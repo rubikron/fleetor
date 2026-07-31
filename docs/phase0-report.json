@@ -1,0 +1,312 @@
+{
+  "aggregate": {
+    "claimed_success": 10,
+    "false_successes": 0,
+    "fidelity_by_kind": {},
+    "fidelity_rate": 0.0,
+    "n_tickets": 10,
+    "per_tool": {
+      "Bash": [
+        14,
+        0
+      ],
+      "Edit": [
+        16,
+        0
+      ],
+      "Glob": [
+        5,
+        0
+      ],
+      "Grep": [
+        7,
+        0
+      ],
+      "Read": [
+        21,
+        0
+      ],
+      "Write": [
+        2,
+        0
+      ]
+    },
+    "total_calls": 65,
+    "total_est_cost_usd": 0.06392663200000001,
+    "total_fidelity_failures": 0,
+    "total_input_tokens": 307592,
+    "total_no_result": 0,
+    "total_output_tokens": 12619,
+    "total_task_errors": 1,
+    "verify_passed": 10
+  },
+  "runs": [
+    {
+      "cache_creation_tokens": 0,
+      "cache_read_tokens": 88832,
+      "category": "bugfix",
+      "claimed_success": true,
+      "est_cost_usd": 0.005618648,
+      "fidelity_by_kind": {},
+      "fidelity_examples": [],
+      "fidelity_failures": 0,
+      "id": "T-01-bugfix-average",
+      "input_tokens": 30124,
+      "no_result": 0,
+      "output_tokens": 563,
+      "targets": "Read, Edit, Bash",
+      "task_errors": 0,
+      "timed_out": false,
+      "tool_calls": {
+        "Bash": 1,
+        "Edit": 1,
+        "Read": 1
+      },
+      "total_calls": 3,
+      "turns": 4,
+      "verify_passed": true,
+      "wall_ms": 10292
+    },
+    {
+      "cache_creation_tokens": 0,
+      "cache_read_tokens": 183424,
+      "category": "add-feature",
+      "claimed_success": true,
+      "est_cost_usd": 0.0073759559999999995,
+      "fidelity_by_kind": {},
+      "fidelity_examples": [],
+      "fidelity_failures": 0,
+      "id": "T-02-add-sub",
+      "input_tokens": 31211,
+      "no_result": 0,
+      "output_tokens": 1566,
+      "targets": "Edit, Write, Bash",
+      "task_errors": 1,
+      "timed_out": false,
+      "tool_calls": {
+        "Bash": 3,
+        "Edit": 4,
+        "Read": 3
+      },
+      "total_calls": 10,
+      "turns": 11,
+      "verify_passed": true,
+      "wall_ms": 20333
+    },
+    {
+      "cache_creation_tokens": 0,
+      "cache_read_tokens": 120192,
+      "category": "grep-driven",
+      "claimed_success": true,
+      "est_cost_usd": 0.006586048000000001,
+      "fidelity_by_kind": {},
+      "fidelity_examples": [],
+      "fidelity_failures": 0,
+      "id": "T-03-grep-slugify",
+      "input_tokens": 31492,
+      "no_result": 0,
+      "output_tokens": 1766,
+      "targets": "Grep, Read, Edit",
+      "task_errors": 0,
+      "timed_out": false,
+      "tool_calls": {
+        "Bash": 1,
+        "Edit": 2,
+        "Grep": 1,
+        "Read": 2
+      },
+      "total_calls": 6,
+      "turns": 7,
+      "verify_passed": true,
+      "wall_ms": 20796
+    },
+    {
+      "cache_creation_tokens": 0,
+      "cache_read_tokens": 155648,
+      "category": "refactor-rename",
+      "claimed_success": true,
+      "est_cost_usd": 0.0075592720000000006,
+      "fidelity_by_kind": {},
+      "fidelity_examples": [],
+      "fidelity_failures": 0,
+      "id": "T-04-rename-mul",
+      "input_tokens": 32406,
+      "no_result": 0,
+      "output_tokens": 3012,
+      "targets": "Grep, MultiEdit, Edit, Bash",
+      "task_errors": 0,
+      "timed_out": false,
+      "tool_calls": {
+        "Bash": 1,
+        "Edit": 4,
+        "Glob": 1,
+        "Grep": 5,
+        "Read": 3
+      },
+      "total_calls": 14,
+      "turns": 15,
+      "verify_passed": true,
+      "wall_ms": 27956
+    },
+    {
+      "cache_creation_tokens": 0,
+      "cache_read_tokens": 120704,
+      "category": "new-module",
+      "claimed_success": true,
+      "est_cost_usd": 0.006224316000000001,
+      "fidelity_by_kind": {},
+      "fidelity_examples": [],
+      "fidelity_failures": 0,
+      "id": "T-05-new-module",
+      "input_tokens": 30601,
+      "no_result": 0,
+      "output_tokens": 894,
+      "targets": "Write, Edit, Bash",
+      "task_errors": 0,
+      "timed_out": false,
+      "tool_calls": {
+        "Bash": 2,
+        "Edit": 1,
+        "Read": 3,
+        "Write": 1
+      },
+      "total_calls": 7,
+      "turns": 8,
+      "verify_passed": true,
+      "wall_ms": 12318
+    },
+    {
+      "cache_creation_tokens": 0,
+      "cache_read_tokens": 88704,
+      "category": "json-edit",
+      "claimed_success": true,
+      "est_cost_usd": 0.005549936,
+      "fidelity_by_kind": {},
+      "fidelity_examples": [],
+      "fidelity_failures": 0,
+      "id": "T-06-json-edit",
+      "input_tokens": 29922,
+      "no_result": 0,
+      "output_tokens": 425,
+      "targets": "Read, Edit, Bash",
+      "task_errors": 0,
+      "timed_out": false,
+      "tool_calls": {
+        "Bash": 1,
+        "Edit": 1,
+        "Read": 1
+      },
+      "total_calls": 3,
+      "turns": 4,
+      "verify_passed": true,
+      "wall_ms": 9518
+    },
+    {
+      "cache_creation_tokens": 0,
+      "cache_read_tokens": 88704,
+      "category": "glob-count",
+      "claimed_success": true,
+      "est_cost_usd": 0.005595716000000001,
+      "fidelity_by_kind": {},
+      "fidelity_examples": [],
+      "fidelity_failures": 0,
+      "id": "T-07-glob-count",
+      "input_tokens": 30083,
+      "no_result": 0,
+      "output_tokens": 508,
+      "targets": "Glob, Edit",
+      "task_errors": 0,
+      "timed_out": false,
+      "tool_calls": {
+        "Edit": 1,
+        "Glob": 2,
+        "Read": 1
+      },
+      "total_calls": 4,
+      "turns": 5,
+      "verify_passed": true,
+      "wall_ms": 9369
+    },
+    {
+      "cache_creation_tokens": 0,
+      "cache_read_tokens": 119168,
+      "category": "bugfix",
+      "claimed_success": true,
+      "est_cost_usd": 0.006164872,
+      "fidelity_by_kind": {},
+      "fidelity_examples": [],
+      "fidelity_failures": 0,
+      "id": "T-08-bugfix-clamp",
+      "input_tokens": 30306,
+      "no_result": 0,
+      "output_tokens": 906,
+      "targets": "Read, Edit, Bash",
+      "task_errors": 0,
+      "timed_out": false,
+      "tool_calls": {
+        "Bash": 1,
+        "Edit": 1,
+        "Grep": 1,
+        "Read": 1
+      },
+      "total_calls": 4,
+      "turns": 5,
+      "verify_passed": true,
+      "wall_ms": 14431
+    },
+    {
+      "cache_creation_tokens": 0,
+      "cache_read_tokens": 121728,
+      "category": "test-authoring",
+      "claimed_success": true,
+      "est_cost_usd": 0.0063731920000000015,
+      "fidelity_by_kind": {},
+      "fidelity_examples": [],
+      "fidelity_failures": 0,
+      "id": "T-09-write-tests",
+      "input_tokens": 30422,
+      "no_result": 0,
+      "output_tokens": 1464,
+      "targets": "Write, Bash",
+      "task_errors": 0,
+      "timed_out": false,
+      "tool_calls": {
+        "Bash": 2,
+        "Glob": 1,
+        "Read": 4,
+        "Write": 1
+      },
+      "total_calls": 8,
+      "turns": 9,
+      "verify_passed": true,
+      "wall_ms": 16953
+    },
+    {
+      "cache_creation_tokens": 0,
+      "cache_read_tokens": 150784,
+      "category": "refactor-multi",
+      "claimed_success": true,
+      "est_cost_usd": 0.006878676,
+      "fidelity_by_kind": {},
+      "fidelity_examples": [],
+      "fidelity_failures": 0,
+      "id": "T-10-refactor-validate",
+      "input_tokens": 31025,
+      "no_result": 0,
+      "output_tokens": 1515,
+      "targets": "Read, Grep, Edit, Bash",
+      "task_errors": 0,
+      "timed_out": false,
+      "tool_calls": {
+        "Bash": 2,
+        "Edit": 1,
+        "Glob": 1,
+        "Read": 2
+      },
+      "total_calls": 6,
+      "turns": 7,
+      "verify_passed": true,
+      "wall_ms": 19507
+    }
+  ]
+}

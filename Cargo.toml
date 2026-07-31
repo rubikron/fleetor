@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = ["crates/fleetor-cc", "crates/fleetor-cli"]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+rust-version = "1.80"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
