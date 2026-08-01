@@ -1,0 +1,24 @@
+:root {
+  --surface-0: #1f1e1b;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--surface-0);
+  overflow: hidden;
+}
+
+#terminal {
+  position: fixed;
+  inset: 0;
+  padding: 6px;
+  box-sizing: border-box;
+}
+
+/* The xterm viewport should own scrollback; keep the page itself static. */
+.xterm .xterm-viewport {
+  overflow-y: auto;
+}

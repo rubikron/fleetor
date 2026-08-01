@@ -10,8 +10,14 @@ Tauri 2 · Rust · macOS-first.
 
 **Phase 0 — PASS (GO).** Flash tool-call fidelity through real Claude Code:
 0 fidelity failures in 65 tool calls across 10 varied tickets, 10/10 acceptance
-gates passed, ~$0.006/ticket. See `docs/phase0-report.md`. Next: Phase 0.5 (pty
-spike). Run the probe with `fleetor probe` (needs `DEEPSEEK_API_KEY` in `.env`).
+gates passed, ~$0.006/ticket. See `docs/phase0-report.md`. Run the probe with
+`fleetor probe` (needs `DEEPSEEK_API_KEY` in `.env`).
+
+**Phase 0.5 — PASS (GO).** Real `claude` TUI renders faithfully through
+`portable-pty` + xterm.js in a bare Tauri 2 window: colors, alternate screen,
+resize, scrollback, paste all verified. The WKWebView terminal risk is retired
+and the embedded-orchestrator product shape holds. Run the spike with
+`npm install && npm run tauri dev`. Next: Phase 1 (supervisor).
 
 ## Reading order
 

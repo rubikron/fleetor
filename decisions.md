@@ -32,6 +32,18 @@ Worker count 4 · rusqlite/WAL · report schema per handoff §4 · gate retry ca
 - **Why:** Claude Code computes `total_cost_usd` from its built-in Anthropic price table via model-name mapping — off by ~30× against DeepSeek ($0.13 reported vs ~$0.004 real).
 - **Reverses if:** DeepSeek's endpoint starts returning a trustworthy cost field, or published rates change (update the constants in `report.rs`).
 
+## D-006 — Phase 0.5 pty spike: PASS (GO); no companion-window fallback
+
+- **What:** Real `claude` TUI renders faithfully through `portable-pty` + `@xterm/xterm` in a bare Tauri 2 window. Operator-verified exit test: colors, alternate screen (slash-command menus), resize/reflow, scrollback, paste all behave. The WKWebView terminal-fidelity risk (BUILDING §8, risk row 2) is retired; the embedded-orchestrator product shape holds — the companion-window fallback is **not** needed.
+- **Why:** This was the one Tauri-specific platform risk (handoff §12). De-risked early, before the shell phase, exactly as the risk register prescribes.
+- **Reverses if:** a later CC version or macOS webview regression degrades the TUI unfixably — then escalate to max (product-shape change), not a silent workaround.
+
+## D-007 — Spike shell: standalone `src-tauri` package, plain-TS frontend
+
+- **What:** `src-tauri/` is its own cargo workspace (empty `[workspace]`), deliberately **not** a member of `crates/*` — keeps tauri's dep tree and build profile out of the clean fleetor-cc/cli lockfile. The spike frontend is plain TypeScript + xterm.js (no React), single Vite host at repo root with source under `ui/`.
+- **Why:** YAGNI + isolation. A one-terminal spike needs no framework; a framework would be dead weight. Isolating the tauri workspace means a UI-layer build problem can never hold the headless core hostage (BUILDING §3).
+- **Reverses if:** Phase 4 (the real shell) folds `src-tauri` into the main workspace and adopts React per BUILDING §2 — expected, and cheap since the spike is throwaway-grade.
+
 ## D-005 — Phase 0 scaffold: only `fleetor-cc` + `fleetor-cli`, sync I/O
 
 - **What:** Created just the two crates Phase 0 needs (not the full 6-crate layout), and the spawn/stream path uses `std::process` + threads, not tokio.

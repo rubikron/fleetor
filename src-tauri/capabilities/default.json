@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capabilities for the pty spike window: core events + the pty commands.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

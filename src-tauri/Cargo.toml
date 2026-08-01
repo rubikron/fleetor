@@ -1,0 +1,25 @@
+# Phase 0.5 pty spike — standalone package, deliberately NOT a member of the
+# root crates/* workspace. Its own [workspace] keeps tauri's heavy dep tree and
+# build profile out of the clean fleetor-cc / fleetor-cli lockfile.
+[package]
+name = "fleetor-shell"
+version = "0.0.0"
+edition = "2021"
+description = "FLEETOR Phase 0.5 pty spike: real claude TUI via portable-pty + xterm.js"
+publish = false
+
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+portable-pty = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+
+[profile.dev]
+# Faster spike iteration; the pty path isn't perf-sensitive.
+incremental = true

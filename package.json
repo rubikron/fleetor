@@ -1,0 +1,23 @@
+{
+  "name": "fleetor-shell-host",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Phase 0.5 pty spike frontend host (Vite + xterm.js) and Tauri CLI.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "typescript": "^5.6.0",
+    "vite": "^7"
+  }
+}
