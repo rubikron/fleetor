@@ -359,6 +359,7 @@ body,
   border: 1px solid var(--border);
   border-radius: var(--radius);
   min-height: 0;
+  min-width: 0; /* let the pane shrink below the xterm grid so fit() can reflow it */
   width: 100%;
   display: flex;
   flex-direction: column;
@@ -408,6 +409,8 @@ body,
 .terminal-host {
   flex: 1 1 auto;
   min-height: 0;
+  min-width: 0; /* same: the xterm's intrinsic grid width must not pin the host open */
+  overflow: hidden;
   padding: 6px;
 }
 .xterm .xterm-viewport { overflow-y: auto; }
