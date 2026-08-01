@@ -5,6 +5,7 @@
 
 mod probe;
 mod quality;
+mod run;
 mod supervise;
 
 use clap::{Parser, Subcommand};
@@ -48,6 +49,19 @@ enum Commands {
         #[arg(long, default_value_t = 300)]
         timeout: u64,
         /// Repo root (for `.env` and the fake-claude script); defaults to cwd.
+        #[arg(long)]
+        repo_root: Option<PathBuf>,
+    },
+    /// Phase 4 fleet runner: boot the hub, spawn wired worker(s), run the lead
+    /// loop. `--real` drives the live-CC messaging confirmation (costs tokens).
+    Run {
+        /// Use real Flash worker(s) — costs tokens. Required for now.
+        #[arg(long)]
+        real: bool,
+        /// Per-ticket wall-clock timeout in seconds.
+        #[arg(long, default_value_t = 300)]
+        timeout: u64,
+        /// Repo root (for `.env`); defaults to cwd.
         #[arg(long)]
         repo_root: Option<PathBuf>,
     },
@@ -95,6 +109,12 @@ fn main() -> anyhow::Result<()> {
                 .or_else(|| std::env::current_dir().ok())
                 .unwrap_or_else(|| PathBuf::from("."));
             supervise::run(supervise::SuperviseArgs { real, scenario, timeout, repo_root })
+        }
+        Commands::Run { real, timeout, repo_root } => {
+            let repo_root = repo_root
+                .or_else(|| std::env::current_dir().ok())
+                .unwrap_or_else(|| PathBuf::from("."));
+            run::run(run::RunArgs { real, timeout, repo_root })
         }
         Commands::Quality { scenario, reviewer, timeout, repo_root } => {
             let repo_root = repo_root

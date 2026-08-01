@@ -13,8 +13,10 @@ path = "src/main.rs"
 fleetor-core = { path = "../fleetor-core" }
 fleetor-cc = { path = "../fleetor-cc" }
 fleetor-db = { path = "../fleetor-db" }
+fleetor-ipc = { path = "../fleetor-ipc" }
 fleetor-server = { path = "../fleetor-server" }
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
 clap.workspace = true
+tokio.workspace = true

@@ -158,6 +158,33 @@ async function runSocketScenario() {
   process.exit(0);
 }
 
+// Phase 4: a stdin-driven worker that also speaks to the hub over the socket.
+// Connects, asks the lead a blocking question, then polls the drain for the
+// lead's mid-turn mail (the Stop-hook stand-in), and files a `done` report.
+async function handleFleetAsk(ticket) {
+  const c = fleetConnect();
+  await c.ready;
+  c.hello();
+  const ans = await c.call({ op: "ask_lead", question: `Which approach for ${ticket}?`, options: ["A", "B"] });
+  assistantText(`lead answered: ${ans.text}`);
+
+  let mail = [];
+  for (let i = 0; i < 40 && mail.length === 0; i++) {
+    const resp = await c.call({ op: "drain_mail" });
+    mail = resp.messages || [];
+    if (mail.length === 0) await new Promise((r) => setTimeout(r, 50));
+  }
+  if (mail.length) assistantText(`mail received: ${mail.map((m) => m.body).join(" | ")}`);
+  c.close();
+
+  assistantText(reportBlock({
+    ticket, status: "done", summary: "asked the lead and drained mid-turn mail",
+    branch: `ticket/${ticket}`, decisions: [], questions: [], risks: [], followups: [],
+  }));
+  result();
+  // Stay alive; the supervisor kills the session once it ingests the report.
+}
+
 if (scenario.startsWith("msg-")) {
   runSocketScenario();
   // Socket scenarios are self-driving and must NOT set up the stdin loop below:
@@ -186,6 +213,16 @@ rl.on("line", (line) => {
 
   if (scenario === "hang") {
     // Consume the assignment, acknowledge nothing, never end the turn.
+    return;
+  }
+
+  // Phase 4 dual-channel worker: driven over stdin by the supervisor AND talks to
+  // the fleet hub over the socket — the two channels a real wired worker uses at
+  // once. On assignment it asks the lead a blocking question, then drains the
+  // mid-turn mail the lead sends back (standing in for the Stop-hook drain), and
+  // finally files a `done` report so the supervisor closes the ticket.
+  if (scenario === "fleet-ask") {
+    handleFleetAsk(ticket);
     return;
   }
 

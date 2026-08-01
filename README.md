@@ -41,9 +41,9 @@ commands (D-014). Verified by: the hub routing tests, a cross-process shim
 bridge test (real binary over the socket), a Stop-hook drain test, and the
 **BUILDING §6 exit test** — a scripted 3-agent conversation with a mid-turn
 delivery, against fake-claude *processes* over the socket. 28 tests, 0 warnings.
-Remaining before GO: one live-worker confirmation pass (the shim + Stop hook
-wired into `WorkerConfig`, driven by a multi-worker runner) — the Phase 4 shell
-territory.
+The one remaining live-worker confirmation (shim + Stop hook wired into
+`WorkerConfig`, driven by a real multi-worker runner) landed in **Phase 4a** —
+see below.
 
 **Phase 3 — quality loop complete; exit test GREEN.** The loop that closes
 implement → gate → fix → review → done **without the lead** (handoff §8). A
@@ -58,8 +58,28 @@ by the **BUILDING §6 exit test** — a deliberately buggy ticket bounces, gets
 fixed, and passes review against fake-claude + a real shell gate, no tokens —
 plus review-changes→fix→approve, retry-cap escalation, and hub-level
 report/ownership tests. Run it with `cargo run -p fleetor-cli -- quality`. 42
-tests, 0 warnings. Next: Phase 4 (the Tauri shell + the multi-worker fleet
-runner that unifies the supervisor with the hub).
+tests, 0 warnings.
+
+**Phase 4a — fleet runner GREEN; live-CC messaging confirmed.** The runner
+that finally unifies the two channels Phases 1–3 kept apart: `run_fleet`
+(`fleetor-server::runner`) boots the hub, connects a stand-in lead loop, and runs
+each worker's **sync** supervisor on `tokio::task::spawn_blocking` — bridging the
+std-process supervisor to the async hub without rewriting either (D-018). Worker
+fleet-wiring (`--mcp-config`/`--add-dir`/`mcp__fleet`, the generated
+`fleet-mcp.json` + Stop-hook `settings.json`, `FLEET_SOCKET`/`FLEETOR_SLOT`)
+lives in `WorkerConfig::write_fleet_config()` in `fleetor-cc::spawn`. `WorkerSpec`
+routes through the `AgentProcess` seam (`::fake`/`::real`) so one runner serves
+both the free integration test and the live run. Verified by an end-to-end
+fake-claude test (a dual-channel worker: stdin-driven **and** socket-speaking at
+once — `ask_lead` + mid-turn mail) and by the **live confirmation gate**:
+`fleetor run --real` drove one real Flash worker fully wired — event log showed
+`ask_lead` → **blocked** → lead answered → `mail` → `Write`/`Bash`/`report` →
+**done**; the worker named the file `hello.sh` (exactly the lead's reply, not the
+decoy `greet.sh`), and the transcript shows it treating the Stop-hook mail as
+coordination, not a command (D-014 holds against real CC 2.1.220). 43 tests,
+0 warnings. Next: 4b (report-over-MCP as the supervisor's primary signal +
+idle/opportunistic mail delivery — the D-015/D-016 reversals), then the Tauri
+React shell (4c–4e).
 
 ## Reading order
 

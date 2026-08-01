@@ -11,9 +11,11 @@
 pub mod gate;
 pub mod hub;
 pub mod quality;
+pub mod runner;
 pub mod supervisor;
 
 pub use gate::ShellGateRunner;
 pub use hub::{Hub, HubConfig};
 pub use quality::{run_quality_loop, QualityOptions, QualityOutcome, Reviewer, DEFAULT_RETRY_CAP};
+pub use runner::{run_fleet, FleetOutcome, LeadPolicy, WorkerSpec};
 pub use supervisor::{run_ticket, Outcome, SuperviseOptions};
