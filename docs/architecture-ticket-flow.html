@@ -240,7 +240,7 @@
   <h2>What's built vs. pending <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text-muted)">(audit against reality)</span></h2>
   <div class="grid3">
     <div class="card">
-      <div class="cap"><span class="status built"><span class="sdot"></span></span> Built (Phases 1–4e-1)</div>
+      <div class="cap"><span class="status built"><span class="sdot"></span></span> Built (Phases 1–4e-2)</div>
       <ul>
         <li>Supervisor loop: spawn → assign → turn-end → report</li>
         <li>Hub + socket: <span class="kkey">ask_lead</span>/<span class="kkey">reply</span>, <span class="kkey">dm</span>/<span class="kkey">broadcast</span>, Stop-hook mail</li>
@@ -248,14 +248,16 @@
         <li>Report-over-MCP as the primary done-signal</li>
         <li>Live event bus (this doc's telemetry rail)</li>
         <li><b>Lead MCP face + dynamic <span class="kkey">assign</span></b>: the orchestrator dispatches over the hub, workers spawn on demand</li>
-        <li><b>The React shell</b>: fleet server embedded in Tauri, <span class="kkey">fleet://event</span> → dashboard band + board + live feed (4e-1)</li>
+        <li><b>The React shell</b>: fleet server embedded in Tauri, <span class="kkey">fleet://event</span> → dashboard band + board + live feed</li>
+        <li><b>The real lead in the pty</b>: <span class="kkey">claude</span> spawns as <span class="kkey">FLEETOR_ROLE=lead</span> wired to the dynamic hub; workers spawn per <span class="kkey">assign</span> via a backend-selectable factory (4e-2)</li>
       </ul>
     </div>
     <div class="card">
       <div class="cap"><span class="status partial"><span class="sdot"></span></span> Stand-in today</div>
       <ul>
-        <li><b>The lead seat + tools exist</b> (a real CC can drive via the lead shim), but the tests use a <em>fake</em> orchestrator — the live <b>Opus-in-the-seat</b> run is a deferred <span class="kkey">--real</span> gate</li>
-        <li><b>The shell is live but token-free</b>: the React window renders the real event bus, but a scripted <span class="kkey">demo</span> drives it — embedding <b>Opus as the lead</b> in the pty + the live confirmation are <b>4e-2</b></li>
+        <li><b>Wired, zero live spend</b>: the lead pty, the dynamic hub, and the worker factory are all connected, but the first live <b>Opus + worker</b> run is an operator-triggered gate (start-session confirm) — not yet exercised</li>
+        <li><b>Workers default to <span class="kkey">fake</span></b> (a free proof path); real DeepSeek Flash rides behind <span class="kkey">FLEETOR_WORKER_BACKEND=real</span></li>
+        <li><b>No cost/token metering</b> in the top bar yet — shown as absent, not faked</li>
         <li>Merge approval / diff viewer live in the CLI for now</li>
       </ul>
     </div>
@@ -273,8 +275,8 @@
 
   <footer>
     Source of truth for these claims: <code>docs/handoff.md</code> (architecture), <code>BUILDING.md</code> (tiers, phases),
-    <code>DECISIONS.md</code> (D-001…D-022). Code: <code>crates/fleetor-server/{supervisor,hub,quality,runner,bus}.rs</code>,
-    <code>crates/fleetor-core/{event,store,wire}.rs</code>, <code>src-tauri/src/fleet.rs</code> + <code>ui/src/</code> (the 4e-1 shell). Updated for Phase&nbsp;4e-1 — a map, not a spec; where code and doc disagree, code wins (BUILDING&nbsp;§1).
+    <code>DECISIONS.md</code> (D-001…D-024). Code: <code>crates/fleetor-server/{supervisor,hub,quality,runner,bus}.rs</code>,
+    <code>crates/fleetor-core/{event,store,wire}.rs</code>, <code>src-tauri/src/{fleet,pty}.rs</code> + <code>ui/src/</code> (the 4e-2 shell). Updated for Phase&nbsp;4e-2 — a map, not a spec; where code and doc disagree, code wins (BUILDING&nbsp;§1).
   </footer>
 </div>
 

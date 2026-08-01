@@ -1,8 +1,9 @@
-// The orchestrator pane: the real `claude` TUI through the Phase 0.5 pty bridge,
-// unchanged, now hosted inside the React shell. In 4e-1 it runs a plain idle
-// session in a scratch cwd (the retained spike); 4e-2 points it at the lead seat
-// wired to the hub. If `claude` isn't on PATH the pane simply reports it exited —
-// the rest of the shell stays fully usable.
+// The orchestrator pane: the operator's real `claude` TUI through the pty bridge,
+// now running as the fleet **lead** wired to the hub (Phase 4e-2). The xterm view
+// mounts immediately, but the lead process is NOT spawned until the operator
+// explicitly starts the session — spawning it runs their Opus and spends tokens,
+// so a start gate (with the target + worker backend spelled out) sits over the
+// pane until then. The Claude Code TUI itself is untouched.
 
 import { useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
@@ -11,6 +12,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "@xterm/xterm/css/xterm.css";
 import { warmTheme } from "../theme";
+import { spawnLead } from "../fleet/api";
+import type { FleetConfig } from "../fleet/types";
 
 // Raw pty bytes arrive base64-encoded so escape sequences and multibyte UTF-8
 // never split across a chunk boundary.
@@ -21,9 +24,17 @@ function decodeBase64(b64: string): Uint8Array {
   return bytes;
 }
 
-export function TerminalPane() {
-  const hostRef = useRef<HTMLDivElement>(null);
+interface TerminalPaneProps {
+  started: boolean;
+  onStart: () => void;
+  config: FleetConfig | null;
+}
 
+export function TerminalPane({ started, onStart, config }: TerminalPaneProps) {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const termRef = useRef<Terminal | null>(null);
+
+  // Mount the xterm view once. No pty is spawned here — that waits for `started`.
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
@@ -42,6 +53,7 @@ export function TerminalPane() {
     term.loadAddon(fit);
     term.open(host);
     fit.fit();
+    termRef.current = term;
 
     const disposers: Array<() => void> = [];
     let disposed = false;
@@ -74,10 +86,9 @@ export function TerminalPane() {
     observer.observe(host);
     window.addEventListener("resize", refit);
 
-    void invoke("pty_spawn", { rows: term.rows, cols: term.cols });
-
     return () => {
       disposed = true;
+      termRef.current = null;
       observer.disconnect();
       window.removeEventListener("resize", refit);
       onData.dispose();
@@ -87,12 +98,58 @@ export function TerminalPane() {
     };
   }, []);
 
+  // Spawn the lead only once the operator has started the session (the gate). The
+  // pty command is idempotent, so a re-run after a spurious flip is harmless.
+  useEffect(() => {
+    if (!started) return;
+    const term = termRef.current;
+    if (!term) return;
+    void spawnLead(term.rows, term.cols);
+  }, [started]);
+
   return (
     <div className="terminal-pane">
       <div className="pane__head">
         <span className="mono">orchestrator · claude</span>
+        {started && <span className="pane__live">live</span>}
       </div>
-      <div ref={hostRef} className="terminal-host" />
+      <div className="terminal-wrap">
+        <div ref={hostRef} className="terminal-host" />
+        {!started && <SessionGate onStart={onStart} config={config} />}
+      </div>
+    </div>
+  );
+}
+
+/// The explicit spend gate: nothing runs until the operator starts the session.
+function SessionGate({ onStart, config }: { onStart: () => void; config: FleetConfig | null }) {
+  const target = config?.target ?? "the scratch repo";
+  const backend = config?.worker_backend ?? "fake";
+  const lead = config?.lead_model ?? "opus (operator)";
+  return (
+    <div className="pane-gate">
+      <div className="pane-gate__card">
+        <h3 className="pane-gate__title">Start orchestrator session</h3>
+        <p className="pane-gate__body">
+          Spawns your real <span className="mono">claude</span> ({lead}) as the fleet lead in{" "}
+          <span className="mono">{target}</span>, wired to the hub. It will spend tokens.
+        </p>
+        <ul className="pane-gate__facts">
+          <li>
+            <span className="k">workers</span>
+            <span className={`v ${backend === "flash" ? "v--gold" : ""}`}>
+              {backend === "flash" ? "real DeepSeek Flash (costs tokens)" : "fake (free proof path)"}
+            </span>
+          </li>
+          <li>
+            <span className="k">target</span>
+            <span className="v mono">{target}</span>
+          </li>
+        </ul>
+        <button className="pane-gate__go" onClick={onStart}>
+          Start session
+        </button>
+      </div>
     </div>
   );
 }

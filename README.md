@@ -162,8 +162,27 @@ layout, and a message dot travelling each live edge (`assign`/`ask_lead`/ticket)
 (`react-resizable-panels`, persisted sizes). A faithful sign-off mock is at
 `docs/ui-redesign-preview.html`. Verified: `tsc --noEmit && vite build` clean
 (45 modules); crate tests untouched. See D-023.
-Next: 4e-2 — point the pane at the real Opus lead over the hub, delete the
-`demo` stand-in, and run the live confirmation gate.
+
+**Phase 4e-2 — the live lead over a dynamic fleet.** The stand-in is gone: the
+hub is now bound **dynamic** (via `run_dynamic_fleet`), so a supervised worker is
+spawned the moment the lead calls `assign` over the socket. The lead seat is the
+operator's real `claude` TUI in the pty — it spawns with `FLEETOR_ROLE=lead`, a
+generated `fleet` MCP config (the shim), `--add-dir`, and `mcp__fleet` on the
+allow-list, running the operator's own Opus in a throwaway git **scratch repo**
+under `~/.fleetor/_shell` (Tier-1 blast radius). The worker `factory` is testable
+and backend-selectable: **fake-claude by default** (a free proof path that dials
+the hub) and real DeepSeek Flash behind `FLEETOR_WORKER_BACKEND=real` — the choice
+is announced on the feed, never silent. The `demo` command/module is deleted; the
+top bar shows the **real** target/branch/worker-backend/gate (`fleet_config`); and
+spawning the lead (which spends tokens) sits behind an explicit **start-session
+gate** in the terminal pane. Token posture this phase: **wired, zero live spend** —
+the factory is proven by unit tests, the whole thing compiles and the 55 crate
+tests hold; the first live Opus+worker run is the operator's to trigger. Verified:
+`cargo test` (2 new factory tests + 55 crate tests green), `tsc --noEmit && vite
+build` clean. See D-024.
+Next: the first live run (operator-triggered) — start the session, let the lead
+assign a scratch ticket, watch the band/board/graph animate; then real Flash
+workers, then top-bar cost/token metering.
 
 ## Reading order
 

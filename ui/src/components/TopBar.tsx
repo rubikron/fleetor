@@ -1,36 +1,46 @@
-// The top status bar: repo · branch · gate · session cost as quiet pill chips,
-// plus the demoted dev toolbar (Run demo / Assign) on the right — dev controls,
-// deliberately kept out of the monitoring content (handoff §11 / redesign notes).
-// Repo/gate/cost values are static placeholders in 4e-1; real wiring rides in
-// with the live orchestrator (4e-2).
+// The top status bar (Phase 4e-2): quiet pill chips showing the *real* fleet
+// posture — the target repo, its branch, the worker backend, and the quality
+// gate — plus the live connection status. Values come from the backend's
+// fleet_config (the scratch repo and resolved worker backend), not placeholders.
+// The former dev toolbar (demo / manual assign) is gone: real dispatch happens
+// when the lead calls `assign` in the orchestrator TUI, so those buttons would
+// only mislead.
+
+import type { FleetConfig } from "../fleet/types";
 
 interface Pill {
   label: string;
   value: string;
-  tone?: "neutral" | "gold" | "green";
+  tone: "neutral" | "gold" | "green";
 }
 
-const PILLS: Pill[] = [
-  { label: "repo", value: "fleetor" },
-  { label: "branch", value: "phase-4e-shell" },
-  { label: "gate", value: "cargo test · vite build", tone: "green" },
-  { label: "session", value: "$0.00", tone: "gold" },
-];
+function pills(config: FleetConfig | null): Pill[] {
+  if (!config) {
+    return [
+      { label: "target", value: "…", tone: "neutral" },
+      { label: "workers", value: "…", tone: "neutral" },
+    ];
+  }
+  return [
+    { label: "target", value: config.target, tone: "neutral" },
+    { label: "branch", value: config.branch, tone: "neutral" },
+    { label: "workers", value: config.worker_backend, tone: config.worker_backend === "flash" ? "gold" : "neutral" },
+    { label: "gate", value: config.gate, tone: "green" },
+  ];
+}
 
 interface TopBarProps {
-  ready: boolean;
   status: string;
-  onDemo: () => void;
-  onAssign: () => void;
+  config: FleetConfig | null;
 }
 
-export function TopBar({ ready, status, onDemo, onAssign }: TopBarProps) {
+export function TopBar({ status, config }: TopBarProps) {
   return (
     <header className="topbar">
       <span className="brand">FLEETOR</span>
       <div className="pills">
-        {PILLS.map((p) => (
-          <span key={p.label} className={`pill pill--${p.tone ?? "neutral"}`}>
+        {pills(config).map((p) => (
+          <span key={p.label} className={`pill pill--${p.tone}`}>
             <span className="pill__label">{p.label}</span>
             <span className="pill__value">{p.value}</span>
           </span>
@@ -38,15 +48,6 @@ export function TopBar({ ready, status, onDemo, onAssign }: TopBarProps) {
       </div>
       <div className="topbar__spacer" />
       <span className="devbar__status">{status}</span>
-      <div className="devbar">
-        <span className="devbar__label">dev</span>
-        <button className="devbtn" onClick={onDemo} disabled={!ready}>
-          Run demo lifecycle
-        </button>
-        <button className="devbtn" onClick={onAssign} disabled={!ready}>
-          Assign a ticket
-        </button>
-      </div>
     </header>
   );
 }

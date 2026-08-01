@@ -45,6 +45,15 @@ export interface BootSnapshot {
   latest_seq: number;
 }
 
+/// The live fleet configuration the top bar shows (real, not placeholders).
+export interface FleetConfig {
+  target: string;
+  branch: string;
+  worker_backend: string;
+  lead_model: string;
+  gate: string;
+}
+
 /// The worker slots the dashboard band always shows (handoff §11).
 export const WORKER_SLOTS = [1, 2, 3, 4] as const;
 

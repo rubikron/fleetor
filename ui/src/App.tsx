@@ -15,25 +15,7 @@ import { TicketBoard } from "./components/TicketBoard";
 import { EventFeed } from "./components/EventFeed";
 import { TerminalPane } from "./components/TerminalPane";
 import { FleetGraph } from "./views/FleetGraph";
-import { assign, runDemo } from "./fleet/api";
 import { useFleet } from "./fleet/useFleet";
-import type { Ticket } from "./fleet/types";
-
-let assignSeq = 0;
-
-function newTicket(): Ticket {
-  assignSeq += 1;
-  const id = `T-${900 + assignSeq}`;
-  return {
-    id,
-    title: "manual ticket from the shell",
-    body: "Assigned by hand to prove the invoke → store → event → UI round-trip.",
-    files_owned: ["src/lib.rs"],
-    slot: ((assignSeq - 1) % 4) + 1,
-    state: "backlog",
-    budget: { wall_secs: 300, max_tokens: null },
-  };
-}
 
 function statusText(ready: boolean, error: string | null, count: number): string {
   if (error) return error;
@@ -44,6 +26,7 @@ function statusText(ready: boolean, error: string | null, count: number): string
 export function App() {
   const [view, setView] = useState<View>("board");
   const [boardCollapsed, setBoardCollapsed] = useState(false);
+  const [started, setStarted] = useState(false);
   const boardPanel = useRef<ImperativePanelHandle>(null);
   const fleet = useFleet();
 
@@ -58,21 +41,25 @@ export function App() {
   return (
     <div className="app">
       <TopBar
-        ready={fleet.ready}
         status={statusText(fleet.ready, fleet.error, fleet.feed.length)}
-        onDemo={() => void runDemo()}
-        onAssign={() => void assign(newTicket())}
+        config={fleet.config}
       />
       <div className="body">
         <Sidebar view={view} onSelect={setView} unread={fleet.feed.length} />
         <main className="workspace">
-          <DashboardBand workers={fleet.workers} board={fleet.board} onNavigate={setView} />
+          <DashboardBand
+            workers={fleet.workers}
+            board={fleet.board}
+            live={started}
+            config={fleet.config}
+            onNavigate={setView}
+          />
 
           {/* Tickets view: terminal ↔ board, resizable + collapsible. Kept mounted. */}
           <div className={`split-wrap ${view === "board" ? "" : "is-hidden"}`} style={{ flex: "1 1 auto", minHeight: 0, display: "flex" }}>
             <PanelGroup direction="horizontal" autoSaveId="fleetor-shell-split" className="split">
               <Panel defaultSize={64} minSize={32} className="pane-slot">
-                <TerminalPane />
+                <TerminalPane started={started} onStart={() => setStarted(true)} config={fleet.config} />
               </Panel>
               <PanelResizeHandle className="divider">
                 <span className="divider__grip" />

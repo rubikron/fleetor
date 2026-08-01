@@ -5,8 +5,8 @@
 // source of truth; events only trigger the refetch).
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { bootstrap, fetchBoard, onFleetEvent } from "./api";
-import { WORKER_SLOTS, type FleetEvent, type Ticket, type WorkerState } from "./types";
+import { bootstrap, fetchBoard, fetchConfig, onFleetEvent } from "./api";
+import { WORKER_SLOTS, type FleetConfig, type FleetEvent, type Ticket, type WorkerState } from "./types";
 
 /// A worker slot as the band renders it, reduced from the event stream.
 export interface WorkerCell {
@@ -22,6 +22,7 @@ export interface FleetView {
   board: Ticket[];
   workers: WorkerCell[];
   feed: FleetEvent[];
+  config: FleetConfig | null;
 }
 
 const MAX_FEED = 300;
@@ -54,6 +55,7 @@ export function useFleet(): FleetView {
   const [board, setBoard] = useState<Ticket[]>([]);
   const [workers, setWorkers] = useState<Record<number, WorkerCell>>(initialWorkers);
   const [feed, setFeed] = useState<FleetEvent[]>([]);
+  const [config, setConfig] = useState<FleetConfig | null>(null);
 
   // Refetch the board off the store; deduped so a burst of moves is one round-trip.
   const refetchPending = useRef(false);
@@ -79,6 +81,14 @@ export function useFleet(): FleetView {
         const snap = await bootstrap();
         if (cancelled) return;
         setBoard(snap.board);
+        // Config is a snapshot of the live posture (target/branch/backend); fetch
+        // once after bootstrap. A failure here must not sink the whole shell.
+        try {
+          const cfg = await fetchConfig();
+          if (!cancelled) setConfig(cfg);
+        } catch {
+          /* top bar falls back to placeholders */
+        }
         unlisten = await onFleetEvent((event) => {
           setFeed((f) => [event, ...f].slice(0, MAX_FEED));
           setWorkers((w) => reduceWorker(w, event));
@@ -106,5 +116,6 @@ export function useFleet(): FleetView {
     board,
     workers: WORKER_SLOTS.map((slot) => workers[slot]),
     feed,
+    config,
   };
 }

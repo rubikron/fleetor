@@ -23,11 +23,12 @@ fn main() {
             fleet::fleet_bootstrap,
             fleet::fleet_board,
             fleet::fleet_assign,
-            fleet::fleet_demo,
+            fleet::fleet_config,
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { .. } = event {
                 pty::kill_session(&window.state::<PtyState>());
+                fleet::shutdown(&window.state::<FleetState>());
             }
         })
         .run(tauri::generate_context!())

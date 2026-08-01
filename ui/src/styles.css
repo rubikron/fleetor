@@ -406,6 +406,14 @@ body,
 }
 .pane__ctl:hover { color: var(--fg-dim); background: var(--bg-2); }
 
+/* wraps the xterm host so the start gate can overlay it without disturbing fit() */
+.terminal-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+}
 .terminal-host {
   flex: 1 1 auto;
   min-height: 0;
@@ -414,6 +422,85 @@ body,
   padding: 6px;
 }
 .xterm .xterm-viewport { overflow-y: auto; }
+
+/* live badge in the orchestrator pane head */
+.pane__live {
+  font-family: var(--sans);
+  font-size: var(--t-label);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 5px;
+  padding: 1px 6px;
+}
+
+/* the explicit spend gate over the terminal until the operator starts the session */
+.pane-gate {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: color-mix(in srgb, var(--bg-1) 90%, transparent);
+  z-index: 5;
+}
+.pane-gate__card {
+  max-width: 400px;
+  width: 100%;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px 22px;
+}
+.pane-gate__title {
+  margin: 0 0 8px;
+  font-size: var(--t-body);
+  font-weight: 600;
+  color: var(--fg);
+}
+.pane-gate__body {
+  margin: 0 0 14px;
+  font-size: var(--t-small);
+  line-height: 1.5;
+  color: var(--fg-dim);
+}
+.pane-gate__facts {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pane-gate__facts li {
+  display: flex;
+  gap: 10px;
+  font-size: var(--t-small);
+}
+.pane-gate__facts .k {
+  flex: 0 0 64px;
+  color: var(--fg-mute);
+  text-transform: uppercase;
+  font-size: var(--t-label);
+  letter-spacing: 0.06em;
+  padding-top: 1px;
+}
+.pane-gate__facts .v { color: var(--fg-dim); }
+.pane-gate__facts .v--gold { color: var(--gold); }
+.pane-gate__go {
+  font-family: var(--sans);
+  font-size: var(--t-small);
+  color: var(--bg-0);
+  background: var(--accent);
+  border: none;
+  border-radius: 6px;
+  padding: 8px 16px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.pane-gate__go:hover { background: color-mix(in srgb, var(--accent) 88%, #fff); }
 
 /* collapsed-board rail: a slim always-reachable expander */
 .board-rail {

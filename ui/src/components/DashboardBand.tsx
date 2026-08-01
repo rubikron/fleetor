@@ -6,7 +6,7 @@
 
 import type { View } from "./Sidebar";
 import type { WorkerCell } from "../fleet/useFleet";
-import type { Ticket, WorkerState } from "../fleet/types";
+import type { FleetConfig, Ticket, WorkerState } from "../fleet/types";
 
 const WORKER_LABEL: Record<WorkerState, string> = {
   booting: "booting",
@@ -53,17 +53,21 @@ function WorkerCellView({ cell, onOpen }: { cell: WorkerCell; onOpen: () => void
   );
 }
 
-function OrchestratorCell({ onOpen }: { onOpen: () => void }) {
+function OrchestratorCell({ live, config, onOpen }: { live: boolean; config: FleetConfig | null; onOpen: () => void }) {
   return (
     <button className="cell cell--orch" onClick={onOpen}>
       <div className="cell__head">
-        <Dot tone="muted" />
+        <Dot tone={live ? "accent" : "muted"} />
         <span className="cell__name">orchestrator</span>
         <span className="role">lead</span>
-        <span className="cell__state">standby</span>
+        <span className={`cell__state ${live ? "text-accent" : ""}`}>{live ? "live" : "standby"}</span>
       </div>
       <div className="cell__body">
-        <span className="cell__muted">live lead seat attaches in 4e-2</span>
+        {live ? (
+          <span className="mono">{config?.lead_model ?? "opus (operator)"}</span>
+        ) : (
+          <span className="cell__muted">start the session to attach the lead</span>
+        )}
       </div>
     </button>
   );
@@ -97,13 +101,15 @@ function QueueCell({ board }: { board: Ticket[] }) {
 interface BandProps {
   workers: WorkerCell[];
   board: Ticket[];
+  live: boolean;
+  config: FleetConfig | null;
   onNavigate: (view: View) => void;
 }
 
-export function DashboardBand({ workers, board, onNavigate }: BandProps) {
+export function DashboardBand({ workers, board, live, config, onNavigate }: BandProps) {
   return (
     <section className="band">
-      <OrchestratorCell onOpen={() => onNavigate("fleet")} />
+      <OrchestratorCell live={live} config={config} onOpen={() => onNavigate("fleet")} />
       {workers.map((cell) => (
         <WorkerCellView key={cell.slot} cell={cell} onOpen={() => onNavigate("fleet")} />
       ))}

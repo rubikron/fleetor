@@ -4,7 +4,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { BootSnapshot, FleetEvent, Ticket } from "./types";
+import type { BootSnapshot, FleetConfig, FleetEvent, Ticket } from "./types";
 
 const FLEET_EVENT = "fleet://event";
 
@@ -23,9 +23,15 @@ export function assign(ticket: Ticket): Promise<void> {
   return invoke("fleet_assign", { ticket });
 }
 
-/// Kick the scripted 4e-1 demo lifecycle (no tokens, no processes).
-export function runDemo(): Promise<void> {
-  return invoke("fleet_demo");
+/// The live fleet configuration (real target/branch/worker backend) for the top bar.
+export function fetchConfig(): Promise<FleetConfig> {
+  return invoke<FleetConfig>("fleet_config");
+}
+
+/// Spawn the lead `claude` in the pty as the fleet orchestrator. Spends tokens —
+/// the caller gates this behind an explicit confirm.
+export function spawnLead(rows: number, cols: number): Promise<void> {
+  return invoke("pty_spawn", { rows, cols });
 }
 
 /// Subscribe to the live event stream. Returns an unlisten fn for cleanup.
