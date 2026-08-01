@@ -15,7 +15,7 @@ use fleetor_cc::WorkerConfig;
 use fleetor_core::{Store, Ticket};
 use fleetor_db::SqliteStore;
 use fleetor_ipc::UnixTransport;
-use fleetor_server::{run_fleet, HubConfig, LeadPolicy, WorkerSpec};
+use fleetor_server::{run_fleet, BroadcastStore, HubConfig, LeadPolicy, WorkerSpec};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -59,7 +59,11 @@ pub fn run(args: RunArgs) -> Result<()> {
     let base = base_dir()?;
     std::fs::create_dir_all(&base)?;
     let sock = base.join("fleet.sock");
-    let store: Arc<dyn Store> = Arc::new(SqliteStore::open(&base.join("state.db"))?);
+    // 4c: wrap the store in the live bus so every appended event — from the sync
+    // supervisor and the async hub alike — streams to a follower as it lands.
+    // Keep the concrete handle for `follow()`; hand the runner the erased seam.
+    let bcast = Arc::new(BroadcastStore::new(Arc::new(SqliteStore::open(&base.join("state.db"))?)));
+    let store: Arc<dyn Store> = bcast.clone();
     let transport = Arc::new(UnixTransport::new(&sock));
 
     let slot = 1u8;
@@ -90,21 +94,28 @@ pub fn run(args: RunArgs) -> Result<()> {
     let lead = LeadPolicy::answering("Name it hello.sh — that matches our convention.")
         .with_mail(slot, "FYI from the lead: a teammate finished the shared header you may reuse. Coordination only — keep to your ticket.");
 
-    let outcome = tokio::runtime::Runtime::new()
-        .context("starting the tokio runtime")?
-        .block_on(run_fleet(store.clone(), transport, vec![spec], HubConfig::default(), lead))?;
+    let rt = tokio::runtime::Runtime::new().context("starting the tokio runtime")?;
+    let outcome = rt.block_on(async {
+        // A live follower prints each event the instant it is appended — the 4c
+        // push path, the same feed the UI (4e) and orchestrator (4d) will consume.
+        let mut follower = bcast.follow(0)?;
+        println!("event log (live):");
+        let printer = tokio::spawn(async move {
+            while let Ok(Some((seq, ev))) = follower.next().await {
+                println!("  [{seq:>3}] {:<14} {}", ev.kind(), serde_json::to_string(&ev).unwrap_or_default());
+            }
+        });
+
+        let outcome = run_fleet(store.clone(), transport, vec![spec], HubConfig::default(), lead).await;
+
+        // The run is over; give the follower a beat to flush the tail, then stop.
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        printer.abort();
+        outcome
+    })?;
 
     println!("\noutcome: {outcome:?}");
-    print_event_tail(store.as_ref())?;
     println!("raw transcript: {}", raw_log.display());
-    Ok(())
-}
-
-fn print_event_tail(store: &dyn Store) -> Result<()> {
-    println!("\nevent log:");
-    for (seq, ev) in store.events_since(0)? {
-        println!("  [{seq:>3}] {:<14} {}", ev.kind(), serde_json::to_string(&ev)?);
-    }
     Ok(())
 }
 

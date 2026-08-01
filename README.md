@@ -91,8 +91,25 @@ transcript-scrape (it needs the full report body to bounce — a 4c/4d
 companion), and the D-015 idle/opportunistic mail paths stay deferred to 4c/4d
 where a real orchestrator exercises them (D-019). Verified deterministically: a
 worker that files only over the socket closes `Done` with exactly one
-`report-filed`. 44 tests, 0 warnings. Next: 4c (a live event bus for the UI),
-then 4d (the orchestrator-as-lead TUI) and the Tauri React shell (4e).
+`report-filed`. 44 tests, 0 warnings.
+
+**Phase 4c — live event bus for the UI.** The push side of the event log. Every
+state change already funnels through the one chokepoint `Store::append_event`;
+`BroadcastStore` (`fleetor-server::bus`) is a **decorator** over the `Store` seam
+that delegates all persistence and, right after a successful append, publishes
+the row's real `seq` on a `tokio::sync::broadcast` bus — so both the sync
+supervisor and the async hub feed subscribers live with **zero change to the
+proven Phase 1–4b loops** (unwrap it and you're back to a plain store). The DB
+stays the source of truth: **persist-then-publish**, best-effort send, and an
+`EventFollower` (`follow(after)`) that streams the DB snapshot then live events
+gap-free and dup-free — a follower that lags the bounded ring recovers by
+re-reading `events_since` (D-020). `fleetor run` now prints events live through a
+follower instead of dumping the log afterward. Verified by `event_bus.rs`: a live
+subscriber receives *exactly* the persisted log (same seqs, no gaps/dupes), a
+late subscriber gets full history then live across a seamless boundary, and a
+follower flooded past `BUS_CAPACITY` recovers every event from the DB. 48 tests,
+0 warnings. Next: 4d (the orchestrator-as-lead TUI) and the Tauri React shell
+(4e).
 
 ## Reading order
 
