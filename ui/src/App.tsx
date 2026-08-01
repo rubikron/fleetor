@@ -3,7 +3,7 @@
 // and the full event log. The band and top bar never move; only the workspace
 // pane below them changes with the selected view.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { TopBar } from "./components/TopBar";
 import { Sidebar, type View } from "./components/Sidebar";
 import { DashboardBand } from "./components/DashboardBand";
@@ -34,6 +34,15 @@ export function App() {
   const [view, setView] = useState<View>("board");
   const fleet = useFleet();
 
+  // The terminal is never unmounted (below) so its xterm buffer survives a tab
+  // switch. When the board tab comes back into view, nudge a resize so the pane
+  // refits to its now-visible box and `claude` repaints its alternate screen.
+  useEffect(() => {
+    if (view !== "board") return;
+    const id = window.setTimeout(() => window.dispatchEvent(new Event("resize")), 0);
+    return () => window.clearTimeout(id);
+  }, [view]);
+
   return (
     <div className="app">
       <TopBar />
@@ -60,18 +69,19 @@ export function App() {
             </span>
           </div>
 
-          {view === "board" ? (
-            <div className="split">
-              <TerminalPane />
-              <div className="board-pane">
-                <TicketBoard board={fleet.board} />
-              </div>
+          {/* Both views stay mounted; we toggle visibility with CSS so the
+              terminal's xterm instance and buffer are never torn down on a tab
+              switch (unmounting it leaves a blank pane the running pty won't
+              repaint). */}
+          <div className={`split ${view === "board" ? "" : "is-hidden"}`}>
+            <TerminalPane />
+            <div className="board-pane">
+              <TicketBoard board={fleet.board} />
             </div>
-          ) : (
-            <div className="events-view">
-              <EventFeed feed={fleet.feed} />
-            </div>
-          )}
+          </div>
+          <div className={`events-view ${view === "events" ? "" : "is-hidden"}`}>
+            <EventFeed feed={fleet.feed} />
+          </div>
         </main>
       </div>
     </div>

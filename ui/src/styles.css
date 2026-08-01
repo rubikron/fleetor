@@ -47,6 +47,12 @@ body,
   font-family: var(--mono);
 }
 
+/* Kept in the DOM but not shown — used to preserve the terminal's live xterm
+   buffer across tab switches instead of unmounting it. */
+.is-hidden {
+  display: none !important;
+}
+
 .text-green { color: var(--green); }
 .text-red { color: var(--red); }
 

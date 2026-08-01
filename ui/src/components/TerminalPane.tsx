@@ -61,6 +61,9 @@ export function TerminalPane() {
     const onResize = term.onResize(({ rows, cols }) => void invoke("pty_resize", { rows, cols }));
 
     const refit = () => {
+      // While the pane is on a hidden tab its box is 0×0; fitting then would
+      // collapse claude's grid. Only refit when it actually has a size.
+      if (host.clientWidth === 0 || host.clientHeight === 0) return;
       try {
         fit.fit();
       } catch {
