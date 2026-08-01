@@ -14,6 +14,7 @@
 //   hang       consume the assignment, then never emit a result (tests the watchdog)
 
 import { createInterface } from "node:readline";
+import net from "node:net";
 
 const scenario = process.env.FAKE_CLAUDE_SCENARIO || "happy";
 const sessionId = `fake-${scenario}-0001`;
@@ -71,6 +72,83 @@ emit({
   apiKeySource: "none",
 });
 
+// --- Phase 2: socket-speaking scenarios (fake worker talks to the fleet hub) ---
+// When the scenario starts with "msg-", this fake connects to $FLEET_SOCKET as
+// $FLEETOR_SLOT and runs a scripted conversation over the wire, then exits. This
+// is how the fake-claude exit test (BUILDING §6) drives a 3-agent conversation
+// with a mid-turn delivery without any real tokens.
+function fleetConnect() {
+  const path = process.env.FLEET_SOCKET;
+  const slot = Number(process.env.FLEETOR_SLOT || "0");
+  const sock = net.createConnection(path);
+  const rl = createInterface({ input: sock });
+  const queue = [];
+  const waiters = [];
+  rl.on("line", (line) => {
+    line = line.trim();
+    if (!line) return;
+    const msg = JSON.parse(line);
+    if (waiters.length) waiters.shift()(msg);
+    else queue.push(msg);
+  });
+  const readResp = () =>
+    new Promise((resolve) => (queue.length ? resolve(queue.shift()) : waiters.push(resolve)));
+  const write = (obj) => sock.write(JSON.stringify(obj) + "\n");
+  let reqSeq = 0;
+  const call = async (op) => {
+    const id = `fake-${slot}-${reqSeq++}`;
+    write({ id, ...op });
+    return readResp();
+  };
+  return {
+    slot,
+    ready: new Promise((res) => sock.on("connect", res)),
+    hello: () => write({ party: { kind: "worker", id: slot }, v: 1 }),
+    call,
+    close: () => sock.end(),
+  };
+}
+
+async function runSocketScenario() {
+  const c = fleetConnect();
+  await c.ready;
+  c.hello();
+
+  if (scenario === "msg-ask") {
+    const resp = await c.call({ op: "ask_lead", question: "Approach A or B?", options: ["A", "B"] });
+    assistantText(`lead answered: ${resp.text}`);
+    result();
+  } else if (scenario === "msg-dm") {
+    const to = Number(process.env.FAKE_DM_TO || "3");
+    const body = process.env.FAKE_DM_BODY || "note from a peer";
+    await c.call({ op: "dm", to, text: body });
+    assistantText(`sent dm to worker-${to}`);
+    result();
+  } else if (scenario === "msg-recv") {
+    // Poll the turn-boundary drain until mail arrives (or give up after ~3s).
+    let got = [];
+    for (let i = 0; i < 60 && got.length === 0; i++) {
+      const resp = await c.call({ op: "drain_mail" });
+      got = resp.messages || [];
+      if (got.length === 0) await new Promise((r) => setTimeout(r, 50));
+    }
+    assistantText(`received: ${got.map((m) => m.body).join(" | ")}`);
+    result();
+  }
+  c.close();
+  process.exit(0);
+}
+
+if (scenario.startsWith("msg-")) {
+  runSocketScenario();
+  // Socket scenarios are self-driving and must NOT set up the stdin loop below:
+  // with stdin=null its EOF would fire `close` and exit before the socket work
+  // finishes. runSocketScenario() calls process.exit() when done.
+} else {
+  runStdinLoop();
+}
+
+function runStdinLoop() {
 let turn = 0;
 const rl = createInterface({ input: process.stdin });
 
@@ -131,3 +209,4 @@ rl.on("line", (line) => {
 });
 
 rl.on("close", () => process.exit(0));
+}

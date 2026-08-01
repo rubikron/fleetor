@@ -2,6 +2,7 @@
 //! supervisor depends only on this trait so it can be driven against an
 //! in-memory fake in unit tests. One of the four sanctioned seams — no more.
 
+use crate::envelope::{Envelope, Party};
 use crate::event::{FleetEvent, TicketState};
 use crate::report::Report;
 use crate::ticket::Ticket;
@@ -26,4 +27,12 @@ pub trait Store: Send + Sync {
     /// Events with sequence greater than `after` (0 = from the start), oldest
     /// first — the CLI/UI tail.
     fn events_since(&self, after: i64) -> Result<Vec<(i64, FleetEvent)>>;
+
+    /// Persist a mail envelope as undelivered (Phase 2). The `mail` table is the
+    /// source of truth so mail survives a crash (handoff §11).
+    fn save_mail(&self, env: &Envelope) -> Result<()>;
+
+    /// Return, and mark delivered, all undelivered mail addressed to `to`,
+    /// oldest first — the drain path (Stop hook / turn boundary).
+    fn take_mail(&self, to: &Party) -> Result<Vec<Envelope>>;
 }

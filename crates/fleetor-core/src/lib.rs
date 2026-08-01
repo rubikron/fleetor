@@ -13,9 +13,13 @@ pub mod report;
 pub mod store;
 pub mod ticket;
 pub mod time;
+pub mod wire;
 
 pub use envelope::{Envelope, MessageKind, Party, Ref, ENVELOPE_VERSION};
 pub use event::{FleetEvent, GateOutcome, TicketState, WorkerState};
 pub use report::{GateResults, Report, ReportStatus};
 pub use store::Store;
 pub use ticket::{Budget, Ticket};
+pub use wire::{
+    Hello, LeadEvent, LeadEventKind, Op, OpResult, Request, Response, WIRE_VERSION,
+};

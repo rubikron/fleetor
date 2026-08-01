@@ -7,6 +7,7 @@
 mod migrations;
 
 use anyhow::{Context, Result};
+use fleetor_core::envelope::{Envelope, Party, Ref};
 use fleetor_core::event::{FleetEvent, TicketState};
 use fleetor_core::report::Report;
 use fleetor_core::ticket::Ticket;
@@ -135,6 +136,79 @@ impl Store for SqliteStore {
                 .with_context(|| format!("decoding event {seq}"))?;
             out.push((seq, ev));
         }
+        Ok(out)
+    }
+
+    fn save_mail(&self, env: &Envelope) -> Result<()> {
+        let (ref_kind, ref_val) = match &env.r#ref {
+            Some(Ref::Ticket(t)) => (Some("ticket"), Some(t.clone())),
+            Some(Ref::Branch(b)) => (Some("branch"), Some(b.clone())),
+            None => (None, None),
+        };
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO mail (id, from_party, to_party, kind, body, ref_kind, ref_val, ts, v, delivered)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0)",
+            rusqlite::params![
+                env.id,
+                serde_json::to_string(&env.from)?,
+                serde_json::to_string(&env.to)?,
+                serde_json::to_string(&env.kind)?,
+                env.body,
+                ref_kind,
+                ref_val,
+                env.ts,
+                env.v,
+            ],
+        )
+        .context("save mail")?;
+        Ok(())
+    }
+
+    fn take_mail(&self, to: &Party) -> Result<Vec<Envelope>> {
+        let to_json = serde_json::to_string(to)?;
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, from_party, kind, body, ref_kind, ref_val, ts, v
+             FROM mail WHERE to_party=?1 AND delivered=0 ORDER BY rowid",
+        )?;
+        let rows = stmt.query_map([&to_json], |r| {
+            Ok((
+                r.get::<_, String>(0)?, // id
+                r.get::<_, String>(1)?, // from_party (json)
+                r.get::<_, String>(2)?, // kind (json)
+                r.get::<_, String>(3)?, // body
+                r.get::<_, Option<String>>(4)?, // ref_kind
+                r.get::<_, Option<String>>(5)?, // ref_val
+                r.get::<_, i64>(6)?,    // ts
+                r.get::<_, u32>(7)?,    // v
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, from, kind, body, ref_kind, ref_val, ts, v) = row?;
+            let r#ref = match (ref_kind.as_deref(), ref_val) {
+                (Some("ticket"), Some(val)) => Some(Ref::Ticket(val)),
+                (Some("branch"), Some(val)) => Some(Ref::Branch(val)),
+                _ => None,
+            };
+            out.push(Envelope {
+                id,
+                from: serde_json::from_str(&from).context("decode mail from_party")?,
+                to: to.clone(),
+                kind: serde_json::from_str(&kind).context("decode mail kind")?,
+                body,
+                r#ref,
+                ts,
+                v,
+            });
+        }
+        drop(stmt);
+        conn.execute(
+            "UPDATE mail SET delivered=1 WHERE to_party=?1 AND delivered=0",
+            [&to_json],
+        )
+        .context("mark mail delivered")?;
         Ok(out)
     }
 }

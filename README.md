@@ -27,7 +27,23 @@ log plus a raw per-worker transcript on disk. Verified against `fake-claude`
 once against real Claude Code Flash (worker wrote + tested `greet.sh`, filed a
 well-formed `fleet-report`, ticket → done). Run it with
 `cargo run -p fleetor-cli -- supervise` (add `--real` for a live worker).
-Next: Phase 2 (messaging — shim, `ask_lead`, Stop-hook delivery).
+
+**Phase 2 — messaging model complete; exit test GREEN.** The fleet socket and
+its routing hub: `ask_lead`/`reply` (the one worker→lead blocking call), async
+`dm`/`broadcast` peer mail persisted to SQLite, the lead's `await_events`
+long-poll, and mid-turn mail delivery via the worker's Stop hook. A new
+`Transport` seam (`fleetor-ipc`, unix socket) and the `fleetor-shim` binary
+(stdio MCP ↔ socket, one binary, slot via env) carry it. The MCP handshake and
+Stop-hook re-injection were **spiked against real CC 2.1.220 first**
+(`docs/phase2-spikes.md`, fixtures in `tests/fixtures/`) — both mechanisms pass;
+the spike also found that mid-turn mail must be framed as coordination, not
+commands (D-014). Verified by: the hub routing tests, a cross-process shim
+bridge test (real binary over the socket), a Stop-hook drain test, and the
+**BUILDING §6 exit test** — a scripted 3-agent conversation with a mid-turn
+delivery, against fake-claude *processes* over the socket. 28 tests, 0 warnings.
+Remaining before GO: one live-worker confirmation pass (the shim + Stop hook
+wired into `WorkerConfig`, driven by a multi-worker runner) — the Phase 4 shell
+territory. Next: Phase 3 (quality loop — gate runner, auto-bounce, peer review).
 
 ## Reading order
 

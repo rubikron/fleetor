@@ -8,3 +8,8 @@
 # Node / frontend
 /node_modules
 /dist
+
+# Throwaway spike run outputs (transcripts + isolated cc-config; never committed)
+/examples/**/work/
+/examples/**/*.ndjson
+/examples/**/*.log

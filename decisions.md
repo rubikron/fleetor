@@ -65,3 +65,33 @@ Worker count 4 · rusqlite/WAL · report schema per handoff §4 · gate retry ca
 - **What:** Created just the two crates Phase 0 needs (not the full 6-crate layout), and the spawn/stream path uses `std::process` + threads, not tokio.
 - **Why:** YAGNI + reversible. `fleetor-cc`'s spawn builder returns a `Command` whose env/arg logic ports to `tokio::process` unchanged; remaining crates (core/db/server/shim) get added when their phase needs them.
 - **Reverses if:** Phase 1 supervision needs async multiplexing — promote spawn to tokio and add crates then.
+
+## D-011 — Phase 2 adopts tokio for the socket + hub (D-005/D-009 deferral resolved)
+
+- **What:** `fleetor-ipc` (the new `Transport` crate) and `fleetor-server`'s hub run on **tokio**. The Phase 1 sync supervisor (`std::process` + threads + mpsc) is untouched and still passes; only the new Phase 2 surface is async.
+- **Why:** Phase 2 multiplexes a socket accept loop + N worker connections + a blocking lead long-poll (`await_events`) + blocking `ask_lead` waiters — the exact "async multiplexing" D-009 said would trigger the promotion, and the runtime BUILDING §2 already names. `tokio::sync::{oneshot, Notify}` model the ask/reply and long-poll cleanly; hand-rolling them on `Condvar` would diverge from §2 for no gain.
+- **Reverses if:** the async surface proves not to earn its keep — unlikely now that the hub, shim, and CLI all consume it.
+
+## D-012 — New `Transport` seam lives in its own crate `fleetor-ipc`; wire types in `fleetor-core`
+
+- **What:** The socket **wire contract** (`Request`/`Response`/`Op`/`OpResult`/`LeadEvent`/`Hello`, versioned `WIRE_VERSION=1`) is pure serde in `fleetor-core::wire`. The **transport** (the `Transport` trait — the 3rd sanctioned seam — plus `UnixTransport`, framed `Conn`, and a `Client` helper) is a new crate `fleetor-ipc`, depended on by both `fleetor-server` and `fleetor-shim`.
+- **Why:** Contracts belong in core (BUILDING §4) and must stay tokio-free; the I/O belongs behind the seam. A shared crate keeps the shim from depending on the whole server, and isolates the socket in one module (BUILDING §2 IPC row) so a Windows named-pipe impl slots in behind the same trait. Framing is newline-delimited JSON over any async duplex, so the transport can change without touching the framing.
+- **Reverses if:** a second transport never materializes and the trait carries one impl forever — collapse `Transport` to the concrete `UnixTransport` (BUILDING §8 over-abstraction guard).
+
+## D-013 — One socket, two faces; worker/lead op split enforced structurally
+
+- **What:** The hub serves workers and the lead on one socket; a connection declares its `Party` via `Hello`. The wire `Op` enum holds both faces, and the hub **rejects** a lead op from a worker connection and vice-versa. `ask_lead` is the *only* worker blocking op; there is no worker↔worker blocking op in the enum at all.
+- **Why:** Makes Tier-1.5 (blocking is worker→lead only; no worker↔worker deadlock primitive) a property of the type surface, not a convention. Mail (`dm`/`broadcast`/`send`) is always async and persisted to the `mail` table (source of truth, survives a crash — handoff §11); questions/notices and `ask_lead` reply-waiters are in-memory and transient (a crash drops an in-flight ask, which times out to the park answer).
+- **Reverses if:** a future need for lead↔lead or a second blocking worker op appears — revisit the split, but never add a worker→worker blocking op (Tier-1.5 is max's).
+
+## D-014 — Mid-turn mail framing: coordination, not commands (spike-derived)
+
+- **What:** The Stop-hook injects queued mail as a `block` decision whose `reason` is explicitly framed as *in-band teammate coordination that augments the current task*, never as a new instruction. Delivery is via the shim binary's `stop-hook` mode; an empty queue emits nothing (turn ends), and the queue emptying is the loop terminator (no `stop_hook_active` bookkeeping needed).
+- **Why:** The Phase 2 spike (`docs/phase2-spikes.md`) showed real Flash **refuses** injected text that reads as an override of its task ("treating it as data, not a command") — correct model behavior. The delivery *channel* is proven; only the *framing* needed care. The MCP + Stop-hook mechanisms themselves passed against installed CC 2.1.220 (fixtures in `tests/fixtures/`), so no escalation to max was needed.
+- **Reverses if:** a later CC changes Stop-hook re-injection semantics — the fixtures are version-stamped; re-capture and diff.
+
+## D-015 — Report-over-MCP and the idle/opportunistic delivery paths deferred within Phase 2
+
+- **What:** Phase 2 builds the messaging *core* — `ask_lead`/`reply`, `notify_lead`, `dm`/`broadcast`, `await_events`/`inbox`, and turn-boundary (`drain`) delivery. Deferred: (a) `report()` as an MCP tool (still transcript-scraped per D-008); (b) the "idle → server writes to stdin" and "opportunistic piggyback on a tool result" delivery paths (handoff §5) — only turn-boundary drain is wired; (c) `whos_working_on`/`claim_file`/`backlog_add` (handoff §4), which serve the Phase 3 ownership/quality loop.
+- **Why:** YAGNI against the exit test (BUILDING §6): the scripted 3-agent conversation with a mid-turn delivery needs exactly the core above. The deferred items are additive behind the same wire surface.
+- **Reverses if:** their phase arrives — report-over-MCP and ownership tools are natural Phase 3 companions; idle/opportunistic delivery lands when the multi-worker supervisor (Phase 4 shell) drives real turn boundaries.
