@@ -29,6 +29,12 @@ pub trait Store: Send + Sync {
     /// first — the CLI/UI tail.
     fn events_since(&self, after: i64) -> Result<Vec<(i64, FleetEvent)>>;
 
+    /// The highest event sequence so far (0 when the log is empty). A cheap
+    /// cursor for "watch for events appended after this point" — the supervisor
+    /// captures it at assign to detect the hub's report-over-MCP `ReportFiled`
+    /// as its primary done-signal (D-018/4b) without re-reading the whole log.
+    fn latest_seq(&self) -> Result<i64>;
+
     /// Persist a mail envelope as undelivered (Phase 2). The `mail` table is the
     /// source of truth so mail survives a crash (handoff §11).
     fn save_mail(&self, env: &Envelope) -> Result<()>;

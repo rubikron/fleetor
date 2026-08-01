@@ -12,12 +12,15 @@
 //!    `ask_lead`, and (4a) sends mid-turn mail — the stand-in for the real
 //!    orchestrator TUI, which takes over this seat in Phase 4d.
 //!
-//! **The sync↔async seam (4a):** the hub and lead loop live on the tokio runtime;
+//! **The sync↔async seam:** the hub and lead loop live on the tokio runtime;
 //! each worker's *supervisor* loop is synchronous (`std::process` + threads), so
-//! it runs on a [`tokio::task::spawn_blocking`] thread. The two channels stay
-//! decoupled — the supervisor drives turns over stdin/stdout while the worker's
-//! fleet tool-calls travel the socket to the hub independently. (Report-over-MCP
-//! becoming the supervisor's *primary* signal — the tight coupling — is 4b.)
+//! it runs on a [`tokio::task::spawn_blocking`] thread. The two channels are
+//! bridged through the shared, persisted event log — **no cross-runtime channel**:
+//! the worker's `fleet.report` MCP call travels the socket to the hub, which
+//! appends `ReportFiled`; the sync supervisor reads that as its **primary**
+//! done-signal (4b/D-019), with the transcript scrape demoted to a backstop.
+//! (Idle→stdin / opportunistic-piggyback mail delivery — D-015 — land with the
+//! real orchestrator in 4c/4d; turn-boundary Stop-hook drain covers 4a/4b.)
 
 use crate::hub::{Hub, HubConfig};
 use crate::supervisor::{run_ticket, Outcome, SuperviseOptions};

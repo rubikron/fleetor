@@ -185,6 +185,28 @@ async function handleFleetAsk(ticket) {
   // Stay alive; the supervisor kills the session once it ingests the report.
 }
 
+// Phase 4b: a worker that files its report over the SOCKET (the `fleet.report`
+// MCP tool the hub ingests), NOT as a transcript block. It ends the turn with
+// plain text only — so the supervisor's *only* done-signal is the hub's
+// `ReportFiled` event (report-over-MCP primary). Proves the transcript scrape is
+// no longer required, and that there's exactly one report-filed (no double-log).
+async function handleMcpReport(ticket) {
+  const c = fleetConnect();
+  await c.ready;
+  c.hello();
+  await c.call({
+    op: "report",
+    report: {
+      ticket, status: "done", summary: "filed over MCP",
+      branch: `ticket/${ticket}`, decisions: [], questions: [], risks: [], followups: [],
+    },
+  });
+  c.close();
+  assistantText("Done — filed my report via the fleet tool.");
+  result();
+  // Stay alive; the supervisor kills the session once it reads the hub event.
+}
+
 if (scenario.startsWith("msg-")) {
   runSocketScenario();
   // Socket scenarios are self-driving and must NOT set up the stdin loop below:
@@ -223,6 +245,13 @@ rl.on("line", (line) => {
   // finally files a `done` report so the supervisor closes the ticket.
   if (scenario === "fleet-ask") {
     handleFleetAsk(ticket);
+    return;
+  }
+
+  // Phase 4b worker: file the report over the socket (report-over-MCP primary),
+  // ending the turn with no transcript report block. See handleMcpReport above.
+  if (scenario === "mcp-report") {
+    handleMcpReport(ticket);
     return;
   }
 

@@ -140,6 +140,12 @@ impl Store for SqliteStore {
         Ok(out)
     }
 
+    fn latest_seq(&self) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        let seq: i64 = conn.query_row("SELECT COALESCE(MAX(seq), 0) FROM events", [], |r| r.get(0))?;
+        Ok(seq)
+    }
+
     fn save_mail(&self, env: &Envelope) -> Result<()> {
         let (ref_kind, ref_val) = match &env.r#ref {
             Some(Ref::Ticket(t)) => (Some("ticket"), Some(t.clone())),

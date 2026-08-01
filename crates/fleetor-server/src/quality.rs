@@ -109,7 +109,10 @@ pub fn run_quality_loop(
 
     loop {
         // --- get a report (may reprompt on a missing one) ---
-        let report = match drive_to_report(&mut session, ticket, sup, store, deadline)? {
+        // The quality loop stays transcript-scrape: it needs the full `Report`
+        // body to attach gate results and bounce, which the event-only MCP-primary
+        // path doesn't carry. Unifying it is a 4c/4d companion (D-016/D-018).
+        let report = match drive_to_report(&mut session, ticket, sup, store, deadline, false)? {
             ReportStep::Report(r) => r,
             ReportStep::Terminal { outcome, final_state } => {
                 finish(store, &ticket.id, sup, &mut session, cur, outcome.clone(), final_state)?;

@@ -110,3 +110,65 @@ async fn runner_wires_one_worker_ask_lead_and_mid_turn_mail() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// 4b (D-018): report-over-MCP is the supervisor's **primary** done-signal. A
+/// worker that files only over the socket (no `fleet-report` transcript block)
+/// still closes its ticket `Done`, and the hub's `ReportFiled` is the *only* one
+/// — proving the 4a double-log (supervisor scrape + hub) is gone.
+#[tokio::test]
+async fn runner_terminates_on_report_over_mcp_no_double_log() {
+    let dir = std::env::temp_dir().join(format!("fleetor-mcp-report-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let sock = dir.join("fleet.sock");
+    let raw_log = dir.join("worker-1.jsonl");
+
+    let store: Arc<dyn Store> = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let transport = Arc::new(UnixTransport::new(&sock));
+
+    let slot = 1u8;
+    let agent = FakeWithEnv {
+        inner: FakeClaude {
+            script: fake_script(),
+            cwd: dir.clone(),
+            scenario: "mcp-report".into(),
+        },
+        env: vec![
+            ("FLEET_SOCKET".into(), sock.to_string_lossy().into_owned()),
+            ("FLEETOR_SLOT".into(), slot.to_string()),
+        ],
+    };
+    let ticket = Ticket::new("T-402", "report over mcp", "Do the work, then file via the fleet tool.");
+    let workers = vec![WorkerSpec::fake(Box::new(agent), ticket, slot, Some(raw_log.clone()), 20)];
+
+    // This worker never asks the lead; the lead just idles.
+    let lead = LeadPolicy::answering("n/a");
+
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(25),
+        run_fleet(store.clone(), transport, workers, HubConfig::default(), lead),
+    )
+    .await
+    .expect("fleet run timed out")
+    .expect("fleet run failed");
+
+    // Terminated Done — via the hub's report, with no ask/mail traffic.
+    assert_eq!(outcome.questions_answered, 0);
+    assert_eq!(outcome.mail_sent, 0);
+    assert!(
+        matches!(outcome.workers[0].1, Outcome::Reported { status: ReportStatus::Done }),
+        "expected a done report via MCP, got {:?}",
+        outcome.workers[0].1
+    );
+
+    // Exactly one report-filed (the hub's) — the supervisor did not scrape and
+    // re-emit its own. This is the 4a double-log fix.
+    let reports = store.events_since(0).unwrap().into_iter().filter(|(_, e)| e.kind() == "report-filed").count();
+    assert_eq!(reports, 1, "expected exactly one report-filed event (no double-log)");
+
+    // The done-signal came from MCP, not a transcript block: the worker's turn
+    // carried none, so the scrape would have found nothing.
+    let transcript = std::fs::read_to_string(&raw_log).expect("worker transcript");
+    assert!(!transcript.contains("fleet-report"), "worker should not have emitted a report block:\n{transcript}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

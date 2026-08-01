@@ -78,7 +78,10 @@ pub fn run_ticket(
 
     let cur = assign(&mut session, ticket, store, opts)?;
 
-    match drive_to_report(&mut session, ticket, opts, store, deadline)? {
+    // The base supervisor prefers report-over-MCP (4b): the worker files via the
+    // `fleet.report` tool, the hub persists + emits `ReportFiled`, and we read
+    // that as the terminal signal. The transcript-scrape stays the backstop.
+    match drive_to_report(&mut session, ticket, opts, store, deadline, true)? {
         ReportStep::Report(report) => {
             store.save_report(&ticket.id, opts.slot, &report)?;
             emit(store, FleetEvent::ReportFiled {
@@ -115,18 +118,31 @@ pub(crate) fn assign(
     Ok(cur)
 }
 
-/// One reported turn: read events until `result`, ingest the report from the
-/// final message, reprompting once (up to `opts.max_turns`) when none is filed.
-/// Does **not** kill the session — the caller (Phase 1 or the quality loop)
-/// decides what happens next. On a wedge / crash / malformed / no-report the
-/// notice is emitted here and a [`ReportStep::Terminal`] is returned.
+/// One reported turn: read events until `result`, ingest the report, reprompting
+/// once (up to `opts.max_turns`) when none is filed. Does **not** kill the
+/// session — the caller (Phase 1 or the quality loop) decides what happens next.
+/// On a wedge / crash / malformed / no-report the notice is emitted here and a
+/// [`ReportStep::Terminal`] is returned.
+///
+/// When `prefer_mcp` is set (the base supervisor — 4b/D-018), the worker's
+/// report-over-MCP is **primary**: the hub persists it and emits `ReportFiled`,
+/// which we read as the terminal signal and finish on *without re-saving or
+/// re-emitting* (a plain `ReportStep::Terminal { Reported }`). The transcript
+/// scrape stays the backstop for a worker that ended its turn with a
+/// `fleet-report` block instead. `prefer_mcp = false` keeps the caller on pure
+/// transcript-scrape (the quality loop needs the full [`Report`] body — D-016).
 pub(crate) fn drive_to_report(
     session: &mut Session,
     ticket: &Ticket,
     opts: &SuperviseOptions,
     store: &dyn Store,
     deadline: Instant,
+    prefer_mcp: bool,
 ) -> Result<ReportStep> {
+    // Watch for a `ReportFiled` the hub appends *after* this point; `i64::MAX`
+    // disables the watch (`events_since(MAX)` is always empty).
+    let mut report_cursor = if prefer_mcp { store.latest_seq()? } else { i64::MAX };
+
     let mut turns_used = 1u32;
     loop {
         let text = match read_until_result(session, ticket, opts, store, deadline)? {
@@ -141,6 +157,12 @@ pub(crate) fn drive_to_report(
             }
         };
 
+        // Primary: the worker filed over MCP; the hub owns the save + emit.
+        if let Some(step) = mcp_report_step(store, &ticket.id, opts.slot, &mut report_cursor) {
+            return Ok(step);
+        }
+
+        // Backstop (D-008): a `fleet-report` block scraped from the transcript.
         match Report::from_transcript_text(&text) {
             Some(Ok(report)) => return Ok(ReportStep::Report(report)),
             Some(Err(e)) => {
@@ -148,6 +170,13 @@ pub(crate) fn drive_to_report(
                 return Ok(ReportStep::terminal(Outcome::BadReport { detail: e.to_string() }, TicketState::Failed));
             }
             None => {
+                // A late MCP report may still be committing on the hub's task —
+                // grace-poll briefly before treating the turn as report-less.
+                if prefer_mcp {
+                    if let Some(step) = grace_poll_mcp_report(store, &ticket.id, opts.slot, &mut report_cursor, deadline) {
+                        return Ok(step);
+                    }
+                }
                 if turns_used >= opts.max_turns {
                     notice(store, NoticeLevel::Warn, format!("{}: no report after reprompt", ticket.id));
                     return Ok(ReportStep::terminal(Outcome::NoReport, TicketState::Failed));
@@ -158,6 +187,48 @@ pub(crate) fn drive_to_report(
             }
         }
     }
+}
+
+/// If the hub appended a `ReportFiled` for (`ticket`, `slot`) after `cursor`,
+/// return the terminal step for it. The hub already saved the report and emitted
+/// the event, so the supervisor finishes on it *without* re-saving or re-emitting
+/// (that double-log was the 4a symptom D-018 fixes). Advances `cursor` past what
+/// it scanned, so repeat polls don't re-report the same event.
+fn mcp_report_step(store: &dyn Store, ticket_id: &str, slot: u8, cursor: &mut i64) -> Option<ReportStep> {
+    let events = store.events_since(*cursor).ok()?;
+    for (seq, ev) in events {
+        *cursor = seq;
+        if let FleetEvent::ReportFiled { ticket, slot: s, status } = ev {
+            if ticket == ticket_id && s == slot {
+                return Some(ReportStep::terminal(Outcome::Reported { status }, state_for(status)));
+            }
+        }
+    }
+    None
+}
+
+/// Poll [`mcp_report_step`] a few times, sleeping between, to catch a report the
+/// hub is still committing right at the turn boundary (its task runs on another
+/// thread). Bounded by `GRACE_TICKS` and the wall-clock `deadline`.
+fn grace_poll_mcp_report(
+    store: &dyn Store,
+    ticket_id: &str,
+    slot: u8,
+    cursor: &mut i64,
+    deadline: Instant,
+) -> Option<ReportStep> {
+    const GRACE_TICKS: u32 = 10;
+    const TICK: Duration = Duration::from_millis(50);
+    for _ in 0..GRACE_TICKS {
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(TICK);
+        if let Some(step) = mcp_report_step(store, ticket_id, slot, cursor) {
+            return Some(step);
+        }
+    }
+    None
 }
 
 /// The result of one [`drive_to_report`]: a filed report, or a terminal outcome

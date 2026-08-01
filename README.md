@@ -77,9 +77,22 @@ once — `ask_lead` + mid-turn mail) and by the **live confirmation gate**:
 **done**; the worker named the file `hello.sh` (exactly the lead's reply, not the
 decoy `greet.sh`), and the transcript shows it treating the Stop-hook mail as
 coordination, not a command (D-014 holds against real CC 2.1.220). 43 tests,
-0 warnings. Next: 4b (report-over-MCP as the supervisor's primary signal +
-idle/opportunistic mail delivery — the D-015/D-016 reversals), then the Tauri
-React shell (4c–4e).
+0 warnings.
+
+**Phase 4b — report-over-MCP is the supervisor's primary done-signal.** The
+tight coupling 4a left decoupled (D-016 reversal). The worker's `fleet.report`
+MCP call is now terminal: the hub persists it and appends `ReportFiled`, and the
+**sync** supervisor reads that from the shared, persisted event log (a new
+`Store::latest_seq` cursor + `events_since` at each turn boundary) — bridging the
+`spawn_blocking` supervisor to the tokio hub with **no cross-runtime channel**.
+The transcript `fleet-report` scrape drops to a backstop. This also removes the
+supervisor's duplicate `ReportFiled` (the 4a double-log). The quality loop stays
+transcript-scrape (it needs the full report body to bounce — a 4c/4d
+companion), and the D-015 idle/opportunistic mail paths stay deferred to 4c/4d
+where a real orchestrator exercises them (D-019). Verified deterministically: a
+worker that files only over the socket closes `Done` with exactly one
+`report-filed`. 44 tests, 0 warnings. Next: 4c (a live event bus for the UI),
+then 4d (the orchestrator-as-lead TUI) and the Tauri React shell (4e).
 
 ## Reading order
 
