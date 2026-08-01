@@ -9,10 +9,11 @@ mod migrations;
 use anyhow::{Context, Result};
 use fleetor_core::envelope::{Envelope, Party, Ref};
 use fleetor_core::event::{FleetEvent, TicketState};
+use fleetor_core::ownership::{BacklogItem, LeaseGrant, Owner};
 use fleetor_core::report::Report;
 use fleetor_core::ticket::Ticket;
 use fleetor_core::{time, Store};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -209,6 +210,80 @@ impl Store for SqliteStore {
             [&to_json],
         )
         .context("mark mail delivered")?;
+        Ok(out)
+    }
+
+    fn who_owns(&self, path: &str) -> Result<Vec<Owner>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT slot, ticket FROM leases WHERE path=?1 ORDER BY acquired_at")?;
+        let rows = stmt.query_map([path], |r| {
+            Ok(Owner { slot: r.get::<_, i64>(0)? as u8, ticket: r.get(1)? })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    fn claim_lease(&self, path: &str, slot: u8, ticket: &str) -> Result<LeaseGrant> {
+        let conn = self.conn.lock().unwrap();
+        // A lease held by a *different* slot blocks the claim (handoff §4).
+        let held: Option<Owner> = conn
+            .query_row(
+                "SELECT slot, ticket FROM leases WHERE path=?1 AND slot<>?2 LIMIT 1",
+                rusqlite::params![path, slot as i64],
+                |r| Ok(Owner { slot: r.get::<_, i64>(0)? as u8, ticket: r.get(1)? }),
+            )
+            .optional()
+            .context("checking existing lease")?;
+        if let Some(held_by) = held {
+            return Ok(LeaseGrant::Denied { held_by });
+        }
+        // Free, or already this slot's — grant it (idempotent for the same
+        // (path, ticket)).
+        conn.execute(
+            "INSERT INTO leases (path, slot, ticket, acquired_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, NULL)
+             ON CONFLICT(path, ticket) DO UPDATE SET slot=excluded.slot",
+            rusqlite::params![path, slot as i64, ticket, time::now_ms()],
+        )
+        .context("granting lease")?;
+        Ok(LeaseGrant::Granted)
+    }
+
+    fn add_backlog(&self, item: &BacklogItem) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO backlog (id, text, added_by, ticket, ts) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![
+                item.id,
+                item.text,
+                serde_json::to_string(&item.added_by)?,
+                item.ticket,
+                item.ts,
+            ],
+        )
+        .context("add backlog item")?;
+        Ok(())
+    }
+
+    fn list_backlog(&self) -> Result<Vec<BacklogItem>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT id, text, added_by, ticket, ts FROM backlog ORDER BY ts, id")?;
+        let rows = stmt.query_map([], |r| {
+            let added_by: String = r.get(2)?;
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, added_by, r.get::<_, Option<String>>(3)?, r.get::<_, i64>(4)?))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, text, added_by, ticket, ts) = row?;
+            out.push(BacklogItem {
+                id,
+                text,
+                added_by: serde_json::from_str(&added_by).context("decode backlog added_by")?,
+                ticket,
+                ts,
+            });
+        }
         Ok(out)
     }
 }

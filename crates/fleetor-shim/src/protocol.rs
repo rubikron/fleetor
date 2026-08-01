@@ -64,6 +64,55 @@ pub fn tool_list() -> Value {
                 "properties": { "text": { "type": "string" } },
                 "required": ["text"]
             }
+        },
+        {
+            "name": "report",
+            "description": "File your structured completion report for the ticket. Call this once, at the end, when the work is done or you are blocked. status is one of done|blocked|needs-decision|failed.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "ticket": { "type": "string" },
+                    "status": { "type": "string", "enum": ["done", "blocked", "needs-decision", "failed"] },
+                    "summary": { "type": "string", "description": "≤200 words" },
+                    "branch": { "type": "string" },
+                    "diffstat": { "type": "string" },
+                    "decisions": { "type": "array", "items": { "type": "string" } },
+                    "questions": { "type": "array", "items": { "type": "string" } },
+                    "risks": { "type": "array", "items": { "type": "string" } },
+                    "followups": { "type": "array", "items": { "type": "string" } }
+                },
+                "required": ["ticket", "status", "summary"]
+            }
+        },
+        {
+            "name": "whos_working_on",
+            "description": "Cheap conflict check: which worker slots currently hold a file path? Check before you touch shared code.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "path": { "type": "string" } },
+                "required": ["path"]
+            }
+        },
+        {
+            "name": "claim_file",
+            "description": "Request a lease to write a file path for your ticket. May be denied if another slot already holds it. Pass your own ticket id.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" },
+                    "ticket": { "type": "string", "description": "your ticket id, e.g. T-041" }
+                },
+                "required": ["path", "ticket"]
+            }
+        },
+        {
+            "name": "backlog_add",
+            "description": "Park an out-of-scope discovery so it doesn't leak into your diff. This is a success, not a distraction.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "text": { "type": "string" } },
+                "required": ["text"]
+            }
         }
     ])
 }
@@ -93,6 +142,15 @@ pub fn tool_to_op(name: &str, args: &Value) -> Result<Op> {
             text: str_arg("text")?,
         }),
         "broadcast" => Ok(Op::Broadcast { text: str_arg("text")? }),
+        "report" => {
+            // The report arguments object *is* a Report (single-sourced schema).
+            let report = serde_json::from_value(args.clone())
+                .map_err(|e| anyhow!("`report` arguments are not a valid report: {e}"))?;
+            Ok(Op::Report { report })
+        }
+        "whos_working_on" => Ok(Op::WhosWorkingOn { path: str_arg("path")? }),
+        "claim_file" => Ok(Op::ClaimFile { path: str_arg("path")?, ticket: str_arg("ticket")? }),
+        "backlog_add" => Ok(Op::BacklogAdd { text: str_arg("text")? }),
         other => Err(anyhow!("unknown fleet tool `{other}`")),
     }
 }
@@ -111,6 +169,8 @@ pub fn op_result_to_mcp(result: &fleetor_core::wire::OpResult) -> Value {
             }
         }
         OpResult::Mail { messages } => (render_mail(messages), false),
+        OpResult::Owners { owners } => (render_owners(owners), false),
+        OpResult::Claim { grant } => (render_claim(grant), false),
         OpResult::Events { .. } => ("(unexpected: events on a worker call)".to_string(), true),
         OpResult::Error { message } => (format!("fleet error: {message}"), true),
     };
@@ -139,6 +199,27 @@ fn sender_label(p: &fleetor_core::Party) -> String {
         fleetor_core::Party::Lead => "lead".to_string(),
         fleetor_core::Party::Worker(n) => format!("worker-{n}"),
         fleetor_core::Party::User => "user".to_string(),
+    }
+}
+
+fn render_owners(owners: &[fleetor_core::Owner]) -> String {
+    if owners.is_empty() {
+        return "Nobody is working on that path — clear to claim.".to_string();
+    }
+    let mut s = String::from("Held by:\n");
+    for o in owners {
+        s.push_str(&format!("- worker-{} (ticket {})\n", o.slot, o.ticket));
+    }
+    s
+}
+
+fn render_claim(grant: &fleetor_core::LeaseGrant) -> String {
+    match grant {
+        fleetor_core::LeaseGrant::Granted => "Claim granted.".to_string(),
+        fleetor_core::LeaseGrant::Denied { held_by } => format!(
+            "Claim denied — worker-{} holds it for ticket {}. Coordinate via dm or ask_lead.",
+            held_by.slot, held_by.ticket
+        ),
     }
 }
 
@@ -211,6 +292,10 @@ mod tests {
             "notify_lead": {"text": "t"},
             "dm": {"to": 1, "text": "t"},
             "broadcast": {"text": "t"},
+            "report": {"ticket": "T-1", "status": "done", "summary": "s"},
+            "whos_working_on": {"path": "src/a.rs"},
+            "claim_file": {"path": "src/a.rs", "ticket": "T-1"},
+            "backlog_add": {"text": "found a bug elsewhere"},
         });
         for tool in tool_list().as_array().unwrap() {
             let name = tool["name"].as_str().unwrap();

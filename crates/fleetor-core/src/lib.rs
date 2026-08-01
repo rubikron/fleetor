@@ -8,16 +8,23 @@
 
 pub mod envelope;
 pub mod event;
+mod fenced;
+pub mod gate;
 pub mod ids;
+pub mod ownership;
 pub mod report;
+pub mod review;
 pub mod store;
 pub mod ticket;
 pub mod time;
 pub mod wire;
 
 pub use envelope::{Envelope, MessageKind, Party, Ref, ENVELOPE_VERSION};
-pub use event::{FleetEvent, GateOutcome, TicketState, WorkerState};
+pub use event::{FleetEvent, GateOutcome, ReviewOutcome, TicketState, WorkerState};
+pub use gate::{CheckResult, GateCheck, GateReport, GateRunner, GateSpec};
+pub use ownership::{BacklogItem, LeaseGrant, Owner};
 pub use report::{GateResults, Report, ReportStatus};
+pub use review::{ReviewDecision, ReviewVerdict};
 pub use store::Store;
 pub use ticket::{Budget, Ticket};
 pub use wire::{

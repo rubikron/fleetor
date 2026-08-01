@@ -135,6 +135,10 @@ impl Hub {
             (Party::Worker(slot), Op::Dm { to, text }) => self.dm(Party::Worker(*slot), to, text),
             (Party::Worker(slot), Op::Broadcast { text }) => self.broadcast(*slot, text),
             (Party::Worker(slot), Op::DrainMail) => self.drain(Party::Worker(*slot)),
+            (Party::Worker(slot), Op::Report { report }) => self.report(*slot, report),
+            (Party::Worker(_), Op::WhosWorkingOn { path }) => self.whos_working_on(&path),
+            (Party::Worker(slot), Op::ClaimFile { path, ticket }) => self.claim_file(*slot, &path, &ticket),
+            (Party::Worker(slot), Op::BacklogAdd { text }) => self.backlog_add(*slot, &text),
 
             (Party::Lead, Op::AwaitEvents { timeout_ms }) => self.await_events(timeout_ms).await,
             (Party::Lead, Op::Inbox) => self.inbox(),
@@ -205,6 +209,50 @@ impl Hub {
         match self.store.take_mail(&to) {
             Ok(messages) => OpResult::Mail { messages },
             Err(e) => OpResult::Error { message: format!("drain failed: {e}") },
+        }
+    }
+
+    /// A worker files a structured report over MCP (D-008 promoted). Persist it,
+    /// log a `ReportFiled` event, and surface a notice to the lead so a lead
+    /// long-polling `await_events` learns a report landed.
+    fn report(&self, slot: u8, report: fleetor_core::Report) -> OpResult {
+        if let Err(e) = self.store.save_report(&report.ticket, slot, &report) {
+            return OpResult::Error { message: format!("could not persist report: {e}") };
+        }
+        self.emit(FleetEvent::ReportFiled {
+            ticket: report.ticket.clone(),
+            slot,
+            status: report.status,
+        });
+        self.push_lead_event(LeadEvent {
+            id: ids::new_id("r"),
+            from: slot,
+            kind: LeadEventKind::Notice {
+                text: format!("worker-{slot} filed a report on {}: {:?}", report.ticket, report.status),
+            },
+        });
+        OpResult::Ack
+    }
+
+    fn whos_working_on(&self, path: &str) -> OpResult {
+        match self.store.who_owns(path) {
+            Ok(owners) => OpResult::Owners { owners },
+            Err(e) => OpResult::Error { message: format!("whos_working_on failed: {e}") },
+        }
+    }
+
+    fn claim_file(&self, slot: u8, path: &str, ticket: &str) -> OpResult {
+        match self.store.claim_lease(path, slot, ticket) {
+            Ok(grant) => OpResult::Claim { grant },
+            Err(e) => OpResult::Error { message: format!("claim_file failed: {e}") },
+        }
+    }
+
+    fn backlog_add(&self, slot: u8, text: &str) -> OpResult {
+        let item = fleetor_core::BacklogItem::new(text.to_string(), Party::Worker(slot), None);
+        match self.store.add_backlog(&item) {
+            Ok(()) => OpResult::Ack,
+            Err(e) => OpResult::Error { message: format!("backlog_add failed: {e}") },
         }
     }
 

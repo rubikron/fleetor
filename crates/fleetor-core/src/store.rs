@@ -4,6 +4,7 @@
 
 use crate::envelope::{Envelope, Party};
 use crate::event::{FleetEvent, TicketState};
+use crate::ownership::{BacklogItem, LeaseGrant, Owner};
 use crate::report::Report;
 use crate::ticket::Ticket;
 use anyhow::Result;
@@ -35,4 +36,18 @@ pub trait Store: Send + Sync {
     /// Return, and mark delivered, all undelivered mail addressed to `to`,
     /// oldest first — the drain path (Stop hook / turn boundary).
     fn take_mail(&self, to: &Party) -> Result<Vec<Envelope>>;
+
+    /// Slots currently holding `path` (Phase 3 `whos_working_on`). Empty if free.
+    fn who_owns(&self, path: &str) -> Result<Vec<Owner>>;
+
+    /// Request a lease on `path` for (`slot`, `ticket`). Granted if free or
+    /// already this slot's; denied if a *different* slot holds it. Idempotent for
+    /// the same holder (Phase 3 `claim_file`).
+    fn claim_lease(&self, path: &str, slot: u8, ticket: &str) -> Result<LeaseGrant>;
+
+    /// Persist a parked out-of-scope discovery (Phase 3 `backlog_add`).
+    fn add_backlog(&self, item: &BacklogItem) -> Result<()>;
+
+    /// All backlog items, oldest first — the board's backlog column.
+    fn list_backlog(&self) -> Result<Vec<BacklogItem>>;
 }

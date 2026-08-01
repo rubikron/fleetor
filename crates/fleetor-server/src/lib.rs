@@ -8,8 +8,12 @@
 //!
 //! [`Store`]: fleetor_core::Store
 
+pub mod gate;
 pub mod hub;
+pub mod quality;
 pub mod supervisor;
 
+pub use gate::ShellGateRunner;
 pub use hub::{Hub, HubConfig};
+pub use quality::{run_quality_loop, QualityOptions, QualityOutcome, Reviewer, DEFAULT_RETRY_CAP};
 pub use supervisor::{run_ticket, Outcome, SuperviseOptions};

@@ -68,6 +68,18 @@ pub const MIGRATIONS: &[&str] = &[
         ts          INTEGER NOT NULL
     );
     "#,
+    // 0002 — Phase 3: parked out-of-scope discoveries (`backlog_add`). The
+    // `leases` table (from 0001) already carries file ownership for
+    // `claim_file`/`whos_working_on`; only the backlog needs a new table.
+    r#"
+    CREATE TABLE backlog (
+        id       TEXT PRIMARY KEY,
+        text     TEXT NOT NULL,
+        added_by TEXT NOT NULL,            -- JSON Party
+        ticket   TEXT,                     -- source ticket, if any
+        ts       INTEGER NOT NULL
+    );
+    "#,
 ];
 
 /// Bring `conn` up to the latest schema version. Idempotent.

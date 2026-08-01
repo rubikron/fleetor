@@ -43,7 +43,23 @@ bridge test (real binary over the socket), a Stop-hook drain test, and the
 delivery, against fake-claude *processes* over the socket. 28 tests, 0 warnings.
 Remaining before GO: one live-worker confirmation pass (the shim + Stop hook
 wired into `WorkerConfig`, driven by a multi-worker runner) — the Phase 4 shell
-territory. Next: Phase 3 (quality loop — gate runner, auto-bounce, peer review).
+territory.
+
+**Phase 3 — quality loop complete; exit test GREEN.** The loop that closes
+implement → gate → fix → review → done **without the lead** (handoff §8). A
+`GateRunner` seam (the 4th and last) with a `ShellGateRunner` runs the exit gate
+in the worktree; a failing gate auto-bounces the failing checks back to the
+still-alive worker, capped at 3 retries then escalated. On green, a **fresh
+reviewer** agent gets the diff + AC and approves or requests changes (also
+bounced, also capped). `report()` is promoted onto the MCP surface (shim tool +
+hub persistence), and the ownership tools `whos_working_on`/`claim_file`/
+`backlog_add` land against the `leases`/`backlog` tables (D-016, D-017). Verified
+by the **BUILDING §6 exit test** — a deliberately buggy ticket bounces, gets
+fixed, and passes review against fake-claude + a real shell gate, no tokens —
+plus review-changes→fix→approve, retry-cap escalation, and hub-level
+report/ownership tests. Run it with `cargo run -p fleetor-cli -- quality`. 42
+tests, 0 warnings. Next: Phase 4 (the Tauri shell + the multi-worker fleet
+runner that unifies the supervisor with the hub).
 
 ## Reading order
 
