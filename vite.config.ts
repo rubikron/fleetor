@@ -1,11 +1,12 @@
 import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
 
-// Spike frontend lives in ui/; build output goes to dist/ (consumed by Tauri's
-// frontendDist). Plain TS + xterm.js — no React here by intent: the spike is a
-// single full-window terminal, so a framework would be dead weight (KISS). The
-// real shell (Phase 4) adopts React per BUILDING §2.
+// Frontend lives in ui/; build output goes to dist/ (Tauri's frontendDist).
+// React from Phase 4e per BUILDING §2 — the shell is the real product surface now
+// (dashboard band, board, live event feed), not the single-terminal 0.5 spike.
 export default defineConfig({
   root: "ui",
+  plugins: [react()],
   build: {
     outDir: "../dist",
     emptyOutDir: true,

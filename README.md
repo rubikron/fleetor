@@ -127,8 +127,30 @@ with mail, and polls `fleet_status` until the board shows done — plus a
 cross-process test that the real shim binary in lead role bridges `assign` MCP →
 the hub. **Deferred:** the live Opus-in-the-seat run (a `--real` gate),
 `interrupt`, and the pty/xterm rendering of the TUI (4e). 55 tests, 0 warnings.
-Next: 4e — the Tauri React shell (embed the orchestrator's pty, board, and the
-4c event feed in the window) + the live Opus confirmation.
+
+**Phase 4e-1 — the observable shell (no tokens).** The fleet server, embedded in
+the Tauri backend and pushed to a **React** window. `src-tauri` takes plain path
+deps on the proven crates and a `fleet` module that opens the store, wraps it in
+the 4c `BroadcastStore`, binds the hub on the fleet socket (idle until 4e-2), and
+runs an `EventFollower` that streams every appended event to the webview as the
+`fleet://event` Tauri event — the same 4c seam, now terminating in React instead
+of `println!`. The UI (migrated off the 0.5 plain-TS spike) renders the top bar,
+navigation spine, always-visible **dashboard band** (orchestrator + 4 workers +
+queue), **ticket board**, and the live **event feed**; a `useFleet` hook seeds
+the board from a snapshot and reduces the stream. Invoke actions (`fleet_assign`,
+`fleet_demo`) write through the same store, so they stream back for free. The 0.5
+pty terminal pane is carried over unchanged (a plain idle `claude`, **not yet**
+the wired lead). A scripted `fleet::demo` (a pure `plan()` of ticket/worker/gate/
+review/report steps applied on a timer) animates the whole shell with **zero
+tokens and no child processes** — the 4e-1 stand-in for a live fleet. Verified by
+`cargo check` + a `demo`-plan unit test (one event per step; board ends T-101
+done, T-102 in review) and `tsc --noEmit && vite build` (43 modules); the 55
+crate tests are untouched. The live visual check (`npm run tauri dev`) is the
+operator-run gate. **Deferred to 4e-2:** embedding `claude` as `Party::Lead`
+driving `run_dynamic_fleet` over the hub bound here, the live Opus confirmation,
+and real repo/gate/cost values in the top bar. See D-022.
+Next: 4e-2 — point the pane at the real Opus lead over the hub, delete the
+`demo` stand-in, and run the live confirmation gate.
 
 ## Reading order
 

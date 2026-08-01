@@ -1,11 +1,13 @@
-# Phase 0.5 pty spike — standalone package, deliberately NOT a member of the
-# root crates/* workspace. Its own [workspace] keeps tauri's heavy dep tree and
-# build profile out of the clean fleetor-cc / fleetor-cli lockfile.
+# The FLEETOR desktop shell — standalone package, deliberately NOT a member of
+# the root crates/* workspace. Its own [workspace] keeps tauri's heavy dep tree
+# and build profile out of the clean fleetor-cc / fleetor-cli lockfile. It reaches
+# the proven core through plain path deps (Phase 4e), so the crates stay the
+# single source of truth and the shell adds only window + wiring on top.
 [package]
 name = "fleetor-shell"
 version = "0.0.0"
 edition = "2021"
-description = "FLEETOR Phase 0.5 pty spike: real claude TUI via portable-pty + xterm.js"
+description = "FLEETOR desktop shell: embedded fleet server + real claude TUI (Phase 4e)"
 publish = false
 
 [workspace]
@@ -19,6 +21,14 @@ portable-pty = "0.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
+anyhow = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+
+# The proven core, reached by path (this package is outside the crates workspace).
+fleetor-core = { path = "../crates/fleetor-core" }
+fleetor-db = { path = "../crates/fleetor-db" }
+fleetor-server = { path = "../crates/fleetor-server" }
+fleetor-ipc = { path = "../crates/fleetor-ipc" }
 
 [profile.dev]
 # Faster spike iteration; the pty path isn't perf-sensitive.

@@ -10,6 +10,7 @@
     "isolatedModules": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
+    "jsx": "react-jsx",
     "types": []
   },
   "include": ["ui/src"]
