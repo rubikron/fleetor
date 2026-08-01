@@ -1,0 +1,906 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>FLEETOR — UI redesign preview</title>
+<!--
+  FLEETOR monitoring UI — STATIC redesign MOCK (approval preview).
+  Self-contained: inline CSS + a few lines of vanilla JS for the view tabs.
+  No external requests, no fonts/CDN, no build step. Opens in any browser.
+
+  Tokens ported EXACTLY from ui/src/styles.css + ui/src/theme.ts, then the
+  layout/hierarchy/spacing/type is elevated on top. Brand held: flat surfaces,
+  NO gradients, NO drop shadows (depth via the 3-step warm ramp + hairlines),
+  NO blue anywhere, NO emoji, status = dot AND text label, mono = system-owned
+  / sans = human prose. Coral = attention, gold = awareness, green = success,
+  red = failure.
+
+  DESIGN NOTE — the terminal pane renders a STATIC claude-style frame only.
+  The real `claude` TUI is untouched by request; this is a placeholder to show
+  the pane's own chrome, not to restyle terminal content.
+-->
+<style>
+  :root {
+    /* --- ported exactly from styles.css --- */
+    --bg-0: #191815;
+    --bg-1: #1f1e1b;
+    --bg-2: #262420;
+    --bg-3: #2f2c27;
+
+    --fg: #e8e6e1;
+    --fg-dim: #b8b4ab;
+    --fg-mute: #9b978c;   /* lightened from #8a867c → clears AA (4.5:1) on bg-2 at small sizes */
+
+    --accent: #d97757;   /* coral — attention / active / the one eye-catch */
+    --gold: #c69a4e;     /* awareness — review / pending / unread / cost */
+    --green: #7fa36a;    /* success */
+    --red: #c25d4f;      /* failure */
+    --tan: #a98f5f;      /* xterm cyan→tan, used only inside the terminal frame */
+
+    --border: #34322d;
+    --border-soft: #2a2823;
+
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+
+    /* --- elevation: an explicit type + rhythm scale (new) --- */
+    --t-display: 20px;
+    --t-title: 15px;
+    --t-body: 13px;
+    --t-small: 11px;
+    --t-label: 10px;
+    --space: 12px;
+    --radius: 8px;
+  }
+
+  * { box-sizing: border-box; }
+  /* keyboard focus — one broad rule, since a monitoring tool is lived in for hours */
+  :focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+
+  html, body {
+    margin: 0;
+    background: var(--bg-0);
+    color: var(--fg);
+    font-family: var(--sans);
+    font-size: var(--t-body);
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono { font-family: var(--mono); }
+  .text-green { color: var(--green); }
+  .text-red { color: var(--red); }
+  .text-gold { color: var(--gold); }
+  .text-accent { color: var(--accent); }
+  .text-mute { color: var(--fg-mute); }
+
+  /* small caps-tracked label — the label voice of the whole UI */
+  .label {
+    font-size: var(--t-label);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--fg-mute);
+  }
+
+  /* ============================ page shell ============================ */
+  .preview-wrap { max-width: 1320px; margin: 0 auto; padding: 22px 20px 60px; }
+  .preview-head {
+    display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+    padding-bottom: 14px; margin-bottom: 18px;
+    border-bottom: 1px solid var(--border);
+  }
+  .preview-head h1 {
+    font-family: var(--mono); letter-spacing: 0.16em; font-size: 14px;
+    color: var(--accent); margin: 0; font-weight: 600;
+  }
+  .preview-head .sub { color: var(--fg-mute); font-size: var(--t-small); }
+  .preview-head .tag {
+    margin-left: auto; font-size: var(--t-label); letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--fg-mute);
+    border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px;
+  }
+
+  /* the app frame — a device-ish window so the mock reads as the real app */
+  .app-frame {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    background: var(--bg-1);
+  }
+  .app {
+    display: flex; flex-direction: column;
+    height: 720px;
+  }
+
+  /* ---------------------------- top bar ---------------------------- */
+  .topbar {
+    display: flex; align-items: center; gap: 16px;
+    height: 42px; padding: 0 14px; flex: 0 0 auto;
+    background: var(--bg-0); border-bottom: 1px solid var(--border);
+  }
+  .brand { font-family: var(--mono); letter-spacing: 0.2em; font-size: 12px; color: var(--accent); font-weight: 600; }
+  .pills { display: flex; gap: 8px; }
+  .pill {
+    display: inline-flex; align-items: baseline; gap: 6px;
+    padding: 3px 9px; border: 1px solid var(--border); border-radius: 999px;
+    background: var(--bg-1); line-height: 1.4;
+  }
+  .pill__label { font-size: var(--t-label); text-transform: uppercase; letter-spacing: 0.08em; color: var(--fg-mute); }
+  .pill__value { font-family: var(--mono); font-size: var(--t-small); color: var(--fg-dim); }
+  .pill--gold .pill__value { color: var(--gold); }
+  .pill--green .pill__value { color: var(--green); }
+  .topbar__spacer { flex: 1 1 auto; }
+  /* dev controls, deliberately demoted to a quiet right-aligned toolbar */
+  .devbar { display: flex; align-items: center; gap: 8px; }
+  .devbar__label { font-size: var(--t-label); letter-spacing: 0.1em; text-transform: uppercase; color: var(--fg-mute); opacity: 0.7; }
+  .devbtn {
+    font-family: var(--sans); font-size: var(--t-small);
+    padding: 4px 10px; border: 1px solid var(--border-soft); border-radius: 6px;
+    background: transparent; color: var(--fg-mute); cursor: pointer;
+  }
+  .devbtn:hover { background: var(--bg-2); color: var(--fg-dim); }
+
+  .body { display: flex; flex: 1 1 auto; min-height: 0; }
+
+  /* ---------------------------- sidebar ---------------------------- */
+  .sidebar {
+    flex: 0 0 176px; background: var(--bg-0);
+    border-right: 1px solid var(--border);
+    padding: 12px 8px; display: flex; flex-direction: column; gap: 3px;
+  }
+  .sidebar__brandrow { padding: 2px 8px 12px; }
+  .sidebar__label { margin: 16px 8px 6px; }
+  .nav {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 10px; background: transparent; border: none; border-radius: 6px;
+    color: var(--fg-dim); font-family: var(--sans); font-size: var(--t-body);
+    text-align: left; cursor: pointer; width: 100%;
+  }
+  .nav:hover { background: var(--bg-2); }
+  .nav--active { background: var(--bg-2); color: var(--fg); box-shadow: inset 2px 0 0 var(--accent); }
+  .nav--soon { color: var(--fg-mute); cursor: default; opacity: 0.5; }
+  .nav--soon:hover { background: transparent; }
+  .nav__new {
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em;
+    color: var(--accent); border: 1px solid var(--accent); border-radius: 4px;
+    padding: 0 4px; text-transform: uppercase;
+  }
+  .badge {
+    font-family: var(--mono); font-size: var(--t-label);
+    background: var(--gold); color: var(--bg-0); padding: 0 6px; border-radius: 8px;
+  }
+
+  /* ---------------------------- workspace -------------------------- */
+  .workspace { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; padding: 12px; gap: 12px; }
+
+  /* ===== dashboard band — HIERARCHY: orchestrator anchor + workers + queue ===== */
+  .band {
+    display: grid;
+    grid-template-columns: 1.55fr repeat(4, 1fr) 0.95fr;
+    gap: 8px; flex: 0 0 auto;
+  }
+  .cell {
+    position: relative;
+    background: var(--bg-2); border: 1px solid var(--border-soft);
+    border-radius: var(--radius); padding: 9px 11px;
+    cursor: pointer;
+  }
+  .cell:hover { border-color: var(--border); }
+  .cell__head { display: flex; align-items: center; gap: 7px; }
+  .cell__name { font-family: var(--mono); font-size: 12px; color: var(--fg); }
+  .cell__state { margin-left: auto; font-size: var(--t-label); text-transform: uppercase; letter-spacing: 0.06em; color: var(--fg-mute); }
+  .cell__body { margin-top: 7px; font-size: var(--t-small); display: flex; gap: 8px; align-items: center; }
+  .cell__activity { color: var(--accent); }
+  .cell__muted { color: var(--fg-mute); }
+  .cell__meta { margin-top: 6px; display: flex; gap: 12px; }
+  .cell__metric { display: flex; flex-direction: column; gap: 1px; }
+  .cell__metric .k { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--fg-mute); }
+  .cell__metric .v { font-family: var(--mono); font-size: var(--t-small); color: var(--fg-dim); }
+
+  /* the orchestrator ANCHOR — bigger, heavier, the first place the eye lands */
+  /* anchor by a lifted surface + size + the gold "lead" tag — not a side rail */
+  .cell--orch {
+    background: var(--bg-3); border-color: var(--border);
+    display: flex; flex-direction: column;
+  }
+  .cell--orch .cell__name { font-size: 13px; letter-spacing: 0.01em; }
+  .cell--orch .role { font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--gold); margin-left: 2px; }
+  .cell--orch .cell__body { margin-top: 8px; font-size: var(--t-small); color: var(--fg-dim); }
+  .cell--orch .cell__meta { margin-top: auto; padding-top: 8px; }
+
+  /* the single blocked worker gets the lone coral rail + a slow pulse */
+  /* the one "needs you" signal: full coral outline + tint + a gentle border pulse */
+  .cell--blocked { border-color: var(--accent); background: rgba(217,119,87,0.07); animation: blockedPulse 2.4s ease-in-out infinite; }
+  @keyframes blockedPulse {
+    0%, 100% { border-color: var(--accent); }
+    50% { border-color: #7a4a37; }
+  }
+
+  /* queue as a compact data-figure block, not inline prose */
+  .cell--queue { padding: 9px 11px; }
+  .queue__grid { margin-top: 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
+  .queue__stat { display: flex; align-items: baseline; justify-content: space-between; }
+  .queue__stat .k { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--fg-mute); }
+  .queue__stat .v { font-family: var(--mono); font-size: 14px; color: var(--fg); }
+  .queue__stat .v--gold { color: var(--gold); }
+  .queue__stat .v--green { color: var(--green); }
+
+  /* status dots — always paired with a text label */
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; background: var(--fg-mute); }
+  .dot--accent { background: var(--accent); }
+  .dot--gold { background: var(--gold); }
+  .dot--green { background: var(--green); }
+  .dot--red { background: var(--red); }
+  .dot--idle { background: var(--fg-mute); }
+  .dot--muted { background: var(--border); border: 1px solid var(--fg-mute); }
+  /* steady, not pulsing — motion is reserved for the one "needs you" signal (blocked) */
+  .dot--live { background: var(--accent); }
+  @keyframes livePulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+  /* ===== split: terminal + board with a draggable-looking divider ===== */
+  .split { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: 1fr 8px 344px; gap: 0; }
+  .terminal-pane, .board-pane {
+    background: var(--bg-1); border: 1px solid var(--border);
+    border-radius: var(--radius); min-height: 0; display: flex; flex-direction: column; overflow: hidden;
+  }
+  .divider {
+    display: flex; align-items: center; justify-content: center; cursor: col-resize;
+  }
+  .divider__grip { width: 3px; height: 34px; border-radius: 2px; background: var(--border); }
+  .divider:hover .divider__grip { background: var(--fg-mute); }
+
+  .pane__head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 10px; border-bottom: 1px solid var(--border-soft);
+    font-size: var(--t-small); color: var(--fg-mute); flex: 0 0 auto;
+  }
+  .pane__head .grow { flex: 1 1 auto; }
+  .pane__ctl {
+    font-family: var(--sans); font-size: var(--t-label); letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--fg-mute); background: transparent; border: 1px solid var(--border-soft);
+    border-radius: 5px; padding: 2px 7px; cursor: pointer;
+  }
+  .pane__ctl:hover { color: var(--fg-dim); background: var(--bg-2); }
+
+  /* ---- static claude TUI frame (placeholder; content untouched) ---- */
+  .terminal-host { flex: 1 1 auto; min-height: 0; padding: 10px 12px; overflow: hidden;
+    background: var(--bg-1); font-family: var(--mono); font-size: 12px; line-height: 1.55; }
+  .term-line { white-space: pre-wrap; color: var(--fg-dim); }
+  .tc-gold { color: var(--gold); }      /* ANSI blue→gold */
+  .tc-tan { color: var(--tan); }        /* ANSI cyan→tan */
+  .tc-green { color: var(--green); }
+  .tc-red { color: var(--red); }
+  .tc-fg { color: var(--fg); }
+  .tc-mute { color: var(--fg-mute); }
+  .tc-accent { color: var(--accent); }
+  .term-box { border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; margin: 8px 0; }
+  .term-cursor { display: inline-block; width: 7px; height: 14px; background: var(--accent); vertical-align: text-bottom; animation: livePulse 1.1s step-end infinite; }
+
+  /* ---------------------------- board ------------------------------ */
+  .board { flex: 1 1 auto; min-height: 0; display: flex; gap: 8px; padding: 8px; overflow-x: auto; }
+  .column { flex: 1 0 118px; display: flex; flex-direction: column; min-width: 0; }
+  .column__head {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 5px 6px; font-size: var(--t-label); text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--fg-mute); border-bottom: 1px solid var(--border-soft);
+  }
+  .column__count { font-family: var(--mono); color: var(--fg-dim); }
+  .column__body { display: flex; flex-direction: column; gap: 6px; padding: 8px 2px; overflow-y: auto; }
+  .card {
+    background: var(--bg-2); border: 1px solid var(--border-soft);
+    border-radius: 6px; padding: 8px 9px;
+  }
+  /* state cued by a full 1px border tint + the foot dot/chip — no side-tab bar */
+  .card--active { border-color: #4a3b32; }
+  .card--review { border-color: #4a4133; }
+  .card--done { border-color: #3a4234; }
+  .card--backlog { border-color: var(--border-soft); }
+  .card__top { display: flex; justify-content: space-between; align-items: center; font-size: var(--t-small); }
+  .card__id { font-family: var(--mono); color: var(--gold); }
+  .card__slot { font-family: var(--mono); color: var(--fg-mute); }
+  .card__title { margin: 5px 0; font-size: 12px; color: var(--fg); line-height: 1.35; }
+  .card__files { font-family: var(--mono); font-size: var(--t-label); color: var(--fg-mute); word-break: break-all; }
+  .card__foot { margin-top: 6px; display: flex; align-items: center; gap: 6px; }
+  .chip {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;
+    padding: 1px 6px; border-radius: 4px; border: 1px solid var(--border);
+    color: var(--fg-mute); font-family: var(--sans);
+  }
+  .chip--gold { color: var(--gold); border-color: #4a4133; }
+  .chip--accent { color: var(--accent); border-color: #4a3b32; }
+
+  /* ---------------------------- event feed ------------------------- */
+  .events-view { flex: 1 1 auto; min-height: 0; background: var(--bg-1); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; display: flex; flex-direction: column; }
+  .events-view__head { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--border-soft); }
+  .events-view__head h3 { margin: 0; font-size: var(--t-body); font-weight: 600; color: var(--fg); }
+  .feed { flex: 1 1 auto; overflow-y: auto; padding: 6px 4px; font-size: 12px; }
+  .line { display: flex; align-items: baseline; gap: 10px; padding: 4px 10px; border-left: 2px solid transparent; line-height: 1.5; }
+  .line:hover { background: var(--bg-2); }
+  .line--rail { border-left-color: var(--accent); background: rgba(217, 119, 87, 0.06); }
+  .line__seq { font-family: var(--mono); color: var(--fg-mute); font-size: var(--t-small); min-width: 34px; text-align: right; }
+  .line__kind { font-family: var(--mono); font-size: var(--t-label); text-transform: uppercase; letter-spacing: 0.05em; min-width: 60px; color: var(--fg-mute); }
+  .line__kind--accent { color: var(--accent); }
+  .line__kind--gold { color: var(--gold); }
+  .line__kind--green { color: var(--green); }
+  .line__kind--red { color: var(--red); }
+  .line__text { color: var(--fg-dim); }
+  .line__text .mono { color: var(--fg); }
+
+  /* ---------------------------- fleet topology --------------------- */
+  .fleet-view { flex: 1 1 auto; min-height: 0; background: var(--bg-1); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; display: flex; flex-direction: column; }
+  .fleet-view__head { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--border-soft); }
+  .fleet-view__head h3 { margin: 0; font-size: var(--t-body); font-weight: 600; color: var(--fg); }
+  .fleet-stage { flex: 1 1 auto; min-height: 0; display: block; }
+  .fleet-legend { display: flex; gap: 16px; padding: 8px 14px; border-top: 1px solid var(--border-soft); font-size: var(--t-small); color: var(--fg-mute); flex-wrap: wrap; }
+  .fleet-legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend-swatch { width: 16px; height: 2px; border-radius: 1px; display: inline-block; }
+
+  /* fleet topology — bespoke directional FLOW, not a recolored service map:
+     quiet static edges carrying a single travelling message dot in the flow
+     direction, arrowheads, and edge labels naming the actual traffic. */
+  .edge { fill: none; stroke: var(--border-soft); stroke-width: 1.5; }
+  .edge--active { stroke: var(--accent); stroke-opacity: 0.5; }
+  .edge--mail { stroke: var(--gold); stroke-opacity: 0.55; }
+  .edge--blocked { stroke: var(--accent); stroke-width: 2; }
+  .edge--idle { stroke: var(--border-soft); stroke-dasharray: 2 7; stroke-opacity: 0.6; }
+  .msg--work { fill: var(--accent); }
+  .msg--mail { fill: var(--gold); }
+  .msg--blocked { fill: var(--accent); }
+  .edge-label { font-family: var(--mono); font-size: 10px; fill: var(--fg-mute); }
+  .edge-label--mail { fill: var(--gold); }
+  .edge-label--blocked { fill: var(--accent); }
+  .node-ring { fill: var(--bg-2); stroke: var(--border); stroke-width: 1.5; }
+  .node-ring--lead { fill: var(--bg-3); stroke: var(--gold); stroke-width: 2; }
+  .node-ring--active { stroke: var(--accent); stroke-width: 1.5; }
+  .node-ring--blocked { stroke: var(--accent); stroke-width: 2; animation: ringPulse 1.9s ease-in-out infinite; }
+  .node-ring--idle { fill: var(--bg-1); stroke: var(--border-soft); }
+  @keyframes ringPulse { 0%,100% { stroke-opacity: 1; } 50% { stroke-opacity: 0.4; } }
+  .node-label { font-family: var(--mono); font-size: 11px; fill: var(--fg); }
+  .node-label--dim { fill: var(--fg-mute); }
+  .node-sub { font-family: var(--mono); font-size: 10px; fill: var(--fg-dim); }
+  .node-state { font-family: var(--sans); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; }
+
+  /* ---------------------------- states strip ----------------------- */
+  .strip { margin-top: 26px; }
+  .strip h2 { font-size: var(--t-title); font-weight: 600; margin: 0 0 4px; }
+  .strip .strip__sub { color: var(--fg-mute); font-size: var(--t-small); margin-bottom: 14px; }
+  .strip__grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .state-card { background: var(--bg-1); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; display: flex; flex-direction: column; min-height: 180px; }
+  .state-card__head { display: flex; align-items: center; gap: 8px; padding: 8px 11px; border-bottom: 1px solid var(--border-soft); }
+  .state-card__head .name { font-size: var(--t-small); font-weight: 600; color: var(--fg); }
+  .state-card__head .label { margin-left: auto; }
+  .state-card__body { flex: 1 1 auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+
+  /* empty state */
+  .empty-cta { color: var(--fg-dim); font-size: 12px; line-height: 1.5; }
+  .empty-cta b { color: var(--fg); font-weight: 600; }
+  .empty-action { align-self: flex-start; margin-top: 4px; font-size: var(--t-small); color: var(--accent); border: 1px solid var(--accent); border-radius: 6px; padding: 5px 12px; background: transparent; cursor: pointer; }
+
+  /* loading skeleton */
+  .skel { background: var(--bg-2); border: 1px solid var(--border-soft); border-radius: 6px; height: 46px; animation: skel 1.4s ease-in-out infinite; }
+  .skel--sm { height: 12px; width: 60%; }
+  @keyframes skel { 0%,100% { opacity: 0.45; } 50% { opacity: 0.85; } }
+
+  /* blocked state */
+  .blocked-q { border: 1px solid var(--accent); background: rgba(217,119,87,0.08); border-radius: 6px; padding: 10px 12px; }
+  .blocked-q .who { font-family: var(--mono); font-size: var(--t-small); color: var(--accent); }
+  .blocked-q .q { color: var(--fg); font-size: 12px; line-height: 1.5; margin: 6px 0 8px; }
+  .blocked-q .reply { display: flex; gap: 6px; }
+  .blocked-q .reply input { flex: 1 1 auto; background: var(--bg-0); border: 1px solid var(--border); border-radius: 6px; color: var(--fg-dim); font-family: var(--sans); font-size: var(--t-small); padding: 5px 8px; }
+  .blocked-q .reply button { font-size: var(--t-small); color: var(--accent); background: transparent; border: 1px solid var(--accent); border-radius: 6px; padding: 5px 12px; cursor: pointer; }
+
+  /* error state */
+  .err-line { display: flex; align-items: baseline; gap: 8px; font-size: 12px; }
+  .err-line .mono { color: var(--fg-dim); }
+
+  /* ---------------------------- design notes ---------------------- */
+  .notes { margin-top: 30px; background: var(--bg-1); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; }
+  .notes h2 { font-size: var(--t-title); font-weight: 600; margin: 0 0 12px; }
+  .notes ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 9px; }
+  .notes li { color: var(--fg-dim); line-height: 1.55; font-size: 12px; }
+  .notes li b { color: var(--fg); font-weight: 600; }
+  .notes .q { color: var(--gold); }
+
+  /* ---------------------------- view tabs -------------------------- */
+  .viewtabs { display: inline-flex; gap: 4px; padding: 4px; background: var(--bg-1); border: 1px solid var(--border); border-radius: 999px; margin-bottom: 14px; }
+  .viewtab { font-family: var(--sans); font-size: var(--t-small); color: var(--fg-mute); background: transparent; border: none; border-radius: 999px; padding: 6px 14px; cursor: pointer; }
+  .viewtab:hover { color: var(--fg-dim); }
+  .viewtab--active { background: var(--bg-3); color: var(--fg); }
+  .view { display: none; }
+  .view--active { display: block; }
+  .section-label { display: flex; align-items: baseline; gap: 10px; margin: 0 0 10px; }
+  .section-label .t { font-size: var(--t-title); font-weight: 600; color: var(--fg); }
+  .section-label .d { font-size: var(--t-small); color: var(--fg-mute); }
+
+  @media (max-width: 960px) {
+    .strip__grid { grid-template-columns: 1fr 1fr; }
+    .band { grid-template-columns: 1fr 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="preview-wrap">
+
+  <div class="preview-head">
+    <h1>FLEETOR</h1>
+    <span class="sub">monitoring UI — redesign preview (static mock, not wired)</span>
+    <span class="tag">approve look &amp; feel</span>
+  </div>
+
+  <!-- view switcher (the only JS in the file) -->
+  <div class="viewtabs" role="tablist" aria-label="Preview views">
+    <button class="viewtab viewtab--active" role="tab" aria-selected="true" aria-controls="view-tickets" data-view="tickets">Tickets</button>
+    <button class="viewtab" role="tab" aria-selected="false" aria-controls="view-events" data-view="events">Event log</button>
+    <button class="viewtab" role="tab" aria-selected="false" aria-controls="view-fleet" data-view="fleet">Fleet topology</button>
+  </div>
+
+  <!-- ============================ TICKETS VIEW ============================ -->
+  <section class="view view--active" id="view-tickets" role="tabpanel" aria-label="Tickets" data-view="tickets">
+    <div class="app-frame">
+      <div class="app">
+
+        <!-- top bar: ambient status pills + demoted dev controls -->
+        <header class="topbar">
+          <span class="brand">FLEETOR</span>
+          <div class="pills">
+            <span class="pill"><span class="pill__label">repo</span><span class="pill__value">fleetor</span></span>
+            <span class="pill"><span class="pill__label">branch</span><span class="pill__value">phase-4c-event-bus</span></span>
+            <span class="pill pill--green"><span class="pill__label">gate</span><span class="pill__value">cargo test · vite build</span></span>
+            <span class="pill pill--gold"><span class="pill__label">session</span><span class="pill__value">$4.12</span></span>
+          </div>
+          <div class="topbar__spacer"></div>
+          <!-- DESIGN NOTE: dev-only controls, demoted from the action row into a
+               quiet toolbar so they never compete with monitoring content. -->
+          <div class="devbar">
+            <span class="devbar__label">dev</span>
+            <button class="devbtn">Run demo lifecycle</button>
+            <button class="devbtn">Assign a ticket</button>
+          </div>
+        </header>
+
+        <div class="body">
+          <!-- sidebar: navigation spine -->
+          <nav class="sidebar">
+            <div class="sidebar__group">
+              <button class="nav nav--active"><span>Tickets</span></button>
+              <button class="nav"><span>Event log</span><span class="badge">7</span></button>
+              <button class="nav"><span>Fleet</span><span class="nav__new">new</span></button>
+            </div>
+            <div class="sidebar__label label">Configure</div>
+            <div class="sidebar__group">
+              <button class="nav nav--soon" disabled>Profiles</button>
+              <button class="nav nav--soon" disabled>Gate</button>
+              <button class="nav nav--soon" disabled>Models</button>
+              <button class="nav nav--soon" disabled>Settings</button>
+            </div>
+          </nav>
+
+          <main class="workspace">
+            <!-- dashboard band -->
+            <section class="band">
+              <!-- orchestrator ANCHOR: the first place the eye lands -->
+              <div class="cell cell--orch">
+                <div class="cell__head">
+                  <span class="dot dot--live"></span>
+                  <span class="cell__name">orchestrator</span>
+                  <span class="role">lead</span>
+                  <span class="cell__state">planning</span>
+                </div>
+                <div class="cell__body">breaking the event-bus epic into contracts &amp; tickets</div>
+                <div class="cell__meta">
+                  <div class="cell__metric"><span class="k">model</span><span class="v">opus</span></div>
+                  <div class="cell__metric"><span class="k">context</span><span class="v">38%</span></div>
+                  <div class="cell__metric"><span class="k">unread</span><span class="v text-gold">2</span></div>
+                  <div class="cell__metric"><span class="k">elapsed</span><span class="v">14:22</span></div>
+                </div>
+              </div>
+
+              <!-- worker-1: working (peer review) -->
+              <div class="cell">
+                <div class="cell__head"><span class="dot dot--accent"></span><span class="cell__name">worker-1</span><span class="cell__state">working</span></div>
+                <div class="cell__body"><span class="mono">T-105</span><span class="cell__activity mono">Read</span></div>
+                <div class="cell__meta">
+                  <div class="cell__metric"><span class="k">elapsed</span><span class="v">02:41</span></div>
+                  <div class="cell__metric"><span class="k">ctx</span><span class="v">22%</span></div>
+                </div>
+              </div>
+
+              <!-- worker-2: working (implementing) -->
+              <div class="cell">
+                <div class="cell__head"><span class="dot dot--accent"></span><span class="cell__name">worker-2</span><span class="cell__state">working</span></div>
+                <div class="cell__body"><span class="mono">T-104</span><span class="cell__activity mono">Edit</span></div>
+                <div class="cell__meta">
+                  <div class="cell__metric"><span class="k">elapsed</span><span class="v">06:08</span></div>
+                  <div class="cell__metric"><span class="k">ctx</span><span class="v">57%</span></div>
+                </div>
+              </div>
+
+              <!-- worker-3: BLOCKED — the lone coral rail + pulse -->
+              <div class="cell cell--blocked">
+                <div class="cell__head"><span class="dot dot--accent"></span><span class="cell__name">worker-3</span><span class="cell__state text-accent">blocked</span></div>
+                <div class="cell__body"><span class="mono">T-103</span><span class="cell__activity mono text-accent">ask_lead</span></div>
+                <div class="cell__meta">
+                  <div class="cell__metric"><span class="k">waiting</span><span class="v">01:12</span></div>
+                  <div class="cell__metric"><span class="k">ctx</span><span class="v">44%</span></div>
+                </div>
+              </div>
+
+              <!-- worker-4: idle -->
+              <div class="cell">
+                <div class="cell__head"><span class="dot dot--idle"></span><span class="cell__name">worker-4</span><span class="cell__state">idle</span></div>
+                <div class="cell__body"><span class="cell__muted">no ticket</span></div>
+                <div class="cell__meta">
+                  <div class="cell__metric"><span class="k">elapsed</span><span class="v">—</span></div>
+                  <div class="cell__metric"><span class="k">ctx</span><span class="v">0%</span></div>
+                </div>
+              </div>
+
+              <!-- queue: data-figure block -->
+              <div class="cell cell--queue">
+                <div class="cell__head"><span class="cell__name">queue</span></div>
+                <div class="queue__grid">
+                  <div class="queue__stat"><span class="k">backlog</span><span class="v">1</span></div>
+                  <div class="queue__stat"><span class="k">active</span><span class="v v--gold">2</span></div>
+                  <div class="queue__stat"><span class="k">review</span><span class="v v--gold">1</span></div>
+                  <div class="queue__stat"><span class="k">done</span><span class="v v--green">1</span></div>
+                </div>
+              </div>
+            </section>
+
+            <!-- split: terminal (left) + divider + board (right) -->
+            <div class="split">
+              <!-- TERMINAL PANE — static claude-style frame; content untouched -->
+              <div class="terminal-pane">
+                <div class="pane__head">
+                  <span class="dot dot--live"></span>
+                  <span class="mono">orchestrator · claude · opus</span>
+                  <span class="grow"></span>
+                  <span class="mono text-mute">plan mode</span>
+                </div>
+                <div class="terminal-host">
+                  <div class="term-line"><span class="tc-mute">~/harness/fleetor</span> <span class="tc-gold">phase-4c-event-bus</span></div>
+                  <div class="term-line">&nbsp;</div>
+                  <div class="term-line"><span class="tc-accent">&gt;</span> <span class="tc-fg">Break the event-bus epic into worker tickets with file ownership.</span></div>
+                  <div class="term-line">&nbsp;</div>
+                  <div class="term-line"><span class="tc-tan">·</span> <span class="tc-mute">Read</span> <span class="tc-gold">crates/fleetor-core/src/event.rs</span> <span class="tc-mute">(148 lines)</span></div>
+                  <div class="term-line"><span class="tc-tan">·</span> <span class="tc-mute">Grep</span> <span class="tc-gold">"broadcast::"</span> <span class="tc-mute">— 6 matches in 3 files</span></div>
+                  <div class="term-line"><span class="tc-green">✓</span> <span class="tc-fg">Contract drafted: bus fan-out is single-writer, N readers.</span></div>
+                  <div class="term-box">
+                    <div class="term-line"><span class="tc-gold">Ready to code?</span> <span class="tc-mute">3 tickets · 2 workers free · gate = cargo test · vite build</span></div>
+                    <div class="term-line"><span class="tc-mute">1.</span> <span class="tc-fg">Yes, dispatch the fleet</span> &nbsp; <span class="tc-mute">2. Let me edit tickets first</span></div>
+                  </div>
+                  <div class="term-line"><span class="tc-accent">&gt;</span> <span class="term-cursor"></span></div>
+                </div>
+              </div>
+
+              <!-- draggable divider handle (affordance only) -->
+              <div class="divider" title="Drag to resize (wired later)"><div class="divider__grip"></div></div>
+
+              <!-- BOARD -->
+              <div class="board-pane">
+                <div class="pane__head">
+                  <span class="mono">board</span>
+                  <span class="grow"></span>
+                  <!-- collapse-to-rail affordance -->
+                  <button class="pane__ctl" title="Collapse board to a rail (wired later)">Collapse</button>
+                </div>
+                <div class="board">
+                  <div class="column">
+                    <div class="column__head"><span>Backlog</span><span class="column__count">1</span></div>
+                    <div class="column__body">
+                      <article class="card card--backlog">
+                        <div class="card__top"><span class="card__id">T-106</span><span class="card__slot">—</span></div>
+                        <div class="card__title">socket backpressure guard</div>
+                        <div class="card__files">crates/fleetor-server/src/socket.rs</div>
+                      </article>
+                    </div>
+                  </div>
+                  <div class="column">
+                    <div class="column__head"><span>Assigned</span><span class="column__count">1</span></div>
+                    <div class="column__body">
+                      <article class="card card--active">
+                        <div class="card__top"><span class="card__id">T-103</span><span class="card__slot">w3</span></div>
+                        <div class="card__title">reader lag metrics on the bus</div>
+                        <div class="card__files">crates/fleetor-core/src/metrics.rs</div>
+                        <div class="card__foot"><span class="dot dot--accent"></span><span class="chip chip--accent">blocked · ask_lead</span></div>
+                      </article>
+                    </div>
+                  </div>
+                  <div class="column">
+                    <div class="column__head"><span>In progress</span><span class="column__count">1</span></div>
+                    <div class="column__body">
+                      <article class="card card--active">
+                        <div class="card__top"><span class="card__id">T-104</span><span class="card__slot">w2</span></div>
+                        <div class="card__title">event bus fan-out to N readers</div>
+                        <div class="card__files">crates/fleetor-server/src/bus.rs</div>
+                        <div class="card__foot"><span class="dot dot--accent"></span><span class="chip">Edit · 06:08</span></div>
+                      </article>
+                    </div>
+                  </div>
+                  <div class="column">
+                    <div class="column__head"><span>In review</span><span class="column__count">1</span></div>
+                    <div class="column__body">
+                      <article class="card card--review">
+                        <div class="card__top"><span class="card__id">T-105</span><span class="card__slot">w1</span></div>
+                        <div class="card__title">seq numbering on streamed events</div>
+                        <div class="card__files">crates/fleetor-core/src/event.rs</div>
+                        <div class="card__foot"><span class="dot dot--gold"></span><span class="chip chip--gold">review · w1</span></div>
+                      </article>
+                    </div>
+                  </div>
+                  <div class="column">
+                    <div class="column__head"><span>Done</span><span class="column__count">1</span></div>
+                    <div class="column__body">
+                      <article class="card card--done">
+                        <div class="card__top"><span class="card__id">T-102</span><span class="card__slot">w3</span></div>
+                        <div class="card__title">boot snapshot on connect</div>
+                        <div class="card__files">crates/fleetor-server/src/boot.rs</div>
+                        <div class="card__foot"><span class="dot dot--green"></span><span class="chip">gate pass</span></div>
+                      </article>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </main>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ EVENT LOG VIEW ============================ -->
+  <section class="view" id="view-events" role="tabpanel" aria-label="Event log" data-view="events">
+    <div class="app-frame">
+      <div class="events-view">
+        <div class="events-view__head">
+          <h3>Event log</h3>
+          <span class="label">append-only · newest first</span>
+          <span class="grow" style="flex:1 1 auto"></span>
+          <span class="mono text-mute" style="font-size:11px">seq 148</span>
+        </div>
+        <div class="feed">
+          <!-- newest first; coral rail reserved for blocked / non-info notice / gate fail -->
+          <div class="line line--rail">
+            <span class="line__seq">148</span><span class="line__kind line__kind--gold">worker</span>
+            <span class="line__text"><span class="mono">worker-3</span> working → <span class="text-gold">blocked</span> · waiting on lead</span>
+          </div>
+          <div class="line line--rail">
+            <span class="line__seq">147</span><span class="line__kind line__kind--accent">mail</span>
+            <span class="line__text"><span class="mono">worker-3</span> → <span class="mono">lead</span> (<span class="text-accent">ask_lead</span>) — "metrics granularity?"</span>
+          </div>
+          <div class="line">
+            <span class="line__seq">146</span><span class="line__kind line__kind--accent">tool</span>
+            <span class="line__text"><span class="mono">worker-2</span> · <span class="mono">T-104</span> · <span class="mono">Edit</span></span>
+          </div>
+          <div class="line">
+            <span class="line__seq">145</span><span class="line__kind line__kind--gold">review</span>
+            <span class="line__text"><span class="mono">T-105</span> review by <span class="mono">w1</span> — <span class="text-gold">changes-requested</span></span>
+          </div>
+          <div class="line">
+            <span class="line__seq">144</span><span class="line__kind">ticket</span>
+            <span class="line__text"><span class="mono">T-105</span> in-progress → <span class="mono">in-review</span></span>
+          </div>
+          <div class="line">
+            <span class="line__seq">143</span><span class="line__kind line__kind--green">report</span>
+            <span class="line__text"><span class="mono">T-105</span> filed report — <span class="text-green">done</span></span>
+          </div>
+          <div class="line line--rail">
+            <span class="line__seq">142</span><span class="line__kind line__kind--red">gate</span>
+            <span class="line__text"><span class="mono">T-104</span> gate <span class="text-red">fail</span> — cargo test (bounced, retrying)</span>
+          </div>
+          <div class="line">
+            <span class="line__seq">141</span><span class="line__kind line__kind--accent">tool</span>
+            <span class="line__text"><span class="mono">worker-2</span> · <span class="mono">T-104</span> · <span class="mono">Bash</span></span>
+          </div>
+          <div class="line">
+            <span class="line__seq">140</span><span class="line__kind line__kind--accent">mail</span>
+            <span class="line__text"><span class="mono">lead</span> → <span class="mono">worker-1</span> (assign) — T-105</span>
+          </div>
+          <div class="line">
+            <span class="line__seq">139</span><span class="line__kind">worker</span>
+            <span class="line__text"><span class="mono">worker-1</span> idle → <span class="text-accent">working</span></span>
+          </div>
+          <div class="line">
+            <span class="line__seq">138</span><span class="line__kind line__kind--green">gate</span>
+            <span class="line__text"><span class="mono">T-102</span> gate <span class="text-green">pass</span></span>
+          </div>
+          <div class="line">
+            <span class="line__seq">137</span><span class="line__kind line__kind--green">review</span>
+            <span class="line__text"><span class="mono">T-102</span> review by <span class="mono">w3</span> — <span class="text-green">approved</span></span>
+          </div>
+          <div class="line">
+            <span class="line__seq">136</span><span class="line__kind">ticket</span>
+            <span class="line__text"><span class="mono">T-102</span> in-review → <span class="mono">done</span></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ FLEET TOPOLOGY VIEW ============================ -->
+  <section class="view" id="view-fleet" role="tabpanel" aria-label="Fleet topology" data-view="fleet">
+    <!-- DESIGN NOTE: hand-rolled SVG, NOT a node-graph library aesthetic. Lead at
+         center; workers radial. Edges light up on mail/activity; worker-3 shows a
+         coral worker→lead rail (blocked). Shown mid-run. -->
+    <div class="app-frame">
+      <div class="fleet-view">
+        <div class="fleet-view__head">
+          <h3>Fleet</h3>
+          <span class="label">live topology · mid-run</span>
+        </div>
+        <svg class="fleet-stage" viewBox="0 0 900 470" preserveAspectRatio="xMidYMid meet" role="img"
+             aria-label="Fleet topology: lead orchestrating four workers. worker-1 and worker-2 working, worker-3 blocked awaiting the lead, worker-4 idle.">
+          <defs>
+            <!-- literal hex (CSS vars don't resolve in marker attrs) -->
+            <marker id="ah-coral" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="#d97757" />
+            </marker>
+            <marker id="ah-gold" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="#c69a4e" />
+            </marker>
+          </defs>
+
+          <!-- Layout is deliberately ASYMMETRIC and signal-driven, not a hub-and-spoke:
+               the blocked worker (w3) sits closest + largest (it needs the human);
+               the idle worker (w4) is pushed out, smaller and dimmer. Each edge
+               carries ONE message dot travelling in the real flow direction. -->
+
+          <!-- e2: lead → w2, assign (gold) -->
+          <path id="fe-w2" class="edge edge--mail" marker-end="url(#ah-gold)" d="M 452 210 C 545 168, 628 132, 676 118" />
+          <!-- e1: lead → w1, active work (coral) -->
+          <path id="fe-w1" class="edge edge--active" marker-end="url(#ah-coral)" d="M 448 210 C 372 176, 296 146, 246 130" />
+          <!-- e4: lead → w4, idle (dim, no dot) -->
+          <path id="fe-w4" class="edge edge--idle" d="M 452 262 C 560 306, 660 340, 712 356" />
+          <!-- e3: w3 → lead, blocked ask_lead — dot travels UP to the lead (coral) -->
+          <path id="fe-w3" class="edge edge--blocked" marker-end="url(#ah-coral)" d="M 300 344 C 356 312, 408 280, 442 258" />
+
+          <!-- travelling message dots (SVG animateMotion follows each edge path) -->
+          <circle class="msg--mail" r="3.5"><animateMotion dur="2.2s" repeatCount="indefinite" keyPoints="0;1" keyTimes="0;1" calcMode="linear"><mpath href="#fe-w2" /></animateMotion></circle>
+          <circle class="msg--work" r="3" ><animateMotion dur="3s" repeatCount="indefinite"><mpath href="#fe-w1" /></animateMotion></circle>
+          <circle class="msg--blocked" r="3.5"><animateMotion dur="1.5s" repeatCount="indefinite"><mpath href="#fe-w3" /></animateMotion></circle>
+
+          <!-- edge labels: what the traffic actually IS -->
+          <text class="edge-label--mail edge-label" x="566" y="150" text-anchor="middle">assign · T-104</text>
+          <text class="edge-label" x="330" y="150" text-anchor="middle">T-105 · working</text>
+          <text class="edge-label--blocked edge-label" x="392" y="316" text-anchor="middle">ask_lead ↑</text>
+
+          <!-- lead node (center) -->
+          <g>
+            <circle class="node-ring node-ring--lead" cx="450" cy="235" r="54" />
+            <text class="node-label" x="450" y="227" text-anchor="middle">orchestrator</text>
+            <text class="node-sub" x="450" y="243" text-anchor="middle">lead · opus</text>
+            <text class="node-state" x="450" y="259" text-anchor="middle" fill="#c69a4e">PLANNING</text>
+          </g>
+
+          <!-- worker-1: working -->
+          <g>
+            <circle class="node-ring node-ring--active" cx="208" cy="112" r="40" />
+            <text class="node-label" x="208" y="106" text-anchor="middle">worker-1</text>
+            <text class="node-sub" x="208" y="121" text-anchor="middle">T-105 · 22%</text>
+            <text class="node-state" x="208" y="135" text-anchor="middle" fill="#d97757">WORKING</text>
+          </g>
+
+          <!-- worker-2: working (receiving assign) -->
+          <g>
+            <circle class="node-ring node-ring--active" cx="712" cy="104" r="42" />
+            <text class="node-label" x="712" y="98" text-anchor="middle">worker-2</text>
+            <text class="node-sub" x="712" y="113" text-anchor="middle">T-104 · 57%</text>
+            <text class="node-state" x="712" y="127" text-anchor="middle" fill="#d97757">WORKING</text>
+          </g>
+
+          <!-- worker-3: BLOCKED — closest to the lead, largest -->
+          <g>
+            <circle class="node-ring node-ring--blocked" cx="262" cy="360" r="47" />
+            <text class="node-label" x="262" y="352" text-anchor="middle">worker-3</text>
+            <text class="node-sub" x="262" y="368" text-anchor="middle">T-103 · 44%</text>
+            <text class="node-state" x="262" y="384" text-anchor="middle" fill="#d97757">BLOCKED</text>
+          </g>
+
+          <!-- worker-4: idle — pushed out, smaller, dim -->
+          <g>
+            <circle class="node-ring node-ring--idle" cx="740" cy="366" r="32" />
+            <text class="node-label node-label--dim" x="740" y="362" text-anchor="middle">worker-4</text>
+            <text class="node-sub" x="740" y="377" text-anchor="middle" fill="#9b978c">idle</text>
+          </g>
+        </svg>
+        <div class="fleet-legend">
+          <span><i class="legend-swatch" style="background:var(--accent)"></i> active work</span>
+          <span><i class="legend-swatch" style="background:var(--gold)"></i> mail in flight</span>
+          <span><i class="legend-swatch" style="background:var(--accent)"></i> blocked → ask_lead</span>
+          <span><i class="legend-swatch" style="background:var(--border-soft)"></i> idle link</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ STATES STRIP ============================ -->
+  <div class="strip">
+    <h2>States</h2>
+    <div class="strip__sub">Considered empty / loading / blocked / error — on-brand, never a generic centered placeholder.</div>
+    <div class="strip__grid">
+
+      <!-- EMPTY -->
+      <div class="state-card">
+        <div class="state-card__head"><span class="dot dot--muted"></span><span class="name">Empty · pre-run</span><span class="label">empty</span></div>
+        <div class="state-card__body">
+          <div class="empty-cta"><b>No fleet running.</b> Point FLEETOR at a local git repo. It scans CLAUDE.md, scripts and CI, proposes the exit gate, and spins up four worktrees.</div>
+          <button class="empty-action">Choose a repo…</button>
+        </div>
+      </div>
+
+      <!-- LOADING -->
+      <div class="state-card">
+        <div class="state-card__head"><span class="dot dot--muted"></span><span class="name">Loading · connecting</span><span class="label">loading</span></div>
+        <div class="state-card__body">
+          <div class="skel skel--sm"></div>
+          <div class="skel"></div>
+          <div class="skel"></div>
+          <div class="empty-cta text-mute" style="font-size:11px">attaching to fleet server socket…</div>
+        </div>
+      </div>
+
+      <!-- BLOCKED -->
+      <div class="state-card">
+        <div class="state-card__head"><span class="dot dot--gold"></span><span class="name">Blocked · ask_lead</span><span class="label">blocked</span></div>
+        <div class="state-card__body">
+          <div class="blocked-q">
+            <div class="who">worker-3 · T-103 → lead</div>
+            <div class="q">Should reader-lag metrics be per-reader or aggregated? The contract only names a single gauge.</div>
+            <div class="reply">
+              <input type="text" placeholder="Reply to unblock…" />
+              <button>Reply</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ERROR -->
+      <div class="state-card">
+        <div class="state-card__head"><span class="dot dot--red"></span><span class="name">Error · worker dead</span><span class="label">error</span></div>
+        <div class="state-card__body">
+          <div class="err-line"><span class="dot dot--red"></span><span class="mono">worker-2</span> <span class="text-red">dead</span> — process exited (signal 9)</div>
+          <div class="err-line"><span class="dot dot--red"></span><span class="mono">T-104</span> <span class="text-red">gate fail ×3</span> — returned to backlog</div>
+          <div class="empty-cta text-mute" style="font-size:11px">Failures bounce silently and are logged; the slot respawns on the next dispatch.</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ============================ DESIGN NOTES ============================ -->
+  <div class="notes">
+    <h2>Design notes</h2>
+    <ul>
+      <li><b>No side-tab accent bars.</b> The single most recognizable AI-UI tell (a thick colored <span class="mono">border-left</span> on cards) is gone. Board cards now cue state with a full 1px border tint plus the foot dot and chip; the orchestrator anchors on a lifted surface, larger size and the gold "lead" tag, not a rail.</li>
+      <li><b>Blocked is one colour, coral, everywhere.</b> The band cell (full coral outline, tint, gentle border pulse), board dot and chip, feed rail and the fleet edge all agree. Gold now means only review / pending / unread / cost, so the one "come here" signal never competes with itself.</li>
+      <li><b>Motion is reserved for that one signal.</b> The "alive" dots are steady; only the blocked worker pulses, and the fleet view moves a single message dot along each active edge in its real direction. Nothing animates for decoration.</li>
+      <li><b>Fleet view rebuilt as directional flow,</b> not a recolored service map: asymmetric, signal-driven layout (the blocked worker sits closest and largest; the idle one is pushed out and dimmed), arrowheads, and edge labels naming the actual traffic (<span class="mono">assign</span>, <span class="mono">ask_lead</span>, ticket ids).</li>
+      <li><b>Accessibility floor raised.</b> Secondary metadata clears WCAG AA (muted grey lightened, 9px steps removed); every interactive element has a keyboard <span class="mono">:focus-visible</span> ring; the view tabs carry real <span class="mono">tab</span>/<span class="mono">tabpanel</span> roles.</li>
+      <li><b>Orchestrator is the visual anchor</b> and carries real data (model · context · unread · elapsed); the band is no longer six equal cells, so the eye has a first place to land.</li>
+      <li><b>Dev controls demoted</b> to a quiet top-bar <span class="mono">dev</span> toolbar. <span class="q">Open question: should they ship in the product at all, or live behind a dev menu?</span></li>
+      <li><span class="q">Open question:</span> the queue cell restates the board's column counts on the Tickets view. It earns its space on the Event log and Fleet views (where the band persists but the board is hidden); worth deciding whether it stays on Tickets or shows something the board can't (oldest backlog age, time-in-review).</li>
+    </ul>
+  </div>
+
+</div>
+
+<script>
+  // The only interactivity: switch between the three views. Everything else is
+  // a static mock for look/feel approval.
+  (function () {
+    var tabs = document.querySelectorAll('.viewtab');
+    var views = document.querySelectorAll('.view');
+    tabs.forEach(function (tab) {
+      tab.addEventListener('click', function () {
+        var name = tab.getAttribute('data-view');
+        tabs.forEach(function (t) {
+          var on = t === tab;
+          t.classList.toggle('viewtab--active', on);
+          t.setAttribute('aria-selected', on ? 'true' : 'false');
+        });
+        views.forEach(function (v) { v.classList.toggle('view--active', v.getAttribute('data-view') === name); });
+      });
+    });
+  })();
+</script>
+</body>
+</html>

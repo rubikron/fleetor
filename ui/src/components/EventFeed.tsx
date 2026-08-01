@@ -53,21 +53,30 @@ function render(event: FleetEvent): Rendered {
 }
 
 export function EventFeed({ feed }: { feed: FleetEvent[] }) {
-  if (feed.length === 0) {
-    return <div className="feed feed--empty">No events yet — assign a ticket or run the demo.</div>;
-  }
   return (
-    <div className="feed">
-      {feed.map((event) => {
-        const r = render(event);
-        return (
-          <div key={event.seq} className={`line line--${r.tone} ${r.rail ? "line--rail" : ""}`}>
-            <span className="mono line__seq">{event.seq}</span>
-            <span className={`mono line__kind line__kind--${r.tone}`}>{r.kind}</span>
-            <span className="line__text">{r.text}</span>
-          </div>
-        );
-      })}
+    <div className="events-view">
+      <div className="events-view__head">
+        <h3>Event log</h3>
+        <span className="label">append-only · newest first</span>
+        <span className="grow" style={{ flex: "1 1 auto" }} />
+        {feed.length > 0 && <span className="mono text-mute">seq {feed[0].seq}</span>}
+      </div>
+      {feed.length === 0 ? (
+        <div className="feed feed--empty">No events yet. Assign a ticket or run the demo lifecycle.</div>
+      ) : (
+        <div className="feed">
+          {feed.map((event) => {
+            const r = render(event);
+            return (
+              <div key={event.seq} className={`line line--${r.tone} ${r.rail ? "line--rail" : ""}`}>
+                <span className="mono line__seq">{event.seq}</span>
+                <span className={`mono line__kind line__kind--${r.tone}`}>{r.kind}</span>
+                <span className="line__text">{r.text}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

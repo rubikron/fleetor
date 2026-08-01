@@ -149,6 +149,19 @@ crate tests are untouched. The live visual check (`npm run tauri dev`) is the
 operator-run gate. **Deferred to 4e-2:** embedding `claude` as `Party::Lead`
 driving `run_dynamic_fleet` over the hub bound here, the live Opus confirmation,
 and real repo/gate/cost values in the top bar. See D-022.
+
+**Phase 4e-1 redesign pass — de-slop + Fleet view + resizable panels.** A
+presentation-only refinement (no backend change), driven by an `impeccable`
+design critique: the side-tab accent bars (the top AI-slop tell) are gone,
+the **blocked** signal is unified to coral end-to-end, motion is reserved for
+that one signal, and the a11y floor is raised (AA contrast, keyboard focus, tab
+roles). A **new Fleet topology view** (`ui/src/views/FleetGraph.tsx`) — a
+hand-rolled SVG with the lead centred, workers in an asymmetric signal-driven
+layout, and a message dot travelling each live edge (`assign`/`ask_lead`/ticket)
+— reads off the same 4c bus. Terminal ↔ board is now **resizable + collapsible**
+(`react-resizable-panels`, persisted sizes). A faithful sign-off mock is at
+`docs/ui-redesign-preview.html`. Verified: `tsc --noEmit && vite build` clean
+(45 modules); crate tests untouched. See D-023.
 Next: 4e-2 — point the pane at the real Opus lead over the hub, delete the
 `demo` stand-in, and run the live confirmation gate.
 
