@@ -22,7 +22,7 @@
 //! (Idle→stdin / opportunistic-piggyback mail delivery — D-015 — land with the
 //! real orchestrator in 4c/4d; turn-boundary Stop-hook drain covers 4a/4b.)
 
-use crate::hub::{Hub, HubConfig};
+use crate::hub::{AssignCommand, Hub, HubConfig};
 use crate::supervisor::{run_ticket, Outcome, SuperviseOptions};
 use anyhow::{Context, Result};
 use fleetor_cc::spawn::WorkerConfig;
@@ -30,10 +30,12 @@ use fleetor_cc::{AgentProcess, RealClaude};
 use fleetor_core::wire::{Hello, LeadEvent, LeadEventKind, Op, OpResult};
 use fleetor_core::{Party, Store, Ticket};
 use fleetor_ipc::{Client, Transport};
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::{mpsc, Notify};
 
 /// One worker's assignment: which process to drive, and the ticket it runs.
 ///
@@ -219,4 +221,103 @@ async fn handle_lead_event(lead: &mut Client, policy: &LeadPolicy, ev: &LeadEven
         }
         LeadEventKind::Notice { .. } => None,
     }
+}
+
+// ============================ Phase 4d: dynamic fleet ============================
+
+/// Builds a spawnable worker from an assigned ticket. The runner owns this
+/// because only it knows how to construct a wired real worker vs. a fake — the
+/// hub just routes the [`AssignCommand`]. The returned [`WorkerSpec`]'s `slot`
+/// should match `ticket.slot`.
+pub type WorkerFactory = Arc<dyn Fn(&Ticket) -> WorkerSpec + Send + Sync>;
+
+/// The Phase 4d **dynamic fleet**: workers are spawned on demand as the lead
+/// calls `assign` over the hub — not from a fixed list up front ([`run_fleet`]).
+///
+/// The lead seat is now *external*: a real orchestrator (or, in tests, a fake one)
+/// drives the fleet through the lead MCP tools, replacing the scripted
+/// [`LeadPolicy`] loop. `driver` runs that session to completion; when it
+/// returns, the runner stops accepting new work, waits for every spawned worker
+/// to finish (the hub stays up so they can still report over the socket), and
+/// returns each worker's outcome by slot.
+///
+/// The hub↔runner bridge is a plain mpsc channel: the hub's `assign` forwards an
+/// [`AssignCommand`]; this dispatch loop turns each into a supervised worker via
+/// `factory` on a [`tokio::task::spawn_blocking`] thread — the same sync↔async
+/// seam `run_fleet` uses (D-018), now fed dynamically.
+pub async fn run_dynamic_fleet<D, Fut>(
+    store: Arc<dyn Store>,
+    transport: Arc<dyn Transport>,
+    hub_config: HubConfig,
+    factory: WorkerFactory,
+    driver: D,
+) -> Result<Vec<(u8, Outcome)>>
+where
+    D: FnOnce() -> Fut,
+    Fut: Future<Output = Result<()>>,
+{
+    // --- hub on the socket, wired to accept assignments ---
+    let (assign_tx, mut assign_rx) = mpsc::unbounded_channel::<AssignCommand>();
+    let hub = Hub::with_dispatcher(store.clone(), hub_config, assign_tx);
+    let listener = transport.bind().await.context("binding fleet socket")?;
+    let hub_task = tokio::spawn(hub.serve(listener));
+
+    // --- dispatch loop: one supervised worker per assign, on a blocking thread ---
+    let handles = Arc::new(Mutex::new(Vec::new()));
+    let stop = Arc::new(Notify::new());
+    let dispatch = tokio::spawn({
+        let handles = handles.clone();
+        let stop = stop.clone();
+        let store = store.clone();
+        async move {
+            loop {
+                let cmd = tokio::select! {
+                    biased;
+                    _ = stop.notified() => break,
+                    cmd = assign_rx.recv() => match cmd {
+                        Some(c) => c,
+                        None => break, // all senders (the hub) gone
+                    },
+                };
+                let spec = factory(&cmd.ticket);
+                // A real worker needs its MCP + Stop-hook files on disk before spawn.
+                if let Some(config) = &spec.config {
+                    if let Err(e) = config.write_fleet_config() {
+                        eprintln!("runner: writing fleet config for worker-{}: {e}", spec.slot);
+                        continue;
+                    }
+                }
+                let store = store.clone();
+                let handle = tokio::task::spawn_blocking(move || {
+                    let opts = SuperviseOptions {
+                        slot: spec.slot,
+                        raw_log: spec.raw_log.clone(),
+                        max_turns: 2,
+                        idle_timeout: Duration::from_secs(spec.wall_secs.max(1)),
+                    };
+                    let outcome = run_ticket(spec.agent.as_ref(), &spec.ticket, &*store, &opts);
+                    (spec.slot, outcome)
+                });
+                handles.lock().unwrap().push(handle);
+            }
+        }
+    });
+
+    // --- run the lead session, then drain ---
+    let driver_res = driver().await;
+    // Stop accepting new work and let the dispatch loop exit; queued-but-unstarted
+    // assigns at this point are dropped (a real orchestrator isn't mid-assign at
+    // session end). Then join the workers with the hub still serving.
+    stop.notify_one();
+    let _ = dispatch.await;
+    driver_res?;
+
+    let handles = std::mem::take(&mut *handles.lock().unwrap());
+    let mut results = Vec::with_capacity(handles.len());
+    for handle in handles {
+        let (slot, outcome) = handle.await.context("worker task panicked")?;
+        results.push((slot, outcome.with_context(|| format!("worker-{slot} supervisor"))?));
+    }
+    hub_task.abort();
+    Ok(results)
 }

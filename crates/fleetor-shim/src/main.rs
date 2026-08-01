@@ -29,17 +29,27 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let socket = std::env::var("FLEET_SOCKET").context("FLEET_SOCKET not set")?;
-    let slot: u8 = std::env::var("FLEETOR_SLOT")
-        .context("FLEETOR_SLOT not set")?
-        .parse()
-        .context("FLEETOR_SLOT must be a number")?;
+
+    // Role selects the party and the tool face (Phase 4d). Default: worker.
+    let is_lead = std::env::var("FLEETOR_ROLE").map(|r| r == "lead").unwrap_or(false);
+    let party = if is_lead {
+        Party::Lead
+    } else {
+        let slot: u8 = std::env::var("FLEETOR_SLOT")
+            .context("FLEETOR_SLOT not set")?
+            .parse()
+            .context("FLEETOR_SLOT must be a number")?;
+        Party::Worker(slot)
+    };
 
     let transport = UnixTransport::new(&socket);
-    let mut client = connect_with_retry(&transport, slot).await?;
+    let mut client = connect_with_retry(&transport, party).await?;
 
     match std::env::args().nth(1).as_deref() {
+        // The Stop hook is a worker-only turn-boundary drain; the lead's stdin is
+        // the human's, never injected into.
         Some("stop-hook") => run_stop_hook(&mut client).await,
-        _ => run_mcp_server(&mut client).await,
+        _ => run_mcp_server(&mut client, is_lead).await,
     }
 }
 
@@ -68,8 +78,9 @@ async fn run_stop_hook(client: &mut Client) -> Result<()> {
     Ok(())
 }
 
-/// The MCP stdio server: bridge each `tools/call` to the fleet socket.
-async fn run_mcp_server(client: &mut Client) -> Result<()> {
+/// The MCP stdio server: bridge each `tools/call` to the fleet socket. `is_lead`
+/// selects the tool face (lead vs worker).
+async fn run_mcp_server(client: &mut Client, is_lead: bool) -> Result<()> {
     let stdin = BufReader::new(tokio::io::stdin());
     let mut stdout = tokio::io::stdout();
     let mut lines = stdin.lines();
@@ -83,7 +94,7 @@ async fn run_mcp_server(client: &mut Client) -> Result<()> {
             Ok(v) => v,
             Err(_) => continue, // ignore non-JSON noise
         };
-        if let Some(reply) = dispatch(client, &req).await {
+        if let Some(reply) = dispatch(client, &req, is_lead).await {
             let mut s = serde_json::to_string(&reply)?;
             s.push('\n');
             stdout.write_all(s.as_bytes()).await?;
@@ -94,10 +105,10 @@ async fn run_mcp_server(client: &mut Client) -> Result<()> {
 }
 
 /// The hub may not be listening the instant CC spawns us; retry briefly.
-async fn connect_with_retry(transport: &UnixTransport, slot: u8) -> Result<Client> {
+async fn connect_with_retry(transport: &UnixTransport, party: Party) -> Result<Client> {
     let mut last_err = None;
     for _ in 0..50 {
-        match Client::connect(transport, Hello::new(Party::Worker(slot))).await {
+        match Client::connect(transport, Hello::new(party.clone())).await {
             Ok(c) => return Ok(c),
             Err(e) => {
                 last_err = Some(e);
@@ -109,7 +120,7 @@ async fn connect_with_retry(transport: &UnixTransport, slot: u8) -> Result<Clien
 }
 
 /// Handle one JSON-RPC message. Returns `None` for notifications (no response).
-async fn dispatch(client: &mut Client, req: &Value) -> Option<Value> {
+async fn dispatch(client: &mut Client, req: &Value, is_lead: bool) -> Option<Value> {
     let method = req.get("method").and_then(Value::as_str)?;
     let id = req.get("id").cloned();
 
@@ -117,22 +128,28 @@ async fn dispatch(client: &mut Client, req: &Value) -> Option<Value> {
     let id = id?;
     let params = req.get("params").cloned().unwrap_or(json!({}));
 
+    let tools = if is_lead { protocol::lead_tool_list() } else { protocol::tool_list() };
     let result: Value = match method {
         "initialize" => protocol::initialize_result(&params),
-        "tools/list" => json!({ "tools": protocol::tool_list() }),
+        "tools/list" => json!({ "tools": tools }),
         "ping" => json!({}),
-        "tools/call" => call_tool(client, &params).await,
+        "tools/call" => call_tool(client, &params, is_lead).await,
         _ => return Some(rpc_error(&id, -32601, &format!("method not found: {method}"))),
     };
     Some(rpc_ok(&id, result))
 }
 
 /// Proxy a `tools/call` to the fleet server and render its result for MCP.
-async fn call_tool(client: &mut Client, params: &Value) -> Value {
+async fn call_tool(client: &mut Client, params: &Value, is_lead: bool) -> Value {
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
 
-    let op = match protocol::tool_to_op(name, &args) {
+    let mapped = if is_lead {
+        protocol::lead_tool_to_op(name, &args)
+    } else {
+        protocol::tool_to_op(name, &args)
+    };
+    let op = match mapped {
         Ok(op) => op,
         Err(e) => return protocol::op_result_to_mcp(&OpResult::Error { message: e.to_string() }),
     };

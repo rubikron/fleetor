@@ -25,10 +25,19 @@ use fleetor_core::event::{FleetEvent, WorkerState};
 use fleetor_core::wire::{Hello, LeadEvent, LeadEventKind, Op, OpResult, Request, Response};
 use fleetor_core::{ids, Store};
 use fleetor_ipc::{Conn, Transport};
+use fleetor_core::Ticket;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::{oneshot, Notify};
+use tokio::sync::{mpsc, oneshot, Notify};
+
+/// A dispatch request the lead's `assign` forwards to the runner (Phase 4d). The
+/// runner turns the ticket into a spawned worker; the hub only routes it, so it
+/// never needs to know how a worker is built.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssignCommand {
+    pub ticket: Ticket,
+}
 
 /// Answer returned to a blocked `ask_lead` when the ask times out with no human
 /// reply — so a worker never deadlocks on an AFK lead (handoff §5).
@@ -66,10 +75,31 @@ struct HubState {
 pub struct Hub {
     state: Arc<HubState>,
     store: Arc<dyn Store>,
+    /// Where a lead's `assign` is forwarded (Phase 4d). `None` on a static fleet
+    /// (Phases 1–4c) — an `assign` there is answered with an error rather than
+    /// silently dropped.
+    dispatcher: Option<mpsc::UnboundedSender<AssignCommand>>,
 }
 
 impl Hub {
     pub fn new(store: Arc<dyn Store>, config: HubConfig) -> Arc<Hub> {
+        Self::build(store, config, None)
+    }
+
+    /// A hub whose `assign` forwards to `dispatcher` — the dynamic fleet (4d).
+    pub fn with_dispatcher(
+        store: Arc<dyn Store>,
+        config: HubConfig,
+        dispatcher: mpsc::UnboundedSender<AssignCommand>,
+    ) -> Arc<Hub> {
+        Self::build(store, config, Some(dispatcher))
+    }
+
+    fn build(
+        store: Arc<dyn Store>,
+        config: HubConfig,
+        dispatcher: Option<mpsc::UnboundedSender<AssignCommand>>,
+    ) -> Arc<Hub> {
         Arc::new(Hub {
             state: Arc::new(HubState {
                 lead_events: Mutex::new(VecDeque::new()),
@@ -78,6 +108,7 @@ impl Hub {
                 config,
             }),
             store,
+            dispatcher,
         })
     }
 
@@ -140,8 +171,10 @@ impl Hub {
             (Party::Worker(slot), Op::ClaimFile { path, ticket }) => self.claim_file(*slot, &path, &ticket),
             (Party::Worker(slot), Op::BacklogAdd { text }) => self.backlog_add(*slot, &text),
 
+            (Party::Lead, Op::Assign { ticket }) => self.assign(ticket),
             (Party::Lead, Op::AwaitEvents { timeout_ms }) => self.await_events(timeout_ms).await,
             (Party::Lead, Op::Inbox) => self.inbox(),
+            (Party::Lead, Op::FleetStatus) => self.fleet_status(),
             (Party::Lead, Op::Reply { event_id, text }) => self.reply(event_id, text),
             (Party::Lead, Op::Send { to, text }) => self.dm(Party::Lead, to, text),
 
@@ -257,6 +290,48 @@ impl Hub {
     }
 
     // ---- lead-facing ----
+
+    /// Dispatch a ticket to the runner (Phase 4d). The ticket must name its
+    /// target slot. The hub persists the ticket row so it shows up in
+    /// `fleet_status` immediately, then forwards the command; the runner spawns
+    /// the worker and its supervisor owns the state transitions from there.
+    fn assign(&self, ticket: Ticket) -> OpResult {
+        let slot = match ticket.slot {
+            Some(s) => s,
+            None => {
+                return OpResult::Error {
+                    message: "assign requires the ticket to name a target slot".to_string(),
+                }
+            }
+        };
+        if !self.state.config.slots.contains(&slot) {
+            return OpResult::Error { message: format!("unknown worker slot {slot}") };
+        }
+        let Some(dispatcher) = &self.dispatcher else {
+            return OpResult::Error {
+                message: "this fleet does not accept dynamic assignment (no runner attached)"
+                    .to_string(),
+            };
+        };
+        if let Err(e) = self.store.upsert_ticket(&ticket) {
+            return OpResult::Error { message: format!("could not persist ticket: {e}") };
+        }
+        match dispatcher.send(AssignCommand { ticket }) {
+            Ok(()) => OpResult::Ack,
+            Err(_) => OpResult::Error {
+                message: "the runner is no longer accepting assignments".to_string(),
+            },
+        }
+    }
+
+    /// The board: every ticket with its state and slot (Phase 4d). How the lead
+    /// sees fleet progress without reading transcripts.
+    fn fleet_status(&self) -> OpResult {
+        match self.store.tickets() {
+            Ok(board) => OpResult::Status { board },
+            Err(e) => OpResult::Error { message: format!("fleet_status failed: {e}") },
+        }
+    }
 
     async fn await_events(&self, timeout_ms: u64) -> OpResult {
         let deadline = Duration::from_millis(timeout_ms);

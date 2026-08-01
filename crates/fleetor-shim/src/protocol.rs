@@ -155,6 +155,104 @@ pub fn tool_to_op(name: &str, args: &Value) -> Result<Op> {
     }
 }
 
+/// The **lead-facing** fleet tools (Phase 4d): the surface the orchestrator drives
+/// the fleet through, when the shim runs in `FLEETOR_ROLE=lead`. Mirrors the
+/// worker face — single-sourced here so the shim and hub can't drift.
+pub fn lead_tool_list() -> Value {
+    json!([
+        {
+            "name": "assign",
+            "description": "Dispatch a ticket to a worker slot. The fleet spawns a fresh worker in its own worktree and drives it. Give crisp acceptance criteria and the files it may write — not how to do it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "ticket id, e.g. T-041" },
+                    "title": { "type": "string" },
+                    "body": { "type": "string", "description": "description + acceptance criteria" },
+                    "slot": { "type": "integer", "description": "target worker slot" },
+                    "files_owned": { "type": "array", "items": { "type": "string" }, "description": "paths this ticket may write" }
+                },
+                "required": ["id", "title", "body", "slot"]
+            }
+        },
+        {
+            "name": "await_events",
+            "description": "BLOCK up to timeout_ms for worker traffic that needs you: blocking questions (ask_lead) and progress notices (including report-filed). This is how you supervise without burning turns.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "timeout_ms": { "type": "integer", "description": "max wait; default 30000" } }
+            }
+        },
+        {
+            "name": "inbox",
+            "description": "Non-blocking drain of the same worker-traffic queue await_events serves. Returns immediately.",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "fleet_status",
+            "description": "The board: every ticket with its state (backlog/assigned/in-progress/in-review/done/blocked/failed) and assigned slot.",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "reply",
+            "description": "Answer a worker blocked in ask_lead. Pass the question's event_id (from await_events) and your answer.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "event_id": { "type": "string", "description": "the question's id from await_events" },
+                    "text": { "type": "string" }
+                },
+                "required": ["event_id", "text"]
+            }
+        },
+        {
+            "name": "send",
+            "description": "Steer a worker mid-flight with an async message (queued, delivered at its next turn boundary). Never interrupts.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "to": { "type": "integer", "description": "worker slot" },
+                    "text": { "type": "string" }
+                },
+                "required": ["to", "text"]
+            }
+        }
+    ])
+}
+
+/// Translate a **lead** MCP `tools/call` into a fleet `Op` (Phase 4d).
+pub fn lead_tool_to_op(name: &str, args: &Value) -> Result<Op> {
+    let str_arg = |k: &str| -> Result<String> {
+        args.get(k)
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| anyhow!("`{name}` requires string argument `{k}`"))
+    };
+    let u8_arg = |k: &str| -> Result<u8> {
+        args.get(k)
+            .and_then(Value::as_u64)
+            .map(|n| n as u8)
+            .ok_or_else(|| anyhow!("`{name}` requires integer argument `{k}`"))
+    };
+    match name {
+        "assign" => {
+            // The arguments object *is* a Ticket (single-sourced schema), so the
+            // orchestrator's assign call round-trips straight into Op::Assign.
+            let ticket = serde_json::from_value(args.clone())
+                .map_err(|e| anyhow!("`assign` arguments are not a valid ticket: {e}"))?;
+            Ok(Op::Assign { ticket })
+        }
+        "await_events" => Ok(Op::AwaitEvents {
+            timeout_ms: args.get("timeout_ms").and_then(Value::as_u64).unwrap_or(30_000),
+        }),
+        "inbox" => Ok(Op::Inbox),
+        "fleet_status" => Ok(Op::FleetStatus),
+        "reply" => Ok(Op::Reply { event_id: str_arg("event_id")?, text: str_arg("text")? }),
+        "send" => Ok(Op::Send { to: u8_arg("to")?, text: str_arg("text")? }),
+        other => Err(anyhow!("unknown lead tool `{other}`")),
+    }
+}
+
 /// Render a fleet `OpResult` as an MCP `tools/call` result payload. Mail and the
 /// park-vs-real-answer distinction are surfaced as plain text the worker reads.
 pub fn op_result_to_mcp(result: &fleetor_core::wire::OpResult) -> Value {
@@ -171,7 +269,8 @@ pub fn op_result_to_mcp(result: &fleetor_core::wire::OpResult) -> Value {
         OpResult::Mail { messages } => (render_mail(messages), false),
         OpResult::Owners { owners } => (render_owners(owners), false),
         OpResult::Claim { grant } => (render_claim(grant), false),
-        OpResult::Events { .. } => ("(unexpected: events on a worker call)".to_string(), true),
+        OpResult::Events { events } => (render_events(events), false),
+        OpResult::Status { board } => (render_board(board), false),
         OpResult::Error { message } => (format!("fleet error: {message}"), true),
     };
     json!({ "content": [ { "type": "text", "text": text } ], "isError": is_error })
@@ -221,6 +320,52 @@ fn render_claim(grant: &fleetor_core::LeaseGrant) -> String {
             held_by.slot, held_by.ticket
         ),
     }
+}
+
+/// Render lead-event traffic (`await_events` / `inbox`) as text the orchestrator
+/// reads. Questions carry the `event_id` it must pass back to `reply`.
+fn render_events(events: &[fleetor_core::wire::LeadEvent]) -> String {
+    use fleetor_core::wire::LeadEventKind;
+    if events.is_empty() {
+        return "No new worker traffic.".to_string();
+    }
+    let mut s = String::from("Worker traffic:\n");
+    for e in events {
+        match &e.kind {
+            LeadEventKind::Question { text, options } => {
+                s.push_str(&format!(
+                    "- ⛔ worker-{} asks (event_id {}): {}",
+                    e.from, e.id, text
+                ));
+                if let Some(opts) = options {
+                    if !opts.is_empty() {
+                        s.push_str(&format!(" [options: {}]", opts.join(" / ")));
+                    }
+                }
+                s.push_str(" — answer with reply(event_id, text)\n");
+            }
+            LeadEventKind::Notice { text } => {
+                s.push_str(&format!("- worker-{}: {}\n", e.from, text));
+            }
+        }
+    }
+    s
+}
+
+/// Render the board (`fleet_status`): one line per ticket with state and slot.
+fn render_board(board: &[fleetor_core::Ticket]) -> String {
+    if board.is_empty() {
+        return "No tickets on the board yet.".to_string();
+    }
+    let mut s = String::from("Board:\n");
+    for t in board {
+        let slot = t.slot.map(|n| format!("worker-{n}")).unwrap_or_else(|| "unassigned".to_string());
+        let state = serde_json::to_value(t.state).ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default();
+        s.push_str(&format!("- {} [{}] {} — {}\n", t.id, state, slot, t.title));
+    }
+    s
 }
 
 fn render_mail(messages: &[fleetor_core::Envelope]) -> String {
@@ -302,6 +447,83 @@ mod tests {
             let args = &sample[name];
             assert!(tool_to_op(name, args).is_ok(), "tool `{name}` has no Op mapping");
         }
+    }
+
+    #[test]
+    fn maps_each_lead_tool_to_its_op() {
+        assert_eq!(
+            lead_tool_to_op("await_events", &json!({"timeout_ms": 500})).unwrap(),
+            Op::AwaitEvents { timeout_ms: 500 }
+        );
+        // Missing timeout defaults, never errors.
+        assert_eq!(
+            lead_tool_to_op("await_events", &json!({})).unwrap(),
+            Op::AwaitEvents { timeout_ms: 30_000 }
+        );
+        assert_eq!(lead_tool_to_op("inbox", &json!({})).unwrap(), Op::Inbox);
+        assert_eq!(lead_tool_to_op("fleet_status", &json!({})).unwrap(), Op::FleetStatus);
+        assert_eq!(
+            lead_tool_to_op("reply", &json!({"event_id": "q1", "text": "use B"})).unwrap(),
+            Op::Reply { event_id: "q1".into(), text: "use B".into() }
+        );
+        assert_eq!(
+            lead_tool_to_op("send", &json!({"to": 2, "text": "rebase first"})).unwrap(),
+            Op::Send { to: 2, text: "rebase first".into() }
+        );
+        // assign: the arguments object is a Ticket.
+        let op = lead_tool_to_op(
+            "assign",
+            &json!({"id": "T-1", "title": "do it", "body": "AC…", "slot": 3, "files_owned": ["src/a.rs"]}),
+        )
+        .unwrap();
+        match op {
+            Op::Assign { ticket } => {
+                assert_eq!(ticket.id, "T-1");
+                assert_eq!(ticket.slot, Some(3));
+                assert_eq!(ticket.files_owned, vec!["src/a.rs".to_string()]);
+            }
+            other => panic!("expected Assign, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn every_listed_lead_tool_is_translatable() {
+        let sample = json!({
+            "assign": {"id": "T-1", "title": "t", "body": "b", "slot": 1},
+            "await_events": {"timeout_ms": 100},
+            "inbox": {},
+            "fleet_status": {},
+            "reply": {"event_id": "q1", "text": "answer"},
+            "send": {"to": 1, "text": "steer"},
+        });
+        for tool in lead_tool_list().as_array().unwrap() {
+            let name = tool["name"].as_str().unwrap();
+            let args = &sample[name];
+            assert!(lead_tool_to_op(name, args).is_ok(), "lead tool `{name}` has no Op mapping");
+        }
+    }
+
+    #[test]
+    fn lead_and_worker_faces_are_disjoint() {
+        // A worker tool is not a lead tool and vice-versa — the split is real.
+        assert!(lead_tool_to_op("ask_lead", &json!({"question": "?"})).is_err());
+        assert!(tool_to_op("assign", &json!({"id": "T-1", "title": "t", "body": "b", "slot": 1})).is_err());
+    }
+
+    #[test]
+    fn renders_events_and_board_for_the_lead() {
+        use fleetor_core::wire::{LeadEvent, LeadEventKind};
+        let events = vec![
+            LeadEvent { id: "q7".into(), from: 2, kind: LeadEventKind::Question { text: "A or B?".into(), options: Some(vec!["A".into(), "B".into()]) } },
+            LeadEvent { id: "n1".into(), from: 3, kind: LeadEventKind::Notice { text: "filed a report".into() } },
+        ];
+        let text = super::render_events(&events);
+        assert!(text.contains("q7") && text.contains("A or B?") && text.contains("worker-2"), "{text}");
+        assert!(text.contains("worker-3") && text.contains("filed a report"), "{text}");
+
+        let board = vec![fleetor_core::Ticket::new("T-9", "wire it", "body")];
+        let b = super::render_board(&board);
+        assert!(b.contains("T-9") && b.contains("backlog"), "{b}");
     }
 
     #[test]

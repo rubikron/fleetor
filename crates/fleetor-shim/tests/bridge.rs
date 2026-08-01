@@ -70,6 +70,67 @@ async fn shim_bridges_mcp_tools_call_to_the_hub() {
 }
 
 #[tokio::test]
+async fn lead_shim_bridges_assign_to_the_hub() {
+    // --- live hub with a dispatcher (a dynamic fleet) on a temp socket ---
+    let dir = std::env::temp_dir().join(format!("fleetor-lead-it-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let sock = dir.join("fleet.sock");
+    let transport = Arc::new(UnixTransport::new(&sock));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let (assign_tx, mut assign_rx) = tokio::sync::mpsc::unbounded_channel();
+    let hub = fleetor_server::Hub::with_dispatcher(
+        store.clone(),
+        HubConfig { slots: vec![1, 2], ask_timeout: Duration::from_secs(5) },
+        assign_tx,
+    );
+    let listener = transport.bind().await.unwrap();
+    tokio::spawn(hub.serve(listener));
+
+    // --- spawn the real shim binary in LEAD role (no slot needed) ---
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_fleetor-shim"))
+        .env("FLEET_SOCKET", &sock)
+        .env("FLEETOR_ROLE", "lead")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut sin = child.stdin.take().unwrap();
+    let mut sout = BufReader::new(child.stdout.take().unwrap()).lines();
+
+    send_line(&mut sin, json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-11-25"}})).await;
+    let _ = read_json(&mut sout).await;
+    send_line(&mut sin, json!({"jsonrpc":"2.0","method":"notifications/initialized"})).await;
+
+    // tools/list → the LEAD face, not the worker face.
+    send_line(&mut sin, json!({"jsonrpc":"2.0","id":1,"method":"tools/list"})).await;
+    let list: Value = read_json(&mut sout).await;
+    let names: Vec<&str> = list["result"]["tools"].as_array().unwrap()
+        .iter().map(|t| t["name"].as_str().unwrap()).collect();
+    assert!(names.contains(&"assign") && names.contains(&"await_events"), "lead tools: {names:?}");
+    assert!(!names.contains(&"ask_lead"), "lead face must not expose worker tools: {names:?}");
+
+    // tools/call assign(ticket) → routes through the socket to the dispatcher.
+    send_line(&mut sin, json!({"jsonrpc":"2.0","id":2,"method":"tools/call",
+        "params":{"name":"assign","arguments":{"id":"T-77","title":"do it","body":"AC…","slot":2,"files_owned":["src/a.rs"]}}})).await;
+    let call: Value = read_json(&mut sout).await;
+    assert_eq!(call["result"]["isError"], json!(false), "call result: {call}");
+
+    // The assign reached the runner: the dispatcher received the ticket, and the
+    // hub persisted it so fleet_status would show it.
+    let cmd = tokio::time::timeout(Duration::from_secs(5), assign_rx.recv())
+        .await
+        .expect("assign should reach the dispatcher")
+        .expect("dispatcher channel open");
+    assert_eq!(cmd.ticket.id, "T-77");
+    assert_eq!(cmd.ticket.slot, Some(2));
+    assert!(store.tickets().unwrap().iter().any(|t| t.id == "T-77"), "hub should have persisted the ticket");
+
+    let _ = child.kill().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn stop_hook_drains_mail_into_a_block_decision() {
     use fleetor_core::wire::{Hello, Op, OpResult};
     use fleetor_ipc::Client;

@@ -108,8 +108,27 @@ follower instead of dumping the log afterward. Verified by `event_bus.rs`: a liv
 subscriber receives *exactly* the persisted log (same seqs, no gaps/dupes), a
 late subscriber gets full history then live across a seamless boundary, and a
 follower flooded past `BUS_CAPACITY` recovers every event from the DB. 48 tests,
-0 warnings. Next: 4d (the orchestrator-as-lead TUI) and the Tauri React shell
-(4e).
+0 warnings.
+
+**Phase 4d — orchestrator-as-lead over a dynamic fleet.** The scripted
+`LeadPolicy` stand-in is replaced by a real lead seat that drives the fleet
+through **MCP tools**. New lead-facing ops `assign` and `fleet_status` join
+`await_events`/`reply`/`send`; the shim gains a **lead role**
+(`FLEETOR_ROLE=lead` → `Party::Lead`) with its own tool face. The heart is
+**dynamic assign**: workers are spawned *on demand* as the orchestrator calls
+`assign` over the hub — `run_dynamic_fleet` (runner) bridges the hub→runner
+command over a plain mpsc channel, each assign becoming a supervised worker on
+`spawn_blocking` (the 4a seam, now fed dynamically). The lead seat is external —
+a `driver` future runs the session; a static hub with no runner answers `assign`
+with a clean error. `run_fleet` (the static path) is untouched, so 4a/4b/4c hold.
+Verified by `orchestrator.rs`: a fake orchestrator assigns a ticket over the hub
+(the worker exists only because of the assign), answers its `ask_lead`, steers it
+with mail, and polls `fleet_status` until the board shows done — plus a
+cross-process test that the real shim binary in lead role bridges `assign` MCP →
+the hub. **Deferred:** the live Opus-in-the-seat run (a `--real` gate),
+`interrupt`, and the pty/xterm rendering of the TUI (4e). 55 tests, 0 warnings.
+Next: 4e — the Tauri React shell (embed the orchestrator's pty, board, and the
+4c event feed in the window) + the live Opus confirmation.
 
 ## Reading order
 

@@ -77,11 +77,19 @@ pub enum Op {
     BacklogAdd { text: String },
 
     // ---- lead-facing ----
+    /// Dispatch a ticket to its named slot (Phase 4d). The ticket carries its
+    /// target `slot`; the hub forwards it to the runner, which spawns and drives
+    /// a worker. Only meaningful on a dynamic fleet (a runner listening for
+    /// assignments); a static fleet answers with an error. → [`OpResult::Ack`].
+    Assign { ticket: crate::ticket::Ticket },
     /// Blocks up to `timeout_ms` for actionable worker→lead traffic (questions,
     /// notices). This is how the lead listens without burning turns (handoff §4).
     AwaitEvents { timeout_ms: u64 },
     /// Non-blocking drain of the same lead-event queue.
     Inbox,
+    /// The board as the fleet server holds it (Phase 4d): every ticket with its
+    /// state and slot. → [`OpResult::Status`].
+    FleetStatus,
     /// Unblock a worker parked in `AskLead`. `event_id` is the question's id.
     Reply { event_id: String, text: String },
     /// Lead→worker steering; async, queued as mail like a `Dm` from the lead.
@@ -109,6 +117,8 @@ pub enum OpResult {
     Mail { messages: Vec<Envelope> },
     /// Actionable worker→lead traffic (`AwaitEvents` / `Inbox`) — oldest first.
     Events { events: Vec<LeadEvent> },
+    /// The board (`FleetStatus`): every ticket with its state and assigned slot.
+    Status { board: Vec<crate::ticket::Ticket> },
     /// Who holds a path (`WhosWorkingOn`) — empty if nobody.
     Owners { owners: Vec<crate::ownership::Owner> },
     /// The outcome of a `ClaimFile`: granted, or denied with the holder.
