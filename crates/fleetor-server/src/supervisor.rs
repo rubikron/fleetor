@@ -61,7 +61,10 @@ pub enum Outcome {
     Crashed,
 }
 
-/// Run one ticket end to end against `agent`, persisting to `store`.
+/// Run one ticket end to end against `agent`, persisting to `store`. Phase 1:
+/// the first filed report is terminal (no gate, no review — that is Phase 3's
+/// [`crate::quality`] loop, which reuses the [`assign`] / [`drive_to_report`]
+/// primitives below to keep the worker session alive across bounces).
 pub fn run_ticket(
     agent: &dyn AgentProcess,
     ticket: &Ticket,
@@ -69,81 +72,104 @@ pub fn run_ticket(
     opts: &SuperviseOptions,
 ) -> Result<Outcome> {
     store.upsert_ticket(ticket)?;
-    // Track the ticket's live board state so event `from` fields are accurate
-    // across hops (the in-memory `ticket` is an immutable snapshot).
-    let mut cur = ticket.state;
     let mut session = Session::spawn(agent, opts.raw_log.clone())
         .with_context(|| format!("spawning worker for {}", ticket.id))?;
-
     let deadline = Instant::now() + opts.idle_timeout;
 
-    // (1) Assign immediately. Real `claude` in stream-json input mode emits its
-    // `init` event only once it begins processing the first stdin message, so
-    // gating the first write on `init` deadlocks (verified against real CC —
-    // DECISIONS D-010). We write first and read the stream after; the `init`
-    // event is consumed like any other in the turn loop.
-    session.send_user(&ticket.assignment_message()).context("assigning ticket")?;
-    cur = transition_ticket(store, &ticket.id, cur, TicketState::Assigned)?;
-    cur = transition_ticket(store, &ticket.id, cur, TicketState::InProgress)?;
-    emit(store, worker_change(opts.slot, WorkerState::Booting, WorkerState::Working));
+    let cur = assign(&mut session, ticket, store, opts)?;
 
-    // (2)+(3) Turn loop with a single no-report reprompt.
+    match drive_to_report(&mut session, ticket, opts, store, deadline)? {
+        ReportStep::Report(report) => {
+            store.save_report(&ticket.id, opts.slot, &report)?;
+            emit(store, FleetEvent::ReportFiled {
+                ticket: ticket.id.clone(),
+                slot: opts.slot,
+                status: report.status,
+            });
+            let final_state = state_for(report.status);
+            finish(store, &ticket.id, opts, &mut session, cur, Outcome::Reported { status: report.status }, final_state)
+        }
+        ReportStep::Terminal { outcome, final_state } => {
+            finish(store, &ticket.id, opts, &mut session, cur, outcome, final_state)
+        }
+    }
+}
+
+/// Assign the ticket: write it to stdin and move the board to `InProgress`.
+///
+/// Real `claude` in stream-json input mode emits its `init` event only once it
+/// begins processing the first stdin message, so gating the first write on
+/// `init` deadlocks (verified against real CC — DECISIONS D-010). We write first
+/// and read the stream after; `init` is consumed like any other turn event.
+/// Returns the live board state so callers keep their `from` cursor accurate.
+pub(crate) fn assign(
+    session: &mut Session,
+    ticket: &Ticket,
+    store: &dyn Store,
+    opts: &SuperviseOptions,
+) -> Result<TicketState> {
+    session.send_user(&ticket.assignment_message()).context("assigning ticket")?;
+    let cur = transition_ticket(store, &ticket.id, ticket.state, TicketState::Assigned)?;
+    let cur = transition_ticket(store, &ticket.id, cur, TicketState::InProgress)?;
+    emit(store, worker_change(opts.slot, WorkerState::Booting, WorkerState::Working));
+    Ok(cur)
+}
+
+/// One reported turn: read events until `result`, ingest the report from the
+/// final message, reprompting once (up to `opts.max_turns`) when none is filed.
+/// Does **not** kill the session — the caller (Phase 1 or the quality loop)
+/// decides what happens next. On a wedge / crash / malformed / no-report the
+/// notice is emitted here and a [`ReportStep::Terminal`] is returned.
+pub(crate) fn drive_to_report(
+    session: &mut Session,
+    ticket: &Ticket,
+    opts: &SuperviseOptions,
+    store: &dyn Store,
+    deadline: Instant,
+) -> Result<ReportStep> {
     let mut turns_used = 1u32;
     loop {
-        let text = match read_until_result(&mut session, ticket, opts, store, deadline)? {
+        let text = match read_until_result(session, ticket, opts, store, deadline)? {
             TurnEnd::Result { assistant_text } => assistant_text,
             TurnEnd::Timeout => {
                 notice(store, NoticeLevel::Error, format!("{}: worker wedged; killing", ticket.id));
-                return finish(store, &ticket.id, opts, &mut session, cur, Outcome::TimedOut, TicketState::Failed);
+                return Ok(ReportStep::terminal(Outcome::TimedOut, TicketState::Failed));
             }
             TurnEnd::Closed => {
                 notice(store, NoticeLevel::Error, format!("{}: stream closed with no result", ticket.id));
-                return finish(store, &ticket.id, opts, &mut session, cur, Outcome::Crashed, TicketState::Failed);
+                return Ok(ReportStep::terminal(Outcome::Crashed, TicketState::Failed));
             }
         };
 
         match Report::from_transcript_text(&text) {
-            Some(Ok(report)) => {
-                store.save_report(&ticket.id, opts.slot, &report)?;
-                emit(store, FleetEvent::ReportFiled {
-                    ticket: ticket.id.clone(),
-                    slot: opts.slot,
-                    status: report.status,
-                });
-                let final_state = state_for(report.status);
-                return finish(
-                    store,
-                    &ticket.id,
-                    opts,
-                    &mut session,
-                    cur,
-                    Outcome::Reported { status: report.status },
-                    final_state,
-                );
-            }
+            Some(Ok(report)) => return Ok(ReportStep::Report(report)),
             Some(Err(e)) => {
-                // A block was present but malformed — don't loop on it.
                 notice(store, NoticeLevel::Error, format!("{}: malformed report: {e}", ticket.id));
-                return finish(
-                    store,
-                    &ticket.id,
-                    opts,
-                    &mut session,
-                    cur,
-                    Outcome::BadReport { detail: e.to_string() },
-                    TicketState::Failed,
-                );
+                return Ok(ReportStep::terminal(Outcome::BadReport { detail: e.to_string() }, TicketState::Failed));
             }
             None => {
                 if turns_used >= opts.max_turns {
                     notice(store, NoticeLevel::Warn, format!("{}: no report after reprompt", ticket.id));
-                    return finish(store, &ticket.id, opts, &mut session, cur, Outcome::NoReport, TicketState::Failed);
+                    return Ok(ReportStep::terminal(Outcome::NoReport, TicketState::Failed));
                 }
                 notice(store, NoticeLevel::Info, format!("{}: no report; reprompting", ticket.id));
                 session.send_user(Ticket::NO_REPORT_REPROMPT).context("reprompting")?;
                 turns_used += 1;
             }
         }
+    }
+}
+
+/// The result of one [`drive_to_report`]: a filed report, or a terminal outcome
+/// the caller should finish on (with the board state to land on).
+pub(crate) enum ReportStep {
+    Report(Report),
+    Terminal { outcome: Outcome, final_state: TicketState },
+}
+
+impl ReportStep {
+    fn terminal(outcome: Outcome, final_state: TicketState) -> Self {
+        ReportStep::Terminal { outcome, final_state }
     }
 }
 
@@ -154,6 +180,23 @@ enum TurnEnd {
 }
 
 /// Read the current turn's events until a `result`, collecting assistant text
+/// Read exactly one turn and return its assistant text; `None` on a wedge or a
+/// closed stream. Used by the quality loop's reviewer, whose turn ends in a
+/// `fleet-review` block rather than a `fleet-report` (so the no-report reprompt
+/// of [`drive_to_report`] doesn't apply).
+pub(crate) fn read_turn_text(
+    session: &mut Session,
+    ticket: &Ticket,
+    opts: &SuperviseOptions,
+    store: &dyn Store,
+    deadline: Instant,
+) -> Result<Option<String>> {
+    match read_until_result(session, ticket, opts, store, deadline)? {
+        TurnEnd::Result { assistant_text } => Ok(Some(assistant_text)),
+        TurnEnd::Timeout | TurnEnd::Closed => Ok(None),
+    }
+}
+
 /// and emitting a `ToolActivity` event per tool call. Honors the wall-clock
 /// deadline across the whole run.
 fn read_until_result(
@@ -203,7 +246,7 @@ fn read_until_result(
     }
 }
 
-fn state_for(status: ReportStatus) -> TicketState {
+pub(crate) fn state_for(status: ReportStatus) -> TicketState {
     match status {
         ReportStatus::Done => TicketState::Done,
         ReportStatus::Blocked => TicketState::Blocked,
@@ -214,7 +257,7 @@ fn state_for(status: ReportStatus) -> TicketState {
 
 /// Common terminal path: mark the worker dead, move the ticket, reap, return.
 #[allow(clippy::too_many_arguments)]
-fn finish(
+pub(crate) fn finish(
     store: &dyn Store,
     ticket_id: &str,
     opts: &SuperviseOptions,
@@ -232,7 +275,7 @@ fn finish(
 
 /// Persist a board transition and log it; returns the new state so callers can
 /// keep their `from` cursor accurate.
-fn transition_ticket(
+pub(crate) fn transition_ticket(
     store: &dyn Store,
     ticket_id: &str,
     from: TicketState,
@@ -243,17 +286,17 @@ fn transition_ticket(
     Ok(to)
 }
 
-fn worker_change(slot: u8, from: WorkerState, to: WorkerState) -> FleetEvent {
+pub(crate) fn worker_change(slot: u8, from: WorkerState, to: WorkerState) -> FleetEvent {
     FleetEvent::WorkerState { slot, from, to }
 }
 
-fn notice(store: &dyn Store, level: NoticeLevel, text: String) {
+pub(crate) fn notice(store: &dyn Store, level: NoticeLevel, text: String) {
     emit(store, FleetEvent::Notice { level, text });
 }
 
 /// Append an event, swallowing (but flagging) a store error so supervision
 /// never dies on a logging failure.
-fn emit(store: &dyn Store, event: FleetEvent) {
+pub(crate) fn emit(store: &dyn Store, event: FleetEvent) {
     if let Err(e) = store.append_event(&event) {
         eprintln!("warn: failed to persist event {}: {e}", event.kind());
     }

@@ -24,7 +24,7 @@ pub enum ReportStatus {
 
 /// Machine-checkable exit-gate results (handoff §4). Filled by the gate runner
 /// in Phase 3; optional here.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GateResults {
     #[serde(default)]
     pub tests: Option<bool>,
@@ -36,7 +36,7 @@ pub struct GateResults {
     pub build: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Report {
     pub ticket: String,
     pub status: ReportStatus,
@@ -63,32 +63,9 @@ impl Report {
     /// Scans for the *last* block so a worker that shows a draft then a final
     /// report yields the final one.
     pub fn from_transcript_text(text: &str) -> Option<anyhow::Result<Report>> {
-        let json = extract_last_fenced(text, REPORT_FENCE)?;
+        let json = crate::fenced::extract_last_fenced(text, REPORT_FENCE)?;
         Some(serde_json::from_str(&json).map_err(Into::into))
     }
-}
-
-/// Pull the contents of the last ```<fence> … ``` block out of `text`.
-fn extract_last_fenced(text: &str, fence: &str) -> Option<String> {
-    let open = format!("```{fence}");
-    let mut search_from = 0usize;
-    let mut last: Option<String> = None;
-    while let Some(rel) = text[search_from..].find(&open) {
-        let block_start = search_from + rel + open.len();
-        // Skip to the end of the info-string line.
-        let after_info = match text[block_start..].find('\n') {
-            Some(nl) => block_start + nl + 1,
-            None => break,
-        };
-        // The block ends at the next closing fence.
-        let Some(close_rel) = text[after_info..].find("```") else {
-            break;
-        };
-        let body = &text[after_info..after_info + close_rel];
-        last = Some(body.trim().to_string());
-        search_from = after_info + close_rel + 3;
-    }
-    last
 }
 
 #[cfg(test)]

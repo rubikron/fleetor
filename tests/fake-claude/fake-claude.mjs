@@ -12,9 +12,24 @@
 //   no-report  turn 1: text + result, no report; turn 2 (reprompt): report → result
 //   bad-report a fleet-report block with malformed JSON → result
 //   hang       consume the assignment, then never emit a result (tests the watchdog)
+//
+// Phase 3 quality-loop scenarios (BUILDING §6 exit test). All self-contained —
+// no env, no shared global state — so tests run in parallel safely:
+//   qa-bounce  worker: reports done every turn; writes `marker.ok` in cwd only
+//              from turn 2 on. So the exit gate `test -f marker.ok` fails on
+//              turn 1 and passes after a bounce. Never closes stdin — the
+//              supervisor kills the session when the loop ends.
+//   qa-clean   worker: like qa-bounce but writes `marker.ok` on turn 1 (gate is
+//              green immediately; the only bounce can come from review).
+//   review-approve  reviewer: one turn → a fleet-review "approve" block.
+//   review-count    reviewer: keeps a counter file in its own cwd; requests
+//              changes until the 2nd review, then approves. A fresh reviewer
+//              process each round shares the file, driving review→fix→approve.
 
 import { createInterface } from "node:readline";
 import net from "node:net";
+import fs from "node:fs";
+import path from "node:path";
 
 const scenario = process.env.FAKE_CLAUDE_SCENARIO || "happy";
 const sessionId = `fake-${scenario}-0001`;
@@ -52,6 +67,10 @@ function result(subtype = "success", isError = false) {
 
 function reportBlock(obj) {
   return "All set.\n\n```fleet-report\n" + JSON.stringify(obj) + "\n```";
+}
+
+function reviewBlock(obj) {
+  return "Reviewed.\n\n```fleet-review\n" + JSON.stringify(obj) + "\n```";
 }
 
 function ticketIdFrom(userMsg) {
@@ -167,6 +186,43 @@ rl.on("line", (line) => {
 
   if (scenario === "hang") {
     // Consume the assignment, acknowledge nothing, never end the turn.
+    return;
+  }
+
+  // Phase 3 worker: report done every turn; write the gate marker only once the
+  // scenario's turn is reached, so the gate fails first then passes on a bounce.
+  if (scenario === "qa-bounce" || scenario === "qa-clean") {
+    const markerOnTurn = scenario === "qa-clean" ? 1 : 2;
+    if (turn >= markerOnTurn) {
+      fs.writeFileSync(path.join(process.cwd(), "marker.ok"), "ok");
+    }
+    assistantToolUse("tu-1", "Edit", { file_path: "marker.ok", old_string: "a", new_string: "b" });
+    toolResult("tu-1", "edited");
+    assistantText(reportBlock({ ticket, status: "done", summary: `turn ${turn}`, branch: `ticket/${ticket}`, decisions: [], questions: [], risks: [], followups: [] }));
+    result();
+    return; // stay alive for further bounces; the supervisor kills the session
+  }
+
+  // Phase 3 reviewer: a fresh process per review round, one turn, one verdict.
+  if (scenario === "review-approve") {
+    assistantText(reviewBlock({ decision: "approve", summary: "meets the AC", blocking: [] }));
+    result();
+    rl.close();
+    return;
+  }
+  if (scenario === "review-count") {
+    const counterPath = path.join(process.cwd(), "review-counter");
+    const approveAt = 2;
+    let n = 0;
+    try { n = Number(fs.readFileSync(counterPath, "utf8")) || 0; } catch { n = 0; }
+    n += 1;
+    fs.writeFileSync(counterPath, String(n));
+    const verdict = n >= approveAt
+      ? { decision: "approve", summary: "changes applied", blocking: [] }
+      : { decision: "request-changes", summary: "needs a test", blocking: ["add a test for the empty case"] };
+    assistantText(reviewBlock(verdict));
+    result();
+    rl.close();
     return;
   }
 

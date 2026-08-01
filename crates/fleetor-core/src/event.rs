@@ -44,6 +44,14 @@ pub enum GateOutcome {
     Fail,
 }
 
+/// Result of a peer review (Phase 3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReviewOutcome {
+    Approved,
+    ChangesRequested,
+}
+
 /// One entry in the append-only event log. `#[serde(tag = "type")]` gives each
 /// variant a stable discriminator that also becomes the `kind` column in the DB.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -60,6 +68,9 @@ pub enum FleetEvent {
     Mail { id: String, from: String, to: String, kind: String },
     /// Exit-gate outcome (Phase 3).
     GateResult { ticket: String, slot: u8, outcome: GateOutcome },
+    /// Peer-review verdict (Phase 3). `reviewer_slot` is the fresh agent that
+    /// reviewed, distinct from the slot that did the work.
+    ReviewResult { ticket: String, reviewer_slot: u8, outcome: ReviewOutcome },
     /// Free-form operational note (timeouts, crashes, reprompts).
     Notice { level: NoticeLevel, text: String },
 }
@@ -83,6 +94,7 @@ impl FleetEvent {
             FleetEvent::ReportFiled { .. } => "report-filed",
             FleetEvent::Mail { .. } => "mail",
             FleetEvent::GateResult { .. } => "gate-result",
+            FleetEvent::ReviewResult { .. } => "review-result",
             FleetEvent::Notice { .. } => "notice",
         }
     }

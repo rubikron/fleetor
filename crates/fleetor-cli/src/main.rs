@@ -4,6 +4,7 @@
 //! through real Claude Code before any supervision infrastructure is built.
 
 mod probe;
+mod quality;
 mod supervise;
 
 use clap::{Parser, Subcommand};
@@ -50,6 +51,21 @@ enum Commands {
         #[arg(long)]
         repo_root: Option<PathBuf>,
     },
+    /// Phase 3 quality loop: drive one ticket through gate → bounce → review.
+    Quality {
+        /// Worker scenario driving the gate outcome.
+        #[arg(long, default_value = "qa-bounce", value_parser = ["qa-bounce", "qa-clean"])]
+        scenario: String,
+        /// Reviewer scenario.
+        #[arg(long, default_value = "review-approve", value_parser = ["review-approve", "review-count"])]
+        reviewer: String,
+        /// Per-turn wall-clock timeout in seconds.
+        #[arg(long, default_value_t = 30)]
+        timeout: u64,
+        /// Repo root (for the fake-claude script); defaults to cwd.
+        #[arg(long)]
+        repo_root: Option<PathBuf>,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -79,6 +95,12 @@ fn main() -> anyhow::Result<()> {
                 .or_else(|| std::env::current_dir().ok())
                 .unwrap_or_else(|| PathBuf::from("."));
             supervise::run(supervise::SuperviseArgs { real, scenario, timeout, repo_root })
+        }
+        Commands::Quality { scenario, reviewer, timeout, repo_root } => {
+            let repo_root = repo_root
+                .or_else(|| std::env::current_dir().ok())
+                .unwrap_or_else(|| PathBuf::from("."));
+            quality::run(quality::QualityArgs { scenario, reviewer, timeout, repo_root })
         }
     }
 }

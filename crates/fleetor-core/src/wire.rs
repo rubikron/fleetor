@@ -64,6 +64,17 @@ pub enum Op {
     /// Pull this client's queued mail (the Stop-hook drainer / turn boundary).
     /// Returns [`OpResult::Mail`] — empty if nothing is waiting.
     DrainMail,
+    /// File a structured completion (handoff §4). Promotes D-008's
+    /// transcript-scrape onto the MCP surface; the scrape stays the backstop.
+    Report { report: crate::report::Report },
+    /// Cheap conflict check: who currently holds `path`? → [`OpResult::Owners`].
+    WhosWorkingOn { path: String },
+    /// Request a lease on `path` for `ticket`; may be denied if another slot
+    /// holds it (handoff §4). The worker passes its own ticket id (a Tier-2
+    /// signature tweak over handoff's `claim_file(path)`). → [`OpResult::Claim`].
+    ClaimFile { path: String, ticket: String },
+    /// Park an out-of-scope discovery instead of widening the diff (handoff §9).
+    BacklogAdd { text: String },
 
     // ---- lead-facing ----
     /// Blocks up to `timeout_ms` for actionable worker→lead traffic (questions,
@@ -98,6 +109,10 @@ pub enum OpResult {
     Mail { messages: Vec<Envelope> },
     /// Actionable worker→lead traffic (`AwaitEvents` / `Inbox`) — oldest first.
     Events { events: Vec<LeadEvent> },
+    /// Who holds a path (`WhosWorkingOn`) — empty if nobody.
+    Owners { owners: Vec<crate::ownership::Owner> },
+    /// The outcome of a `ClaimFile`: granted, or denied with the holder.
+    Claim { grant: crate::ownership::LeaseGrant },
     /// The op could not be served (bad party, unknown event id, etc.).
     Error { message: String },
 }
