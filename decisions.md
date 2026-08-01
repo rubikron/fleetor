@@ -44,7 +44,23 @@ Worker count 4 · rusqlite/WAL · report schema per handoff §4 · gate retry ca
 - **Why:** YAGNI + isolation. A one-terminal spike needs no framework; a framework would be dead weight. Isolating the tauri workspace means a UI-layer build problem can never hold the headless core hostage (BUILDING §3).
 - **Reverses if:** Phase 4 (the real shell) folds `src-tauri` into the main workspace and adopts React per BUILDING §2 — expected, and cheap since the spike is throwaway-grade.
 
-## D-005 — Phase 0 scaffold: only `fleetor-cc` + `fleetor-cli`, sync I/O
+## D-010 — Assign-first: don't gate the first stdin write on the `init` event
+
+- **What:** The supervisor writes the ticket to the worker's stdin *immediately* after spawn, then reads the event stream (consuming `init` inline). It does **not** "read stdout until init, then send" as handoff §5 step 2–3 prescribes.
+- **Why:** Verified against real Claude Code: in `-p --input-format stream-json` mode, `claude` emits `system/init` only *after* it begins processing the first stdin message. Gating the first write on `init` deadlocks (server waits for init; CC waits for input) — the symptom was a real-CC run that produced zero events until the wall-clock kill. The handoff explicitly said to verify event ordering against the installed CC rather than trust the doc; this is that correction. Multi-turn streaming confirmed in the same probe (the process stays alive after `result`, awaiting more input), which the no-report reprompt relies on. `session_id` is still captured from `init` when it arrives; it just isn't needed to send the first message.
+- **Reverses if:** a future CC emits `init` eagerly at startup — the assign-first path still works (init consumed earlier), so no revert needed; only revisit if streaming multi-turn semantics change.
+
+## D-008 — Phase 1 report ingested from a transcript block, not MCP
+
+- **What:** In Phase 1 the worker files its report by ending its final message with a fenced ```` ```fleet-report ```` JSON block; the supervisor extracts and parses it from the transcript (`Report::from_transcript_text`). The assignment message carries the schema and an example. The real `report()` MCP tool (handoff §4) is **not** built yet.
+- **Why:** The MCP `report()` channel needs the stdio-shim + unix socket, which is Phase 2's deliverable. Transcript-block ingestion makes the full ticket lifecycle testable end-to-end *now* (against fake-claude and one real-CC run) without pulling Phase 2 forward. Reversible: when the shim lands, `report()` becomes primary and this parser stays as the "no report filed" backstop (handoff §5).
+- **Reverses if:** Phase 2 wires the MCP surface — then reports arrive as structured tool calls and the transcript scrape demotes to a fallback (or is dropped if the tool proves reliable).
+
+## D-009 — Phase 1 crates: added `fleetor-core`, `fleetor-db`, `fleetor-server`
+
+- **What:** Grew the workspace from 2 crates to 5, per BUILDING §3's layout: `fleetor-core` (frozen contracts — envelope, events, report, ticket, `Store`/`AgentProcess` seams), `fleetor-db` (rusqlite + migrations, the 5-table sketch), `fleetor-server` (the supervisor loop). `fleetor-cc` gained the streaming `supervised_command`, the `AgentProcess` seam, and the persistent stdin/stdout `Session` driver.
+- **Why:** Phase 1 is when supervision, persistence, and the contract layer are first needed (D-005 said add crates when their phase needs them). Only two of the four sanctioned seams are introduced — `AgentProcess` and `Store`; `Transport` and `GateRunner` are deferred to their phases (2, 3) to avoid speculative abstraction (BUILDING §8).
+- **Reverses if:** a crate proves to carry no weight — collapse it back. `fleetor-server` in particular is a lib so Phase 4's Tauri app can consume it directly.
 
 - **What:** Created just the two crates Phase 0 needs (not the full 6-crate layout), and the spawn/stream path uses `std::process` + threads, not tokio.
 - **Why:** YAGNI + reversible. `fleetor-cc`'s spawn builder returns a `Command` whose env/arg logic ports to `tokio::process` unchanged; remaining crates (core/db/server/shim) get added when their phase needs them.

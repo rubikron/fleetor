@@ -5,12 +5,16 @@
 //! Supervision, routing, and analysis live in higher crates. This crate is the
 //! single seam where Claude Code version drift is absorbed (BUILDING §3).
 
+pub mod agent;
 pub mod event;
 pub mod parse;
+pub mod session;
 pub mod spawn;
 
+pub use agent::{AgentProcess, FakeClaude, RealClaude};
 pub use event::{ContentBlock, Event, InitEvent, Message, ResultEvent, ToolResult, ToolUse, Usage};
 pub use parse::{parse_line, parse_transcript};
+pub use session::{Recv, Session, SessionMsg};
 pub use spawn::{WorkerConfig, DEEPSEEK_ANTHROPIC_BASE_URL, MODEL_FLASH};
 
 #[cfg(test)]

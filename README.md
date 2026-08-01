@@ -17,7 +17,17 @@ gates passed, ~$0.006/ticket. See `docs/phase0-report.md`. Run the probe with
 `portable-pty` + xterm.js in a bare Tauri 2 window: colors, alternate screen,
 resize, scrollback, paste all verified. The WKWebView terminal risk is retired
 and the embedded-orchestrator product shape holds. Run the spike with
-`npm install && npm run tauri dev`. Next: Phase 1 (supervisor).
+`npm install && npm run tauri dev`.
+
+**Phase 1 — PASS (GO).** The supervisor drives a full ticket lifecycle —
+spawn → assign (over streaming stdin) → turn-end detection (`result`) → report
+ingestion — persisted through SQLite and observable as an append-only event
+log plus a raw per-worker transcript on disk. Verified against `fake-claude`
+(all four scenarios: happy, no-report+reprompt, bad-report, watchdog kill) and
+once against real Claude Code Flash (worker wrote + tested `greet.sh`, filed a
+well-formed `fleet-report`, ticket → done). Run it with
+`cargo run -p fleetor-cli -- supervise` (add `--real` for a live worker).
+Next: Phase 2 (messaging — shim, `ask_lead`, Stop-hook delivery).
 
 ## Reading order
 

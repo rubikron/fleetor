@@ -82,26 +82,63 @@ impl WorkerConfig {
             cmd.arg("--allowedTools").arg(self.allowed_tools.join(","));
         }
 
-        // Isolated, deterministic environment. We do NOT clear the whole env
-        // (PATH etc. are needed) — we override exactly the Claude/DeepSeek vars
-        // and repoint the config dir.
+        // Isolated, deterministic environment (see `apply_env`).
+        self.apply_env(&mut cmd);
+
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        cmd
+    }
+
+    /// Build a **supervised** streaming command (Phase 1). Unlike [`command`],
+    /// no prompt is passed as an argument: the process reads user messages as
+    /// `stream-json` on stdin and stays alive across turns, so the supervisor
+    /// can assign, detect turn end via the `result` event, then reprompt or
+    /// assign again on the same session. stdin is piped, not null.
+    ///
+    /// [`command`]: WorkerConfig::command
+    pub fn supervised_command(&self) -> Command {
+        let mut cmd = Command::new("claude");
+        cmd.current_dir(&self.cwd)
+            .arg("-p")
+            .arg("--input-format")
+            .arg("stream-json")
+            .arg("--output-format")
+            .arg("stream-json")
+            .arg("--verbose") // required for stream-json under -p
+            .arg("--model")
+            .arg(&self.model)
+            .arg("--permission-mode")
+            .arg(&self.permission_mode);
+
+        if !self.allowed_tools.is_empty() {
+            cmd.arg("--allowedTools").arg(self.allowed_tools.join(","));
+        }
+
+        self.apply_env(&mut cmd);
+
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        cmd
+    }
+
+    /// Apply the isolated Claude/DeepSeek environment shared by both command
+    /// forms. We override exactly the vars that matter and repoint the config
+    /// dir; PATH and friends are inherited.
+    fn apply_env(&self, cmd: &mut Command) {
         cmd.env("CLAUDE_CONFIG_DIR", &self.config_dir)
             .env("ANTHROPIC_BASE_URL", &self.base_url)
             .env("ANTHROPIC_AUTH_TOKEN", &self.api_key)
             .env("ANTHROPIC_API_KEY", &self.api_key)
             .env("ANTHROPIC_MODEL", &self.model)
-            // Strip any inherited interactive-session hints that could bias runs.
             .env_remove("ANTHROPIC_DEFAULT_OPUS_MODEL")
             .env_remove("ANTHROPIC_DEFAULT_SONNET_MODEL");
 
         if let Some(effort) = &self.effort_level {
             cmd.env("CLAUDE_CODE_EFFORT_LEVEL", effort);
         }
-
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        cmd
     }
 
     /// The env pairs this config applies, for logging/inspection (key order

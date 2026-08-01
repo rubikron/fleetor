@@ -4,6 +4,7 @@
 //! through real Claude Code before any supervision infrastructure is built.
 
 mod probe;
+mod supervise;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -34,6 +35,21 @@ enum Commands {
     },
     /// Print the ticket list without running anything.
     Tickets,
+    /// Phase 1 supervisor: drive one ticket through spawn→assign→report.
+    Supervise {
+        /// Use a real Claude Code Flash worker (costs tokens). Default: fake.
+        #[arg(long)]
+        real: bool,
+        /// fake-claude scenario when not `--real`.
+        #[arg(long, default_value = "happy", value_parser = ["happy", "no-report", "bad-report", "hang"])]
+        scenario: String,
+        /// Per-ticket wall-clock timeout in seconds.
+        #[arg(long, default_value_t = 300)]
+        timeout: u64,
+        /// Repo root (for `.env` and the fake-claude script); defaults to cwd.
+        #[arg(long)]
+        repo_root: Option<PathBuf>,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -57,6 +73,12 @@ fn main() -> anyhow::Result<()> {
                 out,
                 cc_version,
             })
+        }
+        Commands::Supervise { real, scenario, timeout, repo_root } => {
+            let repo_root = repo_root
+                .or_else(|| std::env::current_dir().ok())
+                .unwrap_or_else(|| PathBuf::from("."));
+            supervise::run(supervise::SuperviseArgs { real, scenario, timeout, repo_root })
         }
     }
 }
