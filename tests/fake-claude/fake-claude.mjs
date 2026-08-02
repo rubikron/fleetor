@@ -218,6 +218,7 @@ if (scenario.startsWith("msg-")) {
 
 function runStdinLoop() {
 let turn = 0;
+let assignedTicket = null;
 const rl = createInterface({ input: process.stdin });
 
 rl.on("line", (line) => {
@@ -252,6 +253,27 @@ rl.on("line", (line) => {
   // ending the turn with no transcript report block. See handleMcpReport above.
   if (scenario === "mcp-report") {
     handleMcpReport(ticket);
+    return;
+  }
+
+  // D-015 idle→stdin worker: turn 1 ends with NO report (the worker sits idle,
+  // waiting for steering). The supervisor's idle-drain then writes queued mail to
+  // stdin as a fresh turn; turn 2 sees the framed mail and files a done report.
+  if (scenario === "idle-mail") {
+    if (turn === 1) {
+      assignedTicket = ticket;
+      assistantText("Assignment received; standing by for steering before I finalize.");
+      result();
+    } else {
+      const injected = (msg.message?.content || []).map((b) => b.text || "").join(" ");
+      assistantText(`idle mail received: ${injected}`);
+      assistantText(reportBlock({
+        ticket: assignedTicket, status: "done", summary: "acted on idle steering",
+        branch: `ticket/${assignedTicket}`, decisions: [], questions: [], risks: [], followups: [],
+      }));
+      result();
+      rl.close();
+    }
     return;
   }
 

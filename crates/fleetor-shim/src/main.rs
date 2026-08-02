@@ -70,7 +70,7 @@ async fn run_stop_hook(client: &mut Client) -> Result<()> {
     if messages.is_empty() {
         return Ok(()); // allow the turn to end
     }
-    let reason = protocol::frame_mail_for_injection(&messages);
+    let reason = fleetor_core::frame_mail_for_injection(&messages);
     let decision = json!({ "decision": "block", "reason": reason });
     let mut out = tokio::io::stdout();
     out.write_all(decision.to_string().as_bytes()).await?;
@@ -153,8 +153,22 @@ async fn call_tool(client: &mut Client, params: &Value, is_lead: bool) -> Value 
         Ok(op) => op,
         Err(e) => return protocol::op_result_to_mcp(&OpResult::Error { message: e.to_string() }),
     };
+    // D-015 opportunistic piggyback: after any *worker* tool call, fold this
+    // worker's pending mail into the result so it lands mid-turn, for free. Skip
+    // `report` — mail arriving on a report result can prompt a redundant report
+    // (D-018) — and skip the lead face, which has no mailbox.
+    let piggyback = !is_lead && !matches!(op, Op::Report { .. });
     match client.call(op).await {
-        Ok(result) => protocol::op_result_to_mcp(&result),
+        Ok(result) => {
+            let rendered = protocol::op_result_to_mcp(&result);
+            if !piggyback {
+                return rendered;
+            }
+            match client.call(Op::DrainMail).await {
+                Ok(OpResult::Mail { messages }) => protocol::append_piggyback(rendered, &messages),
+                _ => rendered,
+            }
+        }
         Err(e) => protocol::op_result_to_mcp(&OpResult::Error {
             message: format!("socket call failed: {e}"),
         }),

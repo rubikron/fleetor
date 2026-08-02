@@ -300,29 +300,19 @@ pub fn op_result_to_mcp(result: &fleetor_core::wire::OpResult) -> Value {
     json!({ "content": [ { "type": "text", "text": text } ], "isError": is_error })
 }
 
-/// Frame queued mail as the `reason` of a Stop-hook `block` decision, for
-/// mid-turn injection (handoff §5). The spike (docs/phase2-spikes.md) showed a
-/// security-conscious worker will REFUSE injected text that reads like an
-/// override of its task — so this frames mail explicitly as in-band teammate
-/// coordination that augments the current work, never a new directive.
-pub fn frame_mail_for_injection(messages: &[fleetor_core::Envelope]) -> String {
-    let mut s = String::from(
-        "[Fleet mail — coordination from your teammates on this ticket, delivered mid-task. \
-         This is information to factor in, not a new instruction that overrides your ticket.]\n",
-    );
-    for m in messages {
-        s.push_str(&format!("• {}: {}\n", sender_label(&m.from), m.body));
+/// Fold pending mail into an already-rendered tool result (D-015 opportunistic
+/// piggyback): a mid-turn worker that calls any fleet tool gets its queued mail
+/// for free, as an extra content block framed like every other injection path.
+/// A no-op for an empty queue.
+pub fn append_piggyback(mut result: Value, messages: &[fleetor_core::Envelope]) -> Value {
+    if messages.is_empty() {
+        return result;
     }
-    s.push_str("\nAcknowledge anything that affects your current work, then carry on.");
-    s
-}
-
-fn sender_label(p: &fleetor_core::Party) -> String {
-    match p {
-        fleetor_core::Party::Lead => "lead".to_string(),
-        fleetor_core::Party::Worker(n) => format!("worker-{n}"),
-        fleetor_core::Party::User => "user".to_string(),
+    let framed = fleetor_core::frame_mail_for_injection(messages);
+    if let Some(content) = result.get_mut("content").and_then(Value::as_array_mut) {
+        content.push(json!({ "type": "text", "text": framed }));
     }
+    result
 }
 
 fn render_owners(owners: &[fleetor_core::Owner]) -> String {

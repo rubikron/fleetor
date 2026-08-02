@@ -19,8 +19,10 @@
 //! the worker's `fleet.report` MCP call travels the socket to the hub, which
 //! appends `ReportFiled`; the sync supervisor reads that as its **primary**
 //! done-signal (4b/D-019), with the transcript scrape demoted to a backstop.
-//! (Idle→stdin / opportunistic-piggyback mail delivery — D-015 — land with the
-//! real orchestrator in 4c/4d; turn-boundary Stop-hook drain covers 4a/4b.)
+//! (All three mail-delivery paths are now wired: turn-boundary Stop-hook drain,
+//! plus idle→stdin — the supervisor injects queued mail as a fresh turn at a
+//! report-less boundary — and opportunistic piggyback on a tool result — the
+//! shim folds pending mail into an MCP result mid-turn. D-015/D-026.)
 
 use crate::hub::{Hub, HubConfig, RunnerCommand};
 use crate::supervisor::{run_ticket, Outcome, SuperviseOptions, WorkerControl};

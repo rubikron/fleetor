@@ -17,7 +17,7 @@ use fleetor_cc::event::ContentBlock;
 use fleetor_cc::{AgentProcess, Event, Recv, Session, SessionMsg};
 use fleetor_core::event::{FleetEvent, NoticeLevel, TicketState, WorkerState};
 use fleetor_core::report::{Report, ReportStatus};
-use fleetor_core::{Store, Ticket};
+use fleetor_core::{Party, Store, Ticket};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -232,6 +232,14 @@ pub(crate) fn drive_to_report(
                         return Ok(step);
                     }
                 }
+                // D-015 idle→stdin: mail that lands while the worker sits idle
+                // between turns (the Stop hook already drained empty) is delivered
+                // here — the supervisor writes it straight to stdin as a fresh
+                // turn. A mail-driven turn is legitimate work, so it does NOT count
+                // against the no-report reprompt cap; it's bounded by `deadline`.
+                if idle_drain_step(session, store, opts, deadline)? {
+                    continue;
+                }
                 if turns_used >= opts.max_turns {
                     notice(store, NoticeLevel::Warn, format!("{}: no report after reprompt", ticket.id));
                     return Ok(ReportStep::terminal(Outcome::NoReport, TicketState::Failed));
@@ -284,6 +292,54 @@ fn grace_poll_mcp_report(
         }
     }
     None
+}
+
+/// D-015 idle→stdin: at a report-less turn boundary, briefly watch this worker's
+/// mailbox; if mail is queued (or lands within the window), write it to stdin as a
+/// fresh turn (framed like every other injection path — [`frame_mail_for_injection`])
+/// and return `true`. The bounded poll mirrors [`grace_poll_mcp_report`] so steering
+/// mail arriving just after the turn ends is still caught. `false` means the window
+/// elapsed with an empty queue — the caller falls through to its reprompt/finish
+/// path unchanged. The worker is flipped `Working → Idle → Working` around the wait
+/// so the UI can render the honest idle beat.
+///
+/// The supervisor drains the shared [`Store`] directly (the same seam it reads for
+/// `ReportFiled`, D-019) — no cross-runtime channel. `take_mail` is atomic, so this
+/// never races the worker's own Stop-hook drain: whichever pulls a message first
+/// owns it, and by the time a `result` reaches the supervisor the Stop hook has
+/// already drained empty.
+///
+/// [`frame_mail_for_injection`]: fleetor_core::frame_mail_for_injection
+fn idle_drain_step(
+    session: &mut Session,
+    store: &dyn Store,
+    opts: &SuperviseOptions,
+    deadline: Instant,
+) -> Result<bool> {
+    const IDLE_TICKS: u32 = 10;
+    const TICK: Duration = Duration::from_millis(50);
+    let to = Party::Worker(opts.slot);
+
+    emit(store, worker_change(opts.slot, WorkerState::Working, WorkerState::Idle));
+    let mut delivered = false;
+    for tick in 0..IDLE_TICKS {
+        let mail = store.take_mail(&to).unwrap_or_default();
+        if !mail.is_empty() {
+            session
+                .send_user(&fleetor_core::frame_mail_for_injection(&mail))
+                .context("injecting idle mail to stdin")?;
+            delivered = true;
+            break;
+        }
+        // Stop polling once the wall-clock budget is spent; don't sleep past it.
+        if tick + 1 < IDLE_TICKS && Instant::now() < deadline {
+            std::thread::sleep(TICK);
+        } else {
+            break;
+        }
+    }
+    emit(store, worker_change(opts.slot, WorkerState::Idle, WorkerState::Working));
+    Ok(delivered)
 }
 
 /// The result of one [`drive_to_report`]: a filed report, or a terminal outcome

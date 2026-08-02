@@ -88,8 +88,8 @@ MCP call is now terminal: the hub persists it and appends `ReportFiled`, and the
 The transcript `fleet-report` scrape drops to a backstop. This also removes the
 supervisor's duplicate `ReportFiled` (the 4a double-log). The quality loop stays
 transcript-scrape (it needs the full report body to bounce — a 4c/4d
-companion), and the D-015 idle/opportunistic mail paths stay deferred to 4c/4d
-where a real orchestrator exercises them (D-019). Verified deterministically: a
+companion), and the D-015 idle/opportunistic mail paths stay deferred (they
+landed later in 4g — D-026). Verified deterministically: a
 worker that files only over the socket closes `Done` with exactly one
 `report-filed`. 44 tests, 0 warnings.
 
@@ -192,9 +192,18 @@ async→sync yank D-021 deferred as "a real feature, not a stub." Verified by
 `lead_interrupt_yanks_a_busy_worker` (a hanging worker is assigned, driven to
 in-progress, then interrupted → `Interrupted`) plus shim mapping/drift tests;
 full suite green, no live spend. See D-025.
+**Phase 4g — the last two mail-delivery paths (D-015 done).** The messaging model
+is complete: alongside the turn-boundary Stop-hook drain, mail now also reaches a
+worker **idle between turns** (the supervisor writes queued mail straight to stdin
+as a fresh turn) and **mid-turn via any tool call** (the shim folds pending mail
+into the MCP tool result — free, no waiting). Framing is single-sourced in
+`fleetor-core::mail`, so all three paths inject byte-identical D-014 coordination
+text; exactly-once holds because every path pulls the one atomic `take_mail`.
+Verified deterministically against fake-claude + the real-shim bridge test (57
+crate tests), zero live spend. See D-026.
 Next: the first live run (operator-triggered) — start the session, let the lead
 assign a scratch ticket, watch the band/board/graph animate; then real Flash
-workers, then D-015 idle/piggyback mail, then Phase 5 (Memory).
+workers exercising the live idle/piggyback paths; then Phase 5 (Memory).
 
 ## Reading order
 

@@ -171,6 +171,83 @@ async fn stop_hook_drains_mail_into_a_block_decision() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[tokio::test]
+async fn tool_result_piggybacks_pending_mail() {
+    use fleetor_core::wire::{Hello, Op};
+    use fleetor_ipc::Client;
+
+    let dir = std::env::temp_dir().join(format!("fleetor-piggy-it-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let sock = dir.join("fleet.sock");
+    let transport = Arc::new(UnixTransport::new(&sock));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let hub = Hub::new(store.clone(), HubConfig { slots: vec![1, 2], ask_timeout: Duration::from_secs(5) });
+    let listener = transport.bind().await.unwrap();
+    tokio::spawn(hub.serve(listener));
+
+    // --- worker-1 shim, initialized ---
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_fleetor-shim"))
+        .env("FLEET_SOCKET", &sock)
+        .env("FLEETOR_SLOT", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut sin = child.stdin.take().unwrap();
+    let mut sout = BufReader::new(child.stdout.take().unwrap()).lines();
+    send_line(&mut sin, json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-11-25"}})).await;
+    let _ = read_json(&mut sout).await;
+    send_line(&mut sin, json!({"jsonrpc":"2.0","method":"notifications/initialized"})).await;
+
+    // Queue mail for worker-1 (the lead steers it while it works).
+    let mut lead = Client::connect(&*transport, Hello::new(fleetor_core::Party::Lead)).await.unwrap();
+    lead.call(Op::Send { to: 1, text: "rebase before you push".into() }).await.unwrap();
+
+    // A mid-turn tool call folds the pending mail into its own result (free delivery).
+    send_line(&mut sin, json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+        "params":{"name":"whos_working_on","arguments":{"path":"src/a.rs"}}})).await;
+    let call = read_json(&mut sout).await;
+    let text = content_text(&call);
+    assert_eq!(call["result"]["isError"], json!(false), "call: {call}");
+    assert!(text.contains("rebase before you push"), "mail not piggybacked: {text}");
+    assert!(text.contains("Fleet mail"), "piggyback must carry the coordination framing: {text}");
+
+    // Mailbox now drained → a second identical call carries no piggyback.
+    send_line(&mut sin, json!({"jsonrpc":"2.0","id":2,"method":"tools/call",
+        "params":{"name":"whos_working_on","arguments":{"path":"src/a.rs"}}})).await;
+    let call2 = read_json(&mut sout).await;
+    assert!(!content_text(&call2).contains("Fleet mail"), "empty mailbox must not piggyback: {call2}");
+
+    // `report` must NOT piggyback (mail-after-report can prompt a redundant report — D-018).
+    lead.call(Op::Send { to: 1, text: "one more note".into() }).await.unwrap();
+    send_line(&mut sin, json!({"jsonrpc":"2.0","id":3,"method":"tools/call",
+        "params":{"name":"report","arguments":{"ticket":"T-1","status":"done","summary":"finished"}}})).await;
+    let call3 = read_json(&mut sout).await;
+    assert!(!content_text(&call3).contains("Fleet mail"), "report must not piggyback: {call3}");
+    // …and the mail it skipped is still queued for a later path to deliver.
+    let still = store.take_mail(&fleetor_core::Party::Worker(1)).unwrap();
+    assert_eq!(still.len(), 1);
+    assert_eq!(still[0].body, "one more note");
+
+    let _ = child.kill().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Concatenate every text content block of an MCP tool-call result.
+fn content_text(call: &Value) -> String {
+    call["result"]["content"]
+        .as_array()
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter_map(|b| b.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
+
 /// Run the shim in `stop-hook` mode for `slot`, feeding a realistic Stop payload
 /// on stdin; return its stdout.
 async fn run_stop_hook(sock: &std::path::Path, slot: u8) -> String {
