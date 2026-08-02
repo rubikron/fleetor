@@ -18,8 +18,13 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
+
+/// Cap on the retained worker stderr tail — enough to carry a crash reason without
+/// letting a chatty worker grow it unbounded.
+const STDERR_CAP: usize = 8 * 1024;
 
 /// What the reader thread hands back to the supervisor.
 #[derive(Debug)]
@@ -43,6 +48,11 @@ pub struct Session {
     stdin: Option<ChildStdin>,
     rx: Receiver<SessionMsg>,
     reader: Option<JoinHandle<()>>,
+    /// Reader thread for the child's stderr — captured (not dropped) so a worker
+    /// that dies writing an error to stderr can be diagnosed. Ends on stderr EOF.
+    stderr_reader: Option<JoinHandle<()>>,
+    /// The retained tail of the worker's stderr, shared with `stderr_reader`.
+    stderr: Arc<Mutex<String>>,
     label: String,
 }
 
@@ -58,6 +68,26 @@ impl Session {
 
         let stdout = child.stdout.take().context("agent has no stdout pipe")?;
         let stdin = child.stdin.take().context("agent has no stdin pipe")?;
+
+        // Capture stderr out-of-band (it was previously piped and never read, so a
+        // worker that crashed on startup died silently). A small reader thread keeps
+        // the tail; `stderr_tail()` surfaces it on exit.
+        let stderr = Arc::new(Mutex::new(String::new()));
+        let stderr_reader = child.stderr.take().map(|err| {
+            let buf = stderr.clone();
+            std::thread::spawn(move || {
+                for line in BufReader::new(err).lines() {
+                    let Ok(line) = line else { break };
+                    if let Ok(mut s) = buf.lock() {
+                        s.push_str(&line);
+                        s.push('\n');
+                        if s.len() > STDERR_CAP {
+                            *s = s[s.len() - STDERR_CAP..].to_string();
+                        }
+                    }
+                }
+            })
+        });
 
         let mut log_file = match raw_log {
             Some(path) => {
@@ -97,8 +127,16 @@ impl Session {
             stdin: Some(stdin),
             rx,
             reader: Some(reader),
+            stderr_reader,
+            stderr,
             label,
         })
+    }
+
+    /// The tail of the worker's stderr, captured out-of-band. Empty for a healthy
+    /// worker; the crash reason for one that died writing to stderr.
+    pub fn stderr_tail(&self) -> String {
+        self.stderr.lock().map(|s| s.trim().to_string()).unwrap_or_default()
     }
 
     pub fn label(&self) -> &str {
@@ -158,6 +196,9 @@ impl Drop for Session {
         let _ = self.child.wait();
         self.stdin.take();
         if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
+        if let Some(reader) = self.stderr_reader.take() {
             let _ = reader.join();
         }
     }

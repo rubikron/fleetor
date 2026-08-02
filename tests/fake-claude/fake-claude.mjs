@@ -256,6 +256,16 @@ rl.on("line", (line) => {
     return;
   }
 
+  // Phase 4i standby pool worker: driven purely over stdin (the supervisor delivers
+  // each fleet message as a turn). Echo whatever arrives and stay alive for the next
+  // one — never close, so the worker idles in the pool between messages.
+  if (scenario === "standby") {
+    const injected = (msg.message?.content || []).map((b) => b.text || "").join(" ");
+    assistantText(`standby-${process.env.FLEETOR_SLOT || "?"} received: ${injected}`);
+    result();
+    return;
+  }
+
   // D-015 idle→stdin worker: turn 1 ends with NO report (the worker sits idle,
   // waiting for steering). The supervisor's idle-drain then writes queued mail to
   // stdin as a fresh turn; turn 2 sees the framed mail and files a done report.

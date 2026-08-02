@@ -124,6 +124,15 @@ pub fn run_ticket(
 ) -> Result<Outcome> {
     store.upsert_ticket(ticket)?;
     let mut session = Session::spawn(agent, opts.raw_log.clone())
+        .map_err(|e| {
+            emit(store, FleetEvent::WorkerExited {
+                slot: opts.slot,
+                ticket: ticket.id.clone(),
+                ok: false,
+                detail: format!("failed to spawn worker: {e:#}"),
+            });
+            e
+        })
         .with_context(|| format!("spawning worker for {}", ticket.id))?;
     // Publish the pid so the runner can interrupt this turn from the async side.
     if let Some(control) = &opts.control {
@@ -131,7 +140,24 @@ pub fn run_ticket(
     }
     let deadline = Instant::now() + opts.idle_timeout;
 
-    let cur = assign(&mut session, ticket, store, opts)?;
+    // A worker that dies on startup fails here (its first stdin write hits a broken
+    // pipe). Surface its stderr — otherwise the ticket just hangs at `Assigned` with
+    // no visible reason (the crash that was previously invisible).
+    let cur = assign(&mut session, ticket, store, opts).map_err(|e| {
+        let tail = session.stderr_tail();
+        let detail = if tail.is_empty() {
+            format!("worker failed before starting: {e:#}")
+        } else {
+            format!("worker failed before starting: {e:#}\n--- stderr ---\n{tail}")
+        };
+        emit(store, FleetEvent::WorkerExited {
+            slot: opts.slot,
+            ticket: ticket.id.clone(),
+            ok: false,
+            detail,
+        });
+        e
+    })?;
 
     // The base supervisor prefers report-over-MCP (4b): the worker files via the
     // `fleet.report` tool, the hub persists + emits `ReportFiled`, and we read
@@ -151,6 +177,92 @@ pub fn run_ticket(
             finish(store, &ticket.id, opts, &mut session, cur, outcome, final_state)
         }
     }
+}
+
+/// A **standby** pool worker (Phase 4i): spawn the session once and keep it alive
+/// and idle, delivering any queued mail to its stdin (the D-015 path) and driving
+/// the resulting turn — transcript events flow through [`read_until_result`]
+/// (D-028). Unlike [`run_ticket`] it never reports-and-dies; it lives until
+/// interrupted (app shutdown / `worker_restart`). An idle standby worker spends no
+/// tokens. Assignment *is* messaging here: the orch sends the worker a task and it
+/// acts on the delivered turn.
+pub fn run_standby_worker(
+    agent: &dyn AgentProcess,
+    slot: u8,
+    store: &dyn Store,
+    control: Arc<WorkerControl>,
+    raw_log: Option<PathBuf>,
+) -> Result<Outcome> {
+    const POLL: Duration = Duration::from_millis(200);
+    const TURN_BUDGET: Duration = Duration::from_secs(300);
+
+    let ticket = Ticket::new(format!("worker-{slot}"), "standby", "Standby fleet worker.");
+    let opts = SuperviseOptions {
+        slot,
+        raw_log: raw_log.clone(),
+        max_turns: 1,
+        idle_timeout: TURN_BUDGET,
+        control: Some(control.clone()),
+    };
+
+    let mut session = Session::spawn(agent, raw_log)
+        .map_err(|e| {
+            emit(store, FleetEvent::WorkerExited {
+                slot,
+                ticket: ticket.id.clone(),
+                ok: false,
+                detail: format!("failed to spawn standby worker: {e:#}"),
+            });
+            e
+        })
+        .with_context(|| format!("spawning standby worker-{slot}"))?;
+    control.publish_pid(session.pid());
+    emit(store, worker_change(slot, WorkerState::Booting, WorkerState::Idle));
+
+    let to = Party::Worker(slot);
+    let mut crashed = false;
+    while !control.was_interrupted() {
+        let mail = store.take_mail(&to).unwrap_or_default();
+        if mail.is_empty() {
+            std::thread::sleep(POLL);
+            continue;
+        }
+        // Deliver the message as a fresh turn (D-015 idle→stdin), then drive it —
+        // `read_until_result` streams the worker's words + tools to the transcript.
+        emit(store, worker_change(slot, WorkerState::Idle, WorkerState::Working));
+        if session.send_user(&fleetor_core::frame_mail_for_injection(&mail)).is_err() {
+            crashed = true;
+            break;
+        }
+        let deadline = Instant::now() + TURN_BUDGET;
+        match read_until_result(&mut session, &ticket, &opts, store, deadline)? {
+            TurnEnd::Result { .. } => {}
+            TurnEnd::Timeout => notice(
+                store,
+                NoticeLevel::Warn,
+                format!("worker-{slot}: turn timed out; back to standby"),
+            ),
+            TurnEnd::Closed => {
+                crashed = true;
+                break;
+            }
+        }
+        emit(store, worker_change(slot, WorkerState::Working, WorkerState::Idle));
+    }
+
+    // A stream-close we caused by killing the worker at shutdown is not a crash.
+    let genuine_crash = crashed && !control.was_interrupted();
+    let outcome = if genuine_crash { Outcome::Crashed } else { Outcome::Interrupted };
+    emit(store, FleetEvent::WorkerExited {
+        slot,
+        ticket: ticket.id.clone(),
+        ok: !genuine_crash,
+        detail: if genuine_crash { session.stderr_tail() } else { String::new() },
+    });
+    emit(store, worker_change(slot, WorkerState::Working, WorkerState::Dead));
+    session.close_stdin();
+    session.kill();
+    Ok(outcome)
 }
 
 /// Assign the ticket: write it to stdin and move the board to `InProgress`.
@@ -402,6 +514,12 @@ fn read_until_result(
                             ContentBlock::Text(t) => {
                                 assistant_text.push_str(t);
                                 assistant_text.push('\n');
+                                // Surface the worker's words to the transcript view.
+                                emit(store, FleetEvent::WorkerSaid {
+                                    slot: opts.slot,
+                                    ticket: ticket.id.clone(),
+                                    text: t.clone(),
+                                });
                             }
                             ContentBlock::ToolUse(tu) => emit(store, FleetEvent::ToolActivity {
                                 slot: opts.slot,
@@ -449,6 +567,15 @@ pub(crate) fn finish(
     final_state: TicketState,
 ) -> Result<Outcome> {
     transition_ticket(store, ticket_id, from, final_state)?;
+    // Announce the worker's exit — with the captured stderr tail on a non-success,
+    // so a crash that produced no stdout is finally diagnosable in the shell.
+    let ok = matches!(outcome, Outcome::Reported { .. });
+    emit(store, FleetEvent::WorkerExited {
+        slot: opts.slot,
+        ticket: ticket_id.to_string(),
+        ok,
+        detail: if ok { String::new() } else { session.stderr_tail() },
+    });
     emit(store, worker_change(opts.slot, WorkerState::Working, WorkerState::Dead));
     session.close_stdin();
     session.kill();

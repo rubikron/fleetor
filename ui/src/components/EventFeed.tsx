@@ -49,6 +49,17 @@ function render(event: FleetEvent): Rendered {
         text: event.text,
         rail: event.level !== "info",
       };
+    case "worker-said":
+      return { kind: "say", tone: "neutral", text: `worker-${event.slot}: ${event.text}`, rail: false };
+    case "worker-exited":
+      return {
+        kind: "exit",
+        tone: event.ok ? "neutral" : "red",
+        text: event.ok
+          ? `worker-${event.slot} exited`
+          : `worker-${event.slot} died — ${event.detail || "no output"}`,
+        rail: !event.ok,
+      };
   }
 }
 
@@ -65,7 +76,8 @@ export function EventFeed({ feed }: { feed: FleetEvent[] }) {
         <div className="feed feed--empty">No events yet. Assign a ticket or run the demo lifecycle.</div>
       ) : (
         <div className="feed">
-          {feed.map((event) => {
+          {/* worker-said lines live in the Workers transcript view, not the main log */}
+          {feed.filter((event) => event.type !== "worker-said").map((event) => {
             const r = render(event);
             return (
               <div key={event.seq} className={`line line--${r.tone} ${r.rail ? "line--rail" : ""}`}>

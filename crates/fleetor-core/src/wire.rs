@@ -94,6 +94,9 @@ pub enum Op {
     Reply { event_id: String, text: String },
     /// Lead→worker steering; async, queued as mail like a `Dm` from the lead.
     Send { to: u8, text: String },
+    /// Lead→**all** workers in one call (Phase 4i): queued as mail to every slot.
+    /// → [`OpResult::Ack`].
+    LeadBroadcast { text: String },
     /// Yank a busy worker's in-flight turn (Phase 4f): the runner kills the
     /// worker's process, ending its run as [`Interrupted`]. Only meaningful on a
     /// dynamic fleet. → [`OpResult::Ack`].

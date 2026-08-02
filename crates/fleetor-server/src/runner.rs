@@ -25,7 +25,7 @@
 //! shim folds pending mail into an MCP result mid-turn. D-015/D-026.)
 
 use crate::hub::{Hub, HubConfig, RunnerCommand};
-use crate::supervisor::{run_ticket, Outcome, SuperviseOptions, WorkerControl};
+use crate::supervisor::{run_standby_worker, run_ticket, Outcome, SuperviseOptions, WorkerControl};
 use anyhow::{Context, Result};
 use fleetor_cc::spawn::WorkerConfig;
 use fleetor_cc::{AgentProcess, RealClaude};
@@ -363,6 +363,87 @@ where
         }
         results.push((slot, outcome));
     }
+    hub_task.abort();
+    Ok(results)
+}
+
+// ============================ Phase 4i: persistent pool ============================
+
+/// The Phase 4i **persistent pool**: N workers spawned **idle at startup** and kept
+/// alive, rather than one-per-`assign` ([`run_dynamic_fleet`]) or one-per-ticket
+/// ([`run_fleet`]). Each `WorkerSpec` becomes a [`run_standby_worker`] on a blocking
+/// thread (the D-018 sync↔async seam); the workers sit idle until the lead messages
+/// them (`send`/`broadcast`), delivered over the D-015 stdin path and shown via the
+/// D-028 transcript events. The hub is wired with a dispatcher so the lead's
+/// `interrupt`/`worker_restart` still act on a slot (assign-to-spawn is a no-op here
+/// — the pool is message-driven). `driver` runs the lead session; when it returns,
+/// all workers are signalled to stop and drained.
+pub async fn run_pool_fleet<D, Fut>(
+    store: Arc<dyn Store>,
+    transport: Arc<dyn Transport>,
+    hub_config: HubConfig,
+    workers: Vec<WorkerSpec>,
+    driver: D,
+) -> Result<Vec<(u8, Outcome)>>
+where
+    D: FnOnce() -> Fut,
+    Fut: Future<Output = Result<()>>,
+{
+    let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<RunnerCommand>();
+    let hub = Hub::with_dispatcher(store.clone(), hub_config, cmd_tx);
+    let listener = transport.bind().await.context("binding fleet socket")?;
+    let hub_task = tokio::spawn(hub.serve(listener));
+
+    // Spawn every standby worker up front; keep each control for interrupt + the
+    // shutdown signal.
+    let mut controls: HashMap<u8, Arc<WorkerControl>> = HashMap::new();
+    let mut handles = Vec::with_capacity(workers.len());
+    for spec in workers {
+        if let Some(config) = &spec.config {
+            config
+                .write_fleet_config()
+                .with_context(|| format!("writing fleet config for worker-{}", spec.slot))?;
+        }
+        let control = Arc::new(WorkerControl::default());
+        controls.insert(spec.slot, control.clone());
+        let store = store.clone();
+        let handle = tokio::task::spawn_blocking(move || {
+            let outcome = run_standby_worker(spec.agent.as_ref(), spec.slot, &*store, control, spec.raw_log.clone());
+            (spec.slot, outcome)
+        });
+        handles.push(handle);
+    }
+
+    // Route lead control commands to the standing worker on that slot. `Assign` is a
+    // no-op: the pool takes work as messages, not spawn-on-assign.
+    let controls_for_cmd = controls.clone();
+    let cmd_task = tokio::spawn(async move {
+        while let Some(cmd) = cmd_rx.recv().await {
+            match cmd {
+                RunnerCommand::Interrupt { slot } | RunnerCommand::Restart { slot } => {
+                    if let Some(c) = controls_for_cmd.get(&slot) {
+                        c.kill();
+                    }
+                }
+                RunnerCommand::Assign(_) => {}
+            }
+        }
+    });
+
+    // Run the lead session, then signal every worker to stop and drain them (the hub
+    // stays up until the workers finish unwinding).
+    let driver_res = driver().await;
+    for c in controls.values() {
+        c.kill();
+    }
+    driver_res?;
+
+    let mut results = Vec::with_capacity(handles.len());
+    for handle in handles {
+        let (slot, outcome) = handle.await.context("standby worker task panicked")?;
+        results.push((slot, outcome.with_context(|| format!("standby worker-{slot}"))?));
+    }
+    cmd_task.abort();
     hub_task.abort();
     Ok(results)
 }

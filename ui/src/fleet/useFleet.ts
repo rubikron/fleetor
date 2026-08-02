@@ -16,16 +16,27 @@ export interface WorkerCell {
   activity: string | null;
 }
 
+/// One rendered line in a worker's transcript view (observability).
+export interface TranscriptLine {
+  seq: number;
+  slot: number;
+  kind: "said" | "tool" | "mail" | "exit";
+  text: string;
+  tone: "neutral" | "accent" | "green" | "red";
+}
+
 export interface FleetView {
   ready: boolean;
   error: string | null;
   board: Ticket[];
   workers: WorkerCell[];
   feed: FleetEvent[];
+  transcripts: Record<number, TranscriptLine[]>;
   config: FleetConfig | null;
 }
 
 const MAX_FEED = 300;
+const MAX_TRANSCRIPT = 400;
 
 function initialWorkers(): Record<number, WorkerCell> {
   return Object.fromEntries(
@@ -49,12 +60,50 @@ function reduceWorker(
   return workers;
 }
 
+/// Derive a transcript line from an event, or `null` if the event isn't
+/// worker-scoped. Mail counts only when addressed to a worker (so the orch's
+/// steering shows up in that worker's transcript).
+function transcriptLine(event: FleetEvent): TranscriptLine | null {
+  switch (event.type) {
+    case "worker-said":
+      return { seq: event.seq, slot: event.slot, kind: "said", text: event.text, tone: "neutral" };
+    case "tool-activity":
+      return { seq: event.seq, slot: event.slot, kind: "tool", text: `→ ${event.tool}`, tone: "accent" };
+    case "worker-exited":
+      return {
+        seq: event.seq,
+        slot: event.slot,
+        kind: "exit",
+        text: event.ok ? "exited cleanly" : `died — ${event.detail || "no output"}`,
+        tone: event.ok ? "green" : "red",
+      };
+    case "mail": {
+      const m = event.to.match(/^worker-(\d+)$/);
+      return m ? { seq: event.seq, slot: Number(m[1]), kind: "mail", text: `◀ mail from ${event.from}`, tone: "accent" } : null;
+    }
+    default:
+      return null;
+  }
+}
+
+/// Fold one event into the per-slot transcript map (immutable, bounded tail).
+function reduceTranscript(
+  transcripts: Record<number, TranscriptLine[]>,
+  event: FleetEvent,
+): Record<number, TranscriptLine[]> {
+  const line = transcriptLine(event);
+  if (!line) return transcripts;
+  const prev = transcripts[line.slot] ?? [];
+  return { ...transcripts, [line.slot]: [...prev, line].slice(-MAX_TRANSCRIPT) };
+}
+
 export function useFleet(): FleetView {
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [board, setBoard] = useState<Ticket[]>([]);
   const [workers, setWorkers] = useState<Record<number, WorkerCell>>(initialWorkers);
   const [feed, setFeed] = useState<FleetEvent[]>([]);
+  const [transcripts, setTranscripts] = useState<Record<number, TranscriptLine[]>>({});
   const [config, setConfig] = useState<FleetConfig | null>(null);
 
   // Refetch the board off the store; deduped so a burst of moves is one round-trip.
@@ -92,6 +141,7 @@ export function useFleet(): FleetView {
         unlisten = await onFleetEvent((event) => {
           setFeed((f) => [event, ...f].slice(0, MAX_FEED));
           setWorkers((w) => reduceWorker(w, event));
+          setTranscripts((t) => reduceTranscript(t, event));
           if (event.type === "ticket-state") void refetchBoard();
         });
         if (cancelled) {
@@ -116,6 +166,7 @@ export function useFleet(): FleetView {
     board,
     workers: WORKER_SLOTS.map((slot) => workers[slot]),
     feed,
+    transcripts,
     config,
   };
 }

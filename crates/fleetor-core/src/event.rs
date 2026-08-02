@@ -73,6 +73,12 @@ pub enum FleetEvent {
     ReviewResult { ticket: String, reviewer_slot: u8, outcome: ReviewOutcome },
     /// Free-form operational note (timeouts, crashes, reprompts).
     Notice { level: NoticeLevel, text: String },
+    /// A worker's assistant text, for the transcript view (observability only).
+    WorkerSaid { slot: u8, ticket: String, text: String },
+    /// A worker process ended. `ok` is false on crash/timeout/spawn-failure, with
+    /// `detail` carrying the captured stderr tail — the reason a headless worker
+    /// died, which was invisible before (stderr used to be dropped).
+    WorkerExited { slot: u8, ticket: String, ok: bool, detail: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -96,6 +102,8 @@ impl FleetEvent {
             FleetEvent::GateResult { .. } => "gate-result",
             FleetEvent::ReviewResult { .. } => "review-result",
             FleetEvent::Notice { .. } => "notice",
+            FleetEvent::WorkerSaid { .. } => "worker-said",
+            FleetEvent::WorkerExited { .. } => "worker-exited",
         }
     }
 }

@@ -38,7 +38,9 @@ export type FleetEvent =
   | { seq: number; type: "mail"; id: string; from: string; to: string; kind: string }
   | { seq: number; type: "gate-result"; ticket: string; slot: number; outcome: GateOutcome }
   | { seq: number; type: "review-result"; ticket: string; reviewer_slot: number; outcome: ReviewOutcome }
-  | { seq: number; type: "notice"; level: NoticeLevel; text: string };
+  | { seq: number; type: "notice"; level: NoticeLevel; text: string }
+  | { seq: number; type: "worker-said"; slot: number; ticket: string; text: string }
+  | { seq: number; type: "worker-exited"; slot: number; ticket: string; ok: boolean; detail: string };
 
 export interface BootSnapshot {
   board: Ticket[];

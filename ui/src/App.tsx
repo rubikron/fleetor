@@ -14,6 +14,7 @@ import { DashboardBand } from "./components/DashboardBand";
 import { TicketBoard } from "./components/TicketBoard";
 import { EventFeed } from "./components/EventFeed";
 import { TerminalPane } from "./components/TerminalPane";
+import { WorkerTranscripts } from "./components/WorkerTranscripts";
 import { FleetGraph } from "./views/FleetGraph";
 import { useFleet } from "./fleet/useFleet";
 
@@ -102,6 +103,11 @@ export function App() {
           {/* Fleet topology view */}
           <div className={view === "fleet" ? "" : "is-hidden"} style={{ flex: "1 1 auto", minHeight: 0, display: "flex" }}>
             <FleetGraph workers={fleet.workers} feed={fleet.feed} />
+          </div>
+
+          {/* Workers transcript view */}
+          <div className={view === "workers" ? "" : "is-hidden"} style={{ flex: "1 1 auto", minHeight: 0, display: "flex" }}>
+            <WorkerTranscripts transcripts={fleet.transcripts} workers={fleet.workers} />
           </div>
         </main>
       </div>

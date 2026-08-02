@@ -111,7 +111,7 @@ export function DashboardBand({ workers, board, live, config, onNavigate }: Band
     <section className="band">
       <OrchestratorCell live={live} config={config} onOpen={() => onNavigate("fleet")} />
       {workers.map((cell) => (
-        <WorkerCellView key={cell.slot} cell={cell} onOpen={() => onNavigate("fleet")} />
+        <WorkerCellView key={cell.slot} cell={cell} onOpen={() => onNavigate("workers")} />
       ))}
       <QueueCell board={board} />
     </section>

@@ -27,16 +27,20 @@ use fleetor_cc::spawn::{FleetWiring, WorkerConfig};
 use fleetor_cc::{AgentProcess, FakeClaude};
 use fleetor_core::event::{FleetEvent, NoticeLevel, TicketState};
 use fleetor_core::ticket::Ticket;
-use fleetor_core::Store;
+use fleetor_core::wire::{Hello, LeadEvent, LeadEventKind, Op, OpResult};
+use fleetor_core::{Party, Store};
 use fleetor_db::SqliteStore;
-use fleetor_ipc::UnixTransport;
-use fleetor_server::{run_dynamic_fleet, BroadcastStore, HubConfig, WorkerFactory, WorkerSpec};
+use fleetor_ipc::{Client, UnixTransport};
+use fleetor_server::{run_pool_fleet, BroadcastStore, HubConfig, WorkerFactory, WorkerSpec};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::Notify;
 
 /// Emitted for every appended event, in `seq` order, the moment it persists.
 const EVENT_FLEET: &str = "fleet://event";
+
+/// Emitted for each worker→lead message the platform relays into the lead's TUI.
+const EVENT_LEAD_INJECT: &str = "lead://inject";
 
 /// Default per-ticket wall-clock budget for a worker (seconds).
 const WORKER_WALL_SECS: u64 = 300;
@@ -140,13 +144,17 @@ pub fn fleet_bootstrap(
     )));
     let store: Arc<dyn Store> = bcast.clone();
 
-    spawn_follower(&rt, bcast.clone(), app);
+    spawn_follower(&rt, bcast.clone(), app.clone());
 
     // Resolve the worker backend once, announcing the choice on the feed so the
     // token posture is visible, never silent.
     let backend = resolve_backend(&store, &repo);
     let config = fleet_config_for(&backend, &repo);
-    let shutdown = spawn_dynamic_fleet(&rt, store.clone(), backend);
+    let shutdown = spawn_pool_fleet(&rt, store.clone(), backend);
+
+    // The lead's *incoming* half: a free pump that types worker→lead traffic into
+    // the orchestrator's TUI so the operator's Opus never has to poll for it.
+    spawn_lead_inbox_pump(&rt, app);
 
     let snap = snapshot(&store)?;
     *guard = Some(Fleet { _rt: rt, store, shutdown, config });
@@ -180,7 +188,7 @@ fn spawn_follower(rt: &tokio::runtime::Runtime, bcast: Arc<BroadcastStore>, app:
 /// The lead seat stays empty here — the real orchestrator (the pty `claude`)
 /// fills it over the socket. A bind failure degrades gracefully: the shell stays
 /// observable, only live assignment is unavailable.
-fn spawn_dynamic_fleet(
+fn spawn_pool_fleet(
     rt: &tokio::runtime::Runtime,
     store: Arc<dyn Store>,
     backend: WorkerBackend,
@@ -190,21 +198,104 @@ fn spawn_dynamic_fleet(
     let transport = Arc::new(UnixTransport::new(&sock));
     let factory = build_factory(backend);
 
+    // The standing pool (Phase 4i): one worker per slot, spawned idle at startup so
+    // the operator sees 4 available workers immediately and can message them.
+    let workers: Vec<WorkerSpec> = HubConfig::default()
+        .slots
+        .iter()
+        .map(|&slot| {
+            let ticket = Ticket {
+                slot: Some(slot),
+                ..Ticket::new(format!("worker-{slot}"), "standby", "Standby fleet worker.")
+            };
+            factory(&ticket)
+        })
+        .collect();
+
     let shutdown = Arc::new(Notify::new());
     let driver_gate = shutdown.clone();
     rt.spawn(async move {
-        // Driver = lifetime gate: the runner keeps the hub up and dispatches
-        // assigns until the app shuts down. It never occupies the lead seat.
+        // Driver = lifetime gate: keep the hub + pool up until the app shuts down.
         let driver = move || async move {
             driver_gate.notified().await;
             Ok(())
         };
-        match run_dynamic_fleet(store, transport, HubConfig::default(), factory, driver).await {
-            Ok(outcomes) => eprintln!("fleet: runner stopped ({} worker(s) drained)", outcomes.len()),
-            Err(e) => eprintln!("fleet: dynamic runner error: {e}"),
+        match run_pool_fleet(store, transport, HubConfig::default(), workers, driver).await {
+            Ok(outcomes) => eprintln!("fleet: pool stopped ({} worker(s) drained)", outcomes.len()),
+            Err(e) => eprintln!("fleet: pool runner error: {e}"),
         }
     });
     shutdown
+}
+
+/// The lead **inbox pump**: a free `Party::Lead` socket client that long-polls the
+/// hub for worker→lead traffic (`notify_lead` notices, `ask_lead` questions) and
+/// emits each item as a [`EVENT_LEAD_INJECT`] event for the terminal pane to type
+/// into the orchestrator's TUI. This is the *incoming* half of lead messaging a
+/// plain terminal can't have: the app owns the pty writer (handoff §5's "human owns
+/// stdin" limit doesn't bind here), so the operator's Opus never burns turns polling
+/// `await_events`.
+///
+/// It shares the hub's single-consumer lead-event queue with the operator's own
+/// `claude` lead connection. Because it polls continuously it is the de-facto
+/// consumer, so events reach the Opus via injection; the rare one the operator's lead
+/// drains itself simply arrives via that tool result instead — no loss, no duplicate.
+fn spawn_lead_inbox_pump(rt: &tokio::runtime::Runtime, app: AppHandle) {
+    let sock = socket_path();
+    rt.spawn(async move {
+        let transport = UnixTransport::new(&sock);
+        let mut lead = match connect_lead(&transport).await {
+            Some(c) => c,
+            None => {
+                eprintln!("fleet: lead inbox pump could not connect; worker→lead relay disabled");
+                return;
+            }
+        };
+        loop {
+            let events = match lead.call(Op::AwaitEvents { timeout_ms: 1000 }).await {
+                Ok(OpResult::Events { events }) => events,
+                Ok(_) => Vec::new(),
+                Err(_) => break, // hub gone (app shutting down)
+            };
+            for ev in events {
+                if app.emit(EVENT_LEAD_INJECT, render_lead_event(&ev)).is_err() {
+                    return; // webview gone
+                }
+            }
+        }
+    });
+}
+
+/// Connect a lead client to the hub, retrying briefly since the hub binds a beat
+/// after `fleet_bootstrap` spawns this. `None` if it never comes up.
+async fn connect_lead(transport: &UnixTransport) -> Option<Client> {
+    for _ in 0..50 {
+        if let Ok(c) = Client::connect(transport, Hello::new(Party::Lead)).await {
+            return Some(c);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    None
+}
+
+/// Render one worker→lead event as a single TUI line, framed so the orchestrator
+/// reads it as *relayed worker traffic* (not the operator typing) and — for a
+/// question — carries the `event_id` it must pass back to `reply`.
+fn render_lead_event(ev: &LeadEvent) -> String {
+    match &ev.kind {
+        LeadEventKind::Notice { text } => format!("[fleet · worker-{}] {}", ev.from, text),
+        LeadEventKind::Question { text, options } => {
+            let opts = options
+                .as_ref()
+                .filter(|o| !o.is_empty())
+                .map(|o| format!(" [options: {}]", o.join(" / ")))
+                .unwrap_or_default();
+            format!(
+                "[fleet · worker-{} asks — reply with reply(event_id=\"{}\", …)] {}{}",
+                ev.from, ev.id, text, opts
+            )
+        }
+    }
 }
 
 /// The board as it stands now, straight from the store (the source of truth the
@@ -353,7 +444,7 @@ fn build_factory(backend: WorkerBackend) -> WorkerFactory {
                     inner: FakeClaude {
                         script: script.clone(),
                         cwd: wt_base.clone(),
-                        scenario: "fleet-ask".into(),
+                        scenario: "standby".into(),
                     },
                     env: vec![
                         ("FLEET_SOCKET".into(), sock.to_string_lossy().into_owned()),
@@ -409,28 +500,42 @@ fn fake_script_path() -> PathBuf {
     cwd.join("tests").join("fake-claude").join("fake-claude.mjs")
 }
 
-/// Read `DEEPSEEK_API_KEY` from the env or the repo's gitignored `.env`. Never
-/// logged. (Mirrors the CLI's loader.)
+/// Read `DEEPSEEK_API_KEY` from the env or the nearest `.env` on the path from the
+/// cwd up to the filesystem root. Under `tauri dev` the cwd is `src-tauri/`, so a
+/// repo-root `.env` is found by walking up (not just `<cwd>/.env`) — otherwise a
+/// key sitting at the repo root silently downgrades workers to the fake path.
+/// Never logged.
 fn load_api_key(repo_root: &Path) -> Result<String, String> {
     if let Ok(k) = std::env::var("DEEPSEEK_API_KEY") {
         if !k.is_empty() {
             return Ok(k);
         }
     }
-    // The scratch repo has no .env; fall back to the launch dir's .env (dev).
-    let cwd = std::env::current_dir().unwrap_or_else(|_| repo_root.to_path_buf());
-    let env_path = cwd.join(".env");
-    let text = std::fs::read_to_string(&env_path)
-        .map_err(|_| format!("no DEEPSEEK_API_KEY in env and cannot read {env_path:?}"))?;
+    // Walk up from the cwd (falling back to repo_root) looking for a `.env` that
+    // carries the key — the first match wins.
+    let start = std::env::current_dir().unwrap_or_else(|_| repo_root.to_path_buf());
+    for dir in start.ancestors() {
+        let Ok(text) = std::fs::read_to_string(dir.join(".env")) else { continue };
+        if let Some(key) = parse_deepseek_key(&text) {
+            return Ok(key);
+        }
+    }
+    Err(format!("DEEPSEEK_API_KEY not found in env or any .env from {start:?} upward"))
+}
+
+/// Pull the `DEEPSEEK_API_KEY` value out of `.env` text, tolerating surrounding
+/// quotes; `None` if absent or empty. Kept separate so the parse is unit-tested
+/// without touching the filesystem.
+fn parse_deepseek_key(text: &str) -> Option<String> {
     for line in text.lines() {
         if let Some(rest) = line.trim().strip_prefix("DEEPSEEK_API_KEY=") {
             let val = rest.trim().trim_matches('"').trim_matches('\'');
             if !val.is_empty() {
-                return Ok(val.to_string());
+                return Some(val.to_string());
             }
         }
     }
-    Err(format!("DEEPSEEK_API_KEY not found in env or {env_path:?}"))
+    None
 }
 
 // --- scratch repo + config ----------------------------------------------------
@@ -533,5 +638,52 @@ mod tests {
             has("FLEET_SOCKET", &socket_path().to_string_lossy()),
             "fake worker knows the socket to dial"
         );
+    }
+
+    /// The `.env` parse tolerates quotes/comments and ignores an empty value, so a
+    /// repo-root key is picked up (via the walk-up in `load_api_key`) not skipped.
+    #[test]
+    fn parses_deepseek_key_from_env_text() {
+        assert_eq!(parse_deepseek_key("DEEPSEEK_API_KEY=sk-abc\n").as_deref(), Some("sk-abc"));
+        assert_eq!(
+            parse_deepseek_key("# comment\nOTHER=1\nDEEPSEEK_API_KEY=\"sk-xyz\"\n").as_deref(),
+            Some("sk-xyz"),
+        );
+        assert_eq!(parse_deepseek_key("OTHER=1\n"), None);
+        assert_eq!(parse_deepseek_key("DEEPSEEK_API_KEY=\n"), None);
+    }
+
+    /// A worker notice renders as one framed line attributed to its sender, so the
+    /// orchestrator reads it as relayed traffic rather than its own input.
+    #[test]
+    fn renders_a_worker_notice_as_a_framed_line() {
+        let ev = LeadEvent {
+            id: "n-1".into(),
+            from: 2,
+            kind: LeadEventKind::Notice { text: "rebased and pushed".into() },
+        };
+        let line = render_lead_event(&ev);
+        assert!(line.contains("worker-2"), "line: {line}");
+        assert!(line.contains("rebased and pushed"), "line: {line}");
+        assert!(line.contains("fleet"), "line should mark it as fleet traffic: {line}");
+    }
+
+    /// A question carries its `event_id` (and the reply hint) so the orchestrator
+    /// can answer it with `reply(event_id, …)` straight from the injected line.
+    #[test]
+    fn renders_a_question_with_its_event_id_for_reply() {
+        let ev = LeadEvent {
+            id: "q-7".into(),
+            from: 3,
+            kind: LeadEventKind::Question {
+                text: "Approach A or B?".into(),
+                options: Some(vec!["A".into(), "B".into()]),
+            },
+        };
+        let line = render_lead_event(&ev);
+        assert!(line.contains("worker-3"), "line: {line}");
+        assert!(line.contains("q-7"), "question must carry its event_id: {line}");
+        assert!(line.contains("reply"), "question must hint at how to answer: {line}");
+        assert!(line.contains("A / B"), "options should be surfaced: {line}");
     }
 }

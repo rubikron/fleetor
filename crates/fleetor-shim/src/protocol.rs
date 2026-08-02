@@ -218,6 +218,17 @@ pub fn lead_tool_list() -> Value {
             }
         },
         {
+            "name": "broadcast",
+            "description": "Message ALL workers at once with an async note (queued, delivered to each at its next turn boundary). Use for fleet-wide steering or a standby prompt.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "text": { "type": "string" }
+                },
+                "required": ["text"]
+            }
+        },
+        {
             "name": "interrupt",
             "description": "Yank a worker's in-flight turn: kills its process now, ending its run as interrupted. Use when a worker is off-track or wedged and steering (send) is too slow.",
             "inputSchema": {
@@ -271,6 +282,7 @@ pub fn lead_tool_to_op(name: &str, args: &Value) -> Result<Op> {
         "fleet_status" => Ok(Op::FleetStatus),
         "reply" => Ok(Op::Reply { event_id: str_arg("event_id")?, text: str_arg("text")? }),
         "send" => Ok(Op::Send { to: u8_arg("to")?, text: str_arg("text")? }),
+        "broadcast" => Ok(Op::LeadBroadcast { text: str_arg("text")? }),
         "interrupt" => Ok(Op::Interrupt { slot: u8_arg("slot")? }),
         "worker_restart" => Ok(Op::WorkerRestart { slot: u8_arg("slot")? }),
         other => Err(anyhow!("unknown lead tool `{other}`")),
@@ -517,6 +529,7 @@ mod tests {
             "fleet_status": {},
             "reply": {"event_id": "q1", "text": "answer"},
             "send": {"to": 1, "text": "steer"},
+            "broadcast": {"text": "all hands"},
             "interrupt": {"slot": 1},
             "worker_restart": {"slot": 1},
         });

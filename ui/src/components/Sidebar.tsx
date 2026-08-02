@@ -3,7 +3,7 @@
 // topology view. The rest stays the roomy, future-proof scaffold the handoff
 // calls for (disabled until their phases land).
 
-export type View = "board" | "events" | "fleet";
+export type View = "board" | "events" | "fleet" | "workers";
 
 interface SidebarProps {
   view: View;
@@ -15,6 +15,7 @@ const WORKSPACE: { view: View; label: string; isNew?: boolean }[] = [
   { view: "board", label: "Tickets" },
   { view: "events", label: "Event log" },
   { view: "fleet", label: "Fleet", isNew: true },
+  { view: "workers", label: "Workers", isNew: true },
 ];
 
 const SOON = ["Diffs", "Knowledge", "Profiles", "Gate", "Models", "Settings"];

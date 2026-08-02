@@ -192,6 +192,7 @@ impl Hub {
             (Party::Lead, Op::FleetStatus) => self.fleet_status(),
             (Party::Lead, Op::Reply { event_id, text }) => self.reply(event_id, text),
             (Party::Lead, Op::Send { to, text }) => self.dm(Party::Lead, to, text),
+            (Party::Lead, Op::LeadBroadcast { text }) => self.lead_broadcast(text),
             (Party::Lead, Op::Interrupt { slot }) => {
                 self.control(slot, RunnerCommand::Interrupt { slot }, "interrupt")
             }
@@ -405,6 +406,17 @@ impl Hub {
                 message: format!("no worker is waiting on {event_id} (expired or already answered)"),
             },
         }
+    }
+
+    /// Lead→all: fan one message out as mail to every configured slot (Phase 4i).
+    fn lead_broadcast(&self, text: String) -> OpResult {
+        for to in self.state.config.slots.clone() {
+            let r = self.enqueue_mail(Party::Lead, Party::Worker(to), MessageKind::Dm, text.clone());
+            if let OpResult::Error { .. } = r {
+                return r;
+            }
+        }
+        OpResult::Ack
     }
 
     // ---- shared helpers ----

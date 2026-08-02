@@ -24,6 +24,11 @@ function decodeBase64(b64: string): Uint8Array {
   return bytes;
 }
 
+// The lead inbox: relayed worker→lead messages are typed into the TUI only after a
+// quiet gap, so an injection never clobbers a line the operator is composing.
+const INJECT_IDLE_MS = 1500;
+const INJECT_FLUSH_MS = 400;
+
 interface TerminalPaneProps {
   started: boolean;
   onStart: () => void;
@@ -33,6 +38,14 @@ interface TerminalPaneProps {
 export function TerminalPane({ started, onStart, config }: TerminalPaneProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
+  // Relayed worker→lead messages waiting to be typed into the TUI, plus the last
+  // time the operator typed — the idle guard the flush loop keys off of.
+  const injectQueue = useRef<string[]>([]);
+  const lastInputAt = useRef(0);
+  const startedRef = useRef(started);
+  useEffect(() => {
+    startedRef.current = started;
+  }, [started]);
 
   // Mount the xterm view once. No pty is spawned here — that waits for `started`.
   useEffect(() => {
@@ -68,9 +81,27 @@ export function TerminalPane({ started, onStart, config }: TerminalPaneProps) {
       if (disposed) un();
       else disposers.push(un);
     });
+    // Worker→lead traffic the backend pump relays — queued, typed in when idle.
+    void listen<string>("lead://inject", (e) => injectQueue.current.push(e.payload)).then((un) => {
+      if (disposed) un();
+      else disposers.push(un);
+    });
 
-    const onData = term.onData((data) => void invoke("pty_write", { data }));
+    const onData = term.onData((data) => {
+      lastInputAt.current = Date.now();
+      void invoke("pty_write", { data });
+    });
     const onResize = term.onResize(({ rows, cols }) => void invoke("pty_resize", { rows, cols }));
+
+    // Type one queued worker message per tick — but only once the session is live
+    // and the operator has been quiet for a beat, so a relayed message becomes its
+    // own submitted turn (the trailing "\r") without garbling anything mid-compose.
+    const flush = setInterval(() => {
+      if (!startedRef.current || injectQueue.current.length === 0) return;
+      if (Date.now() - lastInputAt.current < INJECT_IDLE_MS) return;
+      const next = injectQueue.current.shift();
+      if (next != null) void invoke("pty_write", { data: `${next}\r` });
+    }, INJECT_FLUSH_MS);
 
     const refit = () => {
       // While the pane is on a hidden tab its box is 0×0; fitting then would
@@ -89,6 +120,7 @@ export function TerminalPane({ started, onStart, config }: TerminalPaneProps) {
     return () => {
       disposed = true;
       termRef.current = null;
+      clearInterval(flush);
       observer.disconnect();
       window.removeEventListener("resize", refit);
       onData.dispose();
