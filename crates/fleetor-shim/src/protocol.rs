@@ -216,6 +216,28 @@ pub fn lead_tool_list() -> Value {
                 },
                 "required": ["to", "text"]
             }
+        },
+        {
+            "name": "interrupt",
+            "description": "Yank a worker's in-flight turn: kills its process now, ending its run as interrupted. Use when a worker is off-track or wedged and steering (send) is too slow.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "slot": { "type": "integer", "description": "worker slot to interrupt" }
+                },
+                "required": ["slot"]
+            }
+        },
+        {
+            "name": "worker_restart",
+            "description": "Kill the worker on a slot and re-dispatch its ticket as a fresh worker. Use to recover a stuck worker without abandoning its ticket.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "slot": { "type": "integer", "description": "worker slot to restart" }
+                },
+                "required": ["slot"]
+            }
         }
     ])
 }
@@ -249,6 +271,8 @@ pub fn lead_tool_to_op(name: &str, args: &Value) -> Result<Op> {
         "fleet_status" => Ok(Op::FleetStatus),
         "reply" => Ok(Op::Reply { event_id: str_arg("event_id")?, text: str_arg("text")? }),
         "send" => Ok(Op::Send { to: u8_arg("to")?, text: str_arg("text")? }),
+        "interrupt" => Ok(Op::Interrupt { slot: u8_arg("slot")? }),
+        "worker_restart" => Ok(Op::WorkerRestart { slot: u8_arg("slot")? }),
         other => Err(anyhow!("unknown lead tool `{other}`")),
     }
 }
@@ -470,6 +494,14 @@ mod tests {
             lead_tool_to_op("send", &json!({"to": 2, "text": "rebase first"})).unwrap(),
             Op::Send { to: 2, text: "rebase first".into() }
         );
+        assert_eq!(
+            lead_tool_to_op("interrupt", &json!({"slot": 3})).unwrap(),
+            Op::Interrupt { slot: 3 }
+        );
+        assert_eq!(
+            lead_tool_to_op("worker_restart", &json!({"slot": 4})).unwrap(),
+            Op::WorkerRestart { slot: 4 }
+        );
         // assign: the arguments object is a Ticket.
         let op = lead_tool_to_op(
             "assign",
@@ -495,6 +527,8 @@ mod tests {
             "fleet_status": {},
             "reply": {"event_id": "q1", "text": "answer"},
             "send": {"to": 1, "text": "steer"},
+            "interrupt": {"slot": 1},
+            "worker_restart": {"slot": 1},
         });
         for tool in lead_tool_list().as_array().unwrap() {
             let name = tool["name"].as_str().unwrap();

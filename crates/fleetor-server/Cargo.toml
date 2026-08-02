@@ -13,6 +13,8 @@ serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
+# Phase 4f: signal a worker's process to interrupt an in-flight turn (unix kill(2)).
+libc = "0.2"
 
 [dev-dependencies]
 fleetor-db = { path = "../fleetor-db" }

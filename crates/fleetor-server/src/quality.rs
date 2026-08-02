@@ -221,6 +221,7 @@ fn review(
         raw_log: reviewer.raw_log.clone(),
         max_turns: sup.max_turns,
         idle_timeout: sup.idle_timeout,
+        control: None,
     };
     let verdict = match drive_to_verdict(&mut session, ticket, &rsup, store, deadline)? {
         Some(text) => match ReviewVerdict::from_transcript_text(&text) {

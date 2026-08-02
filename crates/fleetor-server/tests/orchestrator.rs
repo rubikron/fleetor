@@ -152,6 +152,102 @@ async fn orchestrator_assigns_over_the_hub_and_drives_a_worker_to_done() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Phase 4f: the lead can yank a busy worker. A worker on the `hang` scenario
+/// consumes its assignment and never reports; the lead `interrupt`s it, and the
+/// runner ends its run as `Interrupted` — proving the kill reached the *sync*
+/// supervisor (via the published pid) before the idle watchdog fired, and that a
+/// deliberate stream-close is not mislabelled `Crashed`.
+#[tokio::test]
+async fn lead_interrupt_yanks_a_busy_worker() {
+    let dir = std::env::temp_dir().join(format!("fleetor-int-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let sock = dir.join("fleet.sock");
+    let store: Arc<dyn Store> = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let transport = Arc::new(UnixTransport::new(&sock));
+
+    // Workers hang (consume the assignment, never report) — so only an interrupt
+    // ends them. wall_secs is high so the idle watchdog does not fire first.
+    let factory: WorkerFactory = {
+        let dir = dir.clone();
+        let sock = sock.clone();
+        Arc::new(move |ticket: &Ticket| {
+            let slot = ticket.slot.unwrap_or(1);
+            let agent = FakeWithEnv {
+                inner: FakeClaude { script: fake_script(), cwd: dir.clone(), scenario: "hang".into() },
+                env: vec![
+                    ("FLEET_SOCKET".into(), sock.to_string_lossy().into_owned()),
+                    ("FLEETOR_SLOT".into(), slot.to_string()),
+                ],
+            };
+            WorkerSpec::fake(Box::new(agent), ticket.clone(), slot, None, 30)
+        })
+    };
+
+    let ticket = Ticket { slot: Some(2), ..Ticket::new("T-int", "hang then get yanked", "Consume the assignment and hang.") };
+
+    let driver = {
+        let transport = transport.clone();
+        let ticket = ticket.clone();
+        move || async move {
+            let mut lead = Client::connect(&*transport, Hello::new(Party::Lead)).await?;
+            let acked = lead.call(Op::Assign { ticket }).await?;
+            ensure!(matches!(acked, OpResult::Ack), "assign should ack, got {acked:?}");
+
+            // Wait until the worker is actually in progress (its pid is published on
+            // spawn), then yank it.
+            let started = poll_until(&mut lead, "T-int", TicketState::InProgress, Duration::from_secs(15)).await?;
+            ensure!(started, "worker never reached in-progress to interrupt");
+
+            let acked = lead.call(Op::Interrupt { slot: 2 }).await?;
+            ensure!(matches!(acked, OpResult::Ack), "interrupt should ack, got {acked:?}");
+
+            // Wait until the interrupt takes effect (worker dies → ticket Failed)
+            // before returning, so the runner's shutdown never races the command.
+            let yanked = poll_until(&mut lead, "T-int", TicketState::Failed, Duration::from_secs(10)).await?;
+            ensure!(yanked, "interrupt did not end the worker");
+            Result::<()>::Ok(())
+        }
+    };
+
+    let workers = tokio::time::timeout(
+        Duration::from_secs(30),
+        run_dynamic_fleet(store.clone(), transport.clone(), HubConfig::default(), factory, driver),
+    )
+    .await
+    .expect("interrupt fleet timed out")
+    .expect("interrupt fleet failed");
+
+    assert_eq!(workers.len(), 1, "one worker was assigned");
+    assert_eq!(workers[0].0, 2, "it ran in the assigned slot");
+    assert_eq!(
+        workers[0].1,
+        Outcome::Interrupted,
+        "a yanked worker ends interrupted, not crashed/timed-out: {:?}",
+        workers[0].1
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Poll `fleet_status` until `ticket` reaches `want` or the deadline passes.
+async fn poll_until(
+    lead: &mut Client,
+    ticket: &str,
+    want: TicketState,
+    within: Duration,
+) -> Result<bool> {
+    let deadline = Instant::now() + within;
+    while Instant::now() < deadline {
+        if let OpResult::Status { board } = lead.call(Op::FleetStatus).await? {
+            if board.iter().any(|t| t.id == ticket && t.state == want) {
+                return Ok(true);
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Ok(false)
+}
+
 /// A static fleet (no runner attached to the hub) rejects `assign` rather than
 /// dropping it silently — the error the orchestrator would see, and the guard
 /// that keeps 4d's dynamic path from being assumed elsewhere.

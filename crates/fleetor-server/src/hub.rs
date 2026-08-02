@@ -39,6 +39,21 @@ pub struct AssignCommand {
     pub ticket: Ticket,
 }
 
+/// A lead→runner control command (Phase 4d/4f). The hub only routes these over
+/// the one dispatcher channel; the runner decides how to act on them. `Assign`
+/// spawns a worker; `Interrupt`/`Restart` act on a slot's live worker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunnerCommand {
+    /// Spawn and drive a worker for this ticket (the lead's `assign`).
+    Assign(AssignCommand),
+    /// Kill the worker on `slot`, ending its run as `Interrupted` (the lead's
+    /// `interrupt`).
+    Interrupt { slot: u8 },
+    /// Kill the worker on `slot` and re-dispatch its ticket fresh (the lead's
+    /// `worker_restart`).
+    Restart { slot: u8 },
+}
+
 /// Answer returned to a blocked `ask_lead` when the ask times out with no human
 /// reply — so a worker never deadlocks on an AFK lead (handoff §5).
 pub const ASK_TIMEOUT_ANSWER: &str =
@@ -75,10 +90,10 @@ struct HubState {
 pub struct Hub {
     state: Arc<HubState>,
     store: Arc<dyn Store>,
-    /// Where a lead's `assign` is forwarded (Phase 4d). `None` on a static fleet
-    /// (Phases 1–4c) — an `assign` there is answered with an error rather than
-    /// silently dropped.
-    dispatcher: Option<mpsc::UnboundedSender<AssignCommand>>,
+    /// Where a lead's control commands (`assign`/`interrupt`/`worker_restart`) are
+    /// forwarded (Phase 4d/4f). `None` on a static fleet (Phases 1–4c) — a control
+    /// op there is answered with an error rather than silently dropped.
+    dispatcher: Option<mpsc::UnboundedSender<RunnerCommand>>,
 }
 
 impl Hub {
@@ -86,11 +101,11 @@ impl Hub {
         Self::build(store, config, None)
     }
 
-    /// A hub whose `assign` forwards to `dispatcher` — the dynamic fleet (4d).
+    /// A hub whose control ops forward to `dispatcher` — the dynamic fleet (4d/4f).
     pub fn with_dispatcher(
         store: Arc<dyn Store>,
         config: HubConfig,
-        dispatcher: mpsc::UnboundedSender<AssignCommand>,
+        dispatcher: mpsc::UnboundedSender<RunnerCommand>,
     ) -> Arc<Hub> {
         Self::build(store, config, Some(dispatcher))
     }
@@ -98,7 +113,7 @@ impl Hub {
     fn build(
         store: Arc<dyn Store>,
         config: HubConfig,
-        dispatcher: Option<mpsc::UnboundedSender<AssignCommand>>,
+        dispatcher: Option<mpsc::UnboundedSender<RunnerCommand>>,
     ) -> Arc<Hub> {
         Arc::new(Hub {
             state: Arc::new(HubState {
@@ -177,6 +192,12 @@ impl Hub {
             (Party::Lead, Op::FleetStatus) => self.fleet_status(),
             (Party::Lead, Op::Reply { event_id, text }) => self.reply(event_id, text),
             (Party::Lead, Op::Send { to, text }) => self.dm(Party::Lead, to, text),
+            (Party::Lead, Op::Interrupt { slot }) => {
+                self.control(slot, RunnerCommand::Interrupt { slot }, "interrupt")
+            }
+            (Party::Lead, Op::WorkerRestart { slot }) => {
+                self.control(slot, RunnerCommand::Restart { slot }, "worker_restart")
+            }
 
             (party, op) => OpResult::Error {
                 message: format!("{op:?} is not permitted from {party:?}"),
@@ -316,10 +337,29 @@ impl Hub {
         if let Err(e) = self.store.upsert_ticket(&ticket) {
             return OpResult::Error { message: format!("could not persist ticket: {e}") };
         }
-        match dispatcher.send(AssignCommand { ticket }) {
+        match dispatcher.send(RunnerCommand::Assign(AssignCommand { ticket })) {
             Ok(()) => OpResult::Ack,
             Err(_) => OpResult::Error {
                 message: "the runner is no longer accepting assignments".to_string(),
+            },
+        }
+    }
+
+    /// Route a lead control command (Phase 4f `interrupt`/`worker_restart`) to the
+    /// runner. Validates the slot and requires a dynamic fleet, mirroring `assign`.
+    fn control(&self, slot: u8, command: RunnerCommand, verb: &str) -> OpResult {
+        if !self.state.config.slots.contains(&slot) {
+            return OpResult::Error { message: format!("unknown worker slot {slot}") };
+        }
+        let Some(dispatcher) = &self.dispatcher else {
+            return OpResult::Error {
+                message: format!("this fleet does not accept {verb} (no runner attached)"),
+            };
+        };
+        match dispatcher.send(command) {
+            Ok(()) => OpResult::Ack,
+            Err(_) => OpResult::Error {
+                message: "the runner is no longer accepting commands".to_string(),
             },
         }
     }

@@ -105,6 +105,12 @@ impl Session {
         &self.label
     }
 
+    /// The child's OS process id — the handle an external controller (the Phase 4f
+    /// runner) uses to interrupt an in-flight turn by signalling the process.
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
     /// Write one user message to stdin, starting (or continuing) a turn. Flushes
     /// so the worker sees it immediately (NDJSON, one object per line).
     pub fn send_user(&mut self, text: &str) -> Result<()> {

@@ -94,6 +94,16 @@ pub enum Op {
     Reply { event_id: String, text: String },
     /// Lead→worker steering; async, queued as mail like a `Dm` from the lead.
     Send { to: u8, text: String },
+    /// Yank a busy worker's in-flight turn (Phase 4f): the runner kills the
+    /// worker's process, ending its run as [`Interrupted`]. Only meaningful on a
+    /// dynamic fleet. → [`OpResult::Ack`].
+    ///
+    /// [`Interrupted`]: crate::wire — see `fleetor_server::Outcome::Interrupted`
+    Interrupt { slot: u8 },
+    /// Restart a worker (Phase 4f): kill the current process on `slot` and
+    /// re-dispatch its ticket as a fresh worker. Only meaningful on a dynamic
+    /// fleet. → [`OpResult::Ack`].
+    WorkerRestart { slot: u8 },
 }
 
 /// The server→client reply to one [`Request`]. `id` echoes the request's id.

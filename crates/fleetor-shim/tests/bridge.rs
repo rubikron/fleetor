@@ -122,8 +122,12 @@ async fn lead_shim_bridges_assign_to_the_hub() {
         .await
         .expect("assign should reach the dispatcher")
         .expect("dispatcher channel open");
-    assert_eq!(cmd.ticket.id, "T-77");
-    assert_eq!(cmd.ticket.slot, Some(2));
+    let ticket = match cmd {
+        fleetor_server::RunnerCommand::Assign(a) => a.ticket,
+        other => panic!("expected an assign command, got {other:?}"),
+    };
+    assert_eq!(ticket.id, "T-77");
+    assert_eq!(ticket.slot, Some(2));
     assert!(store.tickets().unwrap().iter().any(|t| t.id == "T-77"), "hub should have persisted the ticket");
 
     let _ = child.kill().await;

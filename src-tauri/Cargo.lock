@@ -876,6 +876,7 @@ dependencies = [
  "fleetor-cc",
  "fleetor-core",
  "fleetor-ipc",
+ "libc",
  "serde",
  "serde_json",
  "tokio",

@@ -19,7 +19,49 @@ use fleetor_core::event::{FleetEvent, NoticeLevel, TicketState, WorkerState};
 use fleetor_core::report::{Report, ReportStatus};
 use fleetor_core::{Store, Ticket};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+/// A handle the dynamic runner keeps for each live worker so it can interrupt an
+/// in-flight turn from the async side (Phase 4f). [`run_ticket`] publishes the
+/// worker's pid the moment its process spawns; [`WorkerControl::kill`] signals
+/// that pid, which closes the worker's stream and unwinds this sync loop cleanly
+/// (the runner then relabels the outcome as [`Outcome::Interrupted`]).
+#[derive(Default)]
+pub struct WorkerControl {
+    /// The worker's process id, or 0 before its process has spawned.
+    pid: AtomicU32,
+    /// Set when the runner deliberately killed this worker (interrupt/restart), so
+    /// the resulting stream-close is relabelled [`Outcome::Interrupted`], not
+    /// [`Outcome::Crashed`].
+    interrupted: AtomicBool,
+}
+
+impl WorkerControl {
+    fn publish_pid(&self, pid: u32) {
+        self.pid.store(pid, Ordering::SeqCst);
+    }
+
+    /// Signal the worker's process to die and mark the kill as deliberate. A no-op
+    /// before the process spawns; a stale pid is a harmless `ESRCH`.
+    pub fn kill(&self) {
+        self.interrupted.store(true, Ordering::SeqCst);
+        let pid = self.pid.load(Ordering::SeqCst);
+        if pid != 0 {
+            // SAFETY: a plain `kill(2)` syscall with an owned pid; the worst case
+            // for a reused/stale pid is `ESRCH`, which we ignore.
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGKILL);
+            }
+        }
+    }
+
+    /// Whether [`kill`](Self::kill) was called on this worker.
+    pub fn was_interrupted(&self) -> bool {
+        self.interrupted.load(Ordering::SeqCst)
+    }
+}
 
 /// Knobs for one supervised ticket run.
 pub struct SuperviseOptions {
@@ -33,6 +75,10 @@ pub struct SuperviseOptions {
     pub max_turns: u32,
     /// If no event arrives within this window, treat the worker as wedged.
     pub idle_timeout: Duration,
+    /// An optional interrupt handle (Phase 4f). When set, `run_ticket` publishes
+    /// the worker's pid here so the runner can kill an in-flight turn. `None` for
+    /// the static supervisor / quality paths, which nobody interrupts externally.
+    pub control: Option<Arc<WorkerControl>>,
 }
 
 impl SuperviseOptions {
@@ -42,6 +88,7 @@ impl SuperviseOptions {
             raw_log: None,
             max_turns: 2,
             idle_timeout: Duration::from_secs(wall_secs.max(1)),
+            control: None,
         }
     }
 }
@@ -59,6 +106,10 @@ pub enum Outcome {
     TimedOut,
     /// The process closed its stream without ever emitting a `result`.
     Crashed,
+    /// The lead yanked this worker's turn (Phase 4f `interrupt`/`worker_restart`):
+    /// the runner killed the process deliberately, so its stream-close is *not* a
+    /// crash. The runner stamps this in place of `Crashed` for a kill it initiated.
+    Interrupted,
 }
 
 /// Run one ticket end to end against `agent`, persisting to `store`. Phase 1:
@@ -74,6 +125,10 @@ pub fn run_ticket(
     store.upsert_ticket(ticket)?;
     let mut session = Session::spawn(agent, opts.raw_log.clone())
         .with_context(|| format!("spawning worker for {}", ticket.id))?;
+    // Publish the pid so the runner can interrupt this turn from the async side.
+    if let Some(control) = &opts.control {
+        control.publish_pid(session.pid());
+    }
     let deadline = Instant::now() + opts.idle_timeout;
 
     let cur = assign(&mut session, ticket, store, opts)?;

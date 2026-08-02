@@ -180,9 +180,21 @@ the factory is proven by unit tests, the whole thing compiles and the 55 crate
 tests hold; the first live Opus+worker run is the operator's to trigger. Verified:
 `cargo test` (2 new factory tests + 55 crate tests green), `tsc --noEmit && vite
 build` clean. See D-024.
+**Phase 4f — interrupt + worker_restart (the fleet becomes steerable).** The lead
+can now yank a busy worker, not just observe one. Two lead ops — `interrupt` and
+`worker_restart` (shim tools of the same name) — ride a generalized
+`RunnerCommand` channel (the old assign channel plus `Interrupt`/`Restart`). Each
+spawned worker carries a shared `WorkerControl` holding its pid; `interrupt`
+`SIGKILL`s that pid, the worker's stream closes, the sync supervisor unwinds, and
+the runner relabels the outcome `Interrupted` (a deliberate kill is not a crash).
+`worker_restart` kills and re-dispatches the ticket fresh. This is the
+async→sync yank D-021 deferred as "a real feature, not a stub." Verified by
+`lead_interrupt_yanks_a_busy_worker` (a hanging worker is assigned, driven to
+in-progress, then interrupted → `Interrupted`) plus shim mapping/drift tests;
+full suite green, no live spend. See D-025.
 Next: the first live run (operator-triggered) — start the session, let the lead
 assign a scratch ticket, watch the band/board/graph animate; then real Flash
-workers, then top-bar cost/token metering.
+workers, then D-015 idle/piggyback mail, then Phase 5 (Memory).
 
 ## Reading order
 

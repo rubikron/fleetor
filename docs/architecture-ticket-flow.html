@@ -240,7 +240,7 @@
   <h2>What's built vs. pending <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text-muted)">(audit against reality)</span></h2>
   <div class="grid3">
     <div class="card">
-      <div class="cap"><span class="status built"><span class="sdot"></span></span> Built (Phases 1–4e-2)</div>
+      <div class="cap"><span class="status built"><span class="sdot"></span></span> Built (Phases 1–4f)</div>
       <ul>
         <li>Supervisor loop: spawn → assign → turn-end → report</li>
         <li>Hub + socket: <span class="kkey">ask_lead</span>/<span class="kkey">reply</span>, <span class="kkey">dm</span>/<span class="kkey">broadcast</span>, Stop-hook mail</li>
@@ -250,6 +250,7 @@
         <li><b>Lead MCP face + dynamic <span class="kkey">assign</span></b>: the orchestrator dispatches over the hub, workers spawn on demand</li>
         <li><b>The React shell</b>: fleet server embedded in Tauri, <span class="kkey">fleet://event</span> → dashboard band + board + live feed</li>
         <li><b>The real lead in the pty</b>: <span class="kkey">claude</span> spawns as <span class="kkey">FLEETOR_ROLE=lead</span> wired to the dynamic hub; workers spawn per <span class="kkey">assign</span> via a backend-selectable factory (4e-2)</li>
+        <li><b>Interrupt / restart</b>: the lead can yank a busy worker (<span class="kkey">interrupt</span>) or kill-and-re-dispatch it (<span class="kkey">worker_restart</span>) — a kill-by-pid that unwinds the sync supervisor, relabelled <span class="kkey">Interrupted</span> (4f)</li>
       </ul>
     </div>
     <div class="card">
@@ -265,7 +266,6 @@
       <div class="cap"><span class="status pending"><span class="sdot"></span></span> Not yet</div>
       <ul>
         <li><b>Knowledge store</b> + review queue + auto-inject — <b>Phase&nbsp;5</b></li>
-        <li><span class="kkey">interrupt</span> / <span class="kkey">worker_restart</span> — yank or respawn a busy worker</li>
         <li>Idle→stdin &amp; opportunistic-piggyback mail paths (D-015)</li>
         <li>Profiles (per-slot skill/tool/model diffs)</li>
         <li>Gate <em>discovery</em> (scan CLAUDE.md/package.json) — config today</li>
@@ -275,7 +275,7 @@
 
   <footer>
     Source of truth for these claims: <code>docs/handoff.md</code> (architecture), <code>BUILDING.md</code> (tiers, phases),
-    <code>DECISIONS.md</code> (D-001…D-024). Code: <code>crates/fleetor-server/{supervisor,hub,quality,runner,bus}.rs</code>,
+    <code>DECISIONS.md</code> (D-001…D-025). Code: <code>crates/fleetor-server/{supervisor,hub,quality,runner,bus}.rs</code>,
     <code>crates/fleetor-core/{event,store,wire}.rs</code>, <code>src-tauri/src/{fleet,pty}.rs</code> + <code>ui/src/</code> (the 4e-2 shell). Updated for Phase&nbsp;4e-2 — a map, not a spec; where code and doc disagree, code wins (BUILDING&nbsp;§1).
   </footer>
 </div>

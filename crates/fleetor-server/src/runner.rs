@@ -22,14 +22,15 @@
 //! (Idle→stdin / opportunistic-piggyback mail delivery — D-015 — land with the
 //! real orchestrator in 4c/4d; turn-boundary Stop-hook drain covers 4a/4b.)
 
-use crate::hub::{AssignCommand, Hub, HubConfig};
-use crate::supervisor::{run_ticket, Outcome, SuperviseOptions};
+use crate::hub::{Hub, HubConfig, RunnerCommand};
+use crate::supervisor::{run_ticket, Outcome, SuperviseOptions, WorkerControl};
 use anyhow::{Context, Result};
 use fleetor_cc::spawn::WorkerConfig;
 use fleetor_cc::{AgentProcess, RealClaude};
 use fleetor_core::wire::{Hello, LeadEvent, LeadEventKind, Op, OpResult};
 use fleetor_core::{Party, Store, Ticket};
 use fleetor_ipc::{Client, Transport};
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -157,6 +158,7 @@ pub async fn run_fleet(
                 raw_log: spec.raw_log.clone(),
                 max_turns: 2,
                 idle_timeout: Duration::from_secs(spec.wall_secs.max(1)),
+                control: None, // static fleet: no external interrupt seat
             };
             let outcome = run_ticket(spec.agent.as_ref(), &spec.ticket, &*store, &opts);
             (spec.slot, outcome)
@@ -256,37 +258,42 @@ where
     D: FnOnce() -> Fut,
     Fut: Future<Output = Result<()>>,
 {
-    // --- hub on the socket, wired to accept assignments ---
-    let (assign_tx, mut assign_rx) = mpsc::unbounded_channel::<AssignCommand>();
-    let hub = Hub::with_dispatcher(store.clone(), hub_config, assign_tx);
+    // --- hub on the socket, wired to accept control commands ---
+    let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<RunnerCommand>();
+    let hub = Hub::with_dispatcher(store.clone(), hub_config, cmd_tx);
     let listener = transport.bind().await.context("binding fleet socket")?;
     let hub_task = tokio::spawn(hub.serve(listener));
 
-    // --- dispatch loop: one supervised worker per assign, on a blocking thread ---
-    let handles = Arc::new(Mutex::new(Vec::new()));
+    // Every worker ever spawned, joined at drain. Shared so the outer function can
+    // take them after the dispatch loop ends.
+    type WorkerJoin = tokio::task::JoinHandle<(u8, Result<Outcome>, Arc<WorkerControl>)>;
+    let handles: Arc<Mutex<Vec<WorkerJoin>>> = Arc::new(Mutex::new(Vec::new()));
     let stop = Arc::new(Notify::new());
+
+    // --- command loop: assign spawns a worker; interrupt/restart act on a slot ---
     let dispatch = tokio::spawn({
         let handles = handles.clone();
         let stop = stop.clone();
         let store = store.clone();
         async move {
-            loop {
-                let cmd = tokio::select! {
-                    biased;
-                    _ = stop.notified() => break,
-                    cmd = assign_rx.recv() => match cmd {
-                        Some(c) => c,
-                        None => break, // all senders (the hub) gone
-                    },
-                };
-                let spec = factory(&cmd.ticket);
-                // A real worker needs its MCP + Stop-hook files on disk before spawn.
+            // The current live worker per slot (its interrupt handle + its ticket,
+            // so a restart can re-dispatch). Only ever touched by this one loop, so
+            // a plain map is enough — no lock.
+            let mut current: HashMap<u8, (Arc<WorkerControl>, Ticket)> = HashMap::new();
+
+            // Turn one ticket into a supervised worker: materialize a real worker's
+            // config, register its interrupt handle, and spawn it on a blocking
+            // thread (the sync↔async seam, D-018).
+            let spawn_worker = |current: &mut HashMap<u8, (Arc<WorkerControl>, Ticket)>, ticket: Ticket| {
+                let spec = factory(&ticket);
                 if let Some(config) = &spec.config {
                     if let Err(e) = config.write_fleet_config() {
                         eprintln!("runner: writing fleet config for worker-{}: {e}", spec.slot);
-                        continue;
+                        return;
                     }
                 }
+                let control = Arc::new(WorkerControl::default());
+                current.insert(spec.slot, (control.clone(), ticket));
                 let store = store.clone();
                 let handle = tokio::task::spawn_blocking(move || {
                     let opts = SuperviseOptions {
@@ -294,19 +301,50 @@ where
                         raw_log: spec.raw_log.clone(),
                         max_turns: 2,
                         idle_timeout: Duration::from_secs(spec.wall_secs.max(1)),
+                        control: Some(control.clone()),
                     };
                     let outcome = run_ticket(spec.agent.as_ref(), &spec.ticket, &*store, &opts);
-                    (spec.slot, outcome)
+                    (spec.slot, outcome, control)
                 });
                 handles.lock().unwrap().push(handle);
+            };
+
+            loop {
+                let cmd = tokio::select! {
+                    biased;
+                    _ = stop.notified() => break,
+                    cmd = cmd_rx.recv() => match cmd {
+                        Some(c) => c,
+                        None => break, // all senders (the hub) gone
+                    },
+                };
+                match cmd {
+                    RunnerCommand::Assign(assign) => spawn_worker(&mut current, assign.ticket),
+                    RunnerCommand::Interrupt { slot } => {
+                        if let Some((control, _)) = current.get(&slot) {
+                            control.kill();
+                        }
+                    }
+                    RunnerCommand::Restart { slot } => {
+                        // Kill the live worker (cloning its ticket out first so the
+                        // borrow ends), then re-dispatch a fresh worker for it.
+                        let ticket = current.get(&slot).map(|(control, ticket)| {
+                            control.kill();
+                            ticket.clone()
+                        });
+                        if let Some(ticket) = ticket {
+                            spawn_worker(&mut current, ticket);
+                        }
+                    }
+                }
             }
         }
     });
 
     // --- run the lead session, then drain ---
     let driver_res = driver().await;
-    // Stop accepting new work and let the dispatch loop exit; queued-but-unstarted
-    // assigns at this point are dropped (a real orchestrator isn't mid-assign at
+    // Stop accepting new work and let the command loop exit; queued-but-unstarted
+    // commands at this point are dropped (a real orchestrator isn't mid-command at
     // session end). Then join the workers with the hub still serving.
     stop.notify_one();
     let _ = dispatch.await;
@@ -315,8 +353,13 @@ where
     let handles = std::mem::take(&mut *handles.lock().unwrap());
     let mut results = Vec::with_capacity(handles.len());
     for handle in handles {
-        let (slot, outcome) = handle.await.context("worker task panicked")?;
-        results.push((slot, outcome.with_context(|| format!("worker-{slot} supervisor"))?));
+        let (slot, outcome, control) = handle.await.context("worker task panicked")?;
+        let mut outcome = outcome.with_context(|| format!("worker-{slot} supervisor"))?;
+        // A stream-close we caused (interrupt/restart) is not a crash.
+        if control.was_interrupted() && outcome == Outcome::Crashed {
+            outcome = Outcome::Interrupted;
+        }
+        results.push((slot, outcome));
     }
     hub_task.abort();
     Ok(results)
