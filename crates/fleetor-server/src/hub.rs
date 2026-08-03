@@ -516,9 +516,6 @@ impl Hub {
             Ok(p) => p,
             Err(e) => return e,
         };
-        if !self.roster_ids().contains(&to) {
-            return OpResult::Error { message: format!("unknown pane {to}") };
-        }
         if to == from {
             return OpResult::Error { message: format!("{from} cannot message itself") };
         }
@@ -526,15 +523,18 @@ impl Hub {
     }
 
     /// `fleet broadcast "<text>"` — one gesture, N−1 legs sharing a `group` id.
-    /// Costs one token per leg, so a fan-out is exactly as expensive as sending to
-    /// each pane by hand and a fountain runs out of budget quickly (L5).
+    ///
+    /// Targets come from the **app's** roster, not from config: a fan-out should
+    /// reach the panes that exist, not the panes someone once declared.
     async fn pane_broadcast(&self, from: Option<PaneId>, text: String) -> OpResult {
         let from = match self.sender(from) {
             Ok(p) => p,
             Err(e) => return e,
         };
-        let targets: Vec<PaneId> =
-            self.roster_ids().into_iter().filter(|p| *p != from).collect();
+        let targets: Vec<PaneId> = match self.app_roster().await {
+            Ok(panes) => panes.into_iter().map(|e| e.pane).filter(|p| *p != from).collect(),
+            Err(e) => return e,
+        };
         if targets.is_empty() {
             return OpResult::Error { message: "there is nobody else in the fleet".to_string() };
         }
@@ -577,19 +577,30 @@ impl Hub {
     }
 
     /// `fleet roster` — asks the app, because only the pty registry knows which
-    /// panes are actually alive right now.
+    /// panes are actually running right now.
     async fn roster(&self) -> OpResult {
+        match self.app_roster().await {
+            Ok(panes) => OpResult::Roster { panes },
+            Err(e) => e,
+        }
+    }
+
+    /// The one place the fleet's membership is read from. There is deliberately no
+    /// second answer derived from config: a pane the app is running must be
+    /// reachable even if config disagrees, and a config entry the app never
+    /// spawned must not look reachable.
+    async fn app_roster(&self) -> Result<Vec<PaneEntry>, OpResult> {
         let Some(app) = &self.app else {
-            return OpResult::Error { message: NO_APP.to_string() };
+            return Err(OpResult::Error { message: NO_APP.to_string() });
         };
         let (ack, rx) = oneshot::channel();
         if app.send(AppCommand::Roster { ack }).is_err() {
-            return OpResult::Error { message: APP_GONE.to_string() };
+            return Err(OpResult::Error { message: APP_GONE.to_string() });
         }
         match tokio::time::timeout(self.state.pane_config.ack_timeout, rx).await {
-            Ok(Ok(panes)) => OpResult::Roster { panes },
-            Ok(Err(_)) => OpResult::Error { message: APP_DROPPED.to_string() },
-            Err(_) => OpResult::Error { message: self.ack_timed_out() },
+            Ok(Ok(panes)) => Ok(panes),
+            Ok(Err(_)) => Err(OpResult::Error { message: APP_DROPPED.to_string() }),
+            Err(_) => Err(OpResult::Error { message: self.ack_timed_out() }),
         }
     }
 
@@ -635,10 +646,6 @@ impl Hub {
             message: "this connection did not identify a pane — set FLEETOR_PANE and retry"
                 .to_string(),
         })
-    }
-
-    fn roster_ids(&self) -> Vec<PaneId> {
-        PaneId::roster(&self.state.config.slots)
     }
 
     fn ack_timed_out(&self) -> String {

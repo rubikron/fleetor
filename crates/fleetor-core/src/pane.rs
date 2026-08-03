@@ -118,9 +118,24 @@ pub enum PaneState {
 }
 
 impl PaneState {
-    /// Whether bytes written to this pane's pty would reach a running `claude`.
+    /// Reached a prompt. A **display** predicate — the roster and the band use it.
+    /// Do not gate delivery on it; see [`PaneState::accepts_input`].
     pub fn is_live(self) -> bool {
         matches!(self, PaneState::Live)
+    }
+
+    /// **The predicate the delivery path must use.** A pane accepts input unless
+    /// its process is gone.
+    ///
+    /// Deliberately *not* `is_live()`. Nothing tells us when `claude` reaches its
+    /// prompt — `Spawning` is a guess about a running process, and gating sends on
+    /// it means a healthy pane silently refuses every message because our guess
+    /// has not flipped yet. That is the exact shape of L1: it looks like it works
+    /// and it doesn't. A write to a still-booting pty is buffered by the kernel
+    /// and read when the TUI starts reading, which is the failure we can live
+    /// with; refusing a live pane is not.
+    pub fn accepts_input(self) -> bool {
+        !matches!(self, PaneState::Dead)
     }
 }
 
@@ -188,9 +203,18 @@ mod tests {
     }
 
     #[test]
-    fn only_live_panes_are_writable() {
+    fn is_live_means_reached_a_prompt() {
         assert!(PaneState::Live.is_live());
         assert!(!PaneState::Spawning.is_live());
         assert!(!PaneState::Dead.is_live());
+    }
+
+    /// Only a dead pane refuses input. A still-spawning one must not, or a
+    /// healthy pane silently drops every message until our guess catches up.
+    #[test]
+    fn only_a_dead_pane_refuses_input() {
+        assert!(PaneState::Live.accepts_input());
+        assert!(PaneState::Spawning.accepts_input());
+        assert!(!PaneState::Dead.accepts_input());
     }
 }

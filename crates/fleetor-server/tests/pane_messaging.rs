@@ -36,15 +36,15 @@ fn spawn_app(roster: Vec<PaneEntry>) -> (mpsc::UnboundedSender<AppCommand>, Writ
         while let Some(cmd) = rx.recv().await {
             match cmd {
                 AppCommand::Deliver { to, text, ack } => {
+                    // `accepts_input`, not `is_live` — the registry refuses only a
+                    // dead pane. A still-spawning pty is written to; the kernel
+                    // buffers until the TUI reads.
                     let result = match states.get(&to) {
-                        Some(PaneState::Live) => {
+                        Some(state) if state.accepts_input() => {
                             sink.lock().unwrap().push((to, text));
                             DeliveryResult::accepted()
                         }
-                        Some(state) => DeliveryResult::rejected(format!(
-                            "pane {to} is not live ({})",
-                            serde_json::to_value(state).unwrap().as_str().unwrap()
-                        )),
+                        Some(_) => DeliveryResult::rejected(format!("pane {to} is dead")),
                         None => DeliveryResult::rejected(format!("no pane {to} is running")),
                     };
                     let _ = ack.send(result);
@@ -146,11 +146,11 @@ async fn a_direct_send_reaches_a_live_pane_and_the_body_lands_in_the_log() {
     assert_eq!(logged_id, &msg_id, "the id the sender got back is the id in the log");
 }
 
-/// A pane that is not live rejects, the caller is told why in words it can act
-/// on, and the attempt is still logged with `accepted: false` — an invisible
-/// failure is worse than a loud one (L3).
+/// A dead pane rejects, the caller is told why in words it can act on, and the
+/// attempt is still logged with `accepted: false` — an invisible failure is worse
+/// than a loud one (L3). A pane that is merely still spawning **accepts**.
 #[tokio::test]
-async fn sending_to_a_pane_that_is_not_live_is_rejected_loudly_and_still_logged() {
+async fn a_dead_pane_is_rejected_loudly_but_a_spawning_one_still_accepts() {
     let roster = vec![
         PaneEntry::new(PaneId::Orch, PaneState::Live),
         PaneEntry::new(PaneId::Worker(1), PaneState::Live),
@@ -160,35 +160,45 @@ async fn sending_to_a_pane_that_is_not_live_is_rejected_loudly_and_still_logged(
     let (transport, store, writes) = start_hub(roster, PaneConfig::default()).await;
     let mut orch = pane(&transport, PaneId::Orch).await;
 
-    for (target, expected) in
-        [(PaneId::Worker(2), "pane worker-2 is not live (dead)"), (PaneId::Worker(3), "pane worker-3 is not live (spawning)")]
-    {
-        let result = orch.call(Op::PaneSend { to: target, text: "ping".into() }).await.unwrap();
-        let OpResult::Delivered { accepted, detail, .. } = result else {
-            panic!("expected a delivery, got {result:?}");
-        };
-        assert!(!accepted, "{target} is not live");
-        assert_eq!(detail.as_deref(), Some(expected), "the reason reaches the sender verbatim");
-    }
+    let dead = orch.call(Op::PaneSend { to: PaneId::Worker(2), text: "ping".into() }).await.unwrap();
+    let OpResult::Delivered { accepted, detail, .. } = dead else {
+        panic!("expected a delivery, got {dead:?}");
+    };
+    assert!(!accepted, "worker-2 is dead");
+    assert_eq!(detail.as_deref(), Some("pane worker-2 is dead"), "the reason reaches the sender");
 
-    assert!(writes.lock().unwrap().is_empty(), "nothing was typed into any terminal");
+    // Still booting is not a reason to refuse: gating on a guess about whether the
+    // TUI has reached its prompt is how a healthy pane silently goes mute.
+    let spawning =
+        orch.call(Op::PaneSend { to: PaneId::Worker(3), text: "ping".into() }).await.unwrap();
+    assert!(
+        matches!(spawning, OpResult::Delivered { accepted: true, .. }),
+        "a spawning pane must accept: {spawning:?}"
+    );
+
+    assert_eq!(writes.lock().unwrap().len(), 1, "only the spawning pane was written to");
     let logged = messages(&store);
-    assert_eq!(logged.len(), 2, "both failed attempts are on the record");
-    assert!(logged.iter().all(|e| !as_message(e).4));
+    assert_eq!(logged.len(), 2, "both attempts are on the record");
+    assert!(!as_message(&logged[0]).4);
+    assert!(as_message(&logged[1]).4);
 }
 
-/// A pane the hub has never heard of, and a pane messaging itself, are rejected
-/// before the app is ever asked — a wrong name should not look like a dead pane.
+/// Membership has exactly one source of truth: the app. A pane the app is not
+/// running is rejected by the app, in its words — the hub does not keep a second,
+/// config-derived opinion that could disagree with the machine actually holding
+/// the ptys. A pane messaging itself is still refused by the hub, because that
+/// check compares the sender to itself and cannot be wrong.
 #[tokio::test]
-async fn an_unknown_pane_and_a_self_send_are_refused_by_the_hub() {
+async fn membership_is_the_apps_answer_and_a_self_send_is_refused() {
     let (transport, store, _writes) = start_hub(all_live(), PaneConfig::default()).await;
     let mut orch = pane(&transport, PaneId::Orch).await;
 
     let unknown = orch.call(Op::PaneSend { to: PaneId::Worker(9), text: "x".into() }).await.unwrap();
-    assert!(
-        matches!(&unknown, OpResult::Error { message } if message.contains("unknown pane worker-9")),
-        "got {unknown:?}"
-    );
+    let OpResult::Delivered { accepted, detail, .. } = unknown else {
+        panic!("expected a delivery, got {unknown:?}");
+    };
+    assert!(!accepted);
+    assert_eq!(detail.as_deref(), Some("no pane worker-9 is running"));
 
     let selfsend = orch.call(Op::PaneSend { to: PaneId::Orch, text: "x".into() }).await.unwrap();
     assert!(
@@ -196,7 +206,21 @@ async fn an_unknown_pane_and_a_self_send_are_refused_by_the_hub() {
         "got {selfsend:?}"
     );
 
-    assert!(messages(&store).is_empty(), "a malformed request is not a message");
+    assert_eq!(messages(&store).len(), 1, "the undeliverable send is logged; the self-send is not");
+}
+
+/// A pane the hub was never configured with is still reachable if the app is
+/// running it. Config is not allowed to veto the machine holding the ptys.
+#[tokio::test]
+async fn a_pane_outside_the_hub_config_is_still_reachable() {
+    let mut roster = all_live();
+    roster.push(PaneEntry::new(PaneId::Worker(7), PaneState::Live)); // not in SLOTS
+    let (transport, _store, writes) = start_hub(roster, PaneConfig::default()).await;
+    let mut orch = pane(&transport, PaneId::Orch).await;
+
+    let result = orch.call(Op::PaneSend { to: PaneId::Worker(7), text: "hi".into() }).await.unwrap();
+    assert!(matches!(result, OpResult::Delivered { accepted: true, .. }), "got {result:?}");
+    assert_eq!(writes.lock().unwrap().len(), 1);
 }
 
 /// One `broadcast` becomes N−1 legs that share a group id, and the sender is not
