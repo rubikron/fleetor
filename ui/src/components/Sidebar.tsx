@@ -1,5 +1,5 @@
-// The navigation spine: the fleet's four real views — the terminals
-// themselves, the message record, the topology, and the activity log.
+// The navigation spine: the fleet's three real views — the terminals
+// themselves, the message record, and the activity log.
 //
 // UI-polish pass: dropped the six disabled "Diffs / Knowledge / Profiles /
 // Gate / Models / Settings" placeholders. A roadmap spelled out in
@@ -27,7 +27,7 @@
 
 import type { ReactNode } from "react";
 
-export type View = "fleet" | "messages" | "topology" | "activity";
+export type View = "fleet" | "messages" | "activity";
 
 interface SidebarProps {
   view: View;
@@ -65,18 +65,6 @@ const ICONS: Record<View, ReactNode> = {
       <polyline points="2.2,4.6 8,8.8 13.8,4.6" />
     </svg>
   ),
-  // the fleet graph: one lead node fanning out to three
-  topology: (
-    <svg {...ICON_PROPS}>
-      <circle cx="3.4" cy="8" r="1.9" />
-      <circle cx="12.6" cy="3.6" r="1.5" />
-      <circle cx="12.6" cy="8" r="1.5" />
-      <circle cx="12.6" cy="12.4" r="1.5" />
-      <line x1="5.2" y1="7.2" x2="11.1" y2="4.1" />
-      <line x1="5.3" y1="8" x2="11.1" y2="8" />
-      <line x1="5.2" y1="8.8" x2="11.1" y2="11.9" />
-    </svg>
-  ),
   // a pulse trace: the activity log
   activity: (
     <svg {...ICON_PROPS}>
@@ -88,7 +76,6 @@ const ICONS: Record<View, ReactNode> = {
 const WORKSPACE: { view: View; label: string }[] = [
   { view: "fleet", label: "Terminals" },
   { view: "messages", label: "Messages" },
-  { view: "topology", label: "Topology" },
   { view: "activity", label: "Activity" },
 ];
 

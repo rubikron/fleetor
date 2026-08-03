@@ -1,5 +1,5 @@
 // The shell: top bar, navigation spine, and a workspace that swaps between the
-// terminals, the message record, the topology and the activity log. Every view
+// terminals, the message record and the activity log. Every view
 // stays mounted and is toggled with CSS — the terminals' xterm buffers must
 // never be torn down (L7).
 //
@@ -20,7 +20,6 @@ import { MessageFeed } from "./components/MessageFeed";
 import { EventFeed } from "./components/EventFeed";
 import { TerminalGrid } from "./components/TerminalGrid";
 import { StartGate } from "./components/StartGate";
-import { FleetGraph } from "./views/FleetGraph";
 import { useFleet } from "./fleet/useFleet";
 import { useZoom } from "./ui/useZoom";
 import { useSidebarCollapse } from "./ui/useSidebarCollapse";
@@ -165,14 +164,6 @@ export function App() {
 
             <div className={`stage-view ${view === "messages" ? "" : "is-hidden"}`}>
               <MessageFeed messages={fleet.messages} />
-            </div>
-
-            <div className={`stage-view ${view === "topology" ? "" : "is-hidden"}`}>
-              <FleetGraph
-                statuses={statuses}
-                feed={fleet.feed}
-                leadModel={fleet.config?.lead_model ?? "opus (operator)"}
-              />
             </div>
 
             <div className={`stage-view ${view === "activity" ? "" : "is-hidden"}`}>
