@@ -26,6 +26,7 @@ import { useSidebarCollapse } from "./ui/useSidebarCollapse";
 import { usePersistedNav } from "./ui/usePersistedNav";
 import { usePaneJump } from "./ui/usePaneJump";
 import { useWindowState } from "./ui/useWindowState";
+import { useFrameProbe } from "./ui/useFrameProbe";
 import { killPane } from "./fleet/api";
 import { ORCH, paneSlot, type PaneId, type PaneStatus } from "./fleet/types";
 
@@ -50,6 +51,9 @@ export function App() {
   // side effect on the OS window — see useWindowState.ts for why a saved
   // position is re-validated against the connected monitors before use.
   useWindowState();
+  // TEMPORARY — see ui/useFrameProbe.ts. Samples frame intervals across each
+  // rail collapse/expand so "it isn't smooth" becomes a measurement.
+  const railProbe = useFrameProbe(sidebar.collapsed, "rail");
 
   // One `focus()` callback per pane, registered by TerminalPane itself once
   // it mounts (see its onFocusReady prop). A plain ref, not state — jumping
@@ -183,6 +187,16 @@ export function App() {
           </div>
         </main>
       </div>
+      {/* TEMPORARY — dev-only frame-time readout for the rail transition.
+          Remove with ui/useFrameProbe.ts and the .frame-probe rule once the
+          "is it actually dropping frames" question is settled. */}
+      {import.meta.env.DEV && railProbe && (
+        <div className="frame-probe">
+          {railProbe.label} · {railProbe.frames}f · mean{" "}
+          {railProbe.meanMs.toFixed(1)}ms · worst {railProbe.worstMs.toFixed(1)}ms ·{" "}
+          {railProbe.over16} over 16ms
+        </div>
+      )}
     </div>
   );
 }
