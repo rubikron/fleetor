@@ -133,7 +133,28 @@ body,
    row — see src-tauri/tauri.conf.json's titleBarStyle) so the topbar carries
    `data-tauri-drag-region` (TopBar.tsx) to keep the window draggable, and
    reserves fixed px — not rem — space on the left: this is clearing a
-   physically fixed OS control, not type, so it must not grow with zoom. */
+   physically fixed OS control, not type, so it must not grow with zoom.
+
+   This row must never wrap or grow taller, at any window width or zoom
+   level — a multi-line drag region reads as broken chrome, and a taller
+   topbar steals rows from the terminals below it. Two things make that
+   structural rather than incidental:
+     1. `overflow: hidden` on the row itself is the fail-safe backstop.
+     2. Every text-bearing descendant below is `white-space: nowrap` with
+        `min-width: 0` on its shrinkable ancestors, so the *only* thing that
+        can happen under width pressure is an ellipsis truncation of a
+        value — never a second line. That guarantee holds regardless of
+        window width or the zoom pivot's root font-size.
+   `container-type: inline-size` turns this row into a query container so
+   the lowest-priority values can drop out (see `.status-line__item--gate`
+   / `--workers` below) before truncation ever has to bite into `target` or
+   `branch`, which the operator actually needs to read. The breakpoints use
+   `em`, not `px`: an `em` in a container query resolves against the
+   container's own font-size, which is itself in rem — so the trigger point
+   scales in lockstep with the zoom pivot instead of staying pinned to a
+   physical pixel width that would drop content "too early" at 100% zoom
+   and "too late" at 200%, where the same content needs twice the physical
+   room. */
 .topbar {
   display: flex;
   align-items: center;
@@ -142,6 +163,9 @@ body,
   background: var(--bg-0);
   border-bottom: 1px solid var(--border);
   flex: 0 0 auto;
+  overflow: hidden;
+  container-type: inline-size;
+  container-name: topbar;
   user-select: none;
 }
 .brand {
@@ -150,16 +174,27 @@ body,
   font-size: var(--t-small);
   color: var(--accent);
   font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 /* a plain terminal-style status line, not chips: dense key/value pairs
-   separated by hairlines, the way a tmux or i3 status bar reads. */
+   separated by hairlines, the way a tmux or i3 status bar reads.
+
+   `target`/`branch` are the "primary" tier — what the operator needs to
+   confirm they're pointed at the right repo. `workers`/`gate` are the
+   "quiet" tier — configuration set once at launch, sized down (--t-label)
+   and left in the muted foreground so they don't compete with primary at
+   the same volume. `gate` in particular is no longer green: green reads as
+   a live "passing" signal app-wide, and a configured policy isn't one. */
 .status-line {
   display: flex;
   align-items: baseline;
   gap: 1.25rem;
   font-family: var(--mono);
   font-size: var(--t-small);
+  min-width: 0;
+  overflow: hidden;
 }
 .status-line__item {
   display: flex;
@@ -167,21 +202,59 @@ body,
   gap: 0.4375rem;
   padding-left: 1.25rem;
   border-left: 1px solid var(--border-soft);
+  min-width: 0;
+  flex-shrink: 1;
 }
 .status-line__item:first-child {
   padding-left: 0;
   border-left: none;
 }
-.status-line__label { color: var(--fg-mute); }
-.status-line__value { color: var(--fg-dim); }
+.status-line__item--quiet {
+  font-size: var(--t-label);
+  flex-shrink: 2; /* the quiet tier gives up room before primary does */
+}
+.status-line__label {
+  color: var(--fg-mute);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.status-line__value {
+  color: var(--fg-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.status-line__item--primary .status-line__value { color: var(--fg); }
 .status-line__value--gold { color: var(--gold); }
-.status-line__value--green { color: var(--green); }
 
-.topbar__spacer { flex: 1 1 auto; }
-.topbar__status { font-size: var(--t-small); color: var(--fg-mute); }
+/* progressive disclosure: quietest, longest, least urgent goes first. Pure
+   enhancement — if a webview doesn't support container queries these items
+   just fall back to the universal nowrap+ellipsis truncation above instead
+   of dropping, so nothing here can wrap or grow the row either way. */
+@container topbar (max-width: 46em) {
+  .status-line__item--gate { display: none; }
+}
+@container topbar (max-width: 34em) {
+  .status-line__item--workers { display: none; }
+}
+
+.topbar__spacer { flex: 1 1 auto; min-width: 0.75rem; }
+.topbar__status {
+  font-size: var(--t-small);
+  color: var(--fg-mute);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
 /* shown only when zoom departs from 100% — quiet mono aside, no border, no
    background, no transition (motion here is reserved for the blocked signal). */
-.topbar__zoom { font-size: var(--t-small); color: var(--fg-mute); font-variant-numeric: tabular-nums; }
+.topbar__zoom {
+  font-size: var(--t-small);
+  color: var(--fg-mute);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
 
 .body {
   display: flex;

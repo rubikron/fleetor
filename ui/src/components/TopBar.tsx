@@ -15,33 +15,51 @@
 // reserves fixed px space on the left so the brand mark clears the macOS
 // traffic lights. None of this row's content is interactive (no buttons),
 // so nothing here risks having its clicks swallowed by the drag region.
+//
+// UI-polish pass 3 (fix + redesign): `target`/`branch` are what the operator
+// needs to confirm they're pointed at the right repo — that's the "primary"
+// tier. `workers`/`gate` are configuration set once at launch — the "quiet"
+// tier: smaller, muted. `gate` in particular used to render as a full phrase
+// in green, which reads as a live "passing" signal; it isn't one, it's just
+// the configured policy, so it now carries the same neutral/muted treatment
+// as an idle `workers` value, never green (green is reserved app-wide for an
+// actual healthy/live signal). Every value is single-line and can truncate
+// with an ellipsis under width pressure — see styles.css's `.status-line`
+// rules — so the full value always lives in `title` for hover recovery, and
+// `.status-line__item--gate` / `--workers` are targeted by a container query
+// to drop first as the row runs out of room, quietest item first.
 
 import type { FleetConfig } from "../fleet/types";
 
 interface StatusItem {
   label: string;
   value: string;
-  tone: "neutral" | "gold" | "green";
+  tone: "neutral" | "gold";
+  tier: "primary" | "quiet";
 }
 
 function statusItems(config: FleetConfig | null): StatusItem[] {
   if (!config) {
     return [
-      { label: "target", value: "…", tone: "neutral" },
-      { label: "workers", value: "…", tone: "neutral" },
+      { label: "target", value: "…", tone: "neutral", tier: "primary" },
+      { label: "workers", value: "…", tone: "neutral", tier: "quiet" },
     ];
   }
   return [
-    { label: "target", value: config.target, tone: "neutral" },
-    { label: "branch", value: config.branch, tone: "neutral" },
-    { label: "workers", value: config.worker_backend, tone: config.worker_backend === "none" ? "neutral" : "gold" },
-    { label: "gate", value: config.gate, tone: "green" },
+    { label: "target", value: config.target, tone: "neutral", tier: "primary" },
+    { label: "branch", value: config.branch, tone: "neutral", tier: "primary" },
+    {
+      label: "workers",
+      value: config.worker_backend,
+      tone: config.worker_backend === "none" ? "neutral" : "gold",
+      tier: "quiet",
+    },
+    { label: "gate", value: config.gate, tone: "neutral", tier: "quiet" },
   ];
 }
 
 function valueClass(tone: StatusItem["tone"]): string {
   if (tone === "gold") return "status-line__value status-line__value--gold";
-  if (tone === "green") return "status-line__value status-line__value--green";
   return "status-line__value";
 }
 
@@ -60,9 +78,14 @@ export function TopBar({ status, config, zoom }: TopBarProps) {
       <span className="brand">FLEETOR</span>
       <div className="status-line">
         {statusItems(config).map((item) => (
-          <span key={item.label} className="status-line__item">
+          <span
+            key={item.label}
+            className={`status-line__item status-line__item--${item.tier} status-line__item--${item.label}`}
+          >
             <span className="status-line__label">{item.label}</span>
-            <span className={valueClass(item.tone)}>{item.value}</span>
+            <span className={valueClass(item.tone)} title={item.value}>
+              {item.value}
+            </span>
           </span>
         ))}
       </div>
