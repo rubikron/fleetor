@@ -49,6 +49,14 @@ interface WindowGeometry {
   height: number;
   x: number;
   y: number;
+  /// Whether the window filled the screen when it was last recorded.
+  ///
+  /// Stored as a flag rather than baked into the width and height, because
+  /// those two facts want different lifetimes: the geometry should remember the
+  /// size the operator sized the window *to*, and this should remember that
+  /// they then filled the screen. Collapsing them loses the first one forever
+  /// the moment anything zooms.
+  maximized: boolean;
 }
 
 function isFiniteNumber(value: unknown): value is number {
@@ -60,11 +68,13 @@ function parseGeometry(raw: string | null): WindowGeometry | null {
   try {
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed !== "object" || parsed === null) return null;
-    const { width, height, x, y } = parsed as Record<string, unknown>;
+    const { width, height, x, y, maximized } = parsed as Record<string, unknown>;
     if (!isFiniteNumber(width) || !isFiniteNumber(height)) return null;
     if (!isFiniteNumber(x) || !isFiniteNumber(y)) return null;
     if (width < MIN_PHYSICAL_PX || height < MIN_PHYSICAL_PX) return null;
-    return { width, height, x, y };
+    // Absent on anything written before the flag existed — treat as not
+    // maximized rather than discarding an otherwise valid geometry.
+    return { width, height, x, y, maximized: maximized === true };
   } catch {
     // Corrupt JSON or a storage-access error reads exactly like "nothing
     // saved" — the OS places the window and the app carries on.
@@ -126,20 +136,38 @@ async function sizeToScreen(win: ReturnType<typeof getCurrentWindow>): Promise<v
 
 async function persistGeometry(win: ReturnType<typeof getCurrentWindow>): Promise<void> {
   try {
-    // A maximized window's outer size is the screen. Saving that would restore
-    // as an un-maximized window filling the display, and the size the operator
-    // actually chose would be gone.
-    if (await win.isMaximized()) return;
-    const size = await win.outerSize();
-    const position = await win.outerPosition();
-    if (size.width < MIN_PHYSICAL_PX || size.height < MIN_PHYSICAL_PX) return;
-    const geometry: WindowGeometry = {
-      width: size.width,
-      height: size.height,
-      x: position.x,
-      y: position.y,
-    };
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(geometry));
+    // On macOS this is `NSWindow.isZoomed`, which compares the frame against
+    // the screen's standard frame — a *geometry test*, not a state flag. So it
+    // reports true for a window zoomed with the green button AND for one a
+    // third-party window manager (Rectangle, Magnet, yabai) merely sized to
+    // fill the screen. Those two cases are indistinguishable from here, and in
+    // the second one filling the screen is exactly what the operator chose.
+    //
+    // An earlier version refused to save at all while this was true, to stop a
+    // screen-sized frame overwriting the real one. That also meant a window
+    // deliberately snapped to full screen was never remembered.
+    const maximized = await win.isMaximized();
+    const stored = parseGeometry(window.localStorage.getItem(STORAGE_KEY));
+
+    // The flag is always current; the geometry only advances while the window
+    // is not filling the screen, so the size the operator actually sized it to
+    // survives a zoom. With nothing stored yet there is no earlier size to
+    // protect, so take the current one even if it is screen-sized.
+    let geometry = stored;
+    if (!maximized || stored === null) {
+      const size = await win.outerSize();
+      const position = await win.outerPosition();
+      if (size.width < MIN_PHYSICAL_PX || size.height < MIN_PHYSICAL_PX) return;
+      geometry = {
+        width: size.width,
+        height: size.height,
+        x: position.x,
+        y: position.y,
+        maximized,
+      };
+    }
+    if (geometry === null) return;
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...geometry, maximized }));
   } catch {
     /* best-effort: the window still works, it just will not be remembered */
   }
@@ -171,6 +199,9 @@ export function useWindowState(): void {
             if (isReachable(saved, monitors)) {
               await win.setPosition(new PhysicalPosition(saved.x, saved.y));
             }
+            // Re-zoom last, so the un-zoomed geometry above is what the window
+            // returns to when the operator un-maximizes.
+            if (saved.maximized) await win.maximize();
             // Unreachable: the display it was on is no longer connected. Size
             // is restored, placement deliberately left to the OS.
           } else if (!cancelled) {
