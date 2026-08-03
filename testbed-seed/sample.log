@@ -1,0 +1,13 @@
+# ip method path status duration_ms
+10.0.0.1 GET /health 200 3
+10.0.0.2 GET /api/users 200 41
+10.0.0.3 POST /api/users 201 118
+10.0.0.2 GET /api/users 200 37
+10.0.0.9 GET /api/orders 500 802
+10.0.0.4 GET /static/app.js 200 12
+10.0.0.5 GET /api/users 404 8
+10.0.0.2 GET /api/orders 200 96
+10.0.0.7 POST /api/login 401 22
+10.0.0.1 GET /health 200 2
+10.0.0.8 GET /api/orders 200 141
+10.0.0.3 DELETE /api/users 204 55
