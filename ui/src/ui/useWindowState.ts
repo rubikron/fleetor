@@ -37,6 +37,11 @@ const MIN_PHYSICAL_PX = 200;
 /// to count as reachable — roughly "enough title bar to grab".
 const MIN_VISIBLE_PX = 80;
 
+/// How much of the monitor a first launch claims. Not 1.0 — a window pinned to
+/// the screen edges is indistinguishable from a maximized one, and the operator
+/// loses the handles to resize it.
+const FIRST_RUN_SCREEN_FRACTION = 0.85;
+
 /// Physical pixels, as reported by `outerSize` / `outerPosition`. `x` and `y`
 /// are signed: a monitor arranged left of the primary has negative origins.
 interface WindowGeometry {
@@ -81,6 +86,44 @@ function isReachable(geometry: WindowGeometry, monitors: Monitor[]): boolean {
   });
 }
 
+/// First-run sizing, used only when nothing has been saved yet.
+///
+/// tauri.conf.json's 1024x720 is the wrong shape of default for this app: it is
+/// a *fixed* number, and no fixed number is right for both a laptop panel and a
+/// 5K display, where it lands at roughly 40% of the width and reads as a window
+/// that failed to open properly. Five terminals want room. So the first launch
+/// is sized to the monitor it actually opened on, and centred there; every
+/// launch after that restores whatever the operator chose instead.
+async function sizeToScreen(win: ReturnType<typeof getCurrentWindow>): Promise<void> {
+  const monitors = await availableMonitors();
+  if (monitors.length === 0) return;
+
+  // Pick the monitor the window opened on rather than assuming the primary —
+  // on a multi-display setup those are frequently not the same one.
+  const origin = await win.outerPosition();
+  const host =
+    monitors.find((m) => {
+      const left = m.position.x;
+      const top = m.position.y;
+      return (
+        origin.x >= left &&
+        origin.x < left + m.size.width &&
+        origin.y >= top &&
+        origin.y < top + m.size.height
+      );
+    }) ?? monitors[0];
+
+  const width = Math.round(host.size.width * FIRST_RUN_SCREEN_FRACTION);
+  const height = Math.round(host.size.height * FIRST_RUN_SCREEN_FRACTION);
+  await win.setSize(new PhysicalSize(width, height));
+  await win.setPosition(
+    new PhysicalPosition(
+      Math.round(host.position.x + (host.size.width - width) / 2),
+      Math.round(host.position.y + (host.size.height - height) / 2),
+    ),
+  );
+}
+
 async function persistGeometry(win: ReturnType<typeof getCurrentWindow>): Promise<void> {
   try {
     // A maximized window's outer size is the screen. Saving that would restore
@@ -121,8 +164,8 @@ export function useWindowState(): void {
       if (!hasRestored.current) {
         hasRestored.current = true;
         const saved = parseGeometry(window.localStorage.getItem(STORAGE_KEY));
-        if (saved && !cancelled) {
-          try {
+        try {
+          if (saved && !cancelled) {
             await win.setSize(new PhysicalSize(saved.width, saved.height));
             const monitors = await availableMonitors();
             if (isReachable(saved, monitors)) {
@@ -130,9 +173,11 @@ export function useWindowState(): void {
             }
             // Unreachable: the display it was on is no longer connected. Size
             // is restored, placement deliberately left to the OS.
-          } catch {
-            /* missing capability or a rejected call — keep the default window */
+          } else if (!cancelled) {
+            await sizeToScreen(win);
           }
+        } catch {
+          /* missing capability or a rejected call — keep the default window */
         }
       }
 
