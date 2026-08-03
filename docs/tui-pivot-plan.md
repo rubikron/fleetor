@@ -442,8 +442,14 @@ of the ticket system growing back. `AppCommand` fully replaces `RunnerCommand`.
 > and `docs/fleet-comms-map.md` rewritten, the dead MCP/Stop-hook spikes and the pre-pivot UI mock
 > deleted, the remaining historical docs bannered as superseded.
 >
-> **Still open**, each needing something a headless session cannot provide:
-> briefings validated against a real Flash worker (deliberate, bounded live spend) ·
+> **Deferred by the operator, deliberately** — not a backlog. The fleet has been running and the
+> residual failures (a message landing while a pane is mid-turn) are rare, visible and
+> recoverable, which is the posture `accepted` was designed to make honest. Flash workers are
+> reported as performing well in live use, which is the closest thing to a briefing validation
+> this project has. **Do not re-open these speculatively; re-open them against a symptom.**
+>
+> Still open, each needing something a headless session cannot provide:
+> briefings validated against a real Flash worker under adversarial load (bounded live spend) ·
 > the anti-amplification clause adversarially tested — worker-1 broadcasts "status?", confirm no
 > fountain (live spend) · coalescing window measured with a chunks/sec instrument, and the
 > `addon-canvas` decision (a running window under load) · `kill_all` process-group teardown
