@@ -1,6 +1,10 @@
 # FLEETOR — the 5-TUI messaging pivot
 
-> **Status:** Phases 0–2 complete (branch `feat/tui-fleet`). Phases 3–6 not started.
+> **Status:** Phases 0–5 complete (branch `feat/tui-fleet`). Phase 6 (hardening) not started.
+> The pivot is done as code: the pane registry, the `fleet` CLI, the terminal shell and the
+> deletion have all landed. What has *not* happened is the manual demo — the app launching as a
+> window, five real `claude` TUIs, one `fleet send` crossing between them. That needs a GUI
+> session, and it is the first thing Phase 6 should do before anything else.
 > **Read `docs/tui-spawn-notes.md` first** — it carries the measured results of the Phase 0
 > spike, several of which corrected assumptions in this plan. Where they differ, the notes win;
 > the corrections have been folded into the phases below and are marked **✓ Phase 0**.
@@ -252,6 +256,8 @@ standby workers are gone. Board shows empty — fine, deleted in Phase 4.
 
 ### Phase 3 — N-pane pty registry + the `fleet` CLI ⇒ **the demo**
 
+> ✅ **DONE** (D-036). Deviations: no `pending`/`last_input_at` on `Pane` (nothing reads them, and they exist only to support the idle guard D-034 bans); `src-tauri` became a lib + a one-line bin so `tests/panes.rs` can drive the registry headless; worker worktrees live under `~/.fleetor/_shell/worktrees/` rather than inside the target, with a fallback to sharing the checkout when git refuses; `kill` leaves the exit event to the read pump.
+
 The two halves must land together to be demonstrable.
 
 **Rewrite in place** `src-tauri/src/pty.rs` (keep the file — the pty logic's git history is
@@ -366,6 +372,8 @@ receive it and answer. That's the whole product in one gesture, before any UI wo
 
 ### Phase 4 — the UI
 
+> ✅ **DONE** (D-037). Deviation: four sidebar views, not two — `fleet` and `messages` as specified, plus `topology` (FleetGraph had nowhere else to live) and `activity` (the notices are the only surface for "the fleet binary was not found" and "the socket is unavailable"). The band shows idle/live/dead only: a live TUI does not tell us whether it is working or blocked, and inventing that distinction is how the headless fleet acquired a mail queue.
+
 **Delete** `TicketBoard.tsx`, `WorkerTranscripts.tsx` (its tab-strip pattern at L24-40 gets lifted
 into the new tab strip first).
 
@@ -407,6 +415,8 @@ each buffer (the `cc7c894` regression); divider drag reflows without clipping (t
 regression).
 
 ### Phase 5 — the deletion (now compiler-verified)
+
+> ✅ **DONE** (D-038). 6,878 lines out. Went further than listed where the compiler made the case: `FleetEvent` reduced to Message/PaneState/Notice, `Op` to the four bare verbs, `Hello` to a non-optional `PaneId`, and `HubConfig`/the dispatcher/the optional app off `Hub` entirely.
 
 **Delete crates**: `crates/fleetor-shim/`, `crates/fleetor-cc/`.
 **Delete modules**: `fleetor-server/src/{supervisor,quality,gate,runner}.rs`;
