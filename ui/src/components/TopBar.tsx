@@ -11,7 +11,7 @@
 //
 // UI-polish pass 2: the window now uses an overlay title bar (see
 // src-tauri/tauri.conf.json), so this row *is* the title bar — it carries
-// `data-tauri-drag-region` so the window is still draggable, and styles.css
+// `data-tauri-drag-region="deep"` so the whole row drags, and styles.css
 // reserves fixed px space on the left so the brand mark clears the macOS
 // traffic lights. None of this row's content is interactive (no buttons),
 // so nothing here risks having its clicks swallowed by the drag region.
@@ -73,8 +73,16 @@ interface TopBarProps {
 
 export function TopBar({ status, config, zoom }: TopBarProps) {
   const zoomPercent = Math.round(zoom * 100);
+  // "deep", not a bare attribute: Tauri's drag script walks the composed path,
+  // and a bare value only matches when the element clicked IS the one carrying
+  // it (`el === composedPath[0]` in tauri/src/window/scripts/drag.js). Every
+  // pixel of this row that shows anything is a child <span>, so a bare
+  // attribute left the brand mark and the whole status line dead to dragging —
+  // only the gaps between them worked. "deep" claims the subtree. Clickable
+  // tags (button, input, a, …) still block dragging on their own, so adding a
+  // control to this row later does not need this revisited.
   return (
-    <header className="topbar" data-tauri-drag-region>
+    <header className="topbar" data-tauri-drag-region="deep">
       <span className="brand">FLEETOR</span>
       <div className="status-line">
         {statusItems(config).map((item) => (
