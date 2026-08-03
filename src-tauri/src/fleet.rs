@@ -10,7 +10,7 @@
 //!
 //!  - the **store** and the live **event bus**, pumped to the webview by
 //!    [`spawn_follower`] (unchanged, and the reason the feed still streams);
-//!  - a plain [`Hub::with_app`] bound to the unix socket, whose pane ops are
+//!  - a plain [`Hub`] bound to the unix socket, whose pane ops are
 //!    served by [`crate::deliver`] out of the real pty registry;
 //!  - the **target** the fleet works on: the operator's repo if
 //!    `~/.fleetor/config.json` names one, else a seeded [`testbed`];
@@ -23,11 +23,10 @@ use std::sync::{Arc, Mutex};
 
 use fleetor_core::event::{FleetEvent, NoticeLevel};
 use fleetor_core::pane::PaneId;
-use fleetor_core::ticket::Ticket;
 use fleetor_core::Store;
 use fleetor_db::SqliteStore;
 use fleetor_ipc::UnixTransport;
-use fleetor_server::{AppCommand, BroadcastStore, Hub, HubConfig};
+use fleetor_server::{AppCommand, BroadcastStore, Hub};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 use tokio::runtime::Runtime;
@@ -49,12 +48,11 @@ struct WireEvent {
     event: FleetEvent,
 }
 
-/// The board + cursor a freshly-mounted UI seeds from. The live feed itself
-/// arrives entirely over [`EVENT_FLEET`] (the follower replays history from 0),
-/// so this carries only what events cannot: the tickets' full metadata.
+/// What a freshly-mounted UI gets back from bootstrap. The feed itself arrives
+/// entirely over [`EVENT_FLEET`] — the follower replays history from 0 — so all
+/// this carries is the cursor. It used to carry the board too; there is no board.
 #[derive(Serialize)]
 pub struct BootSnapshot {
-    board: Vec<Ticket>,
     latest_seq: i64,
 }
 
@@ -173,7 +171,7 @@ fn parse_target(text: &str) -> Result<Option<PathBuf>, String> {
 
 // --- bootstrap ----------------------------------------------------------------
 
-/// Start the embedded fleet (idempotent) and return the board snapshot.
+/// Start the embedded fleet (idempotent) and return the boot snapshot.
 ///
 /// First call: opens the store, wraps it in the live bus, spawns the follower
 /// pump, resolves the target, and binds the hub. Later calls (e.g. React
@@ -404,7 +402,7 @@ fn spawn_hub(
     let gate = shutdown.clone();
     let for_note = store.clone();
     rt.spawn(async move {
-        let hub = Hub::with_app(store, HubConfig::default(), app);
+        let hub = Hub::new(store, app);
         tokio::select! {
             result = hub.run(transport) => {
                 if let Err(e) = result {
@@ -513,10 +511,7 @@ pub fn shutdown(state: &FleetState) {
 }
 
 fn snapshot(store: &Arc<dyn Store>) -> Result<BootSnapshot, String> {
-    Ok(BootSnapshot {
-        board: store.tickets().map_err(|e| e.to_string())?,
-        latest_seq: store.latest_seq().map_err(|e| e.to_string())?,
-    })
+    Ok(BootSnapshot { latest_seq: store.latest_seq().map_err(|e| e.to_string())? })
 }
 
 // --- worker credentials -------------------------------------------------------
@@ -641,7 +636,7 @@ mod tests {
             let transport = UnixTransport::new(&sock);
             let mut client = connect(&transport, PaneId::Orch).await.expect("hub never came up");
             client
-                .call(Op::PaneSend { to: PaneId::Worker(1), text: "take T-4".into() })
+                .call(Op::Send { to: PaneId::Worker(1), text: "take T-4".into() })
                 .await
                 .expect("the hub answered")
         });

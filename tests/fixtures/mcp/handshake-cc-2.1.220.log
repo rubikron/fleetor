@@ -1,7 +1,0 @@
->>RECV {"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{"roots":{"listChanged":true},"elicitation":{}},"clientInfo":{"name":"claude-code","title":"Claude Code","version":"2.1.220","description":"Anthropic's agentic coding tool","websiteUrl":"https://claude.com/claude-code"}},"jsonrpc":"2.0","id":0}
-<<SENT {"jsonrpc":"2.0","id":0,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"spike","version":"0.0.0"}}}
->>RECV {"method":"notifications/initialized","jsonrpc":"2.0"}
->>RECV {"method":"tools/list","jsonrpc":"2.0","id":1}
-<<SENT {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"echo","description":"Echo back the message argument. Spike probe tool.","inputSchema":{"type":"object","properties":{"message":{"type":"string","description":"text to echo"}},"required":["message"]}}]}}
->>RECV {"method":"tools/call","params":{"name":"echo","arguments":{"message":"ping-from-cc"},"_meta":{"claudecode/toolUseId":"call_00_ma8mM7Qei9v2hOLBeYET7062","progressToken":2}},"jsonrpc":"2.0","id":2}
-<<SENT {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"echo: ping-from-cc"}]}}

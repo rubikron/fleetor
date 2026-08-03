@@ -13,10 +13,9 @@ use fleetor_core::wire::{Hello, Op, OpResult};
 use fleetor_core::Store;
 use fleetor_db::SqliteStore;
 use fleetor_ipc::{Client, Transport, UnixTransport};
-use fleetor_server::{AppCommand, DeliveryResult, Hub, HubConfig};
+use fleetor_server::{AppCommand, DeliveryResult, Hub};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 use tokio::sync::mpsc;
 
 const SLOTS: [u8; 3] = [1, 2, 3];
@@ -58,9 +57,9 @@ fn spawn_app(roster: Vec<PaneEntry>) -> (mpsc::UnboundedSender<AppCommand>, Writ
     (tx, writes)
 }
 
-/// A hub wired to a fake app. `roster` is what the app reports; `SLOTS` is what
-/// the hub is configured with — deliberately separate, because "this pane exists"
-/// and "this pane is alive" are different questions with different owners.
+/// A hub wired to a fake app. The roster is the app's alone: after Phase 5 there
+/// is no configured slot list to disagree with it, because a pane the app is not
+/// running cannot be messaged and a pane it is running must be reachable.
 async fn start_hub(roster: Vec<PaneEntry>) -> (Arc<UnixTransport>, Arc<SqliteStore>, Writes) {
     let dir = std::env::temp_dir().join(format!(
         "fleetor-pane-{}-{}",
@@ -71,11 +70,7 @@ async fn start_hub(roster: Vec<PaneEntry>) -> (Arc<UnixTransport>, Arc<SqliteSto
     let transport = Arc::new(UnixTransport::new(dir.join("fleet.sock")));
     let store = Arc::new(SqliteStore::open_in_memory().unwrap());
     let (app, writes) = spawn_app(roster);
-    let hub = Hub::with_app(
-        store.clone(),
-        HubConfig { slots: SLOTS.to_vec(), ask_timeout: Duration::from_secs(5) },
-        app,
-    );
+    let hub = Hub::new(store.clone(), app);
     let listener = transport.bind().await.unwrap();
     tokio::spawn(hub.serve(listener));
     (transport, store, writes)
@@ -117,7 +112,7 @@ async fn a_direct_send_reaches_a_live_pane_and_the_body_lands_in_the_log() {
     let mut orch = pane(&transport, PaneId::Orch).await;
 
     let result = orch
-        .call(Op::PaneSend { to: PaneId::Worker(2), text: "take the parser".into() })
+        .call(Op::Send { to: PaneId::Worker(2), text: "take the parser".into() })
         .await
         .unwrap();
     let OpResult::Delivered { msg_id, accepted, detail } = result else {
@@ -156,7 +151,7 @@ async fn a_dead_pane_is_rejected_loudly_but_a_spawning_one_still_accepts() {
     let (transport, store, writes) = start_hub(roster).await;
     let mut orch = pane(&transport, PaneId::Orch).await;
 
-    let dead = orch.call(Op::PaneSend { to: PaneId::Worker(2), text: "ping".into() }).await.unwrap();
+    let dead = orch.call(Op::Send { to: PaneId::Worker(2), text: "ping".into() }).await.unwrap();
     let OpResult::Delivered { accepted, detail, .. } = dead else {
         panic!("expected a delivery, got {dead:?}");
     };
@@ -166,7 +161,7 @@ async fn a_dead_pane_is_rejected_loudly_but_a_spawning_one_still_accepts() {
     // Still booting is not a reason to refuse: gating on a guess about whether the
     // TUI has reached its prompt is how a healthy pane silently goes mute.
     let spawning =
-        orch.call(Op::PaneSend { to: PaneId::Worker(3), text: "ping".into() }).await.unwrap();
+        orch.call(Op::Send { to: PaneId::Worker(3), text: "ping".into() }).await.unwrap();
     assert!(
         matches!(spawning, OpResult::Delivered { accepted: true, .. }),
         "a spawning pane must accept: {spawning:?}"
@@ -189,14 +184,14 @@ async fn membership_is_the_apps_answer_and_a_self_send_is_refused() {
     let (transport, store, _writes) = start_hub(all_live()).await;
     let mut orch = pane(&transport, PaneId::Orch).await;
 
-    let unknown = orch.call(Op::PaneSend { to: PaneId::Worker(9), text: "x".into() }).await.unwrap();
+    let unknown = orch.call(Op::Send { to: PaneId::Worker(9), text: "x".into() }).await.unwrap();
     let OpResult::Delivered { accepted, detail, .. } = unknown else {
         panic!("expected a delivery, got {unknown:?}");
     };
     assert!(!accepted);
     assert_eq!(detail.as_deref(), Some("no pane worker-9 is running"));
 
-    let selfsend = orch.call(Op::PaneSend { to: PaneId::Orch, text: "x".into() }).await.unwrap();
+    let selfsend = orch.call(Op::Send { to: PaneId::Orch, text: "x".into() }).await.unwrap();
     assert!(
         matches!(&selfsend, OpResult::Error { message } if message.contains("cannot message itself")),
         "got {selfsend:?}"
@@ -214,7 +209,7 @@ async fn a_pane_outside_the_hub_config_is_still_reachable() {
     let (transport, _store, writes) = start_hub(roster).await;
     let mut orch = pane(&transport, PaneId::Orch).await;
 
-    let result = orch.call(Op::PaneSend { to: PaneId::Worker(7), text: "hi".into() }).await.unwrap();
+    let result = orch.call(Op::Send { to: PaneId::Worker(7), text: "hi".into() }).await.unwrap();
     assert!(matches!(result, OpResult::Delivered { accepted: true, .. }), "got {result:?}");
     assert_eq!(writes.lock().unwrap().len(), 1);
 }
@@ -227,7 +222,7 @@ async fn a_broadcast_fans_out_to_every_other_pane_under_one_group() {
     let (transport, store, writes) = start_hub(all_live()).await;
     let mut w1 = pane(&transport, PaneId::Worker(1)).await;
 
-    let result = w1.call(Op::PaneBroadcast { text: "rebasing onto master".into() }).await.unwrap();
+    let result = w1.call(Op::Broadcast { text: "rebasing onto master".into() }).await.unwrap();
     let OpResult::Delivered { msg_id: group, accepted, detail } = result else {
         panic!("expected a delivery, got {result:?}");
     };
@@ -270,7 +265,7 @@ async fn a_partly_undeliverable_broadcast_names_the_panes_that_missed_it() {
     let (transport, _store, writes) = start_hub(roster).await;
     let mut w1 = pane(&transport, PaneId::Worker(1)).await;
 
-    let result = w1.call(Op::PaneBroadcast { text: "status?".into() }).await.unwrap();
+    let result = w1.call(Op::Broadcast { text: "status?".into() }).await.unwrap();
     let OpResult::Delivered { accepted, detail, .. } = result else {
         panic!("expected a delivery, got {result:?}");
     };
@@ -290,13 +285,13 @@ async fn reply_routes_to_whoever_last_got_through() {
     let mut w1 = pane(&transport, PaneId::Worker(1)).await;
     let mut w2 = pane(&transport, PaneId::Worker(2)).await;
 
-    orch.call(Op::PaneSend { to: PaneId::Worker(2), text: "take the parser".into() }).await.unwrap();
-    let replied = w2.call(Op::PaneReply { text: "on it".into() }).await.unwrap();
+    orch.call(Op::Send { to: PaneId::Worker(2), text: "take the parser".into() }).await.unwrap();
+    let replied = w2.call(Op::Reply { text: "on it".into() }).await.unwrap();
     assert!(matches!(replied, OpResult::Delivered { accepted: true, .. }), "got {replied:?}");
 
     // worker-1 now messages worker-2; worker-2's reply target moves to worker-1.
-    w1.call(Op::PaneSend { to: PaneId::Worker(2), text: "I own src/api".into() }).await.unwrap();
-    w2.call(Op::PaneReply { text: "noted".into() }).await.unwrap();
+    w1.call(Op::Send { to: PaneId::Worker(2), text: "I own src/api".into() }).await.unwrap();
+    w2.call(Op::Reply { text: "noted".into() }).await.unwrap();
 
     assert_eq!(
         writes.lock().unwrap().clone(),
@@ -316,7 +311,7 @@ async fn reply_with_no_inbound_message_says_so() {
     let (transport, store, _writes) = start_hub(all_live()).await;
     let mut w3 = pane(&transport, PaneId::Worker(3)).await;
 
-    let result = w3.call(Op::PaneReply { text: "hello?".into() }).await.unwrap();
+    let result = w3.call(Op::Reply { text: "hello?".into() }).await.unwrap();
     let OpResult::Error { message } = result else { panic!("expected an error, got {result:?}") };
     assert!(message.contains("nobody has messaged worker-3"), "{message}");
     assert!(message.contains("fleet send"), "the error names the verb to use instead: {message}");
@@ -338,8 +333,8 @@ async fn a_rejected_delivery_does_not_become_a_reply_target() {
     let mut w1 = pane(&transport, PaneId::Worker(1)).await;
 
     // worker-2 → worker-1 fails (worker-1 is dead), so worker-1 owes no reply...
-    w2.call(Op::PaneSend { to: PaneId::Worker(1), text: "you there?".into() }).await.unwrap();
-    let result = w1.call(Op::PaneReply { text: "yes".into() }).await.unwrap();
+    w2.call(Op::Send { to: PaneId::Worker(1), text: "you there?".into() }).await.unwrap();
+    let result = w1.call(Op::Reply { text: "yes".into() }).await.unwrap();
     assert!(matches!(result, OpResult::Error { .. }), "got {result:?}");
 }
 
@@ -360,51 +355,37 @@ async fn roster_reports_live_state_from_the_app() {
     assert_eq!(result, OpResult::Roster { panes: roster });
 }
 
-/// Pane identity comes from the `Hello`. A connection that never declared one is
-/// refused rather than guessed at — a misattributed message is unrecoverable.
+/// The fleet app going away — the window closed, its receiver dropped — must
+/// fail every send rather than logging deliveries into the void.
+///
+/// The Phase-5 replacement for "a hub with no app": `Hub::new` now *requires* an
+/// app, so the never-attached case is structurally impossible rather than merely
+/// tested. Identity is the same story — `Hello` carries a `PaneId`, not an
+/// `Option<PaneId>`, so an anonymous connection can no longer be constructed and
+/// the test that checked it was refused has nothing left to check.
 #[tokio::test]
-async fn a_connection_without_a_pane_cannot_use_the_pane_surface() {
-    let (transport, store, _writes) = start_hub(all_live()).await;
-    let mut anon =
-        Client::connect(transport.as_ref(), Hello::new(fleetor_core::Party::Lead)).await.unwrap();
-
-    for op in [
-        Op::PaneSend { to: PaneId::Worker(1), text: "x".into() },
-        Op::PaneBroadcast { text: "x".into() },
-        Op::PaneReply { text: "x".into() },
-    ] {
-        let result = anon.call(op.clone()).await.unwrap();
-        assert!(
-            matches!(&result, OpResult::Error { message } if message.contains("did not identify a pane")),
-            "{op:?} gave {result:?}"
-        );
-    }
-    assert!(messages(&store).is_empty());
-}
-
-/// A hub with no app attached must fail every send rather than logging deliveries
-/// into the void. This is the state between "fleet started" and "panes spawned".
-#[tokio::test]
-async fn a_hub_with_no_app_rejects_instead_of_pretending() {
+async fn a_hub_whose_app_has_gone_rejects_instead_of_pretending() {
     let dir = std::env::temp_dir()
         .join(format!("fleetor-noapp-{}-{}", std::process::id(), fleetor_core::ids::new_id("t")));
     std::fs::create_dir_all(&dir).unwrap();
     let transport = Arc::new(UnixTransport::new(dir.join("fleet.sock")));
     let store = Arc::new(SqliteStore::open_in_memory().unwrap());
-    let hub = Hub::new(
-        store.clone(),
-        HubConfig { slots: SLOTS.to_vec(), ask_timeout: Duration::from_secs(5) },
-    );
+
+    // An app that is not listening: the sender survives, its receiver does not.
+    let (app, rx) = mpsc::unbounded_channel::<AppCommand>();
+    drop(rx);
+
+    let hub = Hub::new(store.clone(), app);
     let listener = transport.bind().await.unwrap();
     tokio::spawn(hub.serve(listener));
 
     let mut orch = pane(&transport, PaneId::Orch).await;
-    let result = orch.call(Op::PaneSend { to: PaneId::Worker(1), text: "x".into() }).await.unwrap();
+    let result = orch.call(Op::Send { to: PaneId::Worker(1), text: "x".into() }).await.unwrap();
     let OpResult::Delivered { accepted, detail, .. } = result else {
         panic!("expected a delivery, got {result:?}")
     };
     assert!(!accepted);
-    assert!(detail.unwrap().contains("no fleet app"));
+    assert!(detail.unwrap().contains("not accepting commands"));
     assert_eq!(messages(&store).len(), 1, "the failed attempt is still on the record");
 }
 
@@ -420,12 +401,12 @@ async fn a_broadcast_does_not_hijack_a_recipients_reply_target() {
     let mut w2 = pane(&transport, PaneId::Worker(2)).await;
 
     // orch opens a conversation with worker-2...
-    orch.call(Op::PaneSend { to: PaneId::Worker(2), text: "take the parser".into() }).await.unwrap();
+    orch.call(Op::Send { to: PaneId::Worker(2), text: "take the parser".into() }).await.unwrap();
     // ...then worker-1 broadcasts, reaching worker-2 among others.
-    w1.call(Op::PaneBroadcast { text: "rebasing onto master".into() }).await.unwrap();
+    w1.call(Op::Broadcast { text: "rebasing onto master".into() }).await.unwrap();
 
     // worker-2's reply must still go to orch, not to worker-1.
-    let replied = w2.call(Op::PaneReply { text: "on it".into() }).await.unwrap();
+    let replied = w2.call(Op::Reply { text: "on it".into() }).await.unwrap();
     assert!(matches!(replied, OpResult::Delivered { accepted: true, .. }), "got {replied:?}");
 
     let last = writes.lock().unwrap().last().cloned().unwrap();
@@ -444,8 +425,8 @@ async fn a_broadcast_alone_gives_its_recipients_nobody_to_reply_to() {
     let mut w1 = pane(&transport, PaneId::Worker(1)).await;
     let mut w3 = pane(&transport, PaneId::Worker(3)).await;
 
-    w1.call(Op::PaneBroadcast { text: "status?".into() }).await.unwrap();
-    let result = w3.call(Op::PaneReply { text: "fine".into() }).await.unwrap();
+    w1.call(Op::Broadcast { text: "status?".into() }).await.unwrap();
+    let result = w3.call(Op::Reply { text: "fine".into() }).await.unwrap();
     assert!(
         matches!(&result, OpResult::Error { message } if message.contains("nobody has messaged worker-3")),
         "got {result:?}"

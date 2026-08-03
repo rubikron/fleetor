@@ -828,15 +828,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fleetor-cc"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "fleetor-core"
 version = "0.0.0"
 dependencies = [
@@ -873,10 +864,8 @@ name = "fleetor-server"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "fleetor-cc",
  "fleetor-core",
  "fleetor-ipc",
- "libc",
  "serde",
  "serde_json",
  "tokio",

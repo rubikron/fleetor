@@ -80,6 +80,27 @@ pub const MIGRATIONS: &[&str] = &[
         ts       INTEGER NOT NULL
     );
     "#,
+    // 0003 — the TUI pivot (D-030). Every table the headless supervisor owned
+    // goes; `events` is all that is left, because a fleet of live terminals has
+    // no state to persist beyond what it said. Appended rather than edited, per
+    // this file's own rule, so an existing database migrates rather than being
+    // rebuilt from a schema it never had.
+    //
+    // **`DELETE FROM events` is deliberate, and it is the destructive part.**
+    // Every row already in the log is a variant `FleetEvent` no longer has —
+    // worker states, ticket moves, tool activity. `events_since` would meet the
+    // first of them on replay and, before the skip-and-warn below, would have
+    // failed the whole read: a shell that shows nothing because of what happened
+    // three phases ago. The log is an observability record of a system that has
+    // been replaced, not durable user data.
+    r#"
+    DROP TABLE IF EXISTS tickets;
+    DROP TABLE IF EXISTS leases;
+    DROP TABLE IF EXISTS mail;
+    DROP TABLE IF EXISTS knowledge_proposals;
+    DROP TABLE IF EXISTS backlog;
+    DELETE FROM events;
+    "#,
 ];
 
 /// Bring `conn` up to the latest schema version. Idempotent.

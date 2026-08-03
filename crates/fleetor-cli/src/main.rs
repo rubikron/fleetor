@@ -90,12 +90,12 @@ fn run() -> Result<ExitCode> {
     }
 
     let op = match cli.command {
-        Command::Send { pane, text } => Op::PaneSend {
+        Command::Send { pane, text } => Op::Send {
             to: pane.parse::<PaneId>().map_err(|e| anyhow::anyhow!("{e}"))?,
             text: join(text),
         },
-        Command::Broadcast { text } => Op::PaneBroadcast { text: join(text) },
-        Command::Reply { text } => Op::PaneReply { text: join(text) },
+        Command::Broadcast { text } => Op::Broadcast { text: join(text) },
+        Command::Reply { text } => Op::Reply { text: join(text) },
         Command::Roster => Op::Roster,
         Command::Whoami => unreachable!("handled above"),
     };
@@ -140,13 +140,6 @@ fn report(result: OpResult) -> bool {
         }
         OpResult::Error { message } => {
             eprintln!("fleet: {message}");
-            false
-        }
-        // Every other variant belongs to the pre-D-030 headless surface Phase 5
-        // deletes. Reaching one means the hub answered a different question than
-        // we asked, which is a bug worth naming rather than exiting zero on.
-        other => {
-            eprintln!("fleet: unexpected answer from the hub: {other:?}");
             false
         }
     }
@@ -232,7 +225,5 @@ mod tests {
         };
         assert!(!report(refused), "a refused send must not exit zero");
         assert!(!report(OpResult::Error { message: "no such pane".into() }));
-        // A hub answering a different question is a failure, not a quiet success.
-        assert!(!report(OpResult::Ack));
     }
 }

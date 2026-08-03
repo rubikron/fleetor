@@ -1,87 +1,23 @@
-//! The event stream the fleet server emits to the CLI and (Phase 4) the UI
-//! (BUILDING §4.2). Append-only: every state change is one `FleetEvent`
-//! persisted to the `events` log. Phase 1 emits worker-state, ticket-state,
-//! tool-activity, report, and notice events; mail and gate events are defined
-//! now but not emitted until Phases 2–3.
+//! The append-only event log's payloads (BUILDING §4).
+//!
+//! Three variants. Phase 5 deleted the other ten along with the headless fleet
+//! that emitted them — worker states, ticket moves, tool activity, reports, gate
+//! results, review verdicts, mail routing. None of them describe a fleet of live
+//! terminals, and keeping them "in case" would have left the log able to
+//! describe a supervisor that no longer exists, which is how a ticket system
+//! grows back.
+//!
+//! What is left is what the TUI fleet actually does: it messages, it moves panes
+//! through a lifecycle, and it tells the operator when something is wrong.
 
 use crate::pane::{PaneId, PaneState};
 use serde::{Deserialize, Serialize};
-
-/// A worker slot's lifecycle state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum WorkerState {
-    /// Spawned, awaiting the `init` event.
-    Booting,
-    /// Alive, no ticket in flight.
-    Idle,
-    /// A turn is running.
-    Working,
-    /// Parked on an `ask_lead` (Phase 2).
-    Blocked,
-    /// Process gone.
-    Dead,
-}
-
-/// A ticket's position on the board.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum TicketState {
-    #[default]
-    Backlog,
-    Assigned,
-    InProgress,
-    InReview,
-    Done,
-    Blocked,
-    Failed,
-}
-
-/// Result of an exit-gate run (Phase 3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum GateOutcome {
-    Pass,
-    Fail,
-}
-
-/// Result of a peer review (Phase 3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ReviewOutcome {
-    Approved,
-    ChangesRequested,
-}
 
 /// One entry in the append-only event log. `#[serde(tag = "type")]` gives each
 /// variant a stable discriminator that also becomes the `kind` column in the DB.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum FleetEvent {
-    WorkerState { slot: u8, from: WorkerState, to: WorkerState },
-    TicketState { ticket: String, from: TicketState, to: TicketState },
-    /// A tool call observed in a worker's stream — drives the dashboard
-    /// "activity" line (handoff §10).
-    ToolActivity { slot: u8, ticket: String, tool: String },
-    /// A structured report was ingested.
-    ReportFiled { ticket: String, slot: u8, status: super::report::ReportStatus },
-    /// Mail routed between parties (Phase 2).
-    Mail { id: String, from: String, to: String, kind: String },
-    /// Exit-gate outcome (Phase 3).
-    GateResult { ticket: String, slot: u8, outcome: GateOutcome },
-    /// Peer-review verdict (Phase 3). `reviewer_slot` is the fresh agent that
-    /// reviewed, distinct from the slot that did the work.
-    ReviewResult { ticket: String, reviewer_slot: u8, outcome: ReviewOutcome },
-    /// Free-form operational note (timeouts, crashes, reprompts).
-    Notice { level: NoticeLevel, text: String },
-    /// A worker's assistant text, for the transcript view (observability only).
-    WorkerSaid { slot: u8, ticket: String, text: String },
-    /// A worker process ended. `ok` is false on crash/timeout/spawn-failure, with
-    /// `detail` carrying the captured stderr tail — the reason a headless worker
-    /// died, which was invisible before (stderr used to be dropped).
-    WorkerExited { slot: u8, ticket: String, ok: bool, detail: String },
-
-    // ---- the TUI fleet (D-030) ----
     /// One pane→pane message, **body included** — the append-only message log the
     /// feed replays, and the reason there is no mail queue any more.
     ///
@@ -103,6 +39,11 @@ pub enum FleetEvent {
     },
     /// A pane moved through its lifecycle (spawning → live → dead).
     PaneState { pane: PaneId, from: PaneState, to: PaneState },
+    /// Free-form operational note. The honest-failure channel: a target that
+    /// could not be read, a `fleet` binary that is not there, a socket that would
+    /// not bind. Everything that would otherwise leave the shell looking fine
+    /// while something the operator cares about is broken.
+    Notice { level: NoticeLevel, text: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,18 +59,9 @@ impl FleetEvent {
     /// log lines. Derived from the serialized form so it can never drift.
     pub fn kind(&self) -> &'static str {
         match self {
-            FleetEvent::WorkerState { .. } => "worker-state",
-            FleetEvent::TicketState { .. } => "ticket-state",
-            FleetEvent::ToolActivity { .. } => "tool-activity",
-            FleetEvent::ReportFiled { .. } => "report-filed",
-            FleetEvent::Mail { .. } => "mail",
-            FleetEvent::GateResult { .. } => "gate-result",
-            FleetEvent::ReviewResult { .. } => "review-result",
-            FleetEvent::Notice { .. } => "notice",
-            FleetEvent::WorkerSaid { .. } => "worker-said",
-            FleetEvent::WorkerExited { .. } => "worker-exited",
             FleetEvent::Message { .. } => "message",
             FleetEvent::PaneState { .. } => "pane-state",
+            FleetEvent::Notice { .. } => "notice",
         }
     }
 }
@@ -139,7 +71,7 @@ mod tests {
     use super::*;
 
     /// `kind()` is the DB's `kind` column, so it must equal the serialized `type`
-    /// tag for every variant — including the two new ones.
+    /// tag for every variant.
     #[test]
     fn kind_matches_the_serialized_type_tag() {
         let events = [
@@ -157,6 +89,7 @@ mod tests {
                 from: PaneState::Spawning,
                 to: PaneState::Live,
             },
+            FleetEvent::Notice { level: NoticeLevel::Warn, text: "no fleet binary".into() },
         ];
         for event in events {
             let json: serde_json::Value = serde_json::to_value(&event).unwrap();

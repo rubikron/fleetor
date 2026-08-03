@@ -37,7 +37,12 @@ export function paneSlot(pane: PaneId): number | null {
 /// no name for because an unspawned pane simply is not in its registry.
 export type PaneStatus = "idle" | "live" | "dead";
 
-// The append-only event, discriminated on `type`, each carrying its `seq`.
+/// The append-only event, discriminated on `type`, each carrying its `seq`.
+///
+/// Three variants, because that is all `fleetor_core::FleetEvent` has after
+/// Phase 5. The ten that described the headless supervisor — worker states,
+/// ticket moves, tool activity, reports, gate results, review verdicts, mail
+/// routing — went with it.
 export type FleetEvent =
   | {
       seq: number;
@@ -52,16 +57,8 @@ export type FleetEvent =
       accepted: boolean;
       detail?: string | null;
     }
-  | { seq: number; type: "notice"; level: NoticeLevel; text: string }
-  | { seq: number; type: "mail"; id: string; from: string; to: string; kind: string }
-  | { seq: number; type: "worker-state"; slot: number; from: string; to: string }
-  | { seq: number; type: "ticket-state"; ticket: string; from: string; to: string }
-  | { seq: number; type: "tool-activity"; slot: number; ticket: string; tool: string }
-  | { seq: number; type: "report-filed"; ticket: string; slot: number; status: string }
-  | { seq: number; type: "gate-result"; ticket: string; slot: number; outcome: string }
-  | { seq: number; type: "review-result"; ticket: string; reviewer_slot: number; outcome: string }
-  | { seq: number; type: "worker-said"; slot: number; ticket: string; text: string }
-  | { seq: number; type: "worker-exited"; slot: number; ticket: string; ok: boolean; detail: string };
+  | { seq: number; type: "pane-state"; pane: PaneId; from: string; to: string }
+  | { seq: number; type: "notice"; level: NoticeLevel; text: string };
 
 export type MessageEvent = Extract<FleetEvent, { type: "message" }>;
 

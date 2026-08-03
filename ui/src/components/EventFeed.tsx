@@ -26,22 +26,17 @@ function render(event: FleetEvent): Rendered {
         text: event.text,
         rail: event.level !== "info",
       };
-    case "mail":
-      return { kind: "mail", tone: "neutral", text: `${event.from} → ${event.to} (${event.kind})`, rail: false };
-    case "worker-state":
-      return { kind: "worker", tone: "neutral", text: `worker-${event.slot} ${event.from} → ${event.to}`, rail: false };
-    case "worker-exited":
+    case "pane-state":
       return {
-        kind: "exit",
-        tone: event.ok ? "neutral" : "red",
-        text: event.ok ? `worker-${event.slot} exited` : `worker-${event.slot} died — ${event.detail || "no output"}`,
-        rail: !event.ok,
+        kind: "pane",
+        tone: event.to === "dead" ? "red" : "neutral",
+        text: `${event.pane} ${event.from} → ${event.to}`,
+        rail: event.to === "dead",
       };
-    // The remaining variants belong to the headless surface Phase 5 removes.
-    // Rendered generically rather than enumerated, so deleting one of them is a
-    // change to the backend alone.
-    default:
-      return { kind: event.type, tone: "neutral", text: JSON.stringify(event), rail: false };
+    // Messages have their own view; `EventFeed` filters them out before it gets
+    // here, so this arm exists only to keep the switch exhaustive.
+    case "message":
+      return { kind: "message", tone: "neutral", text: event.body, rail: false };
   }
 }
 
