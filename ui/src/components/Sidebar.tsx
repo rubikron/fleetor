@@ -1,26 +1,26 @@
-// The navigation spine (handoff §11): workspace views up top, a Configure group
-// below. 4e-1 wired Tickets + Event log; the redesign pass adds the live Fleet
-// topology view. The rest stays the roomy, future-proof scaffold the handoff
-// calls for (disabled until their phases land).
+// The navigation spine. Four views now that the fleet is five terminals rather
+// than a board: the terminals themselves, the message record, the topology, and
+// the activity log that carries the backend's notices. The rest stays the roomy
+// scaffold the handoff calls for, disabled until their phases land.
 
-export type View = "board" | "events" | "fleet" | "workers";
+export type View = "fleet" | "messages" | "topology" | "activity";
 
 interface SidebarProps {
   view: View;
   onSelect: (view: View) => void;
-  unread: number;
+  messageCount: number;
 }
 
-const WORKSPACE: { view: View; label: string; isNew?: boolean }[] = [
-  { view: "board", label: "Tickets" },
-  { view: "events", label: "Event log" },
-  { view: "fleet", label: "Fleet", isNew: true },
-  { view: "workers", label: "Workers", isNew: true },
+const WORKSPACE: { view: View; label: string }[] = [
+  { view: "fleet", label: "Terminals" },
+  { view: "messages", label: "Messages" },
+  { view: "topology", label: "Topology" },
+  { view: "activity", label: "Activity" },
 ];
 
 const SOON = ["Diffs", "Knowledge", "Profiles", "Gate", "Models", "Settings"];
 
-export function Sidebar({ view, onSelect, unread }: SidebarProps) {
+export function Sidebar({ view, onSelect, messageCount }: SidebarProps) {
   return (
     <nav className="sidebar">
       <div className="sidebar__group" role="tablist" aria-label="Workspace views">
@@ -33,8 +33,9 @@ export function Sidebar({ view, onSelect, unread }: SidebarProps) {
             onClick={() => onSelect(item.view)}
           >
             <span>{item.label}</span>
-            {item.view === "events" && unread > 0 && <span className="badge">{unread}</span>}
-            {item.isNew && <span className="nav__new">new</span>}
+            {item.view === "messages" && messageCount > 0 && (
+              <span className="badge">{messageCount}</span>
+            )}
           </button>
         ))}
       </div>

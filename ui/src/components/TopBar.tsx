@@ -23,7 +23,7 @@ function pills(config: FleetConfig | null): Pill[] {
   return [
     { label: "target", value: config.target, tone: "neutral" },
     { label: "branch", value: config.branch, tone: "neutral" },
-    { label: "workers", value: config.worker_backend, tone: config.worker_backend === "flash" ? "gold" : "neutral" },
+    { label: "workers", value: config.worker_backend, tone: config.worker_backend === "none" ? "neutral" : "gold" },
     { label: "gate", value: config.gate, tone: "green" },
   ];
 }

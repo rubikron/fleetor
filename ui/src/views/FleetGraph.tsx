@@ -1,24 +1,26 @@
-// The Fleet topology — a bespoke, directional live-flow view (not a recolored
-// node-graph library). The lead sits at the centre; the four workers around it in
-// an asymmetric, signal-driven layout (blocked worker largest, idle smallest).
-// Each non-idle edge carries a single message dot travelling in its real
-// direction — assign/work flows lead→worker, an `ask_lead` flows worker→lead.
+// The topology — a bespoke, directional live-flow view (not a recolored
+// node-graph library). The orchestrator sits at the centre with the four workers
+// around it, and an edge lights when a message has just crossed it, travelling
+// in the direction it actually went.
 //
-// It reads the same live data as the rest of the shell: worker state from the
-// event stream, plus a glance at the newest feed entries to light an edge gold
-// when a message just crossed it. No backend calls, no new data — another
-// consumer of the 4c bus.
+// Repurposed for the TUI fleet. Two things changed and both were bugs of the same
+// kind — a picture that showed something the system no longer does:
+//
+//  - `blocked` / `ask_lead` are gone. Nothing blocks any more; a live `claude`
+//    TUI is always writable, which is the whole reason the mail queue and the
+//    turn boundary went away. An edge that could still light "blocked" would be
+//    drawing a state the fleet cannot enter.
+//  - `edgeKind` read only `e.to`, so a worker→orch message never lit anything.
+//    Half the traffic in a fleet whose product is conversation was invisible.
 
-import type { WorkerCell } from "../fleet/useFleet";
-import type { FleetEvent } from "../fleet/types";
+import { ORCH, isMessage, type FleetEvent, type PaneId, type PaneStatus } from "../fleet/types";
 
-type EdgeKind = "active" | "mail" | "blocked" | "idle";
+type EdgeKind = "inbound" | "outbound" | "quiet";
 
-// Fixed, deliberately asymmetric geometry per slot. `d` always runs lead→worker;
-// blocked simply reverses the dot and puts the arrowhead at the lead end.
 interface SlotLayout {
   cx: number;
   cy: number;
+  /// Always drawn orch→worker; an inbound edge reverses the dot and the arrowhead.
   d: string;
   labelX: number;
   labelY: number;
@@ -33,57 +35,57 @@ const LAYOUT: Record<number, SlotLayout> = {
   4: { cx: 740, cy: 366, d: "M 452 262 C 560 306, 660 340, 706 356", labelX: 596, labelY: 330 },
 };
 
-function nodeRadius(state: WorkerCell["state"]): number {
-  if (state === "blocked") return 46;
-  if (state === "idle" || state === "dead") return 32;
-  return 40;
+/// How many of the newest events count as "just now" for lighting an edge.
+const RECENT = 6;
+
+/// Which way, if any, this worker's edge is lit. Reads **both** ends of a
+/// message, so worker→orch traffic lights the edge exactly as orch→worker does.
+function edgeKind(slot: number, recent: FleetEvent[]): EdgeKind {
+  const pane: PaneId = `worker-${slot}`;
+  for (const event of recent) {
+    if (!isMessage(event)) continue;
+    if (event.from === ORCH && event.to === pane) return "outbound";
+    if (event.from === pane) return "inbound";
+  }
+  return "quiet";
 }
 
-function edgeKind(cell: WorkerCell, feed: FleetEvent[]): EdgeKind {
-  if (cell.state === "blocked") return "blocked";
-  if (cell.state === "idle" || cell.state === "dead") return "idle";
-  // a message just crossed this edge → light it gold briefly (newest entries)
-  const recentMail = feed.slice(0, 4).some((e) => e.type === "mail" && e.to === String(cell.slot));
-  return recentMail ? "mail" : "active";
+function nodeRadius(status: PaneStatus): number {
+  if (status === "live") return 40;
+  return 32;
 }
 
-function WorkerNode({ cell, feed }: { cell: WorkerCell; feed: FleetEvent[] }) {
-  const geo = LAYOUT[cell.slot];
+interface NodeProps {
+  slot: number;
+  status: PaneStatus;
+  recent: FleetEvent[];
+}
+
+function WorkerNode({ slot, status, recent }: NodeProps) {
+  const geo = LAYOUT[slot];
   if (!geo) return null;
-  const kind = edgeKind(cell, feed);
-  const r = nodeRadius(cell.state);
-  const idle = kind === "idle";
-  const edgeId = `fe-s${cell.slot}`;
 
+  const kind = edgeKind(slot, recent);
+  const quiet = kind === "quiet";
+  const edgeId = `fe-s${slot}`;
   const ringClass =
-    cell.state === "blocked"
-      ? "node-ring node-ring--blocked"
-      : idle
-        ? "node-ring node-ring--idle"
-        : "node-ring node-ring--active";
-
-  const label =
-    kind === "blocked" ? "ask_lead" : kind === "mail" ? "mail" : cell.ticket ?? "";
-  const labelClass =
-    kind === "blocked" ? "edge-label edge-label--blocked" : kind === "mail" ? "edge-label edge-label--mail" : "edge-label";
+    status === "live" ? "node-ring node-ring--active" : "node-ring node-ring--idle";
 
   return (
     <g>
-      {/* edge */}
       <path
         id={edgeId}
         className={`edge edge--${kind}`}
         d={geo.d}
-        markerEnd={kind === "active" || kind === "mail" ? "url(#ah-coral)" : undefined}
-        markerStart={kind === "blocked" ? "url(#ah-coral)" : undefined}
+        markerEnd={kind === "outbound" ? "url(#ah-coral)" : undefined}
+        markerStart={kind === "inbound" ? "url(#ah-coral)" : undefined}
       />
-      {/* travelling message dot (skipped for idle edges) */}
-      {!idle && (
-        <circle className={kind === "mail" ? "msg--mail" : kind === "blocked" ? "msg--blocked" : "msg--work"} r={3.4}>
+      {!quiet && (
+        <circle className="msg--mail" r={3.4}>
           <animateMotion
-            dur={kind === "blocked" ? "1.6s" : kind === "mail" ? "2s" : "2.8s"}
+            dur="2s"
             repeatCount="indefinite"
-            keyPoints={kind === "blocked" ? "1;0" : "0;1"}
+            keyPoints={kind === "inbound" ? "1;0" : "0;1"}
             keyTimes="0;1"
             calcMode="linear"
           >
@@ -91,48 +93,52 @@ function WorkerNode({ cell, feed }: { cell: WorkerCell; feed: FleetEvent[] }) {
           </animateMotion>
         </circle>
       )}
-      {/* edge label */}
-      {!idle && label && (
-        <text className={labelClass} x={geo.labelX} y={geo.labelY} textAnchor="middle">
-          {label}
+      {!quiet && (
+        <text className="edge-label edge-label--mail" x={geo.labelX} y={geo.labelY} textAnchor="middle">
+          {kind === "inbound" ? "→ orch" : "→ worker"}
         </text>
       )}
-      {/* node */}
-      <circle className={ringClass} cx={geo.cx} cy={geo.cy} r={r} />
-      <text className={`node-label ${idle ? "node-label--dim" : ""}`} x={geo.cx} y={geo.cy - 6} textAnchor="middle">
-        worker-{cell.slot}
+      <circle className={ringClass} cx={geo.cx} cy={geo.cy} r={nodeRadius(status)} />
+      <text
+        className={`node-label ${status === "live" ? "" : "node-label--dim"}`}
+        x={geo.cx}
+        y={geo.cy - 4}
+        textAnchor="middle"
+      >
+        worker-{slot}
       </text>
-      <text className="node-sub" x={geo.cx} y={geo.cy + 9} textAnchor="middle">
-        {cell.ticket ?? "idle"}
+      <text className="node-sub" x={geo.cx} y={geo.cy + 12} textAnchor="middle">
+        {status === "live" ? "live" : status === "dead" ? "exited" : "standby"}
       </text>
-      {!idle && (
-        <text
-          className="node-state"
-          x={geo.cx}
-          y={geo.cy + 24}
-          textAnchor="middle"
-          fill={cell.state === "blocked" ? "#d97757" : "#d97757"}
-        >
-          {cell.state}
-        </text>
-      )}
     </g>
   );
 }
 
-export function FleetGraph({ workers, feed }: { workers: WorkerCell[]; feed: FleetEvent[] }) {
+interface FleetGraphProps {
+  statuses: Record<PaneId, PaneStatus>;
+  feed: FleetEvent[];
+  leadModel: string;
+}
+
+export function FleetGraph({ statuses, feed, leadModel }: FleetGraphProps) {
+  const recent = feed.slice(0, RECENT);
+  const orchStatus = statuses[ORCH] ?? "idle";
+  const slots = Object.keys(LAYOUT)
+    .map(Number)
+    .sort((a, b) => a - b);
+
   return (
     <div className="fleet-view">
       <div className="fleet-view__head">
-        <h3>Fleet</h3>
-        <span className="label">live topology</span>
+        <h3>Topology</h3>
+        <span className="label">who is talking to whom, live</span>
       </div>
       <svg
         className="fleet-stage"
         viewBox="0 0 900 470"
         preserveAspectRatio="xMidYMid meet"
         role="img"
-        aria-label="Fleet topology: the lead orchestrating its workers, with live message and work flow along the edges."
+        aria-label="Fleet topology: the orchestrator and its four worker terminals, with message flow along the edges."
       >
         <defs>
           {/* literal hex — CSS vars don't resolve in marker attributes */}
@@ -141,29 +147,33 @@ export function FleetGraph({ workers, feed }: { workers: WorkerCell[]; feed: Fle
           </marker>
         </defs>
 
-        {workers.map((cell) => (
-          <WorkerNode key={cell.slot} cell={cell} feed={feed} />
+        {slots.map((slot) => (
+          <WorkerNode
+            key={slot}
+            slot={slot}
+            status={statuses[`worker-${slot}`] ?? "idle"}
+            recent={recent}
+          />
         ))}
 
-        {/* lead node, drawn last so it sits above the edges */}
+        {/* orchestrator, drawn last so it sits above the edges */}
         <g>
           <circle className="node-ring node-ring--lead" cx={LEAD.cx} cy={LEAD.cy} r={LEAD.r} />
           <text className="node-label" x={LEAD.cx} y={LEAD.cy - 8} textAnchor="middle">
             orchestrator
           </text>
           <text className="node-sub" x={LEAD.cx} y={LEAD.cy + 8} textAnchor="middle">
-            lead · opus
+            {leadModel}
           </text>
           <text className="node-state" x={LEAD.cx} y={LEAD.cy + 24} textAnchor="middle" fill="#c69a4e">
-            standby
+            {orchStatus === "live" ? "live" : orchStatus === "dead" ? "exited" : "standby"}
           </text>
         </g>
       </svg>
       <div className="fleet-legend">
-        <span><i className="legend-swatch" style={{ background: "var(--accent)" }} /> active work</span>
         <span><i className="legend-swatch" style={{ background: "var(--gold)" }} /> message in flight</span>
-        <span><i className="legend-swatch" style={{ background: "var(--accent)" }} /> blocked → ask_lead</span>
-        <span><i className="legend-swatch" style={{ background: "var(--border-soft)" }} /> idle link</span>
+        <span><i className="legend-swatch" style={{ background: "var(--accent)" }} /> live pane</span>
+        <span><i className="legend-swatch" style={{ background: "var(--border-soft)" }} /> quiet link</span>
       </div>
     </div>
   );

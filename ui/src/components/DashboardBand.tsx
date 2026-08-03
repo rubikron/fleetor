@@ -1,119 +1,76 @@
-// The always-visible dashboard band (handoff §11): the orchestrator as a visual
-// anchor, one cell per worker slot, and a queue data-figure block. Status is
-// never colour alone — every dot is paired with a text label. Metrics we don't
-// track yet (model, context %, elapsed) are intentionally omitted rather than
-// faked; they arrive with the live orchestrator (4e-2).
+// The always-visible band: one cell per pane, orchestrator first.
+//
+// Status is never colour alone — every dot is paired with a text label. What a
+// cell shows is only what the shell actually knows: a pane is `live` once its
+// pty has produced bytes, `dead` once it has exited, and `idle` before the fleet
+// is started. There is no "working"/"blocked" any more, because a live `claude`
+// TUI does not tell us which it is and inventing the distinction was how the
+// headless fleet ended up with a mail queue and a turn boundary.
 
-import type { View } from "./Sidebar";
-import type { WorkerCell } from "../fleet/useFleet";
-import type { FleetConfig, Ticket, WorkerState } from "../fleet/types";
+import { ORCH, ROSTER, type FleetConfig, type PaneId, type PaneStatus } from "../fleet/types";
 
-const WORKER_LABEL: Record<WorkerState, string> = {
-  booting: "booting",
-  idle: "idle",
-  working: "working",
-  blocked: "blocked",
-  dead: "dead",
+const STATUS_LABEL: Record<PaneStatus, string> = {
+  idle: "standby",
+  live: "live",
+  dead: "exited",
 };
 
-function Dot({ tone }: { tone: string }) {
-  return <span className={`dot dot--${tone}`} />;
+function tone(status: PaneStatus): string {
+  if (status === "live") return "accent";
+  if (status === "dead") return "red";
+  return "muted";
 }
 
-function workerTone(state: WorkerState): string {
-  if (state === "working") return "accent";
-  if (state === "blocked") return "accent";
-  if (state === "dead") return "red";
-  if (state === "booting") return "muted";
-  return "idle";
+interface PaneCellProps {
+  pane: PaneId;
+  status: PaneStatus;
+  detail: string;
+  onOpen: () => void;
 }
 
-function WorkerCellView({ cell, onOpen }: { cell: WorkerCell; onOpen: () => void }) {
-  const blocked = cell.state === "blocked";
+function PaneCell({ pane, status, detail, onOpen }: PaneCellProps) {
+  const isOrch = pane === ORCH;
   return (
-    <button className={`cell ${blocked ? "cell--blocked" : ""}`} onClick={onOpen}>
+    <button className={`cell ${isOrch ? "cell--orch" : ""}`} onClick={onOpen}>
       <div className="cell__head">
-        <Dot tone={workerTone(cell.state)} />
-        <span className="cell__name">worker-{cell.slot}</span>
-        <span className={`cell__state ${blocked ? "text-accent" : ""}`}>{WORKER_LABEL[cell.state]}</span>
+        <span className={`dot dot--${tone(status)}`} />
+        <span className="cell__name">{isOrch ? "orchestrator" : pane}</span>
+        {isOrch && <span className="role">lead</span>}
+        <span className={`cell__state ${status === "live" ? "text-accent" : ""}`}>
+          {STATUS_LABEL[status]}
+        </span>
       </div>
       <div className="cell__body">
-        {cell.ticket ? (
-          <>
-            <span className="mono">{cell.ticket}</span>
-            {cell.activity && (
-              <span className={`cell__activity mono ${blocked ? "text-accent" : ""}`}>{cell.activity}</span>
-            )}
-          </>
-        ) : (
-          <span className="cell__muted">no ticket</span>
-        )}
+        <span className={status === "idle" ? "cell__muted" : "mono"}>{detail}</span>
       </div>
     </button>
-  );
-}
-
-function OrchestratorCell({ live, config, onOpen }: { live: boolean; config: FleetConfig | null; onOpen: () => void }) {
-  return (
-    <button className="cell cell--orch" onClick={onOpen}>
-      <div className="cell__head">
-        <Dot tone={live ? "accent" : "muted"} />
-        <span className="cell__name">orchestrator</span>
-        <span className="role">lead</span>
-        <span className={`cell__state ${live ? "text-accent" : ""}`}>{live ? "live" : "standby"}</span>
-      </div>
-      <div className="cell__body">
-        {live ? (
-          <span className="mono">{config?.lead_model ?? "opus (operator)"}</span>
-        ) : (
-          <span className="cell__muted">start the session to attach the lead</span>
-        )}
-      </div>
-    </button>
-  );
-}
-
-function QueueCell({ board }: { board: Ticket[] }) {
-  const count = (predicate: (t: Ticket) => boolean) => board.filter(predicate).length;
-  const stats: { k: string; v: number; tone?: string }[] = [
-    { k: "backlog", v: count((t) => t.state === "backlog") },
-    { k: "active", v: count((t) => t.state === "assigned" || t.state === "in-progress"), tone: "gold" },
-    { k: "review", v: count((t) => t.state === "in-review"), tone: "gold" },
-    { k: "done", v: count((t) => t.state === "done"), tone: "green" },
-  ];
-  return (
-    <div className="cell cell--queue">
-      <div className="cell__head">
-        <span className="cell__name">queue</span>
-      </div>
-      <div className="queue__grid">
-        {stats.map((s) => (
-          <div key={s.k} className="queue__stat">
-            <span className="k">{s.k}</span>
-            <span className={`v ${s.tone ? `v--${s.tone}` : ""}`}>{s.v}</span>
-          </div>
-        ))}
-      </div>
-    </div>
   );
 }
 
 interface BandProps {
-  workers: WorkerCell[];
-  board: Ticket[];
-  live: boolean;
+  statuses: Record<PaneId, PaneStatus>;
   config: FleetConfig | null;
-  onNavigate: (view: View) => void;
+  onOpen: (pane: PaneId) => void;
 }
 
-export function DashboardBand({ workers, board, live, config, onNavigate }: BandProps) {
+export function DashboardBand({ statuses, config, onOpen }: BandProps) {
+  const lead = config?.lead_model ?? "opus (operator)";
+  const worker = config?.worker_backend ?? "…";
   return (
     <section className="band">
-      <OrchestratorCell live={live} config={config} onOpen={() => onNavigate("fleet")} />
-      {workers.map((cell) => (
-        <WorkerCellView key={cell.slot} cell={cell} onOpen={() => onNavigate("workers")} />
-      ))}
-      <QueueCell board={board} />
+      {ROSTER.map((pane) => {
+        const status = statuses[pane] ?? "idle";
+        const model = pane === ORCH ? lead : worker;
+        return (
+          <PaneCell
+            key={pane}
+            pane={pane}
+            status={status}
+            detail={status === "idle" ? "start the fleet to attach" : model}
+            onOpen={() => onOpen(pane)}
+          />
+        );
+      })}
     </section>
   );
 }
