@@ -35,6 +35,12 @@ function decodeBase64(b64: string): Uint8Array {
 const DIM = "\x1b[38;2;138;134;124m";
 const RESET = "\x1b[0m";
 
+/// How long the pane waits for a resize burst to settle before refitting.
+/// Long enough to swallow a whole sidebar-collapse animation (~140ms of
+/// per-frame ResizeObserver callbacks) into a single fit, short enough that a
+/// window drag still feels immediate. Trailing edge only.
+const REFIT_SETTLE_MS = 60;
+
 interface TerminalPaneProps {
   pane: PaneId;
   label: string;
@@ -154,15 +160,26 @@ export function TerminalPane({
       setScrolledUp(buf.viewportY < buf.baseY);
     });
 
+    // A resize is a burst, not an event. The sidebar's collapse animates over
+    // ~140ms and a divider drag runs for as long as the mouse is held, so a
+    // raw ResizeObserver fires once per frame throughout. Every fit() resizes
+    // the pty, and `claude` repaints its entire TUI on each one — a dozen
+    // full repaints inside one collapse animation is exactly the flicker this
+    // coalescing exists to prevent. Trailing-only, so the geometry that lands
+    // is the settled one rather than an intermediate frame.
+    let refitTimer: number | undefined;
     const refit = () => {
-      // While the pane is on a hidden tab its box is 0×0; fitting then would
-      // collapse claude's grid. Only refit when it actually has a size.
-      if (host.clientWidth === 0 || host.clientHeight === 0) return;
-      try {
-        fit.fit();
-      } catch {
-        /* not measurable yet */
-      }
+      window.clearTimeout(refitTimer);
+      refitTimer = window.setTimeout(() => {
+        // While the pane is on a hidden tab its box is 0×0; fitting then would
+        // collapse claude's grid. Only refit when it actually has a size.
+        if (host.clientWidth === 0 || host.clientHeight === 0) return;
+        try {
+          fit.fit();
+        } catch {
+          /* not measurable yet */
+        }
+      }, REFIT_SETTLE_MS);
     };
     const observer = new ResizeObserver(refit);
     observer.observe(host);
@@ -173,6 +190,7 @@ export function TerminalPane({
       termRef.current = null;
       fitRef.current = null;
       observer.disconnect();
+      window.clearTimeout(refitTimer);
       window.removeEventListener("resize", refit);
       onData.dispose();
       onResize.dispose();

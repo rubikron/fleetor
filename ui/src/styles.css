@@ -62,11 +62,21 @@
   /* interaction feedback only (hover/active on chrome) — never entrance or
      idle-state motion; see the transition rules below and the @media guard. */
   --transition-fast: background-color 80ms ease, border-color 80ms ease;
+
+  /* The sidebar rail's width. Deliberately short: this is a control the
+     operator hits repeatedly with Cmd+B, and anything that reads as "waiting
+     for an animation" is worse than the instant snap it replaces. 140ms with
+     a decelerating curve is long enough to show direction and let the eye
+     follow the icons across, short enough to still feel like a keystroke.
+     Still interaction feedback, not decoration — it is caused by, and lasts
+     no longer than, the gesture that triggered it. */
+  --transition-rail: flex-basis 140ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 @media (prefers-reduced-motion: reduce) {
   :root {
     --transition-fast: none;
+    --transition-rail: none;
   }
 }
 
@@ -281,6 +291,7 @@ body,
   overflow-x: hidden;
   overflow-y: auto;
   user-select: none;
+  transition: var(--transition-rail);
 }
 .sidebar--collapsed {
   flex-basis: 3.5rem;
