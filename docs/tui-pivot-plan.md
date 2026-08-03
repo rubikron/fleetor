@@ -1,6 +1,6 @@
 # FLEETOR — the 5-TUI messaging pivot
 
-> **Status:** Phase 0 complete (`0c84b89`, branch `feat/tui-fleet`). Phases 1–6 not started.
+> **Status:** Phases 0–1 complete (branch `feat/tui-fleet`). Phases 2–6 not started.
 > **Read `docs/tui-spawn-notes.md` first** — it carries the measured results of the Phase 0
 > spike, several of which corrected assumptions in this plan. Where they differ, the notes win;
 > the corrections have been folded into the phases below and are marked **✓ Phase 0**.
@@ -136,9 +136,32 @@ Deliverable: a short `docs/tui-spawn-notes.md` with the exact seed JSON, the byt
 and the Channel verdict. Also create the testbed (`~/.fleetor/testbed/`) by hand so Phase 3 has
 somewhere real to point at. Zero code; a few manual turns of spend.
 
-### Phase 1 — the new contract, additive (backend only, nothing wired)
+### Phase 1 — the new contract, additive (backend only, nothing wired) ✅ **DONE**
 
 New types live *alongside* the old, so the tree stays green and every existing test passes.
+Delivered as specified; decision record is `decisions.md` D-031. Four deviations, all forced by
+the "stays green" constraint and all reversed in Phase 5:
+
+- **`Op::{PaneSend, PaneBroadcast, PaneReply}`, not `{Send, Broadcast, Reply}`** — all three names
+  are already taken by the headless surface with different shapes. Phase 5 deletes those and
+  renames these to the bare verbs; `wire.rs` carries the note.
+- **`PaneConfig` is a separate struct**, not new fields on `HubConfig` — six existing test files
+  construct `HubConfig` by struct literal, so a new field breaks all of them. `Hub::with_app` takes
+  both; Phase 5 folds them together.
+- **`OpResult::Delivered { msg_id, .. }`, not `{ id, .. }`** — `Response` flattens `OpResult` into
+  the same JSON object as its own `id`, so a second `id` is a duplicate key that fails to
+  deserialize. Caught by `pane_messaging.rs` on first run; `wire.rs` now round-trips every pane
+  frame so it can't come back.
+- **Two framings, not one** — `frame_for_pane` and `frame_broadcast_for_pane`
+  (`[fleet · worker-1]` vs `[fleet · worker-1 → all]`). L5's brief clause "never reply to a
+  broadcast unless it names you" is unobeyable if the receiver can't tell the two apart.
+
+Also built here, ahead of the plan: the rate limiter charges **one token per outbound leg**, so a
+broadcast costs what N sends cost; an unaffordable broadcast is refused in full rather than
+reaching an arbitrary prefix of the fleet; and every refusal is logged as a `Message` with
+`accepted: false`, so the ramp is visible rather than silently absent.
+
+*Original scope, retained for reference:*
 
 **Create** `crates/fleetor-core/src/`:
 - `pane.rs` — `PaneId`, `PaneState`, `Display`/`FromStr` (accepts `orch`/`2`/`w2`/`worker-2`)/serde.

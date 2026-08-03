@@ -21,7 +21,9 @@ pub mod supervisor;
 
 pub use bus::{BroadcastStore, EventBus, EventFollower, BUS_CAPACITY};
 pub use gate::ShellGateRunner;
-pub use hub::{AssignCommand, Hub, HubConfig, RunnerCommand};
+pub use hub::{
+    AppCommand, AssignCommand, DeliveryResult, Hub, HubConfig, PaneConfig, RateLimit, RunnerCommand,
+};
 pub use quality::{run_quality_loop, QualityOptions, QualityOutcome, Reviewer, DEFAULT_RETRY_CAP};
 pub use runner::{run_dynamic_fleet, run_fleet, run_pool_fleet, FleetOutcome, LeadPolicy, WorkerFactory, WorkerSpec};
 pub use supervisor::{run_standby_worker, run_ticket, Outcome, SuperviseOptions, WorkerControl};

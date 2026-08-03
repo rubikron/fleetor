@@ -308,6 +308,13 @@ pub fn op_result_to_mcp(result: &fleetor_core::wire::OpResult) -> Value {
         OpResult::Events { events } => (render_events(events), false),
         OpResult::Status { board } => (render_board(board), false),
         OpResult::Error { message } => (format!("fleet error: {message}"), true),
+        // The D-030 pane surface has no MCP spelling — the `fleet` CLI speaks it
+        // directly over the socket, and this shim goes away in Phase 5. Reaching
+        // here means the hub answered an op the shim never sends.
+        OpResult::Delivered { .. } | OpResult::Roster { .. } => (
+            "fleet error: the pane surface is not reachable over MCP".to_string(),
+            true,
+        ),
     };
     json!({ "content": [ { "type": "text", "text": text } ], "isError": is_error })
 }

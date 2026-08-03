@@ -22,13 +22,15 @@
 use anyhow::{Context, Result};
 use fleetor_core::envelope::{Envelope, MessageKind, Party};
 use fleetor_core::event::{FleetEvent, WorkerState};
+use fleetor_core::message::Message;
+use fleetor_core::pane::{PaneEntry, PaneId};
 use fleetor_core::wire::{Hello, LeadEvent, LeadEventKind, Op, OpResult, Request, Response};
 use fleetor_core::{ids, Store};
 use fleetor_ipc::{Conn, Transport};
 use fleetor_core::Ticket;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot, Notify};
 
 /// A dispatch request the lead's `assign` forwards to the runner (Phase 4d). The
@@ -54,6 +56,76 @@ pub enum RunnerCommand {
     Restart { slot: u8 },
 }
 
+/// What the hub asks the fleet app to do on its behalf (D-030). This is the
+/// `RunnerCommand` seam again — the hub routes, something else owns the
+/// machinery — but **request/response** rather than fire-and-forget, because
+/// `fleet send 3` needs a real yes/no and only the pty registry knows whether
+/// pane 3 is alive.
+///
+/// The hub awaits the ack and *then* logs the message with the real outcome, so
+/// the feed can never claim a delivery that did not happen.
+#[derive(Debug)]
+pub enum AppCommand {
+    /// Type `text` into `to`'s terminal. Answer with whether the bytes were
+    /// queued to a live pty.
+    Deliver { to: PaneId, text: String, ack: oneshot::Sender<DeliveryResult> },
+    /// Every pane the app currently holds, with its state.
+    Roster { ack: oneshot::Sender<Vec<PaneEntry>> },
+}
+
+/// The app's answer to a [`AppCommand::Deliver`]. `accepted` means the pane was
+/// live and the bytes went to its pty — deliberately not "delivered", because
+/// nothing on this side of the pty knows whether the model read them (L3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeliveryResult {
+    pub accepted: bool,
+    pub detail: Option<String>,
+}
+
+impl DeliveryResult {
+    pub fn accepted() -> Self {
+        Self { accepted: true, detail: None }
+    }
+
+    pub fn rejected(detail: impl Into<String>) -> Self {
+        Self { accepted: false, detail: Some(detail.into()) }
+    }
+}
+
+/// Per-pane send budget — the first of L5's three required anti-amplification
+/// mitigations. Five peers that all answer broadcasts is a runaway that burns
+/// real tokens while the graph animates beautifully; this is what stops it.
+#[derive(Debug, Clone, Copy)]
+pub struct RateLimit {
+    /// Messages a pane may send back-to-back from a full bucket.
+    pub burst: u32,
+    /// Sustained refill rate.
+    pub per_minute: u32,
+}
+
+impl Default for RateLimit {
+    fn default() -> Self {
+        Self { burst: 8, per_minute: 20 }
+    }
+}
+
+/// Knobs for the pane surface, kept out of [`HubConfig`] so the pre-D-030 call
+/// sites keep compiling untouched. Phase 5 folds these two structs together.
+#[derive(Debug, Clone, Copy)]
+pub struct PaneConfig {
+    pub rate_limit: RateLimit,
+    /// Ceiling on the app's delivery ack. The round-trip is a HashMap lookup and
+    /// a pty write — sub-millisecond — so this exists only so a wedged app cannot
+    /// park the CLI forever. It is not a delay; nothing in the path sleeps.
+    pub ack_timeout: Duration,
+}
+
+impl Default for PaneConfig {
+    fn default() -> Self {
+        Self { rate_limit: RateLimit::default(), ack_timeout: Duration::from_secs(2) }
+    }
+}
+
 /// Answer returned to a blocked `ask_lead` when the ask times out with no human
 /// reply — so a worker never deadlocks on an AFK lead (handoff §5).
 pub const ASK_TIMEOUT_ANSWER: &str =
@@ -75,6 +147,13 @@ impl Default for HubConfig {
     }
 }
 
+/// One pane's send budget: a token bucket refilled continuously at
+/// `per_minute / 60` tokens per second, capped at `burst`.
+struct Bucket {
+    tokens: f64,
+    last: Instant,
+}
+
 struct HubState {
     /// Actionable worker→lead traffic awaiting the lead (questions, notices).
     lead_events: Mutex<VecDeque<LeadEvent>>,
@@ -83,7 +162,14 @@ struct HubState {
     /// Pending `ask_lead` waiters: question id → the channel that delivers the
     /// reply text back to the blocked worker handler.
     waiters: Mutex<HashMap<String, oneshot::Sender<String>>>,
+    /// Who last got a message *through* to each pane — the target `fleet reply`
+    /// resolves to. Only successful deliveries land here: replying to a pane that
+    /// never actually heard from you is not a reply.
+    last_inbound_from: Mutex<HashMap<PaneId, PaneId>>,
+    /// Per-pane send budgets (L5).
+    buckets: Mutex<HashMap<PaneId, Bucket>>,
     config: HubConfig,
+    pane_config: PaneConfig,
 }
 
 /// The routing hub. Cheap to clone (everything shared behind `Arc`).
@@ -94,11 +180,14 @@ pub struct Hub {
     /// forwarded (Phase 4d/4f). `None` on a static fleet (Phases 1–4c) — a control
     /// op there is answered with an error rather than silently dropped.
     dispatcher: Option<mpsc::UnboundedSender<RunnerCommand>>,
+    /// Where pane deliveries go (D-030). `None` when no fleet app is attached, in
+    /// which case a pane op is rejected loudly rather than logged as a success.
+    app: Option<mpsc::UnboundedSender<AppCommand>>,
 }
 
 impl Hub {
     pub fn new(store: Arc<dyn Store>, config: HubConfig) -> Arc<Hub> {
-        Self::build(store, config, None)
+        Self::build(store, config, PaneConfig::default(), None, None)
     }
 
     /// A hub whose control ops forward to `dispatcher` — the dynamic fleet (4d/4f).
@@ -107,23 +196,40 @@ impl Hub {
         config: HubConfig,
         dispatcher: mpsc::UnboundedSender<RunnerCommand>,
     ) -> Arc<Hub> {
-        Self::build(store, config, Some(dispatcher))
+        Self::build(store, config, PaneConfig::default(), Some(dispatcher), None)
+    }
+
+    /// A hub whose pane ops are served by a fleet app holding the pty registry
+    /// (D-030) — the only constructor the TUI fleet uses.
+    pub fn with_app(
+        store: Arc<dyn Store>,
+        config: HubConfig,
+        pane_config: PaneConfig,
+        app: mpsc::UnboundedSender<AppCommand>,
+    ) -> Arc<Hub> {
+        Self::build(store, config, pane_config, None, Some(app))
     }
 
     fn build(
         store: Arc<dyn Store>,
         config: HubConfig,
+        pane_config: PaneConfig,
         dispatcher: Option<mpsc::UnboundedSender<RunnerCommand>>,
+        app: Option<mpsc::UnboundedSender<AppCommand>>,
     ) -> Arc<Hub> {
         Arc::new(Hub {
             state: Arc::new(HubState {
                 lead_events: Mutex::new(VecDeque::new()),
                 lead_notify: Notify::new(),
                 waiters: Mutex::new(HashMap::new()),
+                last_inbound_from: Mutex::new(HashMap::new()),
+                buckets: Mutex::new(HashMap::new()),
                 config,
+                pane_config,
             }),
             store,
             dispatcher,
+            app,
         })
     }
 
@@ -162,9 +268,10 @@ impl Hub {
             None => return Ok(()), // client hung up before saying hello
         };
         let party = hello.party;
+        let pane = hello.pane;
         while let Some(req) = conn.read_json::<Request>().await? {
             let id = req.id.clone();
-            let result = self.handle(party.clone(), req.op).await;
+            let result = self.handle(party.clone(), pane, req.op).await;
             conn.write_json(&Response::new(id, result)).await?;
         }
         Ok(())
@@ -172,8 +279,18 @@ impl Hub {
 
     /// Dispatch one op, enforcing the worker/lead split (Tier-1.5 is structural:
     /// a worker connection cannot invoke a lead op, and only `ask_lead` blocks).
-    async fn handle(&self, party: Party, op: Op) -> OpResult {
+    ///
+    /// The pane ops (D-030) are the exception to the split: they are dispatched on
+    /// the `Hello`'s pane identity, not its party, and a connection that did not
+    /// declare a pane cannot invoke them at all.
+    async fn handle(&self, party: Party, pane: Option<PaneId>, op: Op) -> OpResult {
         match (&party, op) {
+            // ---- pane-facing (D-030): identity comes from `pane`, not `party` ----
+            (_, Op::PaneSend { to, text }) => self.pane_send(pane, to, text).await,
+            (_, Op::PaneBroadcast { text }) => self.pane_broadcast(pane, text).await,
+            (_, Op::PaneReply { text }) => self.pane_reply(pane, text).await,
+            (_, Op::Roster) => self.roster().await,
+
             (Party::Worker(slot), Op::AskLead { question, options }) => {
                 self.ask_lead(*slot, question, options).await
             }
@@ -419,6 +536,197 @@ impl Hub {
         OpResult::Ack
     }
 
+    // ---- pane-facing (D-030) ----
+
+    /// `fleet send <pane> "<text>"`.
+    async fn pane_send(&self, from: Option<PaneId>, to: PaneId, text: String) -> OpResult {
+        let from = match self.sender(from) {
+            Ok(p) => p,
+            Err(e) => return e,
+        };
+        if !self.roster_ids().contains(&to) {
+            return OpResult::Error { message: format!("unknown pane {to}") };
+        }
+        if to == from {
+            return OpResult::Error { message: format!("{from} cannot message itself") };
+        }
+        let msg = Message::direct(from, to, text);
+        match self.take_tokens(from, 1) {
+            Ok(()) => self.deliver(msg).await,
+            Err(detail) => self.record_rejection(msg, detail),
+        }
+    }
+
+    /// `fleet broadcast "<text>"` — one gesture, N−1 legs sharing a `group` id.
+    /// Costs one token per leg, so a fan-out is exactly as expensive as sending to
+    /// each pane by hand and a fountain runs out of budget quickly (L5).
+    async fn pane_broadcast(&self, from: Option<PaneId>, text: String) -> OpResult {
+        let from = match self.sender(from) {
+            Ok(p) => p,
+            Err(e) => return e,
+        };
+        let targets: Vec<PaneId> =
+            self.roster_ids().into_iter().filter(|p| *p != from).collect();
+        if targets.is_empty() {
+            return OpResult::Error { message: "there is nobody else in the fleet".to_string() };
+        }
+
+        let group = ids::new_id("grp");
+        // Charged up front for the whole fan-out: a broadcast that cannot be paid
+        // for in full is rejected in full, rather than reaching an arbitrary
+        // prefix of the fleet.
+        let limited = self.take_tokens(from, targets.len() as u32).err();
+
+        let mut any_accepted = false;
+        let mut failures: Vec<String> = Vec::new();
+        for to in targets {
+            let msg = Message::in_group(from, to, text.clone(), group.clone());
+            let outcome = match &limited {
+                Some(detail) => DeliveryResult::rejected(detail.clone()),
+                None => self.ask_app(to, msg.framed()).await,
+            };
+            if outcome.accepted {
+                any_accepted = true;
+            } else {
+                failures.push(format!("{to}: {}", outcome.detail.as_deref().unwrap_or("rejected")));
+            }
+            self.log_message(msg, &outcome);
+        }
+        // A rate-limited fan-out failed for one reason, not N — say it once.
+        let detail = match limited {
+            Some(reason) => Some(reason),
+            None => (!failures.is_empty()).then(|| failures.join("; ")),
+        };
+        OpResult::Delivered { msg_id: group, accepted: any_accepted, detail }
+    }
+
+    /// `fleet reply "<text>"` — to whoever last got through to this pane.
+    async fn pane_reply(&self, from: Option<PaneId>, text: String) -> OpResult {
+        let from = match self.sender(from) {
+            Ok(p) => p,
+            Err(e) => return e,
+        };
+        let Some(to) = self.state.last_inbound_from.lock().unwrap().get(&from).copied() else {
+            return OpResult::Error {
+                message: format!(
+                    "nobody has messaged {from} yet — there is nothing to reply to; \
+                     name a pane with `fleet send <pane> \"…\"`"
+                ),
+            };
+        };
+        let msg = Message::direct(from, to, text);
+        match self.take_tokens(from, 1) {
+            Ok(()) => self.deliver(msg).await,
+            Err(detail) => self.record_rejection(msg, detail),
+        }
+    }
+
+    /// `fleet roster` — asks the app, because only the pty registry knows which
+    /// panes are actually alive right now.
+    async fn roster(&self) -> OpResult {
+        let Some(app) = &self.app else {
+            return OpResult::Error { message: NO_APP.to_string() };
+        };
+        let (ack, rx) = oneshot::channel();
+        if app.send(AppCommand::Roster { ack }).is_err() {
+            return OpResult::Error { message: APP_GONE.to_string() };
+        }
+        match tokio::time::timeout(self.state.pane_config.ack_timeout, rx).await {
+            Ok(Ok(panes)) => OpResult::Roster { panes },
+            Ok(Err(_)) => OpResult::Error { message: APP_DROPPED.to_string() },
+            Err(_) => OpResult::Error { message: self.ack_timed_out() },
+        }
+    }
+
+    /// Ask the app to type one message into its target, then log what actually
+    /// happened. Persist-then-emit-*after*-ack is the whole reason the app seam is
+    /// request/response: the feed records the real outcome, never an intention.
+    async fn deliver(&self, msg: Message) -> OpResult {
+        let outcome = self.ask_app(msg.to, msg.framed()).await;
+        let msg_id = msg.id.clone();
+        let accepted = outcome.accepted;
+        let detail = outcome.detail.clone();
+        self.log_message(msg, &outcome);
+        OpResult::Delivered { msg_id, accepted, detail }
+    }
+
+    /// A message the hub refused before it ever reached the app (today: the rate
+    /// limiter). Logged like any other attempt, because an invisible rejection is
+    /// how a fleet quietly stops talking (L5 wants the ramp visible).
+    fn record_rejection(&self, msg: Message, detail: String) -> OpResult {
+        let msg_id = msg.id.clone();
+        let outcome = DeliveryResult::rejected(detail.clone());
+        self.log_message(msg, &outcome);
+        OpResult::Delivered { msg_id, accepted: false, detail: Some(detail) }
+    }
+
+    fn log_message(&self, msg: Message, outcome: &DeliveryResult) {
+        if outcome.accepted {
+            self.state.last_inbound_from.lock().unwrap().insert(msg.to, msg.from);
+        }
+        self.emit(msg.into_event(outcome.accepted, outcome.detail.clone()));
+    }
+
+    /// One `Deliver` round-trip. Every failure mode answers with a sentence the
+    /// `fleet` CLI can print to stderr for the model to read and act on.
+    async fn ask_app(&self, to: PaneId, text: String) -> DeliveryResult {
+        let Some(app) = &self.app else {
+            return DeliveryResult::rejected(NO_APP);
+        };
+        let (ack, rx) = oneshot::channel();
+        if app.send(AppCommand::Deliver { to, text, ack }).is_err() {
+            return DeliveryResult::rejected(APP_GONE);
+        }
+        match tokio::time::timeout(self.state.pane_config.ack_timeout, rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => DeliveryResult::rejected(APP_DROPPED),
+            Err(_) => DeliveryResult::rejected(self.ack_timed_out()),
+        }
+    }
+
+    /// The sending pane, or the error a connection that never declared one gets.
+    fn sender(&self, pane: Option<PaneId>) -> Result<PaneId, OpResult> {
+        pane.ok_or_else(|| OpResult::Error {
+            message: "this connection did not identify a pane — set FLEETOR_PANE and retry"
+                .to_string(),
+        })
+    }
+
+    fn roster_ids(&self) -> Vec<PaneId> {
+        PaneId::roster(&self.state.config.slots)
+    }
+
+    fn ack_timed_out(&self) -> String {
+        format!(
+            "the fleet app did not answer within {:?} — it may be wedged",
+            self.state.pane_config.ack_timeout
+        )
+    }
+
+    /// Spend `cost` tokens from `pane`'s bucket, refilling for elapsed time first.
+    /// `Err` carries the message the sender sees.
+    fn take_tokens(&self, pane: PaneId, cost: u32) -> Result<(), String> {
+        let limit = self.state.pane_config.rate_limit;
+        let capacity = f64::from(limit.burst);
+        let now = Instant::now();
+
+        let mut buckets = self.state.buckets.lock().unwrap();
+        let bucket = buckets.entry(pane).or_insert(Bucket { tokens: capacity, last: now });
+        let refill = now.duration_since(bucket.last).as_secs_f64() * f64::from(limit.per_minute) / 60.0;
+        bucket.tokens = (bucket.tokens + refill).min(capacity);
+        bucket.last = now;
+
+        if bucket.tokens < f64::from(cost) {
+            return Err(format!(
+                "rate limit: {pane} may send {} messages a minute (burst {}); \
+                 this one cost {cost}. Wait a few seconds, and do not answer broadcasts.",
+                limit.per_minute, limit.burst
+            ));
+        }
+        bucket.tokens -= f64::from(cost);
+        Ok(())
+    }
+
     // ---- shared helpers ----
 
     fn enqueue_mail(&self, from: Party, to: Party, kind: MessageKind, text: String) -> OpResult {
@@ -454,6 +762,12 @@ impl Hub {
         }
     }
 }
+
+// The three ways the app seam can fail, worded for a model reading its own Bash
+// stderr — each says what happened and what it means for the message.
+const NO_APP: &str = "no fleet app is attached to this hub, so nothing can be delivered";
+const APP_GONE: &str = "the fleet app is shutting down and is no longer accepting deliveries";
+const APP_DROPPED: &str = "the fleet app dropped the delivery without answering";
 
 /// Short human/UI label for a party in the event log ("worker-2", "lead").
 fn party_label(p: &Party) -> String {
