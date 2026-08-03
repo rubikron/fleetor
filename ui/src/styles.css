@@ -81,6 +81,14 @@
      no longer than, the gesture that triggered it. */
   --transition-rail: flex-basis 140ms cubic-bezier(0.4, 0, 0.2, 1);
 
+  /* Collapsing runs slightly longer than expanding. Opening wants to feel
+     immediate — the operator is going somewhere and the content should be
+     there. Closing is the gesture you actually watch, since the rail is
+     travelling further into a smaller space, so a little more time reads as
+     the panel settling rather than snapping shut. Asymmetry is the point;
+     matching them makes the close feel abrupt next to the open. */
+  --transition-rail-collapse: flex-basis 190ms cubic-bezier(0.4, 0, 0.2, 1);
+
   /* Rail labels, deliberately asymmetric — the text always moves out of the
      way of the width rather than fighting it. Collapsing: fade out fast and
      immediately, so the labels are gone before the rail closes over them.
@@ -113,6 +121,7 @@
   :root {
     --transition-fast: none;
     --transition-rail: none;
+    --transition-rail-collapse: none;
     --transition-label-out: none;
     --transition-label-in: none;
   }
@@ -347,6 +356,10 @@ body,
 .sidebar--collapsed {
   flex-basis: 3.5rem;
   padding: 0.5rem;
+  /* Governs the collapse only. A transition is read from the computed style of
+     the state being transitioned *to*, so this rule times the close and the
+     base .sidebar rule times the open. */
+  transition: var(--transition-rail-collapse);
 }
 .sidebar__nav {
   display: flex;
