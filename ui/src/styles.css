@@ -1,12 +1,32 @@
-/* FLEETOR shell — warm visual language (handoff §11 / BUILDING §7), elevated in
-   the Phase-4e redesign pass. Flat surfaces, no gradients or shadows; depth via a
-   three-step warm ramp + hairlines; monospace for anything the system owns; NO
-   blue anywhere; coral = attention (the one eye-catch), gold = awareness, warm
-   neutral grays for everything else. Ported from docs/ui-redesign-preview.html
-   after the impeccable critique (side-tab bars removed, blocked=coral unified,
-   motion reserved for the one signal, AA contrast, keyboard focus). */
+/* FLEETOR shell — warm visual language (handoff §11 / BUILDING §7).
+   Flat surfaces, no gradients or shadows; depth via a three-step warm ramp +
+   hairlines; NO blue anywhere; coral = attention (the one eye-catch), gold =
+   awareness, warm neutral grays for everything else.
+
+   UI-polish pass: cut decorative chips/pills, uppercase eyebrows, and dead
+   placeholder nav in favor of a denser, plain-spoken operator surface; folded
+   the dashboard band into the pane heads it duplicated; moved the whole type
+   scale onto rem so it tracks a single root font-size.
+
+   DECISION — all-mono, one exception (supersedes handoff §"Visual language",
+   which split mono/system-owned vs. sans/prose): the operator lives in this
+   surface for hours next to five monospaced terminals, and a second
+   proportional typeface next to that was reading as visual noise rather than
+   a deliberate distinction. The whole shell — sidebar, topbar, tabs, buttons,
+   headings, the event feed, the fleet graph — is now `--mono`. `--sans` stays
+   defined and is used in exactly one place, `.msg__body`: agent-authored
+   prose paragraphs, where mono hurts readability at paragraph length. This
+   override was requested and approved explicitly; it is not drift — do not
+   "fix" `.msg__body` back to `--mono` or start re-introducing `--sans`
+   elsewhere without the same conversation. */
 
 :root {
+  /* ZOOM PIVOT — the only value a Cmd+/Cmd-/Cmd+0 zoom feature needs to touch.
+     Every font-size below (and any spacing that should grow with text) is
+     expressed in rem against this declaration. Border widths and other 1px
+     hairlines are intentionally left in px — they are structural, not type. */
+  font-size: 18px; /* must equal ROOT_FONT_SIZE_PX in ui/zoomConstants.ts */
+
   --bg-0: #191815;
   --bg-1: #1f1e1b;
   --bg-2: #262420;
@@ -27,12 +47,27 @@
   --mono: ui-monospace, "SF Mono", Menlo, monospace;
   --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
 
-  --t-display: 20px;
-  --t-title: 15px;
-  --t-body: 13px;
-  --t-small: 11px;
-  --t-label: 10px;
-  --radius: 8px;
+  /* type scale — ~1.15-1.2 ratio between steps, all rem.
+     px figures below are the computed size at the 18px root above, i.e. at
+     the 100% rung of the zoom ladder. */
+  --t-display: 1.375rem; /* 25px — brand mark only */
+  --t-title: 1.125rem; /* 20px — view/dialog titles */
+  --t-body: 0.9375rem; /* 17px — default UI text */
+  --t-small: 0.8125rem; /* 15px — secondary/meta text, feed rows */
+  --t-label: 0.6875rem; /* 12px — short categorical tags/keys only */
+
+  --radius: 0.375rem; /* 7px — panels and cards */
+  --radius-sm: 0.25rem; /* 5px — controls, tags, buttons */
+
+  /* interaction feedback only (hover/active on chrome) — never entrance or
+     idle-state motion; see the transition rules below and the @media guard. */
+  --transition-fast: background-color 80ms ease, border-color 80ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --transition-fast: none;
+  }
 }
 
 * {
@@ -45,6 +80,14 @@
   border-radius: 3px;
 }
 
+/* chrome the operator clicks, never reads letter-by-letter — every button in
+   the shell is interactive UI, not payload text (item 5). Interaction
+   feedback (item 6) lives here too since it's the same set of elements. */
+button {
+  user-select: none;
+  transition: var(--transition-fast);
+}
+
 html,
 body,
 #root {
@@ -52,8 +95,9 @@ body,
   height: 100%;
   background: var(--bg-1);
   color: var(--fg);
-  font-family: var(--sans);
+  font-family: var(--mono);
   font-size: var(--t-body);
+  line-height: 1.45;
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
 }
@@ -61,17 +105,15 @@ body,
 .mono {
   font-family: var(--mono);
 }
-.text-green { color: var(--green); }
-.text-red { color: var(--red); }
-.text-gold { color: var(--gold); }
-.text-accent { color: var(--accent); }
-.text-mute { color: var(--fg-mute); }
+.text-mute { color: var(--fg-mute); font-variant-numeric: tabular-nums; }
 
+/* caption text under a view heading — muted and quiet, deliberately not an
+   uppercase eyebrow; it is a sentence, not a category tag. Chrome, not
+   payload, so it doesn't select (item 5). */
 .label {
-  font-size: var(--t-label);
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
+  font-size: var(--t-small);
   color: var(--fg-mute);
+  user-select: none;
 }
 
 /* kept mounted but not shown — preserves the terminal's live xterm buffer
@@ -87,79 +129,59 @@ body,
   height: 100%;
 }
 
+/* the window's title bar is overlaid (macOS traffic lights float over this
+   row — see src-tauri/tauri.conf.json's titleBarStyle) so the topbar carries
+   `data-tauri-drag-region` (TopBar.tsx) to keep the window draggable, and
+   reserves fixed px — not rem — space on the left: this is clearing a
+   physically fixed OS control, not type, so it must not grow with zoom. */
 .topbar {
   display: flex;
   align-items: center;
-  gap: 16px;
-  height: 42px;
-  padding: 0 14px;
+  gap: 1.5rem;
+  padding: 0.625rem 1rem 0.625rem 80px;
   background: var(--bg-0);
   border-bottom: 1px solid var(--border);
   flex: 0 0 auto;
+  user-select: none;
 }
 .brand {
   font-family: var(--mono);
-  letter-spacing: 0.2em;
-  font-size: 12px;
+  letter-spacing: 0.16em;
+  font-size: var(--t-small);
   color: var(--accent);
   font-weight: 600;
 }
-.pills {
+
+/* a plain terminal-style status line, not chips: dense key/value pairs
+   separated by hairlines, the way a tmux or i3 status bar reads. */
+.status-line {
   display: flex;
-  gap: 8px;
-}
-.pill {
-  display: inline-flex;
   align-items: baseline;
-  gap: 6px;
-  padding: 3px 9px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--bg-1);
-  line-height: 1.4;
-}
-.pill__label {
-  font-size: var(--t-label);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--fg-mute);
-}
-.pill__value {
+  gap: 1.25rem;
   font-family: var(--mono);
   font-size: var(--t-small);
-  color: var(--fg-dim);
 }
-.pill--gold .pill__value { color: var(--gold); }
-.pill--green .pill__value { color: var(--green); }
+.status-line__item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4375rem;
+  padding-left: 1.25rem;
+  border-left: 1px solid var(--border-soft);
+}
+.status-line__item:first-child {
+  padding-left: 0;
+  border-left: none;
+}
+.status-line__label { color: var(--fg-mute); }
+.status-line__value { color: var(--fg-dim); }
+.status-line__value--gold { color: var(--gold); }
+.status-line__value--green { color: var(--green); }
 
 .topbar__spacer { flex: 1 1 auto; }
-
-/* dev controls, deliberately demoted to a quiet right-aligned toolbar */
-.devbar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.devbar__label {
-  font-size: var(--t-label);
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--fg-mute);
-  opacity: 0.7;
-}
-.devbtn {
-  font-family: var(--sans);
-  font-size: var(--t-small);
-  padding: 4px 10px;
-  border: 1px solid var(--border-soft);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--fg-mute);
-  cursor: pointer;
-}
-.devbtn:hover:not(:disabled) { background: var(--bg-2); color: var(--fg-dim); }
-.devbtn:disabled { opacity: 0.5; cursor: default; }
-.devbar__status { font-size: var(--t-small); color: var(--fg-mute); }
+.topbar__status { font-size: var(--t-small); color: var(--fg-mute); }
+/* shown only when zoom departs from 100% — quiet mono aside, no border, no
+   background, no transition (motion here is reserved for the blocked signal). */
+.topbar__zoom { font-size: var(--t-small); color: var(--fg-mute); font-variant-numeric: tabular-nums; }
 
 .body {
   display: flex;
@@ -168,65 +190,132 @@ body,
 }
 
 /* ---- sidebar ---- */
+/* The rail is secondary chrome. It is sized and toned to recede: --t-small
+   type (not --t-body), one uniform 2rem row, 2px gaps, and a three-step
+   surface ramp for rest/hover/active against the bg-0 rail. Both widths are
+   rem so they track the zoom pivot.
+
+   Collapsed is a real icon rail, not a squeezed label rail — 3.5rem is set to
+   the icon plus symmetric padding, so a centred 1rem glyph has room and
+   nothing has to clip or shrink to fit. */
 .sidebar {
-  flex: 0 0 176px;
+  flex: 0 0 13rem;
   background: var(--bg-0);
   border-right: 1px solid var(--border);
-  padding: 12px 8px;
+  padding: 0.5rem;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  overflow-x: hidden;
   overflow-y: auto;
+  user-select: none;
 }
-.sidebar__group {
+.sidebar--collapsed {
+  flex-basis: 3.5rem;
+  padding: 0.5rem 0.4375rem;
+}
+.sidebar__nav {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 0.125rem;
 }
-.sidebar__label {
-  margin: 16px 8px 6px;
-}
+
 .nav {
+  position: relative;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 8px 10px;
+  gap: 0.625rem;
+  height: 2rem;
+  padding: 0 0.5rem;
   background: transparent;
   border: none;
-  border-radius: 6px;
-  color: var(--fg-dim);
-  font-family: var(--sans);
-  font-size: var(--t-body);
+  border-radius: var(--radius-sm);
+  color: var(--fg-mute);
+  font-family: var(--mono);
+  font-size: var(--t-small);
   text-align: left;
   cursor: pointer;
   width: 100%;
 }
-.nav:hover { background: var(--bg-2); }
+.nav:hover { background: var(--bg-1); color: var(--fg-dim); }
+/* Active: a surface step plus a foreground step. No weight change, no marker
+   glyph, no accent bar — that rail is reserved for the blocked-question
+   signal in the activity log (see .line--rail), and spending it here diluted
+   the one eye-catch the app is allowed. Both cues are lightness, not hue, so
+   this still reads without colour vision. */
 .nav--active {
   background: var(--bg-2);
   color: var(--fg);
-  box-shadow: inset 2px 0 0 var(--accent);
 }
-.nav--soon { color: var(--fg-mute); cursor: default; opacity: 0.5; }
-.nav--soon:hover { background: transparent; }
-.nav__new {
-  font-family: var(--mono);
-  font-size: var(--t-label);
-  letter-spacing: 0.08em;
-  color: var(--accent);
-  border: 1px solid var(--accent);
-  border-radius: 4px;
-  padding: 0 4px;
-  text-transform: uppercase;
+.nav__icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  width: 1rem;
+  height: 1rem;
 }
-.badge {
-  font-family: var(--mono);
+.nav__icon svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.nav__label {
+  flex: 1 1 auto;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* the unread count: gold digits, not a filled pill. Awareness, quietly. */
+.nav__count {
+  flex: 0 0 auto;
   font-size: var(--t-label);
+  color: var(--gold);
+  font-variant-numeric: tabular-nums;
+}
+/* collapsed stand-in for the count — digits do not fit an icon rail */
+.nav__dot {
+  display: none;
+  position: absolute;
+  top: 0.25rem;
+  right: 0.4375rem;
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: 50%;
   background: var(--gold);
-  color: var(--bg-0);
-  padding: 0 6px;
-  border-radius: 8px;
 }
+.sidebar--collapsed .nav,
+.sidebar--collapsed .sidebar__toggle {
+  justify-content: center;
+  gap: 0;
+  padding: 0;
+}
+.sidebar--collapsed .nav__label,
+.sidebar--collapsed .nav__count {
+  display: none;
+}
+.sidebar--collapsed .nav__dot { display: block; }
+
+/* the collapse control sits at the foot of the rail, as its own row in the
+   same shape as a nav item — so it reads as chrome, not as a fifth view. */
+.sidebar__footer {
+  margin-top: auto;
+  padding-top: 0.5rem;
+}
+.sidebar__toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  height: 2rem;
+  padding: 0 0.5rem;
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--fg-mute);
+  font-family: var(--mono);
+  font-size: var(--t-small);
+  text-align: left;
+  cursor: pointer;
+}
+.sidebar__toggle:hover { background: var(--bg-1); color: var(--fg-dim); }
 
 /* ---- workspace ---- */
 .workspace {
@@ -234,69 +323,13 @@ body,
   min-width: 0;
   display: flex;
   flex-direction: column;
-  padding: 12px;
-  gap: 12px;
-}
-
-/* dashboard band — one cell per pane, orchestrator anchored wider */
-.band {
-  display: grid;
-  grid-template-columns: 1.55fr repeat(4, 1fr);
-  gap: 8px;
-  flex: 0 0 auto;
-}
-.cell {
-  position: relative;
-  background: var(--bg-2);
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius);
-  padding: 9px 11px;
-  cursor: pointer;
-  text-align: left;
-  font: inherit;
-  color: inherit;
-  width: 100%;
-}
-.cell:hover { border-color: var(--border); }
-.cell__head { display: flex; align-items: center; gap: 7px; }
-.cell__name { font-family: var(--mono); font-size: 12px; color: var(--fg); }
-.cell__state {
-  margin-left: auto;
-  font-size: var(--t-label);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--fg-mute);
-}
-.cell__body {
-  margin-top: 7px;
-  font-size: var(--t-small);
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-.cell__activity { color: var(--accent); }
-.cell__muted { color: var(--fg-mute); }
-
-/* the orchestrator ANCHOR — lifted surface + size + the gold "lead" tag */
-.cell--orch {
-  background: var(--bg-3);
-  border-color: var(--border);
-  display: flex;
-  flex-direction: column;
-}
-.cell--orch .cell__name { font-size: 13px; }
-.cell--orch .role {
-  font-size: var(--t-label);
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--gold);
-  margin-left: 2px;
+  padding: 0.75rem;
 }
 
 /* status dots — always paired with a text label */
 .dot {
-  width: 8px;
-  height: 8px;
+  width: 0.5rem;
+  height: 0.5rem;
   border-radius: 50%;
   flex: 0 0 auto;
   background: var(--fg-mute);
@@ -305,9 +338,7 @@ body,
 .dot--gold { background: var(--gold); }
 .dot--green { background: var(--green); }
 .dot--red { background: var(--red); }
-.dot--idle { background: var(--fg-mute); }
 .dot--muted { background: var(--border); border: 1px solid var(--fg-mute); }
-.dot--live { background: var(--accent); } /* steady; motion is for "blocked" only */
 
 /* split: orchestrator + worker column via react-resizable-panels */
 .split {
@@ -330,8 +361,19 @@ body,
   flex-direction: column;
   overflow: hidden;
 }
+/* the focused-pane frame: five live terminals, one keyboard — this is the
+   one persistent, always-on signal for which pane owns it, so it earns the
+   app's single eye-catch colour (see the header comment's palette note).
+   Subtle on the head (a tinted hairline, not a colour change on the text)
+   so it doesn't compete with the frame itself for attention. */
+.terminal-pane--focused {
+  border-color: var(--accent);
+}
+.terminal-pane--focused .pane__head {
+  border-bottom-color: color-mix(in srgb, var(--accent) 35%, var(--border-soft));
+}
 .divider {
-  flex: 0 0 12px;
+  flex: 0 0 0.75rem;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -339,34 +381,40 @@ body,
 }
 .divider__grip {
   width: 3px;
-  height: 34px;
+  height: 2.125rem;
   border-radius: 2px;
   background: var(--border);
 }
 .divider:hover .divider__grip,
 .divider[data-resize-handle-state="drag"] .divider__grip { background: var(--fg-mute); }
 
+/* pane head: identity + live status + model, replacing the dashboard band's
+   duplicate per-pane row — this is now the one place that detail lives. */
 .pane__head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
+  gap: 0.5rem;
+  padding: 0.5rem 0.625rem;
   border-bottom: 1px solid var(--border-soft);
   font-size: var(--t-small);
   color: var(--fg-mute);
   flex: 0 0 auto;
+  user-select: none;
 }
 .pane__head .grow { flex: 1 1 auto; }
+.pane__title { color: var(--fg-dim); }
+.pane__meta { color: var(--fg-mute); }
+.pane__status { font-size: var(--t-label); color: var(--fg-mute); }
 .pane__ctl {
-  font-family: var(--sans);
+  font-family: var(--mono);
   font-size: var(--t-label);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--fg-mute);
   background: transparent;
   border: 1px solid var(--border-soft);
-  border-radius: 5px;
-  padding: 2px 7px;
+  border-radius: var(--radius-sm);
+  padding: 0.125rem 0.4375rem;
   cursor: pointer;
 }
 .pane__ctl:hover { color: var(--fg-dim); background: var(--bg-2); }
@@ -384,9 +432,29 @@ body,
   min-height: 0;
   min-width: 0; /* same: the xterm's intrinsic grid width must not pin the host open */
   overflow: hidden;
-  padding: 6px;
+  padding: 0.375rem;
 }
 .xterm .xterm-viewport { overflow-y: auto; }
+
+/* quiet "jump to bottom" affordance — shown only while the operator has
+   scrolled up in this pane (TerminalPane.tsx's onScroll listener). Neutral
+   surface, not gold or coral: this is plain navigation, not an awareness or
+   attention signal. */
+.terminal-jump {
+  position: absolute;
+  bottom: 0.625rem;
+  right: 0.875rem;
+  font-family: var(--mono);
+  font-size: var(--t-label);
+  color: var(--fg-dim);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.25rem 0.5625rem;
+  cursor: pointer;
+  z-index: 2;
+}
+.terminal-jump:hover { color: var(--fg); background: var(--bg-3); }
 
 /* the explicit spend gate, over the whole workspace until the fleet is started */
 .pane-gate {
@@ -395,90 +463,93 @@ body,
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 20px;
+  padding: 1.25rem;
   background: color-mix(in srgb, var(--bg-1) 90%, transparent);
   z-index: 5;
 }
 .pane-gate__card {
-  max-width: 400px;
+  max-width: 25rem;
   width: 100%;
   background: var(--bg-2);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 20px 22px;
+  padding: 1.25rem 1.375rem;
 }
 .pane-gate__title {
-  margin: 0 0 8px;
-  font-size: var(--t-body);
+  margin: 0 0 0.5rem;
+  font-size: var(--t-title);
   font-weight: 600;
   color: var(--fg);
 }
 .pane-gate__body {
-  margin: 0 0 14px;
+  margin: 0 0 0.875rem;
   font-size: var(--t-small);
   line-height: 1.5;
   color: var(--fg-dim);
 }
 .pane-gate__facts {
   list-style: none;
-  margin: 0 0 16px;
+  margin: 0 0 1rem;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 0.375rem;
 }
 .pane-gate__facts li {
   display: flex;
-  gap: 10px;
+  gap: 0.625rem;
   font-size: var(--t-small);
 }
 .pane-gate__facts .k {
-  flex: 0 0 64px;
+  /* widened from 4rem: mono runs wider than the sans this replaced, and
+     "orchestrator" uppercase in mono no longer fits 4rem without overflowing
+     into the value column. */
+  flex: 0 0 5.75rem;
   color: var(--fg-mute);
   text-transform: uppercase;
   font-size: var(--t-label);
   letter-spacing: 0.06em;
-  padding-top: 1px;
+  padding-top: 0.0625rem;
 }
 .pane-gate__facts .v { color: var(--fg-dim); }
 .pane-gate__facts .v--gold { color: var(--gold); }
 .pane-gate__go {
-  font-family: var(--sans);
+  font-family: var(--mono);
   font-size: var(--t-small);
   color: var(--bg-0);
   background: var(--accent);
   border: none;
-  border-radius: 6px;
-  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  padding: 0.5rem 1rem;
   cursor: pointer;
   font-weight: 600;
 }
 .pane-gate__go:hover { background: color-mix(in srgb, var(--accent) 88%, #fff); }
 .pane-gate__alt {
-  font-family: var(--sans);
+  font-family: var(--mono);
   font-size: var(--t-small);
   color: var(--fg-dim);
   background: transparent;
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  padding: 0.5rem 0.875rem;
   cursor: pointer;
 }
 .pane-gate__alt:hover:not(:disabled) { border-color: var(--accent); color: var(--fg); }
 .pane-gate__alt:disabled { opacity: 0.55; cursor: default; }
 .pane-gate__actions {
   display: flex;
-  gap: 8px;
+  gap: 0.5rem;
   align-items: center;
   justify-content: flex-end;
 }
 .pane-gate__error {
-  margin: 0 0 12px;
+  margin: 0 0 0.75rem;
   font-size: var(--t-small);
   color: var(--accent);
 }
 .pane-gate__note {
-  margin: 12px 0 0;
+  margin: 0.75rem 0 0;
   font-size: var(--t-label);
   line-height: 1.5;
   color: var(--fg-mute);
@@ -506,31 +577,49 @@ body,
   min-height: 0;
   min-width: 0;
   width: 100%;
-  gap: 8px;
+  gap: 0.5rem;
 }
 .tabstrip {
   display: flex;
-  gap: 6px;
+  gap: 0.375rem;
   flex: 0 0 auto;
 }
 .tab {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 0.4375rem;
   font: inherit;
   font-size: var(--t-small);
   color: var(--fg-mute);
   background: var(--bg-2);
   border: 1px solid var(--border-soft);
-  border-radius: var(--radius);
-  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  padding: 0.375rem 0.625rem;
   cursor: pointer;
 }
 .tab:hover { border-color: var(--border); color: var(--fg-dim); }
+/* Selection, not focus. This used to tint coral, which collided head-on with
+   .terminal-pane--focused: the same hue was answering two different questions
+   ("which worker is displayed" vs "which pane has the keyboard"), and in a
+   five-terminal app the second one is the one that must never be ambiguous.
+   So selection drops to the same lightness-only treatment the sidebar nav
+   uses — surface step + foreground step — and coral is left to mean exactly
+   one thing app-wide. */
 .tab--active {
   color: var(--fg);
-  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
-  background: color-mix(in srgb, var(--accent) 10%, var(--bg-2));
+  background: var(--bg-3);
+  border-color: var(--border);
+}
+.tab__status { font-size: var(--t-label); color: var(--fg-mute); }
+/* unread-output marker: presence only, no count. Gold (awareness/unread),
+   never the accent — coral is reserved for the focused-pane frame in this
+   pass (see .terminal-pane--focused). */
+.tab__unread {
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: 50%;
+  background: var(--gold);
+  flex: 0 0 auto;
 }
 .worker-slot {
   flex: 1 1 auto;
@@ -544,21 +633,19 @@ body,
 .feed--messages {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px 12px;
+  gap: 0.5rem;
+  padding: 0.625rem 0.75rem;
 }
 .msg {
   background: var(--bg-2);
   border: 1px solid var(--border-soft);
-  border-left: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
   border-radius: var(--radius);
-  padding: 8px 11px;
+  padding: 0.5rem 0.6875rem;
 }
-.msg--failed { border-left-color: var(--gold); }
 .msg__head {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 0.4375rem;
   font-size: var(--t-small);
 }
 .msg__from { color: var(--fg); }
@@ -570,11 +657,14 @@ body,
   text-transform: uppercase;
   color: var(--gold);
   border: 1px solid color-mix(in srgb, var(--gold) 45%, transparent);
-  border-radius: 4px;
-  padding: 0 5px;
+  border-radius: var(--radius-sm);
+  padding: 0 0.3125rem;
 }
+/* the one deliberate exception to the all-mono shell (see the header
+   comment): agent-authored prose paragraphs, not something the system owns. */
 .msg__body {
-  margin: 6px 0 0;
+  margin: 0.375rem 0 0;
+  font-family: var(--sans);
   font-size: var(--t-small);
   line-height: 1.55;
   color: var(--fg-dim);
@@ -582,14 +672,14 @@ body,
   word-break: break-word;
 }
 .msg__failures {
-  margin-top: 7px;
+  margin-top: 0.4375rem;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 0.1875rem;
 }
 .msg__failure {
   font-size: var(--t-label);
-  color: var(--fg-mute);
+  color: var(--gold); /* awareness — the failure lives in this text, not a card rail */
 }
 
 /* activity log */
@@ -606,30 +696,30 @@ body,
 .events-view__head {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
+  gap: 0.625rem;
+  padding: 0.5rem 0.75rem;
   border-bottom: 1px solid var(--border-soft);
 }
-.events-view__head h3 { margin: 0; font-size: var(--t-body); font-weight: 600; color: var(--fg); }
-.feed { flex: 1 1 auto; overflow-y: auto; padding: 6px 4px; font-size: 12px; }
-.feed--empty { color: var(--fg-mute); padding: 16px; }
+.events-view__head h3 { margin: 0; font-size: var(--t-title); font-weight: 600; color: var(--fg); }
+.feed { flex: 1 1 auto; overflow-y: auto; padding: 0.375rem 0.25rem; font-size: var(--t-small); }
+.feed--empty { color: var(--fg-mute); padding: 1rem; }
 .line {
   display: flex;
   align-items: baseline;
-  gap: 10px;
-  padding: 4px 10px;
+  gap: 0.625rem;
+  padding: 0.25rem 0.625rem;
   border-left: 2px solid transparent;
   line-height: 1.5;
 }
 .line:hover { background: var(--bg-2); }
 .line--rail { border-left-color: var(--accent); background: rgba(217, 119, 87, 0.06); }
-.line__seq { font-family: var(--mono); color: var(--fg-mute); font-size: var(--t-small); min-width: 34px; text-align: right; }
+.line__seq { font-family: var(--mono); color: var(--fg-mute); font-size: var(--t-small); min-width: 2.125rem; text-align: right; font-variant-numeric: tabular-nums; }
 .line__kind {
   font-family: var(--mono);
   font-size: var(--t-label);
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  min-width: 60px;
+  min-width: 3.75rem;
   color: var(--fg-mute);
 }
 .line__kind--accent { color: var(--accent); }
@@ -653,23 +743,23 @@ body,
 .fleet-view__head {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
+  gap: 0.625rem;
+  padding: 0.5rem 0.75rem;
   border-bottom: 1px solid var(--border-soft);
 }
-.fleet-view__head h3 { margin: 0; font-size: var(--t-body); font-weight: 600; color: var(--fg); }
+.fleet-view__head h3 { margin: 0; font-size: var(--t-title); font-weight: 600; color: var(--fg); }
 .fleet-stage { flex: 1 1 auto; min-height: 0; width: 100%; }
 .fleet-legend {
   display: flex;
-  gap: 16px;
-  padding: 8px 14px;
+  gap: 1rem;
+  padding: 0.5rem 0.875rem;
   border-top: 1px solid var(--border-soft);
   font-size: var(--t-small);
   color: var(--fg-mute);
   flex-wrap: wrap;
 }
-.fleet-legend span { display: inline-flex; align-items: center; gap: 6px; }
-.legend-swatch { width: 16px; height: 2px; border-radius: 1px; display: inline-block; }
+.fleet-legend span { display: inline-flex; align-items: center; gap: 0.375rem; }
+.legend-swatch { width: 1rem; height: 2px; border-radius: 1px; display: inline-block; }
 
 .edge { fill: none; stroke: var(--border-soft); stroke-width: 1.5; }
 .edge--active { stroke: var(--accent); stroke-opacity: 0.5; }
@@ -691,4 +781,4 @@ body,
 .node-label { font-family: var(--mono); font-size: var(--t-small); fill: var(--fg); }
 .node-label--dim { fill: var(--fg-mute); }
 .node-sub { font-family: var(--mono); font-size: var(--t-label); fill: var(--fg-dim); }
-.node-state { font-family: var(--sans); font-size: var(--t-label); letter-spacing: 0.08em; text-transform: uppercase; }
+.node-state { font-family: var(--mono); font-size: var(--t-label); letter-spacing: 0.08em; text-transform: uppercase; }

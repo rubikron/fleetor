@@ -73,7 +73,7 @@ function collapse(messages: MessageEvent[]): Row[] {
 function MessageRow({ row }: { row: Row }) {
   const failed = row.failures.length > 0;
   return (
-    <article className={`msg ${failed ? "msg--failed" : ""}`}>
+    <article className="msg">
       <header className="msg__head">
         <span className="mono msg__from">{row.from}</span>
         <span className="msg__arrow">→</span>

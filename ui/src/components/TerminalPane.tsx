@@ -14,12 +14,13 @@
 // flusher — is gone with the headless fleet, and delivery now goes straight from
 // the hub to the pty with nothing in between (D-034).
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { warmTheme } from "../theme";
 import { onPaneExit, onPaneOutput, resizePane, spawnPane, writePane } from "../fleet/api";
+import { statusTone, STATUS_LABEL } from "../lib/statusTone";
 import type { PaneId, PaneStatus } from "../fleet/types";
 
 // Raw pty bytes arrive base64-encoded so escape sequences and multibyte UTF-8
@@ -42,9 +43,25 @@ interface TerminalPaneProps {
   scrollback: number;
   /// The operator has started the fleet — this pane may spend tokens.
   started: boolean;
+  /// This pane's live status, shown as a dot + word in its own head — the
+  /// detail the dashboard band used to duplicate now lives only here and in
+  /// the worker tab strip.
+  status: PaneStatus;
+  /// The model running this pane, shown alongside the label when known.
+  model?: string;
+  /// xterm's fontSize in px, driven by the app-wide zoom factor
+  /// (TERMINAL_FONT_SIZE_PX * zoom — see ui/useZoom.ts). Read once as the
+  /// initial value at mount; changes afterward are applied by a separate
+  /// effect below, never by re-running the mount effect (L8).
+  fontSize: number;
   onStatus: (pane: PaneId, status: PaneStatus) => void;
   /// Rendered in the pane head; the per-pane restart when one wedges.
   onRestart?: () => void;
+  /// Called once, after mount, with a function that moves keyboard focus
+  /// into this pane's terminal. App.tsx keeps one of these per pane so its
+  /// Cmd+1..5 pane-jump shortcut (ui/usePaneJump.ts) can focus the terminal
+  /// it just switched to.
+  onFocusReady?: (focus: () => void) => void;
 }
 
 export function TerminalPane({
@@ -52,15 +69,35 @@ export function TerminalPane({
   label,
   scrollback,
   started,
+  status,
+  model,
+  fontSize,
   onStatus,
   onRestart,
+  onFocusReady,
 }: TerminalPaneProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
+  const fitRef = useRef<FitAddon | null>(null);
   // Held in a ref so the mount effect never re-runs when App re-renders: tearing
   // the xterm down to swap a callback would destroy the buffer (L7).
   const onStatusRef = useRef(onStatus);
   onStatusRef.current = onStatus;
+  // Same reasoning, for the zoom-driven fontSize: the mount effect below reads
+  // this only once, as the terminal's initial size, and must never re-run when
+  // it changes (L8) — a separate effect further down handles updates.
+  const fontSizeRef = useRef(fontSize);
+  fontSizeRef.current = fontSize;
+  const onFocusReadyRef = useRef(onFocusReady);
+  onFocusReadyRef.current = onFocusReady;
+
+  // Whether this pane's terminal currently owns keyboard focus — drives the
+  // always-on focused-pane frame (five live terminals share one keyboard;
+  // nothing else shows which one is listening).
+  const [isFocused, setIsFocused] = useState(false);
+  // Whether the operator has scrolled up in this pane's scrollback — drives
+  // the "jump to bottom" affordance (see the onScroll listener below).
+  const [scrolledUp, setScrolledUp] = useState(false);
 
   // Mount the xterm view once. No pty is spawned here — that waits for `started`.
   useEffect(() => {
@@ -70,7 +107,7 @@ export function TerminalPane({
     const term = new Terminal({
       theme: warmTheme,
       fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
-      fontSize: 13,
+      fontSize: fontSizeRef.current,
       lineHeight: 1.2,
       cursorBlink: true,
       scrollback,
@@ -82,6 +119,7 @@ export function TerminalPane({
     term.open(host);
     fit.fit();
     termRef.current = term;
+    fitRef.current = fit;
 
     const disposers: Array<() => void> = [];
     let disposed = false;
@@ -104,6 +142,18 @@ export function TerminalPane({
     });
     const onResize = term.onResize(({ rows, cols }) => void resizePane(pane, rows, cols).catch(() => {}));
 
+    // xterm already preserves scroll position on new output on its own: it
+    // only re-pins the viewport to the bottom when the viewport was already
+    // there (see @xterm/xterm's BufferService — `isUserScrolling` gates
+    // whether a write advances `ydisp`). `onScroll` fires on every such
+    // adjustment — both from a manual scroll and from a write while
+    // scrolled up — so comparing viewportY to baseY here is enough to drive
+    // a quiet "jump to bottom" affordance; no extra scroll-locking is needed.
+    const onScroll = term.onScroll(() => {
+      const buf = term.buffer.active;
+      setScrolledUp(buf.viewportY < buf.baseY);
+    });
+
     const refit = () => {
       // While the pane is on a hidden tab its box is 0×0; fitting then would
       // collapse claude's grid. Only refit when it actually has a size.
@@ -121,14 +171,67 @@ export function TerminalPane({
     return () => {
       disposed = true;
       termRef.current = null;
+      fitRef.current = null;
       observer.disconnect();
       window.removeEventListener("resize", refit);
       onData.dispose();
       onResize.dispose();
+      onScroll.dispose();
       disposers.forEach((un) => un());
       term.dispose();
     };
   }, [pane, label, scrollback]);
+
+  // Focused-pane frame: a new, separate effect from the mount effect above.
+  // xterm's own focus target is its internal textarea, created during
+  // `term.open()` there, so this effect (which only runs once, after that
+  // mount effect has already run) reads it from `termRef.current` rather
+  // than adding anything to the mount effect itself — attaching listeners
+  // here can never risk re-running that effect's deps and tearing the
+  // buffer down (L7/L8).
+  useEffect(() => {
+    const textarea = termRef.current?.textarea;
+    if (!textarea) return;
+    const handleFocus = () => setIsFocused(true);
+    const handleBlur = () => setIsFocused(false);
+    textarea.addEventListener("focus", handleFocus);
+    textarea.addEventListener("blur", handleBlur);
+    return () => {
+      textarea.removeEventListener("focus", handleFocus);
+      textarea.removeEventListener("blur", handleBlur);
+    };
+  }, []);
+
+  // Registers a `focus()` callback for App.tsx's Cmd+1..5 pane-jump shortcut
+  // (ui/usePaneJump.ts). Also a separate, mount-once effect, for the same
+  // L7/L8 reason as above — it must never join the mount effect's deps.
+  useEffect(() => {
+    onFocusReadyRef.current?.(() => termRef.current?.focus());
+  }, []);
+
+  // Zoom: a separate, additional effect from the mount effect above. It only
+  // mutates the existing xterm instance's fontSize and refits — it must never
+  // be folded into the mount effect's deps, because that effect constructs
+  // and disposes the Terminal, and re-running it on every zoom change would
+  // tear down and recreate the xterm, wiping the scrollback buffer (L7/L8).
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    term.options.fontSize = fontSize;
+    const host = hostRef.current;
+    // Same 0×0 guard as `refit` above: a hidden worker pane can't be fit
+    // while it measures zero, and forcing it would collapse the grid. The
+    // fontSize is still applied, so when the pane next becomes visible —
+    // App.tsx's view/selectedWorker effect dispatches a `resize` event on
+    // exactly that transition — the mount effect's own `resize` listener
+    // calls `fit.fit()` again, this time against the already-updated size.
+    if (!host || host.clientWidth === 0 || host.clientHeight === 0) return;
+    try {
+      fitRef.current?.fit();
+    } catch {
+      /* not measurable yet — a later resize/refit will catch up */
+    }
+  }, [fontSize]);
 
   // Spawn once the operator has started the fleet. The command is idempotent, so
   // a re-run after a spurious flip is harmless; a failure is written into the
@@ -143,11 +246,29 @@ export function TerminalPane({
     });
   }, [started, pane, label]);
 
+  // Clicking anywhere in the pane — its head, its padding, its frame, the
+  // xterm surface itself — moves keyboard focus into the terminal, except
+  // the Restart button, which needs its own click uncontested. `onClick`
+  // (not `onMouseDown`) so a text-selection drag inside xterm finishes
+  // before this fires; xterm tracks selection itself rather than relying on
+  // the browser's native selection, so re-focusing afterward doesn't clear it.
+  const focusTerminal = (e: React.MouseEvent) => {
+    const target = e.target as HTMLElement;
+    if (target.closest(".pane__ctl")) return;
+    termRef.current?.focus();
+  };
+
   return (
-    <div className="terminal-pane">
+    <div
+      className={`terminal-pane ${isFocused ? "terminal-pane--focused" : ""}`}
+      onClick={focusTerminal}
+    >
       <div className="pane__head">
-        <span className="mono">{label}</span>
+        <span className={`dot dot--${statusTone(status)}`} />
+        <span className="mono pane__title">{label}</span>
+        {model && <span className="mono pane__meta">{model}</span>}
         <span className="grow" style={{ flex: "1 1 auto" }} />
+        <span className="pane__status">{STATUS_LABEL[status]}</span>
         {started && onRestart && (
           <button className="pane__ctl" onClick={onRestart}>
             Restart
@@ -156,6 +277,14 @@ export function TerminalPane({
       </div>
       <div className="terminal-wrap">
         <div ref={hostRef} className="terminal-host" />
+        {scrolledUp && (
+          <button
+            className="terminal-jump"
+            onClick={() => termRef.current?.scrollToBottom()}
+          >
+            ↓ jump to latest
+          </button>
+        )}
       </div>
     </div>
   );
