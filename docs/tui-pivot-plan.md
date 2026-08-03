@@ -281,10 +281,26 @@ Phase-1 delivery-path audit (D-032/D-033), each of which is a silent failure if 
   single `AppCommand` loop, or five panes serialize behind each other and a wedged pane burns the
   hub's 2s ack ceiling for every message queued behind it. Broadcast legs are awaited sequentially
   in the hub, so a slow receiver multiplies: 4 targets × 2s worst case.
-- **The `fleet` CLI needs its own timeout on `Client::call`.** `fleetor_ipc::Client` waits forever
-  for a response today. The hub's ack ceiling protects the *hub's* handler; nothing protects the
-  CLI if the hub itself is wedged or the socket never answers — and a `fleet` that never returns
-  parks the calling agent's Bash tool call indefinitely, which is worse than any failed send. No idle guard, no `pending` buffer, no
+- **One write, one lock.** The paste-open, body, paste-close and `\r` must reach the pty as a
+  *single* write under a single lock hold. Tauri dispatches sync commands on a thread pool, so a
+  keystroke `pty_write` racing a delivery can land between the body and its `\r` — corrupting the
+  message or submitting it early. Today's `pty.rs` L173-181 has exactly this shape.
+- **A failed pty write must be reported, never dropped.** Today both call sites use
+  `void invoke("pty_write", …)` with no `.catch`, so a rejected write vanishes into an unhandled
+  promise — no event, no log, no console. The `Deliver` ack is what fixes this; do not add a
+  fire-and-forget write path alongside it.
+- **Attach the event listener before `bootstrap()`.** `useFleet.ts` subscribes only after bootstrap
+  *and* a config round-trip, and a Tauri `emit` with no listener is a drop — so the first events of
+  a session go missing. In a product whose deliverable is the message record, that is a hole in
+  the record.
+- **`MAX_FEED = 300` must never discard message events.** Dropping the oldest rows is fine for a
+  scrolling activity log and wrong for the thing being delivered.
+
+**Deliberately unbounded (D-034).** There is no timeout anywhere between `fleet send` and the pty,
+including on the CLI's own `Client::call`. A ceiling cannot cancel a delivery already sitting in the
+channel, so all it can do is report failure for a message that then arrives — which makes the model
+resend and makes the log lie. Waiting forever is the honest failure. Revisit only against a measured
+case where something actually hangs. No idle guard, no `pending` buffer, no
 flush ticker. This deletes the entire `lead://inject` / `injectQueue` / `lastInputAt` /
 `INJECT_IDLE_MS` / flush-interval apparatus from React outright rather than moving it.
 

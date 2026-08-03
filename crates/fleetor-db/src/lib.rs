@@ -46,7 +46,7 @@ impl SqliteStore {
 
 impl Store for SqliteStore {
     fn upsert_ticket(&self, ticket: &Ticket) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT INTO tickets (id, title, body, files_owned, slot, state, budget, report, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8)
@@ -70,7 +70,7 @@ impl Store for SqliteStore {
     }
 
     fn set_ticket_state(&self, id: &str, state: TicketState) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "UPDATE tickets SET state=?2, updated_at=?3 WHERE id=?1",
             rusqlite::params![id, serde_json::to_string(&state)?, time::now_ms()],
@@ -80,7 +80,7 @@ impl Store for SqliteStore {
     }
 
     fn save_report(&self, ticket: &str, _slot: u8, report: &Report) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "UPDATE tickets SET report=?2, updated_at=?3 WHERE id=?1",
             rusqlite::params![ticket, serde_json::to_string(report)?, time::now_ms()],
@@ -90,7 +90,7 @@ impl Store for SqliteStore {
     }
 
     fn append_event(&self, event: &FleetEvent) -> Result<i64> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT INTO events (ts, kind, payload) VALUES (?1, ?2, ?3)",
             rusqlite::params![time::now_ms(), event.kind(), serde_json::to_string(event)?],
@@ -100,7 +100,7 @@ impl Store for SqliteStore {
     }
 
     fn tickets(&self) -> Result<Vec<Ticket>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT id, title, body, files_owned, slot, state, budget FROM tickets ORDER BY id",
         )?;
@@ -122,7 +122,7 @@ impl Store for SqliteStore {
     }
 
     fn events_since(&self, after: i64) -> Result<Vec<(i64, FleetEvent)>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt =
             conn.prepare("SELECT seq, payload FROM events WHERE seq > ?1 ORDER BY seq")?;
         let rows = stmt.query_map([after], |r| {
@@ -141,7 +141,7 @@ impl Store for SqliteStore {
     }
 
     fn latest_seq(&self) -> Result<i64> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let seq: i64 = conn.query_row("SELECT COALESCE(MAX(seq), 0) FROM events", [], |r| r.get(0))?;
         Ok(seq)
     }
@@ -152,7 +152,7 @@ impl Store for SqliteStore {
             Some(Ref::Branch(b)) => (Some("branch"), Some(b.clone())),
             None => (None, None),
         };
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT INTO mail (id, from_party, to_party, kind, body, ref_kind, ref_val, ts, v, delivered)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0)",
@@ -174,7 +174,7 @@ impl Store for SqliteStore {
 
     fn take_mail(&self, to: &Party) -> Result<Vec<Envelope>> {
         let to_json = serde_json::to_string(to)?;
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT id, from_party, kind, body, ref_kind, ref_val, ts, v
              FROM mail WHERE to_party=?1 AND delivered=0 ORDER BY rowid",
@@ -220,7 +220,7 @@ impl Store for SqliteStore {
     }
 
     fn who_owns(&self, path: &str) -> Result<Vec<Owner>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare("SELECT slot, ticket FROM leases WHERE path=?1 ORDER BY acquired_at")?;
         let rows = stmt.query_map([path], |r| {
@@ -230,7 +230,7 @@ impl Store for SqliteStore {
     }
 
     fn claim_lease(&self, path: &str, slot: u8, ticket: &str) -> Result<LeaseGrant> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         // A lease held by a *different* slot blocks the claim (handoff §4).
         let held: Option<Owner> = conn
             .query_row(
@@ -256,7 +256,7 @@ impl Store for SqliteStore {
     }
 
     fn add_backlog(&self, item: &BacklogItem) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT INTO backlog (id, text, added_by, ticket, ts) VALUES (?1, ?2, ?3, ?4, ?5)",
             rusqlite::params![
@@ -272,7 +272,7 @@ impl Store for SqliteStore {
     }
 
     fn list_backlog(&self) -> Result<Vec<BacklogItem>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt =
             conn.prepare("SELECT id, text, added_by, ticket, ts FROM backlog ORDER BY ts, id")?;
         let rows = stmt.query_map([], |r| {

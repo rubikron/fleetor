@@ -92,22 +92,6 @@ impl DeliveryResult {
     }
 }
 
-/// Knobs for the pane surface, kept out of [`HubConfig`] so the pre-D-030 call
-/// sites keep compiling untouched. Phase 5 folds these two structs together.
-#[derive(Debug, Clone, Copy)]
-pub struct PaneConfig {
-    /// Ceiling on the app's delivery ack. The round-trip is a HashMap lookup and
-    /// a pty write — sub-millisecond — so this exists only so a wedged app cannot
-    /// park the CLI forever. It is not a delay; nothing in the path sleeps.
-    pub ack_timeout: Duration,
-}
-
-impl Default for PaneConfig {
-    fn default() -> Self {
-        Self { ack_timeout: Duration::from_secs(2) }
-    }
-}
-
 /// Answer returned to a blocked `ask_lead` when the ask times out with no human
 /// reply — so a worker never deadlocks on an AFK lead (handoff §5).
 pub const ASK_TIMEOUT_ANSWER: &str =
@@ -142,7 +126,6 @@ struct HubState {
     /// never actually heard from you is not a reply.
     last_inbound_from: Mutex<HashMap<PaneId, PaneId>>,
     config: HubConfig,
-    pane_config: PaneConfig,
 }
 
 /// The routing hub. Cheap to clone (everything shared behind `Arc`).
@@ -160,7 +143,7 @@ pub struct Hub {
 
 impl Hub {
     pub fn new(store: Arc<dyn Store>, config: HubConfig) -> Arc<Hub> {
-        Self::build(store, config, PaneConfig::default(), None, None)
+        Self::build(store, config, None, None)
     }
 
     /// A hub whose control ops forward to `dispatcher` — the dynamic fleet (4d/4f).
@@ -169,7 +152,7 @@ impl Hub {
         config: HubConfig,
         dispatcher: mpsc::UnboundedSender<RunnerCommand>,
     ) -> Arc<Hub> {
-        Self::build(store, config, PaneConfig::default(), Some(dispatcher), None)
+        Self::build(store, config, Some(dispatcher), None)
     }
 
     /// A hub whose pane ops are served by a fleet app holding the pty registry
@@ -177,16 +160,14 @@ impl Hub {
     pub fn with_app(
         store: Arc<dyn Store>,
         config: HubConfig,
-        pane_config: PaneConfig,
         app: mpsc::UnboundedSender<AppCommand>,
     ) -> Arc<Hub> {
-        Self::build(store, config, pane_config, None, Some(app))
+        Self::build(store, config, None, Some(app))
     }
 
     fn build(
         store: Arc<dyn Store>,
         config: HubConfig,
-        pane_config: PaneConfig,
         dispatcher: Option<mpsc::UnboundedSender<RunnerCommand>>,
         app: Option<mpsc::UnboundedSender<AppCommand>>,
     ) -> Arc<Hub> {
@@ -197,7 +178,6 @@ impl Hub {
                 waiters: Mutex::new(HashMap::new()),
                 last_inbound_from: Mutex::new(HashMap::new()),
                 config,
-                pane_config,
             }),
             store,
             dispatcher,
@@ -300,7 +280,7 @@ impl Hub {
     async fn ask_lead(&self, slot: u8, question: String, options: Option<Vec<String>>) -> OpResult {
         let event_id = ids::new_id("q");
         let (tx, rx) = oneshot::channel();
-        self.state.waiters.lock().unwrap().insert(event_id.clone(), tx);
+        self.state.waiters.lock().unwrap_or_else(|e| e.into_inner()).insert(event_id.clone(), tx);
         self.push_lead_event(LeadEvent {
             id: event_id.clone(),
             from: slot,
@@ -315,7 +295,7 @@ impl Hub {
             _ => {
                 // Timed out or the waiter was dropped — return the park answer
                 // and clear any stale waiter entry.
-                self.state.waiters.lock().unwrap().remove(&event_id);
+                self.state.waiters.lock().unwrap_or_else(|e| e.into_inner()).remove(&event_id);
                 OpResult::Answer { text: ASK_TIMEOUT_ANSWER.to_string(), answered: false }
             }
         }
@@ -483,7 +463,7 @@ impl Hub {
     }
 
     fn reply(&self, event_id: String, text: String) -> OpResult {
-        let waiter = self.state.waiters.lock().unwrap().remove(&event_id);
+        let waiter = self.state.waiters.lock().unwrap_or_else(|e| e.into_inner()).remove(&event_id);
         match waiter {
             Some(tx) => {
                 // A dropped receiver means the ask already timed out; treat the
@@ -540,21 +520,22 @@ impl Hub {
         }
 
         let group = ids::new_id("grp");
-        let mut any_accepted = false;
         let mut failures: Vec<String> = Vec::new();
         for to in targets {
             let msg = Message::in_group(from, to, text.clone(), group.clone());
             let outcome = self.ask_app(to, msg.framed()).await;
-            if outcome.accepted {
-                any_accepted = true;
-            } else {
+            if !outcome.accepted {
                 failures.push(format!("{to}: {}", outcome.detail.as_deref().unwrap_or("rejected")));
             }
             self.log_message(msg, &outcome);
         }
+        // Accepted means *every* leg landed. Anything weaker exits the `fleet`
+        // CLI zero, and the brief has taught the model that zero means the bytes
+        // reached a terminal — so a partial fan-out would read as a full one and
+        // the panes that missed it would never be followed up.
         OpResult::Delivered {
             msg_id: group,
-            accepted: any_accepted,
+            accepted: failures.is_empty(),
             detail: (!failures.is_empty()).then(|| failures.join("; ")),
         }
     }
@@ -565,7 +546,7 @@ impl Hub {
             Ok(p) => p,
             Err(e) => return e,
         };
-        let Some(to) = self.state.last_inbound_from.lock().unwrap().get(&from).copied() else {
+        let Some(to) = self.state.last_inbound_from.lock().unwrap_or_else(|e| e.into_inner()).get(&from).copied() else {
             return OpResult::Error {
                 message: format!(
                     "nobody has messaged {from} yet — there is nothing to reply to; \
@@ -597,10 +578,9 @@ impl Hub {
         if app.send(AppCommand::Roster { ack }).is_err() {
             return Err(OpResult::Error { message: APP_GONE.to_string() });
         }
-        match tokio::time::timeout(self.state.pane_config.ack_timeout, rx).await {
-            Ok(Ok(panes)) => Ok(panes),
-            Ok(Err(_)) => Err(OpResult::Error { message: APP_DROPPED.to_string() }),
-            Err(_) => Err(OpResult::Error { message: self.ack_timed_out() }),
+        match rx.await {
+            Ok(panes) => Ok(panes),
+            Err(_) => Err(OpResult::Error { message: APP_DROPPED.to_string() }),
         }
     }
 
@@ -617,8 +597,14 @@ impl Hub {
     }
 
     fn log_message(&self, msg: Message, outcome: &DeliveryResult) {
-        if outcome.accepted {
-            self.state.last_inbound_from.lock().unwrap().insert(msg.to, msg.from);
+        // A broadcast leg must not become the recipient's reply target. It was
+        // not addressed to them — the brief tells them not to answer it — and
+        // letting it overwrite `last_inbound_from` silently redirects their next
+        // `fleet reply`, which the brief calls their usual move, to a pane that
+        // never spoke to them. That is the one failure where a message arrives
+        // somewhere it was never meant to go.
+        if outcome.accepted && !msg.is_broadcast() {
+            self.state.last_inbound_from.lock().unwrap_or_else(|e| e.into_inner()).insert(msg.to, msg.from);
         }
         self.emit(msg.into_event(outcome.accepted, outcome.detail.clone()));
     }
@@ -633,10 +619,14 @@ impl Hub {
         if app.send(AppCommand::Deliver { to, text, ack }).is_err() {
             return DeliveryResult::rejected(APP_GONE);
         }
-        match tokio::time::timeout(self.state.pane_config.ack_timeout, rx).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(_)) => DeliveryResult::rejected(APP_DROPPED),
-            Err(_) => DeliveryResult::rejected(self.ack_timed_out()),
+        // No deadline. The round trip is a HashMap lookup and a pty write; a
+        // ceiling here could only ever turn a slow delivery into a *reported
+        // failure for a message that still arrives* — the command is already in
+        // the channel when a timer would fire, so the timeout cannot cancel it.
+        // Duplicate sends and a log that lies are worse than waiting.
+        match rx.await {
+            Ok(result) => result,
+            Err(_) => DeliveryResult::rejected(APP_DROPPED),
         }
     }
 
@@ -646,13 +636,6 @@ impl Hub {
             message: "this connection did not identify a pane — set FLEETOR_PANE and retry"
                 .to_string(),
         })
-    }
-
-    fn ack_timed_out(&self) -> String {
-        format!(
-            "the fleet app did not answer within {:?} — it may be wedged",
-            self.state.pane_config.ack_timeout
-        )
     }
 
     // ---- shared helpers ----
@@ -672,12 +655,12 @@ impl Hub {
     }
 
     fn push_lead_event(&self, event: LeadEvent) {
-        self.state.lead_events.lock().unwrap().push_back(event);
+        self.state.lead_events.lock().unwrap_or_else(|e| e.into_inner()).push_back(event);
         self.state.lead_notify.notify_one();
     }
 
     fn take_lead_events(&self) -> Vec<LeadEvent> {
-        self.state.lead_events.lock().unwrap().drain(..).collect()
+        self.state.lead_events.lock().unwrap_or_else(|e| e.into_inner()).drain(..).collect()
     }
 
     fn worker_state(&self, slot: u8, from: WorkerState, to: WorkerState) {
