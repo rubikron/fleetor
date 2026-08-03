@@ -13,7 +13,7 @@ use fleetor_core::wire::{Hello, Op, OpResult};
 use fleetor_core::Store;
 use fleetor_db::SqliteStore;
 use fleetor_ipc::{Client, Transport, UnixTransport};
-use fleetor_server::{AppCommand, DeliveryResult, Hub, HubConfig, PaneConfig, RateLimit};
+use fleetor_server::{AppCommand, DeliveryResult, Hub, HubConfig, PaneConfig};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -321,56 +321,6 @@ async fn a_rejected_delivery_does_not_become_a_reply_target() {
     w2.call(Op::PaneSend { to: PaneId::Worker(1), text: "you there?".into() }).await.unwrap();
     let result = w1.call(Op::PaneReply { text: "yes".into() }).await.unwrap();
     assert!(matches!(result, OpResult::Error { .. }), "got {result:?}");
-}
-
-/// L5's first mitigation. A pane that keeps sending runs out of budget, and the
-/// refusal is a sentence that tells it what to stop doing.
-#[tokio::test]
-async fn the_rate_limiter_stops_a_runaway_sender() {
-    let config = PaneConfig {
-        rate_limit: RateLimit { burst: 2, per_minute: 1 },
-        ..PaneConfig::default()
-    };
-    let (transport, store, writes) = start_hub(all_live(), config).await;
-    let mut w1 = pane(&transport, PaneId::Worker(1)).await;
-
-    for i in 0..2 {
-        let r = w1.call(Op::PaneSend { to: PaneId::Orch, text: format!("msg {i}") }).await.unwrap();
-        assert!(matches!(r, OpResult::Delivered { accepted: true, .. }), "send {i}: {r:?}");
-    }
-
-    let r = w1.call(Op::PaneSend { to: PaneId::Orch, text: "msg 2".into() }).await.unwrap();
-    let OpResult::Delivered { accepted, detail, .. } = r else { panic!("expected a delivery") };
-    assert!(!accepted, "the bucket is empty");
-    let detail = detail.unwrap();
-    assert!(detail.contains("rate limit"), "{detail}");
-    assert!(detail.contains("do not answer broadcasts"), "the fix is in the message: {detail}");
-
-    assert_eq!(writes.lock().unwrap().len(), 2, "the third message never reached a terminal");
-    let logged = messages(&store);
-    assert_eq!(logged.len(), 3, "the rejection is logged too, so the ramp is visible in the band");
-    assert!(!as_message(&logged[2]).4);
-}
-
-/// A fan-out costs one token per leg, so it cannot be used to route around the
-/// per-message budget — and an unaffordable broadcast reaches nobody rather than
-/// an arbitrary prefix of the fleet.
-#[tokio::test]
-async fn a_broadcast_that_cannot_be_paid_for_reaches_nobody() {
-    let config = PaneConfig {
-        rate_limit: RateLimit { burst: 2, per_minute: 1 },
-        ..PaneConfig::default()
-    };
-    let (transport, store, writes) = start_hub(all_live(), config).await;
-    let mut w1 = pane(&transport, PaneId::Worker(1)).await;
-
-    // Three targets, two tokens.
-    let r = w1.call(Op::PaneBroadcast { text: "everyone status?".into() }).await.unwrap();
-    let OpResult::Delivered { accepted, detail, .. } = r else { panic!("expected a delivery") };
-    assert!(!accepted);
-    assert!(detail.unwrap().contains("rate limit"));
-    assert!(writes.lock().unwrap().is_empty(), "no partial fan-out");
-    assert_eq!(messages(&store).len(), 3, "each refused leg is on the record");
 }
 
 /// The roster is the app's answer, not the config's: the hub knows which panes

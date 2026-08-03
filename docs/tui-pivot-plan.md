@@ -156,10 +156,12 @@ the "stays green" constraint and all reversed in Phase 5:
   (`[fleet · worker-1]` vs `[fleet · worker-1 → all]`). L5's brief clause "never reply to a
   broadcast unless it names you" is unobeyable if the receiver can't tell the two apart.
 
-Also built here, ahead of the plan: the rate limiter charges **one token per outbound leg**, so a
-broadcast costs what N sends cost; an unaffordable broadcast is refused in full rather than
-reaching an arbitrary prefix of the fleet; and every refusal is logged as a `Message` with
-`accepted: false`, so the ramp is visible rather than silently absent.
+**The per-pane token bucket was built and then removed** (operator direction). Nothing may sit in
+the delivery path that can stop a message from landing while messaging itself is unproven — it
+guarded against a predicted fountain, its only power was to refuse sends, and its defaults were
+unmeasured. L5's other two mitigations stand and are the right layer anyway: the brief clause is
+prompt text with no code in the send path, and the messages/min figure is observation, not
+enforcement. Revisit in Phase 6 behind a *demonstrated* fountain — see the amended L5 below.
 
 *Original scope, retained for reference:*
 
@@ -407,9 +409,14 @@ for `fleet`.** Explicit resolution ladder (`FLEETOR_FLEET_BIN` → sibling of `c
 `broadcast`, all instructed to be helpful. Worker 1 broadcasts → three receive → each acknowledges →
 each fans out → runaway burning real DeepSeek tokens while you watch a beautiful animated graph of
 the fire. Today's system is immune only because workers are parked headless processes with no
-volition between turns; live TUIs have volition. **All three mitigations required**: hub-side
-per-pane token bucket that rejects with a readable error; an explicit brief clause *"never reply to a
-broadcast unless it names you"*; a per-pane messages/min figure in the band so the ramp is visible.
+volition between turns; live TUIs have volition. Three mitigations were planned. **Two ship; the token bucket does not.**
+The brief clause — *"never reply to a broadcast unless it names you"* — ships in Phase 1 and the
+per-pane messages/min figure ships in Phase 4; neither can drop a message, because one is prompt
+text and the other is a readout. The hub-side per-pane token bucket was built in Phase 1 and
+**removed**: it is the only one of the three that sits in the delivery path and refuses sends, and
+trading "messages sometimes don't arrive" for "tokens sometimes get wasted" is the wrong way round
+while messaging is the entire product. It returns in Phase 6 only if a real fountain is observed,
+sized against that measurement rather than a guess.
 
 **L6 — the Tauri event firehose. The chokepoints, in detail.**
 

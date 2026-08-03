@@ -30,7 +30,7 @@ use fleetor_ipc::{Conn, Transport};
 use fleetor_core::Ticket;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, Notify};
 
 /// A dispatch request the lead's `assign` forwards to the runner (Phase 4d). The
@@ -92,28 +92,10 @@ impl DeliveryResult {
     }
 }
 
-/// Per-pane send budget — the first of L5's three required anti-amplification
-/// mitigations. Five peers that all answer broadcasts is a runaway that burns
-/// real tokens while the graph animates beautifully; this is what stops it.
-#[derive(Debug, Clone, Copy)]
-pub struct RateLimit {
-    /// Messages a pane may send back-to-back from a full bucket.
-    pub burst: u32,
-    /// Sustained refill rate.
-    pub per_minute: u32,
-}
-
-impl Default for RateLimit {
-    fn default() -> Self {
-        Self { burst: 8, per_minute: 20 }
-    }
-}
-
 /// Knobs for the pane surface, kept out of [`HubConfig`] so the pre-D-030 call
 /// sites keep compiling untouched. Phase 5 folds these two structs together.
 #[derive(Debug, Clone, Copy)]
 pub struct PaneConfig {
-    pub rate_limit: RateLimit,
     /// Ceiling on the app's delivery ack. The round-trip is a HashMap lookup and
     /// a pty write — sub-millisecond — so this exists only so a wedged app cannot
     /// park the CLI forever. It is not a delay; nothing in the path sleeps.
@@ -122,7 +104,7 @@ pub struct PaneConfig {
 
 impl Default for PaneConfig {
     fn default() -> Self {
-        Self { rate_limit: RateLimit::default(), ack_timeout: Duration::from_secs(2) }
+        Self { ack_timeout: Duration::from_secs(2) }
     }
 }
 
@@ -147,13 +129,6 @@ impl Default for HubConfig {
     }
 }
 
-/// One pane's send budget: a token bucket refilled continuously at
-/// `per_minute / 60` tokens per second, capped at `burst`.
-struct Bucket {
-    tokens: f64,
-    last: Instant,
-}
-
 struct HubState {
     /// Actionable worker→lead traffic awaiting the lead (questions, notices).
     lead_events: Mutex<VecDeque<LeadEvent>>,
@@ -166,8 +141,6 @@ struct HubState {
     /// resolves to. Only successful deliveries land here: replying to a pane that
     /// never actually heard from you is not a reply.
     last_inbound_from: Mutex<HashMap<PaneId, PaneId>>,
-    /// Per-pane send budgets (L5).
-    buckets: Mutex<HashMap<PaneId, Bucket>>,
     config: HubConfig,
     pane_config: PaneConfig,
 }
@@ -223,7 +196,6 @@ impl Hub {
                 lead_notify: Notify::new(),
                 waiters: Mutex::new(HashMap::new()),
                 last_inbound_from: Mutex::new(HashMap::new()),
-                buckets: Mutex::new(HashMap::new()),
                 config,
                 pane_config,
             }),
@@ -550,11 +522,7 @@ impl Hub {
         if to == from {
             return OpResult::Error { message: format!("{from} cannot message itself") };
         }
-        let msg = Message::direct(from, to, text);
-        match self.take_tokens(from, 1) {
-            Ok(()) => self.deliver(msg).await,
-            Err(detail) => self.record_rejection(msg, detail),
-        }
+        self.deliver(Message::direct(from, to, text)).await
     }
 
     /// `fleet broadcast "<text>"` — one gesture, N−1 legs sharing a `group` id.
@@ -572,19 +540,11 @@ impl Hub {
         }
 
         let group = ids::new_id("grp");
-        // Charged up front for the whole fan-out: a broadcast that cannot be paid
-        // for in full is rejected in full, rather than reaching an arbitrary
-        // prefix of the fleet.
-        let limited = self.take_tokens(from, targets.len() as u32).err();
-
         let mut any_accepted = false;
         let mut failures: Vec<String> = Vec::new();
         for to in targets {
             let msg = Message::in_group(from, to, text.clone(), group.clone());
-            let outcome = match &limited {
-                Some(detail) => DeliveryResult::rejected(detail.clone()),
-                None => self.ask_app(to, msg.framed()).await,
-            };
+            let outcome = self.ask_app(to, msg.framed()).await;
             if outcome.accepted {
                 any_accepted = true;
             } else {
@@ -592,12 +552,11 @@ impl Hub {
             }
             self.log_message(msg, &outcome);
         }
-        // A rate-limited fan-out failed for one reason, not N — say it once.
-        let detail = match limited {
-            Some(reason) => Some(reason),
-            None => (!failures.is_empty()).then(|| failures.join("; ")),
-        };
-        OpResult::Delivered { msg_id: group, accepted: any_accepted, detail }
+        OpResult::Delivered {
+            msg_id: group,
+            accepted: any_accepted,
+            detail: (!failures.is_empty()).then(|| failures.join("; ")),
+        }
     }
 
     /// `fleet reply "<text>"` — to whoever last got through to this pane.
@@ -614,11 +573,7 @@ impl Hub {
                 ),
             };
         };
-        let msg = Message::direct(from, to, text);
-        match self.take_tokens(from, 1) {
-            Ok(()) => self.deliver(msg).await,
-            Err(detail) => self.record_rejection(msg, detail),
-        }
+        self.deliver(Message::direct(from, to, text)).await
     }
 
     /// `fleet roster` — asks the app, because only the pty registry knows which
@@ -648,16 +603,6 @@ impl Hub {
         let detail = outcome.detail.clone();
         self.log_message(msg, &outcome);
         OpResult::Delivered { msg_id, accepted, detail }
-    }
-
-    /// A message the hub refused before it ever reached the app (today: the rate
-    /// limiter). Logged like any other attempt, because an invisible rejection is
-    /// how a fleet quietly stops talking (L5 wants the ramp visible).
-    fn record_rejection(&self, msg: Message, detail: String) -> OpResult {
-        let msg_id = msg.id.clone();
-        let outcome = DeliveryResult::rejected(detail.clone());
-        self.log_message(msg, &outcome);
-        OpResult::Delivered { msg_id, accepted: false, detail: Some(detail) }
     }
 
     fn log_message(&self, msg: Message, outcome: &DeliveryResult) {
@@ -701,30 +646,6 @@ impl Hub {
             "the fleet app did not answer within {:?} — it may be wedged",
             self.state.pane_config.ack_timeout
         )
-    }
-
-    /// Spend `cost` tokens from `pane`'s bucket, refilling for elapsed time first.
-    /// `Err` carries the message the sender sees.
-    fn take_tokens(&self, pane: PaneId, cost: u32) -> Result<(), String> {
-        let limit = self.state.pane_config.rate_limit;
-        let capacity = f64::from(limit.burst);
-        let now = Instant::now();
-
-        let mut buckets = self.state.buckets.lock().unwrap();
-        let bucket = buckets.entry(pane).or_insert(Bucket { tokens: capacity, last: now });
-        let refill = now.duration_since(bucket.last).as_secs_f64() * f64::from(limit.per_minute) / 60.0;
-        bucket.tokens = (bucket.tokens + refill).min(capacity);
-        bucket.last = now;
-
-        if bucket.tokens < f64::from(cost) {
-            return Err(format!(
-                "rate limit: {pane} may send {} messages a minute (burst {}); \
-                 this one cost {cost}. Wait a few seconds, and do not answer broadcasts.",
-                limit.per_minute, limit.burst
-            ));
-        }
-        bucket.tokens -= f64::from(cost);
-        Ok(())
     }
 
     // ---- shared helpers ----
