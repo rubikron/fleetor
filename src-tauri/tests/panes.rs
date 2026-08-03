@@ -20,8 +20,11 @@ use std::time::{Duration, Instant};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use fleetor_core::message::frame_for_pane;
 use fleetor_core::pane::{PaneId, WORKER_SLOTS};
+use fleetor_shell::deliver::spawn_delivery;
 use fleetor_shell::pty::{exit_channel, out_channel, Emit, PaneRegistry};
 use fleetor_shell::spawn;
+use fleetor_server::AppCommand;
+use tokio::sync::{mpsc, oneshot};
 
 /// Long enough for a shell to start and echo on a loaded machine; short enough
 /// that a genuine failure doesn't look like a hang.
@@ -235,4 +238,69 @@ fn kill_all_reaps_the_whole_fleet() {
             "{pane} still accepted input after kill_all"
         );
     }
+}
+
+/// **The D-039 burst.** Four peers messaging one pane at the same moment must all
+/// arrive, in the order the hub took them, and must reach the terminal as *fewer
+/// writes than there were messages* — which is the whole point: the merging that
+/// the receiving TUI was doing invisibly and badly is now ours, done where the
+/// framing still says who sent what.
+///
+/// The write holds the pty for the 30 ms submit gap, so messages 2–4 are
+/// guaranteed to be queued while message 1 is in flight. That is what makes this
+/// deterministic rather than a race the test happens to win.
+#[test]
+fn a_burst_from_four_peers_arrives_whole_in_order_and_in_fewer_writes() {
+    let (registry, transcript) = fleet();
+    let target = PaneId::Orch;
+    transcript.wait_for(&out_channel(target), "ready");
+
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let (tx, rx) = mpsc::unbounded_channel::<AppCommand>();
+    spawn_delivery(&rt, registry.clone(), rx);
+
+    // Fire all four without awaiting any of them — a real burst, not a sequence.
+    let answers: Vec<oneshot::Receiver<_>> = WORKER_SLOTS
+        .iter()
+        .map(|slot| {
+            let (ack, answer) = oneshot::channel();
+            tx.send(AppCommand::Deliver {
+                to: target,
+                text: frame_for_pane(PaneId::Worker(*slot), &format!("from worker {slot}")),
+                ack,
+            })
+            .unwrap();
+            answer
+        })
+        .collect();
+
+    for (i, answer) in answers.into_iter().enumerate() {
+        let result = rt.block_on(answer).unwrap_or_else(|_| panic!("leg {i} went unanswered"));
+        assert!(result.accepted, "leg {i} was refused: {result:?}");
+    }
+
+    for slot in WORKER_SLOTS {
+        transcript.wait_for(&out_channel(target), &format!("from worker {slot}"));
+    }
+
+    let seen = transcript.text(&out_channel(target));
+    let order: Vec<usize> = WORKER_SLOTS
+        .iter()
+        .map(|slot| seen.find(&format!("from worker {slot}")).expect("present"))
+        .collect();
+    let mut sorted = order.clone();
+    sorted.sort_unstable();
+    assert_eq!(order, sorted, "the pane saw the burst out of the order the hub took it");
+
+    // Each write opens exactly one bracketed paste, and the pane's tty echoes it
+    // back, so counting the opening markers counts the writes. Four unbatched
+    // messages would show four; batching shows fewer.
+    let opens = seen.matches("\u{1b}[200~").count();
+    assert!(opens >= 1, "no paste ever reached the pane: {seen:?}");
+    assert!(
+        opens < WORKER_SLOTS.len(),
+        "four messages reached the pane as {opens} separate pastes — they were not batched"
+    );
+
+    registry.kill_all();
 }
