@@ -115,6 +115,29 @@ export function StartGate({ config, onStart, onTargetChanged }: StartGateProps) 
               disabled={saving}
               onChange={(e) => setDraft(e.target.value)}
               onBlur={() => void commit()}
+              // A text input scrolls to follow the caret, but ignores the wheel
+              // entirely — so a long path could be overflowed and unreadable
+              // with no way to pan it short of selecting through. Drive
+              // scrollLeft by hand.
+              //
+              // Trackpads report a horizontal swipe as deltaX; a mouse wheel
+              // only ever produces deltaY, and there is nowhere vertical to go
+              // in a single-line field, so deltaY is folded into the same axis
+              // rather than being dropped.
+              //
+              // No preventDefault: React attaches wheel listeners passively, so
+              // the call would be a no-op plus a console warning. It is not
+              // needed here anyway — body is `overflow: hidden` and the gate
+              // does not scroll, so there is no ancestor to stop.
+              onWheel={(e) => {
+                const el = e.currentTarget;
+                const max = el.scrollWidth - el.clientWidth;
+                if (max <= 0) return;
+                const delta =
+                  Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+                if (delta === 0) return;
+                el.scrollLeft = Math.min(max, Math.max(0, el.scrollLeft + delta));
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault();
