@@ -1,27 +1,19 @@
-//! `fleetor-server` — supervision (BUILDING §3). Phase 1 delivers the ticket
-//! lifecycle loop: spawn → assign → turn-end detection → report ingestion,
-//! persisted through the [`Store`] seam and observable via the event log.
+//! `fleetor-server` — the routing core of a FLEETOR fleet (BUILDING §3).
 //!
-//! Phase 2 adds the [`hub`] — the routing core behind the unix socket: mail
-//! delivery, the `ask_lead`/`reply` blocking round-trip, and the lead's
-//! `await_events` long-poll. The gate runner (Phase 3) joins later.
+//! Two modules after Phase 5. [`hub`] is the server side of the fleet socket:
+//! it decides where a message goes, asks the app to type it, and writes down
+//! what happened. [`bus`] is the live push side of the event log —
+//! [`BroadcastStore`] wraps the [`Store`] seam so every appended event streams to
+//! subscribers, which is what the UI's feed consumes.
 //!
-//! Phase 4c adds the [`bus`] — the live push side of the event log
-//! ([`BroadcastStore`] wraps the [`Store`] seam so every appended event streams to
-//! subscribers), the substrate the UI (4e) and orchestrator feed (4d) consume.
+//! The supervisor, the runner, the quality loop and the shell gate are gone with
+//! the headless fleet they drove. There is nothing to supervise: a pane is a
+//! terminal the operator can see, and its agent answers to them.
 //!
 //! [`Store`]: fleetor_core::Store
 
 pub mod bus;
-pub mod gate;
 pub mod hub;
-pub mod quality;
-pub mod runner;
-pub mod supervisor;
 
 pub use bus::{BroadcastStore, EventBus, EventFollower, BUS_CAPACITY};
-pub use gate::ShellGateRunner;
-pub use hub::{AssignCommand, Hub, HubConfig, RunnerCommand};
-pub use quality::{run_quality_loop, QualityOptions, QualityOutcome, Reviewer, DEFAULT_RETRY_CAP};
-pub use runner::{run_dynamic_fleet, run_fleet, FleetOutcome, LeadPolicy, WorkerFactory, WorkerSpec};
-pub use supervisor::{run_ticket, Outcome, SuperviseOptions, WorkerControl};
+pub use hub::{AppCommand, DeliveryResult, Hub};

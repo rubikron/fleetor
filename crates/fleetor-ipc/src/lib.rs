@@ -120,7 +120,7 @@ impl Transport for UnixTransport {
 
 /// A connected fleet client: sends [`Hello`] once, then issues request/response
 /// round-trips. Honors the wire contract's one-in-flight-request-per-connection
-/// rule (`fleetor_core::wire`). Used by the shim (per worker) and the lead CLI.
+/// rule (`fleetor_core::wire`). One per `fleet` invocation inside a pane.
 pub struct Client {
     conn: Conn,
 }
@@ -133,8 +133,10 @@ impl Client {
         Ok(Client { conn })
     }
 
-    /// Issue one op and await its response. Blocks for as long as the server
-    /// holds a blocking op (`AskLead`, `AwaitEvents`).
+    /// Issue one op and await its response, for as long as that takes. There is
+    /// deliberately no deadline anywhere on this path: a ceiling could only turn
+    /// a slow delivery into a reported failure for a message that still arrives
+    /// (D-034).
     pub async fn call(&mut self, op: Op) -> Result<fleetor_core::wire::OpResult> {
         let req = Request::new(op);
         let id = req.id.clone();
@@ -156,8 +158,8 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fleetor_core::pane::PaneId;
     use fleetor_core::wire::OpResult;
-    use fleetor_core::Party;
 
     // A framed request survives a round-trip over a real unix socket, and the
     // server side reads exactly what the client wrote.
@@ -173,25 +175,26 @@ mod tests {
         let server = tokio::spawn(async move {
             let mut conn = listener.accept().await.unwrap();
             let hello: Hello = conn.read_json().await.unwrap().unwrap();
-            assert_eq!(hello.party, Party::Worker(2));
+            assert_eq!(hello.pane, PaneId::Worker(2));
             let req: Request = conn.read_json().await.unwrap().unwrap();
-            let Op::NotifyLead { text } = &req.op else {
-                panic!("expected notify_lead, got {:?}", req.op);
+            let Op::Send { to, text } = &req.op else {
+                panic!("expected send, got {:?}", req.op);
             };
-            assert_eq!(text, "hi lead");
-            conn.write_json(&Response::new(req.id, OpResult::Ack))
-                .await
-                .unwrap();
+            assert_eq!(*to, PaneId::Orch);
+            assert_eq!(text, "hi orch");
+            let result =
+                OpResult::Delivered { msg_id: "msg-1".into(), accepted: true, detail: None };
+            conn.write_json(&Response::new(req.id, result)).await.unwrap();
         });
 
-        let mut client = Client::connect(&transport, Hello::new(Party::Worker(2)))
+        let mut client = Client::connect(&transport, Hello::for_pane(PaneId::Worker(2)))
             .await
             .unwrap();
         let result = client
-            .call(Op::NotifyLead { text: "hi lead".into() })
+            .call(Op::Send { to: PaneId::Orch, text: "hi orch".into() })
             .await
             .unwrap();
-        assert_eq!(result, OpResult::Ack);
+        assert!(matches!(result, OpResult::Delivered { accepted: true, .. }));
         server.await.unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }

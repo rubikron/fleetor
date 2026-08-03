@@ -13,3 +13,4 @@
 /examples/**/work/
 /examples/**/*.ndjson
 /examples/**/*.log
+/ui/dist

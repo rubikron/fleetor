@@ -3,10 +3,8 @@ resolver = "2"
 members = [
     "crates/fleetor-core",
     "crates/fleetor-db",
-    "crates/fleetor-cc",
     "crates/fleetor-ipc",
     "crates/fleetor-server",
-    "crates/fleetor-shim",
     "crates/fleetor-cli",
 ]
 

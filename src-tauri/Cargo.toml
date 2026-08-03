@@ -12,11 +12,22 @@ publish = false
 
 [workspace]
 
+# A library with a one-line binary on top: `tests/panes.rs` drives the pane
+# registry over real ptys, which a bin-only crate could not expose.
+[lib]
+name = "fleetor_shell"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fleetor-shell"
+path = "src/main.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
 portable-pty = "0.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -26,10 +37,15 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"
 
 # The proven core, reached by path (this package is outside the crates workspace).
 fleetor-core = { path = "../crates/fleetor-core" }
-fleetor-cc = { path = "../crates/fleetor-cc" }
 fleetor-db = { path = "../crates/fleetor-db" }
 fleetor-server = { path = "../crates/fleetor-server" }
 fleetor-ipc = { path = "../crates/fleetor-ipc" }
+
+# `kill_all` signals the child's *process group*, not just its pid: openpty gives
+# each pane its own session, so a leaked orchestrator keeps spending after the
+# window closes. portable-pty's `kill()` only reaches the leader.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [profile.dev]
 # Faster spike iteration; the pty path isn't perf-sensitive.

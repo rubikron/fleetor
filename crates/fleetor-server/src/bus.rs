@@ -5,16 +5,15 @@
 //! [`Store::append_event`], read back by *polling* [`Store::events_since`]. That
 //! is correct but laggy: a UI would poll the DB on a timer. 4c adds a **live
 //! push** so a subscriber learns of an event the moment it is appended — from
-//! both the sync supervisor thread ([`crate::supervisor`]) and the async
-//! [`hub`](crate::hub) tasks, with no change to either.
+//! the async [`hub`](crate::hub) tasks and the app's own notices, with no change
+//! to either.
 //!
 //! **How it hooks in without touching the loops:** every event already funnels
 //! through the one chokepoint `Store::append_event`. [`BroadcastStore`] is a
 //! decorator over any `Store` — it delegates every method and, right after a
 //! successful append, publishes `(seq, event)` on a [`tokio::sync::broadcast`]
-//! channel. Wrap the inner store once and every emitter publishes for free; the
-//! proven Phase 1–4b code is untouched. Unwrap it and you are back to a plain
-//! store (fully reversible — BUILDING §8).
+//! channel. Wrap the inner store once and every emitter publishes for free.
+//! Unwrap it and you are back to a plain store (fully reversible — BUILDING §8).
 //!
 //! **The DB stays the source of truth.** Persist happens *before* publish, and
 //! publish is best-effort (a send with no subscribers is a no-op — the event is
@@ -25,11 +24,7 @@
 //! (D-019), now exposed as a stream.
 
 use anyhow::Result;
-use fleetor_core::envelope::{Envelope, Party};
-use fleetor_core::event::{FleetEvent, TicketState};
-use fleetor_core::ownership::{BacklogItem, LeaseGrant, Owner};
-use fleetor_core::report::Report;
-use fleetor_core::ticket::Ticket;
+use fleetor_core::event::FleetEvent;
 use fleetor_core::Store;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -200,40 +195,10 @@ impl Store for BroadcastStore {
         Ok(seq)
     }
 
-    fn upsert_ticket(&self, ticket: &Ticket) -> Result<()> {
-        self.inner.upsert_ticket(ticket)
-    }
-    fn set_ticket_state(&self, id: &str, state: TicketState) -> Result<()> {
-        self.inner.set_ticket_state(id, state)
-    }
-    fn save_report(&self, ticket: &str, slot: u8, report: &Report) -> Result<()> {
-        self.inner.save_report(ticket, slot, report)
-    }
-    fn tickets(&self) -> Result<Vec<Ticket>> {
-        self.inner.tickets()
-    }
     fn events_since(&self, after: i64) -> Result<Vec<(i64, FleetEvent)>> {
         self.inner.events_since(after)
     }
     fn latest_seq(&self) -> Result<i64> {
         self.inner.latest_seq()
-    }
-    fn save_mail(&self, env: &Envelope) -> Result<()> {
-        self.inner.save_mail(env)
-    }
-    fn take_mail(&self, to: &Party) -> Result<Vec<Envelope>> {
-        self.inner.take_mail(to)
-    }
-    fn who_owns(&self, path: &str) -> Result<Vec<Owner>> {
-        self.inner.who_owns(path)
-    }
-    fn claim_lease(&self, path: &str, slot: u8, ticket: &str) -> Result<LeaseGrant> {
-        self.inner.claim_lease(path, slot, ticket)
-    }
-    fn add_backlog(&self, item: &BacklogItem) -> Result<()> {
-        self.inner.add_backlog(item)
-    }
-    fn list_backlog(&self) -> Result<Vec<BacklogItem>> {
-        self.inner.list_backlog()
     }
 }

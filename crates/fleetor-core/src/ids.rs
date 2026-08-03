@@ -2,8 +2,8 @@
 //!
 //! Not cryptographic and not globally unique — a monotonic counter combined
 //! with a millisecond timestamp, which is sufficient to distinguish records
-//! created within one fleet-server process. Ticket ids come from outside (e.g.
-//! `T-041`) and are never generated here.
+//! created within one fleet-server process — message ids and broadcast group
+//! ids, which is all there is left to identify.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
