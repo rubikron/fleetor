@@ -59,6 +59,15 @@
   --radius: 0.375rem; /* 7px — panels and cards */
   --radius-sm: 0.25rem; /* 5px — controls, tags, buttons */
 
+  /* Right edge of the macOS traffic-light group, from the window's left edge.
+     14.35px inset (must match trafficLightPosition.x in tauri.conf.json) plus
+     a 54px group — three 14px buttons at 20px pitch, measured against AppKit
+     under the exact styleMask Tauri builds for titleBarStyle: Overlay, not
+     assumed. Fixed px on purpose: these are OS controls and do not scale with
+     the app's zoom, so reserving rem here would drift. Anything laid out after
+     the lights should be `calc(var(--traffic-lights) + <a real gap>)`. */
+  --traffic-lights: 68.35px;
+
   /* interaction feedback only (hover/active on chrome) — never entrance or
      idle-state motion; see the transition rules below and the @media guard. */
   --transition-fast: background-color 80ms ease, border-color 80ms ease;
@@ -171,8 +180,14 @@ body,
 /* the window's title bar is overlaid (macOS traffic lights float over this
    row — see src-tauri/tauri.conf.json's titleBarStyle) so the topbar carries
    `data-tauri-drag-region` (TopBar.tsx) to keep the window draggable, and
-   reserves fixed px — not rem — space on the left: this is clearing a
-   physically fixed OS control, not type, so it must not grow with zoom.
+   reserves space on the left for them.
+
+   That reservation is `--traffic-lights` (a fixed px measurement of the OS
+   controls, which do not scale with zoom) plus the row's own `gap` — so the
+   space between the lights and the brand mark is the *same* 1.5rem as the
+   space between every other pair of items in this row, and it scales with
+   zoom exactly like they do. A bare px reservation would leave the lights
+   crowding the brand at one zoom level and stranded at another.
 
    This row must never wrap or grow taller, at any window width or zoom
    level — a multi-line drag region reads as broken chrome, and a taller
@@ -198,7 +213,7 @@ body,
   display: flex;
   align-items: center;
   gap: 1.5rem;
-  padding: 0.625rem 1rem 0.625rem 80px;
+  padding: 0.625rem 1rem 0.625rem calc(var(--traffic-lights) + 1.5rem);
   background: var(--bg-0);
   border-bottom: 1px solid var(--border);
   flex: 0 0 auto;
