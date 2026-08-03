@@ -47,6 +47,7 @@ pub fn run() {
             fleet::fleet_config,
             fleet::fleet_target,
             fleet::fleet_pick_target,
+            fleet::fleet_set_target,
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { .. } = event {

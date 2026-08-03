@@ -24,6 +24,14 @@ export function pickTarget(): Promise<string | null> {
   return invoke<string | null>("fleet_pick_target");
 }
 
+/// Record a typed target folder. Rejects with a message the operator can act on
+/// when the path is empty, missing, or not a directory; resolves with the
+/// canonical path actually written, which may differ from what was typed
+/// (`~` expanded, `..` and symlinks resolved).
+export function setTarget(path: string): Promise<string> {
+  return invoke<string>("fleet_set_target", { path });
+}
+
 // --- panes --------------------------------------------------------------------
 
 /// Spawn one pane's `claude` under a pty. Spends tokens — every caller is behind

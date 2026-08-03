@@ -1,7 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Core events, the pane commands, and the folder picker the target chooser needs.",
+  "description": "Core events, the pane commands, the folder picker the target chooser needs, and the two window writes that restore a saved size/position on launch.",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:allow-open"]
+  "permissions": [
+    "core:default",
+    "dialog:allow-open",
+    "core:window:allow-set-size",
+    "core:window:allow-set-position"
+  ]
 }
