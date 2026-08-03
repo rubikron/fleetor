@@ -1,13 +1,14 @@
-//! Pane identity and lifecycle — the D-030 replacement for [`Party`] (D-030,
-//! `docs/tui-pivot-plan.md`).
+//! Pane identity and lifecycle (D-030, `docs/tui-pivot-plan.md`).
 //!
 //! In the TUI fleet every agent is a live `claude` terminal, so identity is
-//! **which pane you are**, not which role you play. [`PaneId`] serializes as a
+//! **which pane you are**, not which role you play — it replaced a `Party` enum
+//! that named roles (lead, worker slot), deleted in Phase 5.
+//!
+//! [`PaneId`] serializes as a
 //! bare string (`"orch"`, `"worker-2"`) precisely so the CLI argument, the DB
 //! payload, the event field and the TypeScript type are all the same thing —
 //! there is no second spelling to keep in sync.
 //!
-//! [`Party`]: crate::envelope::Party
 
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;

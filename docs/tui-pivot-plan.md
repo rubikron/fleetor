@@ -1,10 +1,10 @@
 # FLEETOR — the 5-TUI messaging pivot
 
-> **Status:** Phases 0–5 complete (branch `feat/tui-fleet`). Phase 6 (hardening) not started.
-> The pivot is done as code: the pane registry, the `fleet` CLI, the terminal shell and the
-> deletion have all landed. What has *not* happened is the manual demo — the app launching as a
-> window, five real `claude` TUIs, one `fleet send` crossing between them. That needs a GUI
-> session, and it is the first thing Phase 6 should do before anything else.
+> **Status:** Phases 0–5 complete and **merged to `master`**. Phase 6 partially done.
+> The manual demo has been run: five live `claude` TUIs, `fleet send` crossing between them, and
+> the concurrency bug it surfaced fixed (D-039). The docs have been rewritten against the new
+> topology (D-040). What remains in Phase 6 needs either live spend or a running window — see the
+> phase entry below.
 > **Read `docs/tui-spawn-notes.md` first** — it carries the measured results of the Phase 0
 > spike, several of which corrected assumptions in this plan. Where they differ, the notes win;
 > the corrections have been folded into the phases below and are marked **✓ Phase 0**.
@@ -436,6 +436,24 @@ of the ticket system growing back. `AppCommand` fully replaces `RunnerCommand`.
 **Verify**: `cargo test` workspace + `src-tauri`, `tsc --noEmit && vite build`. Expect ~3,500 lines out.
 
 ### Phase 6 — hardening
+
+> **PARTIALLY DONE.** Complete: the manual demo (five live TUIs messaging each other), the
+> concurrency fix it surfaced (D-039), and the documentation pass (D-040) — README, `building.md`
+> and `docs/fleet-comms-map.md` rewritten, the dead MCP/Stop-hook spikes and the pre-pivot UI mock
+> deleted, the remaining historical docs bannered as superseded.
+>
+> **Still open**, each needing something a headless session cannot provide:
+> briefings validated against a real Flash worker (deliberate, bounded live spend) ·
+> the anti-amplification clause adversarially tested — worker-1 broadcasts "status?", confirm no
+> fountain (live spend) · coalescing window measured with a chunks/sec instrument, and the
+> `addon-canvas` decision (a running window under load) · `kill_all` process-group teardown
+> verified with `ps` after window close (a running window).
+>
+> **Note on the rate limiter:** the original Phase 6 line said "rate limiter tuned". There is no
+> rate limiter to tune — it was built in Phase 1 and removed (D-032), and Tier 1.4 now forbids
+> reintroducing one without a measurement. If a real fountain is observed, size the bucket against
+> *that*, not against a guess.
+
 
 Briefings validated against a real Flash worker (the one phase with deliberate, bounded live spend) ·
 rate limiter tuned and the anti-amplification clause adversarially tested (worker-1 broadcasts
