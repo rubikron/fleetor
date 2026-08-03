@@ -1,3 +1,15 @@
+> ## ⚠ SUPERSEDED — historical record
+>
+> This is the **original architecture handoff**, describing the headless system: one TUI
+> orchestrator, four `claude -p` workers under a sync supervisor, an MCP shim, a ticket board with
+> gates and peer review. **All of it was deleted in the 5-TUI pivot (D-030).** Nothing here
+> describes the code.
+>
+> It is kept because it is the *why* behind decisions that are still in force — the repo-boundary
+> test, real-unmodified-CC-only, worker isolation, the four-seam discipline — and because
+> `decisions.md` refers back to it. For how the system works now, read
+> **`docs/fleet-comms-map.md`**.
+
 # FLEETOR — Architecture Handoff
 
 **For:** Fable, for detailed architectural mapping

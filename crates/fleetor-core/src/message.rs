@@ -6,8 +6,7 @@
 //!     `FleetEvent::Mail` it replaces, because a product about watching messages
 //!     cannot keep the messages out of its own log.
 //!  2. [`frame_for_pane`] / [`frame_broadcast_for_pane`] — the exact bytes typed
-//!     into the receiving TUI. Single-sourced here, the way [`crate::mail`]
-//!     single-sources injection framing today, so the one delivery path in
+//!     into the receiving TUI. Single-sourced here so the one delivery path in
 //!     `src-tauri::deliver` can never invent a second spelling.
 //!
 //! The direct and broadcast framings differ on purpose: L5 (broadcast

@@ -151,10 +151,10 @@ impl EventFollower {
 
 /// A [`Store`] decorator that publishes every appended event on an [`EventBus`]
 /// while delegating all persistence to the inner store. Wrap the real store once
-/// and every emitter (supervisor, hub) feeds the live bus for free.
+/// and every emitter (the hub, the app's own notices) feeds the live bus for free.
 ///
 /// It *is* a `Store`, so it drops straight into anything that takes
-/// `Arc<dyn Store>` (e.g. [`run_fleet`](crate::run_fleet)); keep the concrete
+/// `Arc<dyn Store>`; keep the concrete
 /// `Arc<BroadcastStore>` around to [`subscribe`](BroadcastStore::subscribe) /
 /// [`follow`](BroadcastStore::follow) before coercing it to `Arc<dyn Store>`.
 pub struct BroadcastStore {

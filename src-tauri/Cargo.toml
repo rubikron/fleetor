@@ -1,13 +1,12 @@
 # The FLEETOR desktop shell — standalone package, deliberately NOT a member of
 # the root crates/* workspace. Its own [workspace] keeps tauri's heavy dep tree
-# and build profile out of the clean fleetor-cc / fleetor-cli lockfile. It reaches
-# the proven core through plain path deps (Phase 4e), so the crates stay the
-# single source of truth and the shell adds only window + wiring on top.
+# and build profile out of the clean crates/* lockfile. It reaches the core
+# through plain path deps, so the crates stay the single source of truth.
 [package]
 name = "fleetor-shell"
 version = "0.0.0"
 edition = "2021"
-description = "FLEETOR desktop shell: embedded fleet server + real claude TUI (Phase 4e)"
+description = "FLEETOR desktop shell: five live claude TUIs, the hub, and the pty registry"
 publish = false
 
 [workspace]

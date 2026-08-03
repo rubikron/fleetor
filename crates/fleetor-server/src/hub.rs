@@ -11,8 +11,8 @@
 //! has nowhere to wait: it is typed into the target terminal, and whether that
 //! worked is the answer the sender gets.
 //!
-//! **Persist-then-emit, after the ack.** [`Hub::deliver`] asks the app first and
-//! logs second, so the feed records the real outcome and never an intention. That
+//! **Persist-then-emit, after the ack.** `deliver` asks the app first and logs
+//! second, so the feed records the real outcome and never an intention. That
 //! ordering is the whole reason the app seam is request/response rather than
 //! fire-and-forget.
 

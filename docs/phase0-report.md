@@ -1,3 +1,12 @@
+> ## ⚠ Historical mechanism, live finding
+>
+> This measured DeepSeek V4 Flash's tool-call fidelity through **headless** Claude Code, driven by
+> a `fleetor probe` command that no longer exists. The *mechanism* is gone with the pivot (D-030).
+>
+> The *finding* is still load-bearing: it is why the worker panes run Flash. 0 fidelity failures in
+> 65 tool calls across 10 varied tickets, 10/10 acceptance gates, ~$0.006/ticket. Nothing has
+> re-measured Flash through an interactive TUI, which is an open Phase 6 item.
+
 # FLEETOR — Phase 0 Probe Report
 
 Worker model: `deepseek-v4-flash` via `https://api.deepseek.com/anthropic` · Claude Code `2.1.220 (Claude Code)` · isolated `CLAUDE_CONFIG_DIR`.
