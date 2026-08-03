@@ -635,8 +635,13 @@ body,
   background: color-mix(in srgb, var(--bg-1) 90%, transparent);
   z-index: 5;
 }
+/* 25rem -> 37.5rem, half again as wide. The card carries a full filesystem
+   path, and at the old width that field was overflowing almost immediately —
+   the extra room means the common case is readable without panning it. Still
+   capped rather than fluid: this is a paragraph plus three facts, and a line
+   that runs the width of a 5K display is harder to read, not easier. */
 .pane-gate__card {
-  max-width: 25rem;
+  max-width: 37.5rem;
   width: 100%;
   background: var(--bg-2);
   border: 1px solid var(--border);
