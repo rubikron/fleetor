@@ -170,6 +170,7 @@ export function App() {
               <EventFeed feed={fleet.feed} />
             </div>
 
+
             {!started && (
               <StartGate
                 config={fleet.config}
