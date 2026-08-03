@@ -1,47 +1,43 @@
-//! Phase 2 of the TUI pivot — **the old fleet, unwired** (D-030).
+//! The embedded fleet: store, event bus, hub, and where the panes run (D-030).
 //!
-//! What this module was: a shell that spawned four headless standby workers and
-//! bound a *dynamic* hub, so the lead's `assign` over the socket turned into a
-//! supervised `fake-claude` or DeepSeek Flash process. That whole apparatus is
-//! gone. In the TUI fleet there are no headless workers — every agent is a live
-//! `claude` terminal, and the only thing crossing the socket is a message.
+//! What this module was through Phase 2: a shell that spawned four headless
+//! standby workers and bound a *dynamic* hub, so the lead's `assign` turned into a
+//! supervised process. That apparatus is gone. In the TUI fleet there are no
+//! headless workers — every agent is a live `claude` terminal, and the only thing
+//! crossing the socket is a message.
 //!
-//! What is left is deliberately small:
+//! What is here now:
 //!
 //!  - the **store** and the live **event bus**, pumped to the webview by
 //!    [`spawn_follower`] (unchanged, and the reason the feed still streams);
-//!  - a plain [`Hub::with_app`] bound to the unix socket, whose pane ops
-//!    ([`AppCommand`]) are answered by the fleet app itself;
+//!  - a plain [`Hub::with_app`] bound to the unix socket, whose pane ops are
+//!    served by [`crate::deliver`] out of the real pty registry;
 //!  - the **target** the fleet works on: the operator's repo if
-//!    `~/.fleetor/config.json` names one, else a seeded [`testbed`].
-//!
-//! The pane registry that makes an [`AppCommand::Deliver`] land in a real
-//! terminal is Phase 3 (`deliver.rs`). Until it exists, [`spawn_pane_seam`]
-//! answers every command with an honest refusal — never a silent drop, and never
-//! a park, because nothing between `fleet send` and the pty has a timeout (D-034).
+//!    `~/.fleetor/config.json` names one, else a seeded [`testbed`];
+//!  - [`spawn_pane`] — the one place a pane's cwd, config seed and command come
+//!    together, which is why the L1 re-seed requirement is met structurally
+//!    rather than by remembering to do it.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use fleetor_core::event::{FleetEvent, NoticeLevel, TicketState};
+use fleetor_core::event::{FleetEvent, NoticeLevel};
+use fleetor_core::pane::PaneId;
 use fleetor_core::ticket::Ticket;
 use fleetor_core::Store;
 use fleetor_db::SqliteStore;
 use fleetor_ipc::UnixTransport;
-use fleetor_server::{AppCommand, BroadcastStore, DeliveryResult, Hub, HubConfig};
+use fleetor_server::{AppCommand, BroadcastStore, Hub, HubConfig};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, Notify};
 
-use crate::testbed;
+use crate::pty::PaneRegistry;
+use crate::{deliver, spawn, testbed};
 
 /// Emitted for every appended event, in `seq` order, the moment it persists.
 const EVENT_FLEET: &str = "fleet://event";
-
-/// The Phase-2 answer to any pane op: there is no registry yet, so nothing can be
-/// live. Phase 3 replaces this with a real lookup.
-const NO_PANES: &str = "no panes are running yet — the pane registry lands in Phase 3";
 
 /// One event as the webview sees it: the `seq` cursor plus the flattened
 /// [`FleetEvent`] (its `#[serde(tag = "type")]` discriminator carries through, so
@@ -68,10 +64,12 @@ pub struct BootSnapshot {
 pub struct FleetConfig {
     /// The repo the fleet operates on (display name — the target's directory).
     target: String,
+    /// Its full path, for the spend gate and the target picker.
+    target_path: String,
     /// That repo's current git branch (best-effort).
     branch: String,
-    /// What fills the worker seats. `"none"` until Phase 3 spawns worker panes —
-    /// the headless backends this field used to name are gone.
+    /// What fills the worker seats: the model, or `"none"` when no key is
+    /// available and the fleet can only run its orchestrator.
     worker_backend: String,
     /// The model in the orchestrator seat — the operator's own Opus.
     lead_model: String,
@@ -80,13 +78,17 @@ pub struct FleetConfig {
 }
 
 /// The live backend, created once by [`fleet_bootstrap`] and kept for the app's
-/// lifetime. Owns the tokio runtime the follower, hub, and pane seam run on.
+/// lifetime. Owns the tokio runtime the follower, hub, and delivery loop run on.
 struct Fleet {
     _rt: Runtime,
     store: Arc<dyn Store>,
     /// Fired on window close so the hub stops serving and unlinks its socket.
     shutdown: Arc<Notify>,
     config: FleetConfig,
+    /// Resolved once at bootstrap. Panes spawn against *this*, not a re-read of
+    /// config.json — a target that changed mid-session would otherwise put half
+    /// the fleet in one repo and half in another.
+    target: PathBuf,
 }
 
 /// Managed Tauri state: at most one embedded fleet.
@@ -122,11 +124,16 @@ pub(crate) fn socket_path() -> PathBuf {
     shell_dir().join("fleet.sock")
 }
 
-/// The directory the fleet works in, resolved fresh. Used by the pty spawn path
-/// for a pane's cwd; [`fleet_bootstrap`] is what actually seeds the testbed, so
-/// this only ever *reads* the decision.
-pub(crate) fn target_dir() -> PathBuf {
-    configured_target().ok().flatten().unwrap_or_else(testbed_dir)
+/// A worker's isolated `CLAUDE_CONFIG_DIR`. Deliberately *not* the Phase-2
+/// `cc-config/worker-*` dirs: those were built by headless `-p` runs and carry no
+/// onboarding keys at all, which is precisely L1 (`docs/tui-spawn-notes.md` §1).
+fn worker_config_dir(slot: u8) -> PathBuf {
+    shell_dir().join("pane-config").join(format!("worker-{slot}"))
+}
+
+/// A worker's own checkout of the target.
+fn worktree_dir(slot: u8) -> PathBuf {
+    shell_dir().join("worktrees").join(format!("worker-{slot}"))
 }
 
 /// The target named in `~/.fleetor/config.json`, if there is a usable one.
@@ -176,6 +183,7 @@ fn parse_target(text: &str) -> Result<Option<PathBuf>, String> {
 pub fn fleet_bootstrap(
     app: AppHandle,
     state: State<'_, FleetState>,
+    registry: State<'_, Arc<PaneRegistry>>,
 ) -> Result<BootSnapshot, String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     if let Some(fleet) = guard.as_ref() {
@@ -204,12 +212,125 @@ pub fn fleet_bootstrap(
     // The hub↔app seam: the hub routes, the app owns the terminals. Unbounded on
     // purpose — a bounded channel would make a busy fleet block a send (D-034).
     let (app_tx, app_rx) = mpsc::unbounded_channel();
-    spawn_pane_seam(&rt, app_rx);
+    deliver::spawn_delivery(&rt, registry.inner().clone(), app_rx);
     let shutdown = spawn_hub(&rt, store.clone(), app_tx, socket_path());
 
     let snap = snapshot(&store)?;
-    *guard = Some(Fleet { _rt: rt, store, shutdown, config });
+    *guard = Some(Fleet { _rt: rt, store, shutdown, config, target });
     Ok(snap)
+}
+
+// --- panes --------------------------------------------------------------------
+
+/// Bring one pane up: resolve its cwd, seed its config for that exact cwd, build
+/// its command, and hand it to the registry.
+///
+/// **The L1 re-seed requirement lives here, structurally.**
+/// `hasTrustDialogAccepted` is keyed by absolute project path, so a fleet pointed
+/// at a new target needs its seed re-applied for every pane cwd — otherwise all
+/// four workers sit on a trust dialog while every `fleet send` reports success.
+/// Seeding at the spawn site rather than at the target picker means that can only
+/// be got wrong by deleting this line, not by forgetting a code path.
+pub(crate) fn spawn_pane(
+    fleet: &FleetState,
+    registry: &Arc<PaneRegistry>,
+    pane: PaneId,
+    rows: u16,
+    cols: u16,
+) -> Result<(), String> {
+    let (target, store) = {
+        let guard = fleet.0.lock().map_err(|e| e.to_string())?;
+        let f = guard.as_ref().ok_or("fleet not bootstrapped")?;
+        (f.target.clone(), f.store.clone())
+    };
+
+    // A pane with no `fleet` on its PATH is a pane that looks alive and cannot
+    // talk. Say so once, loudly, rather than letting the model discover it as
+    // `command not found` mid-turn (L4).
+    if spawn::fleet_bin_path().is_none() {
+        note(
+            &store,
+            NoticeLevel::Warn,
+            "the `fleet` binary was not found — panes will spawn but cannot message each other. \
+             Build it with `cargo build -p fleetor-cli --bin fleet`.",
+        );
+    }
+
+    let socket = socket_path();
+    let command = match pane {
+        // The operator's own `claude`: already onboarded, already trusted, in the
+        // target itself. Nothing to seed — seeding would touch *their* config dir.
+        PaneId::Orch => {
+            std::fs::create_dir_all(&target).map_err(|e| format!("create orchestrator cwd: {e}"))?;
+            spawn::orch_command(&target, &socket)
+        }
+        PaneId::Worker(slot) => {
+            let key = load_api_key()?;
+            let cwd = worker_cwd(&store, &target, slot);
+            let config_dir = worker_config_dir(slot);
+            spawn::seed_config_dir(&config_dir, &cwd)?;
+            spawn::worker_command(slot, &cwd, &config_dir, &socket, &key)
+        }
+    };
+
+    registry.spawn(pane, command, rows, cols)
+}
+
+/// A worker's checkout: its own git worktree, so four workers editing at once do
+/// not fight over one index.
+///
+/// Falls back to the target itself when git cannot oblige — the target may not be
+/// a repo at all, and a fleet that refuses to start because of a worktree is worse
+/// than one sharing a checkout. The fallback is announced, because "who else is
+/// editing this file" is a very different question in the two arrangements.
+fn worker_cwd(store: &Arc<dyn Store>, target: &Path, slot: u8) -> PathBuf {
+    match ensure_worktree(target, slot) {
+        Ok(dir) => dir,
+        Err(e) => {
+            note(
+                store,
+                NoticeLevel::Warn,
+                &format!("worker-{slot}: {e} — sharing the target checkout instead"),
+            );
+            target.to_path_buf()
+        }
+    }
+}
+
+fn ensure_worktree(target: &Path, slot: u8) -> Result<PathBuf, String> {
+    let dir = worktree_dir(slot);
+    if dir.join(".git").exists() {
+        return Ok(dir);
+    }
+    let parent = dir.parent().ok_or("worktree path has no parent")?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("create worktree root: {e}"))?;
+    // Clear registrations left by a worktree directory someone deleted by hand;
+    // without this, `worktree add` refuses the path it already knows about.
+    let _ = git(target, &["worktree", "prune"]);
+
+    let branch = format!("fleet/worker-{slot}");
+    let dir_str = dir.to_string_lossy().into_owned();
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(target)
+        .args(["worktree", "add", "-B", &branch, &dir_str])
+        .output()
+        .map_err(|e| format!("could not run git: {e}"))?;
+    if !output.status.success() {
+        let why = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git worktree add failed: {}", why.trim().replace('\n', "; ")));
+    }
+    Ok(dir)
+}
+
+fn git(repo: &Path, args: &[&str]) -> bool {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 /// Decide where the fleet works, announcing the choice on the feed so it is never
@@ -298,39 +419,9 @@ fn spawn_hub(
     shutdown
 }
 
-/// The Phase-2 stand-in for `deliver.rs`: answer every [`AppCommand`], honestly.
-///
-/// It must answer *something* for each one. The hub awaits the ack with no
-/// deadline (D-034), so a command received and left unanswered parks the caller's
-/// `fleet send` forever — the exact failure the unbounded design accepts in
-/// exchange for never lying about a delivery.
-fn spawn_pane_seam(rt: &Runtime, mut commands: mpsc::UnboundedReceiver<AppCommand>) {
-    rt.spawn(async move {
-        while let Some(command) = commands.recv().await {
-            match command {
-                AppCommand::Deliver { ack, .. } => {
-                    let _ = ack.send(DeliveryResult::rejected(NO_PANES));
-                }
-                AppCommand::Roster { ack } => {
-                    let _ = ack.send(Vec::new());
-                }
-            }
-        }
-    });
-}
-
 // --- commands -----------------------------------------------------------------
 
-/// The board as it stands now, straight from the store (the source of truth the
-/// UI refetches whenever it sees a ticket move).
-#[tauri::command]
-pub fn fleet_board(state: State<'_, FleetState>) -> Result<Vec<Ticket>, String> {
-    let guard = state.0.lock().map_err(|e| e.to_string())?;
-    let fleet = guard.as_ref().ok_or("fleet not bootstrapped")?;
-    fleet.store.tickets().map_err(|e| e.to_string())
-}
-
-/// The live fleet configuration for the top bar (real target/branch).
+/// The live fleet configuration for the top bar and the spend gate.
 #[tauri::command]
 pub fn fleet_config(state: State<'_, FleetState>) -> Result<FleetConfig, String> {
     let guard = state.0.lock().map_err(|e| e.to_string())?;
@@ -338,24 +429,77 @@ pub fn fleet_config(state: State<'_, FleetState>) -> Result<FleetConfig, String>
     Ok(fleet.config.clone())
 }
 
-/// Put a ticket on the board as `Assigned`. A real action through the store, so
-/// the move streams to the UI over the event bus like any other.
+/// The full path of the repo the running fleet is working in.
 #[tauri::command]
-pub fn fleet_assign(state: State<'_, FleetState>, ticket: Ticket) -> Result<(), String> {
+pub fn fleet_target(state: State<'_, FleetState>) -> Result<String, String> {
     let guard = state.0.lock().map_err(|e| e.to_string())?;
     let fleet = guard.as_ref().ok_or("fleet not bootstrapped")?;
-    let from = ticket.state;
-    let assigned = Ticket { state: TicketState::Assigned, ..ticket };
-    fleet.store.upsert_ticket(&assigned).map_err(|e| e.to_string())?;
-    fleet
-        .store
-        .append_event(&FleetEvent::TicketState {
-            ticket: assigned.id.clone(),
-            from,
-            to: TicketState::Assigned,
-        })
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    Ok(fleet.target.to_string_lossy().into_owned())
+}
+
+/// Ask the operator for a repo and record it in `~/.fleetor/config.json`.
+///
+/// Deliberately does **not** move a running fleet: panes already have a cwd, and
+/// four workers silently relocated mid-session would be reporting on files they
+/// no longer hold. The new target is announced and takes effect on next launch.
+/// Returns `Ok(None)` when the picker was dismissed.
+#[tauri::command]
+pub fn fleet_pick_target(
+    app: AppHandle,
+    state: State<'_, FleetState>,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let Some(picked) = app.dialog().file().blocking_pick_folder() else { return Ok(None) };
+    let path = picked
+        .into_path()
+        .map_err(|e| format!("that folder has no usable path: {e}"))?;
+    if !path.is_dir() {
+        return Err(format!("{} is not a directory", path.display()));
+    }
+
+    write_target(&path)?;
+
+    if let Ok(guard) = state.0.lock() {
+        if let Some(fleet) = guard.as_ref() {
+            note(
+                &fleet.store,
+                NoticeLevel::Info,
+                &format!(
+                    "target set to {} — it takes effect the next time the fleet starts.",
+                    path.display()
+                ),
+            );
+        }
+    }
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
+
+/// Set `target` in the config without disturbing anything else the operator has
+/// put there. Merge-not-clobber for the same reason the config seed is.
+fn write_target(target: &Path) -> Result<(), String> {
+    let file = config_path();
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+    }
+    let existing = std::fs::read_to_string(&file).ok();
+    let text = merge_target(existing.as_deref(), target)?;
+    std::fs::write(&file, text).map_err(|e| format!("write {}: {e}", file.display()))
+}
+
+/// The merge itself, kept pure so it is tested without writing to the operator's
+/// real home directory. Unreadable or non-object config text is replaced rather
+/// than treated as fatal — refusing to record a target the operator just picked
+/// would leave the picker looking broken.
+fn merge_target(existing: Option<&str>, target: &Path) -> Result<String, String> {
+    let mut root = existing
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+        .filter(|v| v.is_object())
+        .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+    root.as_object_mut()
+        .expect("just filtered to an object")
+        .insert("target".into(), target.to_string_lossy().into_owned().into());
+    serde_json::to_string_pretty(&root).map_err(|e| format!("encode config: {e}"))
 }
 
 /// Stop the hub and unlink its socket. Best-effort, called on window close
@@ -382,24 +526,27 @@ fn snapshot(store: &Arc<dyn Store>) -> Result<BootSnapshot, String> {
 /// repo-root `.env` is found by walking up (not just `<cwd>/.env`) — otherwise a
 /// key sitting at the repo root silently goes unseen. Never logged.
 ///
-/// Unused until Phase 3, which spawns the worker panes: it is what they set
-/// `ANTHROPIC_AUTH_TOKEN` from. Never `ANTHROPIC_API_KEY` — with that set, the
-/// interactive TUI blocks on api-key approval and never reaches its prompt (L2).
-#[allow(dead_code)]
-fn load_api_key(repo_root: &Path) -> Result<String, String> {
+/// This is what a worker pane sets `ANTHROPIC_AUTH_TOKEN` from — and only that.
+/// Never `ANTHROPIC_API_KEY`: with it set, the interactive TUI blocks on api-key
+/// approval and never reaches its prompt (L2).
+fn load_api_key() -> Result<String, String> {
     if let Ok(k) = std::env::var("DEEPSEEK_API_KEY") {
         if !k.is_empty() {
             return Ok(k);
         }
     }
-    let start = std::env::current_dir().unwrap_or_else(|_| repo_root.to_path_buf());
+    let start = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     for dir in start.ancestors() {
         let Ok(text) = std::fs::read_to_string(dir.join(".env")) else { continue };
         if let Some(key) = parse_deepseek_key(&text) {
             return Ok(key);
         }
     }
-    Err(format!("DEEPSEEK_API_KEY not found in env or any .env from {start:?} upward"))
+    Err(format!(
+        "no DEEPSEEK_API_KEY in the environment or any .env from {} upward — \
+         the orchestrator runs without one, worker panes cannot",
+        start.display()
+    ))
 }
 
 /// Pull the `DEEPSEEK_API_KEY` value out of `.env` text, tolerating surrounding
@@ -439,8 +586,15 @@ fn fleet_config_for(target: &Path) -> FleetConfig {
         .unwrap_or_else(|| target.to_string_lossy().into_owned());
     FleetConfig {
         target: name,
+        target_path: target.to_string_lossy().into_owned(),
         branch: git_branch(target),
-        worker_backend: "none".to_string(),
+        // What a click will actually spend. Without a key the worker panes cannot
+        // start at all, and the gate must say so rather than offering four seats
+        // that fail on spawn.
+        worker_backend: match load_api_key() {
+            Ok(_) => "deepseek-v4-flash".to_string(),
+            Err(_) => "none".to_string(),
+        },
         lead_model: "opus (operator)".to_string(),
         gate: "shell gate + peer review".to_string(),
     }
@@ -461,12 +615,13 @@ mod tests {
     use fleetor_ipc::Client;
     use std::time::Duration;
 
-    /// The Phase-2 wiring, end to end over a **real unix socket**: bootstrap's
-    /// hub + seam, dialled by a real client the way the `fleet` CLI will.
+    /// The wiring end to end over a **real unix socket**: bootstrap's hub and the
+    /// real delivery loop over a real (empty) pane registry, dialled by a real
+    /// client exactly the way the `fleet` CLI does.
     ///
-    /// Everything proven so far was in-process against a fake app. This is the
-    /// first thing that shows the socket binds, the hub serves a pane op, and an
-    /// answer comes back — the mechanism itself, minus the pty.
+    /// The pane here is genuinely not running, so the honest answer is a refusal
+    /// that names it — not a park, and not a success the feed would have to walk
+    /// back. `src-tauri/tests/panes.rs` runs the same path with live ptys.
     #[test]
     fn a_pane_op_crosses_the_real_socket_and_is_answered() {
         let dir = std::env::temp_dir().join(format!("fleetor-hub-{}", std::process::id()));
@@ -479,7 +634,7 @@ mod tests {
             Arc::new(SqliteStore::open(&dir.join("state.db")).unwrap());
 
         let (app_tx, app_rx) = mpsc::unbounded_channel();
-        spawn_pane_seam(&rt, app_rx);
+        deliver::spawn_delivery(&rt, Arc::new(PaneRegistry::new(Arc::new(|_, _| {}))), app_rx);
         let shutdown = spawn_hub(&rt, store.clone(), app_tx, sock.clone());
 
         let result = rt.block_on(async {
@@ -491,13 +646,14 @@ mod tests {
                 .expect("the hub answered")
         });
 
-        // No panes exist yet, so the honest answer is a refusal that says why —
-        // not a park, and not a success the feed would then have to walk back.
         let OpResult::Delivered { accepted, detail, .. } = result else {
             panic!("expected a delivery result, got {result:?}");
         };
-        assert!(!accepted, "nothing can be accepted before the pane registry exists");
-        assert_eq!(detail.as_deref(), Some(NO_PANES));
+        assert!(!accepted, "a pane that is not running cannot accept anything");
+        assert!(
+            detail.as_deref().unwrap_or_default().contains("worker-1"),
+            "the refusal must name the pane: {detail:?}"
+        );
 
         // And the attempt is on the record, body included.
         let logged = store
@@ -509,6 +665,36 @@ mod tests {
 
         shutdown.notify_one();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A picked target must land in the config without costing the operator
+    /// whatever else they had put there by hand.
+    #[test]
+    fn recording_a_target_replaces_only_the_target() {
+        let merged = merge_target(Some(r#"{"theme":"warm","target":"/old"}"#), Path::new("/new"));
+        let config: serde_json::Value = serde_json::from_str(&merged.unwrap()).unwrap();
+        assert_eq!(config["target"], serde_json::json!("/new"));
+        assert_eq!(config["theme"], serde_json::json!("warm"), "an unrelated setting survived");
+    }
+
+    /// The picker must still work on a first run, and on a config someone has
+    /// broken — refusing to record the folder they just chose would read as a
+    /// broken picker rather than as a broken file.
+    #[test]
+    fn a_missing_or_unreadable_config_still_records_the_target() {
+        for existing in [None, Some("not json at all"), Some("[]")] {
+            let merged = merge_target(existing, Path::new("/picked")).unwrap();
+            let config: serde_json::Value = serde_json::from_str(&merged).unwrap();
+            assert_eq!(config["target"], serde_json::json!("/picked"), "{existing:?}");
+        }
+    }
+
+    /// The round trip that matters: what the picker writes is what the next boot
+    /// reads. Two functions on opposite ends of a restart, pinned together.
+    #[test]
+    fn what_the_picker_writes_is_what_bootstrap_reads_back() {
+        let merged = merge_target(None, Path::new("/Users/me/code/thing")).unwrap();
+        assert_eq!(parse_target(&merged).unwrap(), Some(PathBuf::from("/Users/me/code/thing")));
     }
 
     /// The hub binds a beat after it is spawned, so a client that dials once loses

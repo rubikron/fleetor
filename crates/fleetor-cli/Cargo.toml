@@ -5,18 +5,15 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+# `fleet`, not `fleetor`: this binary is typed by a language model inside a Bash
+# tool call, and the briefs (`fleetor_core::brief`) teach it as `fleet`.
 [[bin]]
-name = "fleetor"
+name = "fleet"
 path = "src/main.rs"
 
 [dependencies]
 fleetor-core = { path = "../fleetor-core" }
-fleetor-cc = { path = "../fleetor-cc" }
-fleetor-db = { path = "../fleetor-db" }
 fleetor-ipc = { path = "../fleetor-ipc" }
-fleetor-server = { path = "../fleetor-server" }
-serde.workspace = true
-serde_json.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 tokio.workspace = true

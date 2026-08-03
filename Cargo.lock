@@ -198,13 +198,8 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "clap",
- "fleetor-cc",
  "fleetor-core",
- "fleetor-db",
  "fleetor-ipc",
- "fleetor-server",
- "serde",
- "serde_json",
  "tokio",
 ]
 
