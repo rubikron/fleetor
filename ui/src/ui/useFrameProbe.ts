@@ -43,6 +43,51 @@ export interface FrameReport {
   over16: number;
 }
 
+/// The control measurement for `useFrameProbe`.
+///
+/// Runs a continuous rAF loop while nothing in particular is happening. A rAF
+/// loop asks for a frame every vsync, so the interval it observes IS the rate
+/// the compositor is willing to serve — with no work of our own in the way.
+///
+/// Read it against the transition number:
+///   - idle ≈ transition  → the animation is not the problem. Frames are not
+///     being served any faster than this even when the app is doing nothing,
+///     so no amount of CSS, containment or GPU work will change it. Look at
+///     the display's refresh rate, Low Power Mode, or webview throttling.
+///   - idle ≪ transition  → the compositor can go faster and the transition is
+///     genuinely costing frames. Then, and only then, is it worth optimizing.
+///
+/// Reports the median, not the mean: one hitch should not move a baseline.
+export function useBaselineFrameRate(): number | null {
+  const [intervalMs, setIntervalMs] = useState<number | null>(null);
+
+  useEffect(() => {
+    // Never leave a permanent rAF loop running in a production build.
+    if (!import.meta.env.DEV) return;
+
+    const SAMPLES_PER_REPORT = 30;
+    let deltas: number[] = [];
+    let last = performance.now();
+    let raf = 0;
+
+    const tick = (now: number) => {
+      deltas.push(now - last);
+      last = now;
+      if (deltas.length >= SAMPLES_PER_REPORT) {
+        const sorted = [...deltas].sort((a, b) => a - b);
+        setIntervalMs(sorted[Math.floor(sorted.length / 2)]);
+        deltas = [];
+      }
+      raf = requestAnimationFrame(tick);
+    };
+
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
+  return intervalMs;
+}
+
 /// Samples frame intervals for a fixed window each time `trigger` changes.
 /// Returns the most recent report, or null before the first one.
 export function useFrameProbe(trigger: unknown, label: string): FrameReport | null {
