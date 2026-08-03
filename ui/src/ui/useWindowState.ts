@@ -209,6 +209,19 @@ export function useWindowState(): void {
           }
         } catch {
           /* missing capability or a rejected call — keep the default window */
+        } finally {
+          // The window is created hidden (`visible: false` in tauri.conf.json)
+          // so none of the sizing above is ever seen as a jump from the
+          // configured default to the remembered size. Revealing it is
+          // therefore this hook's responsibility, and it belongs in `finally`:
+          // a window that stays hidden because geometry failed is far worse
+          // than one that opens at the wrong size. The Rust side reveals it
+          // anyway after a timeout if this never runs at all (see lib.rs).
+          try {
+            await win.show();
+          } catch {
+            /* the Rust fallback will reveal it */
+          }
         }
       }
 

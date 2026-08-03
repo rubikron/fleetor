@@ -22,7 +22,8 @@
         "trafficLightPosition": {
           "x": 14.35,
           "y": 20.35
-        }
+        },
+        "visible": false
       }
     ],
     "security": {
@@ -32,6 +33,8 @@
   "bundle": {
     "active": false,
     "targets": "all",
-    "icon": ["icons/icon.png"]
+    "icon": [
+      "icons/icon.png"
+    ]
   }
 }
