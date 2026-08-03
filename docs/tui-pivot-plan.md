@@ -272,7 +272,19 @@ valuable):
   worker's cwd, which would show in `git status` and could be deleted by the worker itself.
 
 **Create** `src-tauri/src/deliver.rs` — the `AppCommand` receiver: registry lookup → **write
-immediately** (bracketed paste, then `\r`) → resolve the ack. No idle guard, no `pending` buffer, no
+immediately** (bracketed paste, then `\r`) → resolve the ack. Three hard requirements found by the
+Phase-1 delivery-path audit (D-032/D-033), each of which is a silent failure if missed:
+
+- **Reject only on `PaneState::accepts_input() == false`** (i.e. the process is gone). Never on
+  `is_live()`. Gating on "has it reached a prompt" refuses healthy panes on an inference.
+- **The receiver must not block.** The 30ms gap before `\r` must not be an inline `sleep` in the
+  single `AppCommand` loop, or five panes serialize behind each other and a wedged pane burns the
+  hub's 2s ack ceiling for every message queued behind it. Broadcast legs are awaited sequentially
+  in the hub, so a slow receiver multiplies: 4 targets × 2s worst case.
+- **The `fleet` CLI needs its own timeout on `Client::call`.** `fleetor_ipc::Client` waits forever
+  for a response today. The hub's ack ceiling protects the *hub's* handler; nothing protects the
+  CLI if the hub itself is wedged or the socket never answers — and a `fleet` that never returns
+  parks the calling agent's Bash tool call indefinitely, which is worse than any failed send. No idle guard, no `pending` buffer, no
 flush ticker. This deletes the entire `lead://inject` / `injectQueue` / `lastInputAt` /
 `INJECT_IDLE_MS` / flush-interval apparatus from React outright rather than moving it.
 
