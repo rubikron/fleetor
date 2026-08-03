@@ -681,6 +681,37 @@ body,
 }
 .pane-gate__facts .v { color: var(--fg-dim); }
 .pane-gate__facts .v--gold { color: var(--gold); }
+/* The target folder: editable, and it carries its own overflow. A path is
+   frequently longer than this card is wide, and the two bad answers are
+   letting it push the card open and ellipsing it away from the one person who
+   needs to read it. An input does neither — it scrolls horizontally, so the
+   whole value stays reachable in place. */
+.pane-gate__path {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: var(--t-small);
+  color: var(--fg-dim);
+  background: var(--bg-1);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  padding: 0.1875rem 0.375rem;
+  white-space: nowrap;
+  overflow-x: auto;
+  text-overflow: clip;
+}
+.pane-gate__path:hover:not(:disabled) { border-color: var(--border); }
+.pane-gate__path:focus {
+  color: var(--fg);
+  border-color: var(--border);
+  outline: none; /* the border carries focus here; :focus-visible would double it */
+}
+.pane-gate__path:disabled { opacity: 0.6; }
+.pane-gate__hint {
+  margin-right: auto;
+  font-size: var(--t-label);
+  color: var(--fg-mute);
+}
 .pane-gate__go {
   font-family: var(--mono);
   font-size: var(--t-small);

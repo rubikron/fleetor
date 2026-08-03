@@ -473,6 +473,64 @@ pub fn fleet_pick_target(
     Ok(Some(path.to_string_lossy().into_owned()))
 }
 
+/// Record a target the operator **typed** rather than picked.
+///
+/// Same contract as `fleet_pick_target`: it writes the config and announces the
+/// change, and deliberately does not move a running fleet.
+///
+/// A typed path is untrusted in a way a picked one is not — the folder picker
+/// can only hand back a directory that exists, whereas this accepts whatever
+/// was in the box. So it is trimmed, `~` is expanded, and it has to resolve to
+/// a real directory before anything is written. Returning the canonical form
+/// matters: the operator should see what was actually recorded, not the
+/// shorthand they typed, or they cannot tell a typo from a working path.
+#[tauri::command]
+pub fn fleet_set_target(path: String, state: State<'_, FleetState>) -> Result<String, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("enter a folder path".into());
+    }
+    let expanded = expand_home(trimmed)?;
+    if !expanded.exists() {
+        return Err(format!("{} does not exist", expanded.display()));
+    }
+    if !expanded.is_dir() {
+        return Err(format!("{} is not a directory", expanded.display()));
+    }
+    // Resolves `..`, symlinks and relative segments, so the config records one
+    // canonical spelling of a directory rather than however it was reached.
+    let canonical = expanded
+        .canonicalize()
+        .map_err(|e| format!("resolve {}: {e}", expanded.display()))?;
+
+    write_target(&canonical)?;
+
+    if let Ok(guard) = state.0.lock() {
+        if let Some(fleet) = guard.as_ref() {
+            note(
+                &fleet.store,
+                NoticeLevel::Info,
+                &format!(
+                    "target set to {} — it takes effect the next time the fleet starts.",
+                    canonical.display()
+                ),
+            );
+        }
+    }
+    Ok(canonical.to_string_lossy().into_owned())
+}
+
+/// `~` and `~/…` are what an operator types; `std::path` treats them as literal
+/// directory names, so a typed home-relative path would silently miss.
+fn expand_home(input: &str) -> Result<PathBuf, String> {
+    if input != "~" && !input.starts_with("~/") {
+        return Ok(PathBuf::from(input));
+    }
+    let home = std::env::var_os("HOME").ok_or("HOME is not set, so ~ cannot be expanded")?;
+    let home = PathBuf::from(home);
+    Ok(if input == "~" { home } else { home.join(&input[2..]) })
+}
+
 /// Set `target` in the config without disturbing anything else the operator has
 /// put there. Merge-not-clobber for the same reason the config seed is.
 fn write_target(target: &Path) -> Result<(), String> {
