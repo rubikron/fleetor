@@ -1,10 +1,9 @@
 // The top status bar (Phase 4e-2): quiet pill chips showing the *real* fleet
 // posture — the target repo, its branch, the worker backend, and the quality
 // gate — plus the live connection status. Values come from the backend's
-// fleet_config (the scratch repo and resolved worker backend), not placeholders.
-// The former dev toolbar (demo / manual assign) is gone: real dispatch happens
-// when the lead calls `assign` in the orchestrator TUI, so those buttons would
-// only mislead.
+// fleet_config (the resolved target repo — the operator's own, or the seeded
+// testbed), not placeholders. The former dev toolbar (demo / manual assign) is
+// gone: those buttons would only mislead.
 
 import type { FleetConfig } from "../fleet/types";
 

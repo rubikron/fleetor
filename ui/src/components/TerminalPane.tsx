@@ -1,9 +1,16 @@
-// The orchestrator pane: the operator's real `claude` TUI through the pty bridge,
-// now running as the fleet **lead** wired to the hub (Phase 4e-2). The xterm view
-// mounts immediately, but the lead process is NOT spawned until the operator
-// explicitly starts the session — spawning it runs their Opus and spends tokens,
-// so a start gate (with the target + worker backend spelled out) sits over the
-// pane until then. The Claude Code TUI itself is untouched.
+// The orchestrator pane: the operator's real `claude` TUI through the pty bridge.
+// The xterm view mounts immediately, but the process is NOT spawned until the
+// operator explicitly starts the session — spawning it runs their Opus and spends
+// tokens, so a start gate (with the target spelled out) sits over the pane until
+// then. The Claude Code TUI itself is untouched.
+//
+// **Phase 2 removed the injection queue.** Relayed worker→lead traffic used to be
+// held here behind a 1500ms operator-idle guard and typed in one message per
+// 400ms tick — so a message could be withheld indefinitely while the operator kept
+// typing, and the whole fleet was capped at 2.5 messages/second. Its producer
+// (`lead://inject`) is gone with the headless fleet, and delivery in Phase 3 goes
+// straight to the pty with nothing in between (D-034). Nothing here may queue,
+// delay, or rate-limit a message again.
 
 import { useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
@@ -24,11 +31,6 @@ function decodeBase64(b64: string): Uint8Array {
   return bytes;
 }
 
-// The lead inbox: relayed worker→lead messages are typed into the TUI only after a
-// quiet gap, so an injection never clobbers a line the operator is composing.
-const INJECT_IDLE_MS = 1500;
-const INJECT_FLUSH_MS = 400;
-
 interface TerminalPaneProps {
   started: boolean;
   onStart: () => void;
@@ -38,14 +40,6 @@ interface TerminalPaneProps {
 export function TerminalPane({ started, onStart, config }: TerminalPaneProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
-  // Relayed worker→lead messages waiting to be typed into the TUI, plus the last
-  // time the operator typed — the idle guard the flush loop keys off of.
-  const injectQueue = useRef<string[]>([]);
-  const lastInputAt = useRef(0);
-  const startedRef = useRef(started);
-  useEffect(() => {
-    startedRef.current = started;
-  }, [started]);
 
   // Mount the xterm view once. No pty is spawned here — that waits for `started`.
   useEffect(() => {
@@ -81,27 +75,8 @@ export function TerminalPane({ started, onStart, config }: TerminalPaneProps) {
       if (disposed) un();
       else disposers.push(un);
     });
-    // Worker→lead traffic the backend pump relays — queued, typed in when idle.
-    void listen<string>("lead://inject", (e) => injectQueue.current.push(e.payload)).then((un) => {
-      if (disposed) un();
-      else disposers.push(un);
-    });
-
-    const onData = term.onData((data) => {
-      lastInputAt.current = Date.now();
-      void invoke("pty_write", { data });
-    });
+    const onData = term.onData((data) => void invoke("pty_write", { data }));
     const onResize = term.onResize(({ rows, cols }) => void invoke("pty_resize", { rows, cols }));
-
-    // Type one queued worker message per tick — but only once the session is live
-    // and the operator has been quiet for a beat, so a relayed message becomes its
-    // own submitted turn (the trailing "\r") without garbling anything mid-compose.
-    const flush = setInterval(() => {
-      if (!startedRef.current || injectQueue.current.length === 0) return;
-      if (Date.now() - lastInputAt.current < INJECT_IDLE_MS) return;
-      const next = injectQueue.current.shift();
-      if (next != null) void invoke("pty_write", { data: `${next}\r` });
-    }, INJECT_FLUSH_MS);
 
     const refit = () => {
       // While the pane is on a hidden tab its box is 0×0; fitting then would
@@ -120,7 +95,6 @@ export function TerminalPane({ started, onStart, config }: TerminalPaneProps) {
     return () => {
       disposed = true;
       termRef.current = null;
-      clearInterval(flush);
       observer.disconnect();
       window.removeEventListener("resize", refit);
       onData.dispose();
@@ -155,22 +129,25 @@ export function TerminalPane({ started, onStart, config }: TerminalPaneProps) {
 
 /// The explicit spend gate: nothing runs until the operator starts the session.
 function SessionGate({ onStart, config }: { onStart: () => void; config: FleetConfig | null }) {
-  const target = config?.target ?? "the scratch repo";
-  const backend = config?.worker_backend ?? "fake";
+  const target = config?.target ?? "the target repo";
+  // Phase 2 unwired the headless worker backends, so this is "none" until Phase 3
+  // spawns worker panes. The spend gate states what will actually run — claiming a
+  // free proof path that no longer exists is the one lie this screen must not tell.
+  const backend = config?.worker_backend ?? "none";
   const lead = config?.lead_model ?? "opus (operator)";
   return (
     <div className="pane-gate">
       <div className="pane-gate__card">
         <h3 className="pane-gate__title">Start orchestrator session</h3>
         <p className="pane-gate__body">
-          Spawns your real <span className="mono">claude</span> ({lead}) as the fleet lead in{" "}
+          Spawns your real <span className="mono">claude</span> ({lead}) as the fleet orchestrator in{" "}
           <span className="mono">{target}</span>, wired to the hub. It will spend tokens.
         </p>
         <ul className="pane-gate__facts">
           <li>
             <span className="k">workers</span>
-            <span className={`v ${backend === "flash" ? "v--gold" : ""}`}>
-              {backend === "flash" ? "real DeepSeek Flash (costs tokens)" : "fake (free proof path)"}
+            <span className={`v ${backend === "none" ? "" : "v--gold"}`}>
+              {backend === "none" ? "none yet — worker panes land in Phase 3" : backend}
             </span>
           </li>
           <li>

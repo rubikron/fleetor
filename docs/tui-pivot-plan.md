@@ -1,6 +1,6 @@
 # FLEETOR — the 5-TUI messaging pivot
 
-> **Status:** Phases 0–1 complete (branch `feat/tui-fleet`). Phases 2–6 not started.
+> **Status:** Phases 0–2 complete (branch `feat/tui-fleet`). Phases 3–6 not started.
 > **Read `docs/tui-spawn-notes.md` first** — it carries the measured results of the Phase 0
 > spike, several of which corrected assumptions in this plan. Where they differ, the notes win;
 > the corrections have been folded into the phases below and are marked **✓ Phase 0**.
@@ -204,9 +204,39 @@ last inbound sender; rate-limit rejection; bodies land in the log.
 
 **Verify**: `cargo test` workspace green, old tests untouched.
 
-### Phase 2 — unwire the old fleet from the app
+### Phase 2 — unwire the old fleet from the app ✅ **DONE**
 
-Surgical, and it makes Phase 5's deletion possible.
+Delivered as specified; decision record is `decisions.md` D-035. `src-tauri/src/fleet.rs` went
+689 → ~430 lines, `cargo check` clean in both workspaces, 9 shell tests + the 104 workspace tests
+green, `tsc --noEmit` clean.
+
+The one addition beyond the spec: **`a_pane_op_crosses_the_real_socket_and_is_answered`** in
+`fleet.rs`. Everything before it was in-process against a fake app; this dials the bound hub over a
+real unix socket the way the Phase-3 `fleet` CLI will, sends `Op::PaneSend`, and asserts both the
+refusal and its appearance on the feed with the body intact. It is the first evidence the socket
+half of the mechanism works.
+
+Five deviations, each because Phase 2 forced it:
+
+- **The pty MCP wiring went too** (it was on Phase 3's list). `fleet::shim_path()` dies here, and
+  `pty.rs` called it — but the real reason is that `mcp__fleet__assign / await_events / reply`
+  pointed at a hub that no longer spawns anything. A tool surface that silently can't work is worse
+  than no tool surface. `FLEET_SOCKET` stays; Phase 3's `fleet` CLI reads it.
+- **The lead inbox pump is deleted** (`spawn_lead_inbox_pump`, `connect_lead`, `render_lead_event`,
+  `lead://inject`). It long-polled a queue only headless workers ever wrote to.
+- **Its consumer went with it** — the `lead://inject` injection queue in `TerminalPane.tsx`, with
+  the 1500ms operator-idle guard and the 400ms one-message-per-tick flusher the D-034 sweep found.
+  Dead code implementing exactly the pattern the pivot bans is a trap: the next phase could have
+  re-pointed it at message events and quietly reintroduced both delays.
+- **The testbed seed is embedded (`include_str!`), not copied from disk.** A path ladder (repo
+  relative in dev, a Tauri resource in a bundle) is L4's shape: works in dev, silently resolves to
+  nothing in a bundle, and the fleet gets an empty directory to "work on". ~9KB in the binary
+  removes the failure mode. Seeding never overwrites an existing file, and makes an initial commit
+  — `git worktree add` needs one, and Phase 3 gives every worker pane a worktree.
+- **`tauri-plugin-dialog` was not added.** An unregistered plugin dependency does nothing but slow
+  builds and read as wired to a reviewer. It lands with the picker that uses it.
+
+*Original scope, retained for reference:*
 
 **Modify** `src-tauri/src/fleet.rs` — delete `spawn_pool_fleet` (L191-229), `build_factory`
 (L416-458), `WorkerBackend`, `FakeWithEnv`, `resolve_backend`, `fake_script_path`, `shim_path`, and

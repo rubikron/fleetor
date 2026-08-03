@@ -1,49 +1,47 @@
-//! Phase 4e-2 — the **live fleet, embedded in the shell**.
+//! Phase 2 of the TUI pivot — **the old fleet, unwired** (D-030).
 //!
-//! 4e-1 embedded the observability core (store + live bus + follower→webview) and
-//! animated it with a scripted `demo`. 4e-2 removes the stand-in and lets a *real*
-//! orchestrator drive: the hub is now bound **dynamic** (via
-//! [`run_dynamic_fleet`]), so a worker is spawned the moment the lead calls
-//! `assign` over the socket. The lead seat is the operator's real `claude` TUI in
-//! the pty ([`crate::pty`]), which connects as [`Party::Lead`](fleetor_core::Party)
-//! through the shim — this backend never fills that seat itself.
+//! What this module was: a shell that spawned four headless standby workers and
+//! bound a *dynamic* hub, so the lead's `assign` over the socket turned into a
+//! supervised `fake-claude` or DeepSeek Flash process. That whole apparatus is
+//! gone. In the TUI fleet there are no headless workers — every agent is a live
+//! `claude` terminal, and the only thing crossing the socket is a message.
 //!
-//! **What is real here:** the store, the live event bus, the follower→UI pump, and
-//! a dynamic hub that turns each `assign` into a supervised worker via the
-//! [`factory`](build_factory). Worker/hub/supervisor writes stream to the UI over
-//! the same 4c seam, unchanged.
+//! What is left is deliberately small:
 //!
-//! **Token posture (4e-2 gate):** the worker backend is [`fake`](WorkerBackend)
-//! by default — a `fake-claude` that dials the socket and drives the loop for
-//! free, so the wire can be proven without DeepSeek spend. Setting
-//! `FLEETOR_WORKER_BACKEND=real` (with a `DEEPSEEK_API_KEY`) swaps in real Flash
-//! workers. Either way the lead is the operator's own Opus, whose spend the UI
-//! gates behind an explicit "start session" confirm before the pty is spawned.
+//!  - the **store** and the live **event bus**, pumped to the webview by
+//!    [`spawn_follower`] (unchanged, and the reason the feed still streams);
+//!  - a plain [`Hub::with_app`] bound to the unix socket, whose pane ops
+//!    ([`AppCommand`]) are answered by the fleet app itself;
+//!  - the **target** the fleet works on: the operator's repo if
+//!    `~/.fleetor/config.json` names one, else a seeded [`testbed`].
+//!
+//! The pane registry that makes an [`AppCommand::Deliver`] land in a real
+//! terminal is Phase 3 (`deliver.rs`). Until it exists, [`spawn_pane_seam`]
+//! answers every command with an honest refusal — never a silent drop, and never
+//! a park, because nothing between `fleet send` and the pty has a timeout (D-034).
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use fleetor_cc::spawn::{FleetWiring, WorkerConfig};
-use fleetor_cc::{AgentProcess, FakeClaude};
 use fleetor_core::event::{FleetEvent, NoticeLevel, TicketState};
 use fleetor_core::ticket::Ticket;
-use fleetor_core::wire::{Hello, LeadEvent, LeadEventKind, Op, OpResult};
-use fleetor_core::{Party, Store};
+use fleetor_core::Store;
 use fleetor_db::SqliteStore;
-use fleetor_ipc::{Client, UnixTransport};
-use fleetor_server::{run_pool_fleet, BroadcastStore, HubConfig, WorkerFactory, WorkerSpec};
+use fleetor_ipc::UnixTransport;
+use fleetor_server::{AppCommand, BroadcastStore, DeliveryResult, Hub, HubConfig};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
-use tokio::sync::Notify;
+use tokio::runtime::Runtime;
+use tokio::sync::{mpsc, Notify};
+
+use crate::testbed;
 
 /// Emitted for every appended event, in `seq` order, the moment it persists.
 const EVENT_FLEET: &str = "fleet://event";
 
-/// Emitted for each worker→lead message the platform relays into the lead's TUI.
-const EVENT_LEAD_INJECT: &str = "lead://inject";
-
-/// Default per-ticket wall-clock budget for a worker (seconds).
-const WORKER_WALL_SECS: u64 = 300;
+/// The Phase-2 answer to any pane op: there is no registry yet, so nothing can be
+/// live. Phase 3 replaces this with a real lookup.
+const NO_PANES: &str = "no panes are running yet — the pane registry lands in Phase 3";
 
 /// One event as the webview sees it: the `seq` cursor plus the flattened
 /// [`FleetEvent`] (its `#[serde(tag = "type")]` discriminator carries through, so
@@ -65,28 +63,28 @@ pub struct BootSnapshot {
 }
 
 /// The fleet's live configuration, surfaced to the top bar so it shows *facts*
-/// (the real target, branch, and worker backend) instead of placeholders.
+/// rather than placeholders.
 #[derive(Serialize, Clone)]
 pub struct FleetConfig {
-    /// The repo the fleet operates on (display path — the scratch repo in 4e-2).
+    /// The repo the fleet operates on (display name — the target's directory).
     target: String,
     /// That repo's current git branch (best-effort).
     branch: String,
-    /// `"fake"` (proof) or `"flash"` (real DeepSeek workers).
+    /// What fills the worker seats. `"none"` until Phase 3 spawns worker panes —
+    /// the headless backends this field used to name are gone.
     worker_backend: String,
-    /// The model in the lead seat — the operator's own Opus.
+    /// The model in the orchestrator seat — the operator's own Opus.
     lead_model: String,
     /// A short, honest label for the quality gate workers pass through.
     gate: String,
 }
 
 /// The live backend, created once by [`fleet_bootstrap`] and kept for the app's
-/// lifetime. Owns the tokio runtime the follower, hub, and workers run on.
+/// lifetime. Owns the tokio runtime the follower, hub, and pane seam run on.
 struct Fleet {
-    _rt: tokio::runtime::Runtime,
+    _rt: Runtime,
     store: Arc<dyn Store>,
-    /// Fired on shutdown to end the dynamic runner's driver so it drains workers
-    /// and stops the hub cleanly.
+    /// Fired on window close so the hub stops serving and unlinks its socket.
     shutdown: Arc<Notify>,
     config: FleetConfig,
 }
@@ -95,30 +93,85 @@ struct Fleet {
 #[derive(Default)]
 pub struct FleetState(Mutex<Option<Fleet>>);
 
+// --- locations ----------------------------------------------------------------
+
+/// The operator-facing root: holds `config.json` and the seeded testbed.
+fn fleetor_dir() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".fleetor")
+}
+
 /// State root, out of the user's repo so `rm -rf ~/.fleetor/_shell` fully undoes
 /// it (Tier-1 boundary).
 pub(crate) fn shell_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".fleetor").join("_shell")
+    fleetor_dir().join("_shell")
 }
 
-/// The scratch repo the fleet operates on. A throwaway git repo under the shell
-/// dir — real work, zero blast radius on any of the operator's real code.
-pub fn scratch_repo() -> PathBuf {
-    shell_dir().join("repo")
+/// The seeded project the fleet falls back to when no target is configured.
+fn testbed_dir() -> PathBuf {
+    fleetor_dir().join("testbed")
 }
 
-/// The fleet unix socket the shim (lead and workers) dial.
+/// Where the operator names the repo the fleet should work on.
+fn config_path() -> PathBuf {
+    fleetor_dir().join("config.json")
+}
+
+/// The fleet unix socket the `fleet` CLI dials.
 pub(crate) fn socket_path() -> PathBuf {
     shell_dir().join("fleet.sock")
 }
 
+/// The directory the fleet works in, resolved fresh. Used by the pty spawn path
+/// for a pane's cwd; [`fleet_bootstrap`] is what actually seeds the testbed, so
+/// this only ever *reads* the decision.
+pub(crate) fn target_dir() -> PathBuf {
+    configured_target().ok().flatten().unwrap_or_else(testbed_dir)
+}
+
+/// The target named in `~/.fleetor/config.json`, if there is a usable one.
+/// `Ok(None)` means nothing is configured (the ordinary first-run case); `Err`
+/// means something *is* configured and can't be used, which the operator has to
+/// be told about rather than silently working somewhere else.
+fn configured_target() -> Result<Option<PathBuf>, String> {
+    let path = config_path();
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("could not read {}: {e}", path.display())),
+    };
+    let Some(target) = parse_target(&text).map_err(|e| format!("{}: {e}", path.display()))? else {
+        return Ok(None);
+    };
+    if !target.is_dir() {
+        return Err(format!("target {} is not a directory", target.display()));
+    }
+    Ok(Some(target))
+}
+
+/// Pull the `target` out of config text. `Ok(None)` for a config that simply
+/// doesn't set one; `Err` only for text that isn't JSON at all — a typo'd config
+/// must not read as "no target configured". Kept pure so it is unit-tested
+/// without touching the filesystem.
+fn parse_target(text: &str) -> Result<Option<PathBuf>, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("not valid JSON ({e})"))?;
+    let Some(target) = value.get("target") else { return Ok(None) };
+    let Some(s) = target.as_str() else {
+        return Err("\"target\" must be a path string".to_string());
+    };
+    let s = s.trim();
+    Ok((!s.is_empty()).then(|| PathBuf::from(s)))
+}
+
+// --- bootstrap ----------------------------------------------------------------
+
 /// Start the embedded fleet (idempotent) and return the board snapshot.
 ///
 /// First call: opens the store, wraps it in the live bus, spawns the follower
-/// pump, ensures the scratch repo exists, and binds the **dynamic** hub (so an
-/// `assign` from the lead spawns a worker). Later calls (e.g. React StrictMode's
-/// double-mount) find it already running and just return a fresh snapshot.
+/// pump, resolves the target, and binds the hub. Later calls (e.g. React
+/// StrictMode's double-mount) find it already running and just return a fresh
+/// snapshot.
 #[tauri::command]
 pub fn fleet_bootstrap(
     app: AppHandle,
@@ -131,7 +184,6 @@ pub fn fleet_bootstrap(
 
     let dir = shell_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("create shell dir: {e}"))?;
-    let repo = ensure_scratch_repo()?;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -144,26 +196,57 @@ pub fn fleet_bootstrap(
     )));
     let store: Arc<dyn Store> = bcast.clone();
 
-    spawn_follower(&rt, bcast.clone(), app.clone());
+    spawn_follower(&rt, bcast.clone(), app);
 
-    // Resolve the worker backend once, announcing the choice on the feed so the
-    // token posture is visible, never silent.
-    let backend = resolve_backend(&store, &repo);
-    let config = fleet_config_for(&backend, &repo);
-    let shutdown = spawn_pool_fleet(&rt, store.clone(), backend);
+    let target = resolve_target(&store)?;
+    let config = fleet_config_for(&target);
 
-    // The lead's *incoming* half: a free pump that types worker→lead traffic into
-    // the orchestrator's TUI so the operator's Opus never has to poll for it.
-    spawn_lead_inbox_pump(&rt, app);
+    // The hub↔app seam: the hub routes, the app owns the terminals. Unbounded on
+    // purpose — a bounded channel would make a busy fleet block a send (D-034).
+    let (app_tx, app_rx) = mpsc::unbounded_channel();
+    spawn_pane_seam(&rt, app_rx);
+    let shutdown = spawn_hub(&rt, store.clone(), app_tx, socket_path());
 
     let snap = snapshot(&store)?;
     *guard = Some(Fleet { _rt: rt, store, shutdown, config });
     Ok(snap)
 }
 
+/// Decide where the fleet works, announcing the choice on the feed so it is never
+/// a silent surprise. A configured target wins; anything else falls back to the
+/// seeded testbed, which is the only case that has to create anything.
+fn resolve_target(store: &Arc<dyn Store>) -> Result<PathBuf, String> {
+    match configured_target() {
+        Ok(Some(target)) => {
+            note(store, NoticeLevel::Info, &format!("target: {}", target.display()));
+            Ok(target)
+        }
+        Ok(None) => fall_back_to_testbed(store, None),
+        Err(e) => fall_back_to_testbed(store, Some(e)),
+    }
+}
+
+fn fall_back_to_testbed(store: &Arc<dyn Store>, problem: Option<String>) -> Result<PathBuf, String> {
+    let testbed = testbed::ensure(&testbed_dir())?;
+    let (level, why) = match problem {
+        Some(e) => (NoticeLevel::Warn, format!("{e} — ")),
+        None => (NoticeLevel::Info, String::new()),
+    };
+    note(
+        store,
+        level,
+        &format!(
+            "{why}working in the seeded testbed at {}. Set \"target\" in {} to point the fleet at your own repo.",
+            testbed.display(),
+            config_path().display()
+        ),
+    );
+    Ok(testbed)
+}
+
 /// Pump every appended event to the webview, oldest-first then live. Started once;
 /// runs for the app's lifetime.
-fn spawn_follower(rt: &tokio::runtime::Runtime, bcast: Arc<BroadcastStore>, app: AppHandle) {
+fn spawn_follower(rt: &Runtime, bcast: Arc<BroadcastStore>, app: AppHandle) {
     rt.spawn(async move {
         let mut follower = match bcast.follow(0) {
             Ok(f) => f,
@@ -180,123 +263,63 @@ fn spawn_follower(rt: &tokio::runtime::Runtime, bcast: Arc<BroadcastStore>, app:
     });
 }
 
-/// Bind the **dynamic** hub and run it for the app's lifetime, spawning one
-/// supervised worker per `assign` the lead sends. Returns the shutdown handle:
-/// the runner's `driver` is a pure lifetime gate that resolves when it fires, at
-/// which point [`run_dynamic_fleet`] drains the workers and stops the hub.
+/// Bind the hub on `sock` and serve until the app closes. Returns the shutdown
+/// gate. (The socket is a parameter, not [`socket_path`], so this is exercisable
+/// over a real unix socket in a test.)
 ///
-/// The lead seat stays empty here — the real orchestrator (the pty `claude`)
-/// fills it over the socket. A bind failure degrades gracefully: the shell stays
-/// observable, only live assignment is unavailable.
-fn spawn_pool_fleet(
-    rt: &tokio::runtime::Runtime,
+/// A bind failure is the one error that takes messaging down completely, so it is
+/// reported on the feed rather than only to stderr — a shell that looks fine while
+/// every `fleet send` fails is the worst version of this failure.
+fn spawn_hub(
+    rt: &Runtime,
     store: Arc<dyn Store>,
-    backend: WorkerBackend,
+    app: mpsc::UnboundedSender<AppCommand>,
+    sock: PathBuf,
 ) -> Arc<Notify> {
-    let sock = socket_path();
     let _ = std::fs::remove_file(&sock); // clear a stale socket from a prior run
     let transport = Arc::new(UnixTransport::new(&sock));
-    let factory = build_factory(backend);
-
-    // The standing pool (Phase 4i): one worker per slot, spawned idle at startup so
-    // the operator sees 4 available workers immediately and can message them.
-    let workers: Vec<WorkerSpec> = HubConfig::default()
-        .slots
-        .iter()
-        .map(|&slot| {
-            let ticket = Ticket {
-                slot: Some(slot),
-                ..Ticket::new(format!("worker-{slot}"), "standby", "Standby fleet worker.")
-            };
-            factory(&ticket)
-        })
-        .collect();
 
     let shutdown = Arc::new(Notify::new());
-    let driver_gate = shutdown.clone();
+    let gate = shutdown.clone();
+    let for_note = store.clone();
     rt.spawn(async move {
-        // Driver = lifetime gate: keep the hub + pool up until the app shuts down.
-        let driver = move || async move {
-            driver_gate.notified().await;
-            Ok(())
-        };
-        match run_pool_fleet(store, transport, HubConfig::default(), workers, driver).await {
-            Ok(outcomes) => eprintln!("fleet: pool stopped ({} worker(s) drained)", outcomes.len()),
-            Err(e) => eprintln!("fleet: pool runner error: {e}"),
+        let hub = Hub::with_app(store, HubConfig::default(), app);
+        tokio::select! {
+            result = hub.run(transport) => {
+                if let Err(e) = result {
+                    eprintln!("fleet: hub stopped: {e}");
+                    note(&for_note, NoticeLevel::Error, &format!("fleet socket unavailable — messaging is down: {e}"));
+                }
+            }
+            _ = gate.notified() => {}
         }
+        let _ = std::fs::remove_file(&sock);
     });
     shutdown
 }
 
-/// The lead **inbox pump**: a free `Party::Lead` socket client that long-polls the
-/// hub for worker→lead traffic (`notify_lead` notices, `ask_lead` questions) and
-/// emits each item as a [`EVENT_LEAD_INJECT`] event for the terminal pane to type
-/// into the orchestrator's TUI. This is the *incoming* half of lead messaging a
-/// plain terminal can't have: the app owns the pty writer (handoff §5's "human owns
-/// stdin" limit doesn't bind here), so the operator's Opus never burns turns polling
-/// `await_events`.
+/// The Phase-2 stand-in for `deliver.rs`: answer every [`AppCommand`], honestly.
 ///
-/// It shares the hub's single-consumer lead-event queue with the operator's own
-/// `claude` lead connection. Because it polls continuously it is the de-facto
-/// consumer, so events reach the Opus via injection; the rare one the operator's lead
-/// drains itself simply arrives via that tool result instead — no loss, no duplicate.
-fn spawn_lead_inbox_pump(rt: &tokio::runtime::Runtime, app: AppHandle) {
-    let sock = socket_path();
+/// It must answer *something* for each one. The hub awaits the ack with no
+/// deadline (D-034), so a command received and left unanswered parks the caller's
+/// `fleet send` forever — the exact failure the unbounded design accepts in
+/// exchange for never lying about a delivery.
+fn spawn_pane_seam(rt: &Runtime, mut commands: mpsc::UnboundedReceiver<AppCommand>) {
     rt.spawn(async move {
-        let transport = UnixTransport::new(&sock);
-        let mut lead = match connect_lead(&transport).await {
-            Some(c) => c,
-            None => {
-                eprintln!("fleet: lead inbox pump could not connect; worker→lead relay disabled");
-                return;
-            }
-        };
-        loop {
-            let events = match lead.call(Op::AwaitEvents { timeout_ms: 1000 }).await {
-                Ok(OpResult::Events { events }) => events,
-                Ok(_) => Vec::new(),
-                Err(_) => break, // hub gone (app shutting down)
-            };
-            for ev in events {
-                if app.emit(EVENT_LEAD_INJECT, render_lead_event(&ev)).is_err() {
-                    return; // webview gone
+        while let Some(command) = commands.recv().await {
+            match command {
+                AppCommand::Deliver { ack, .. } => {
+                    let _ = ack.send(DeliveryResult::rejected(NO_PANES));
+                }
+                AppCommand::Roster { ack } => {
+                    let _ = ack.send(Vec::new());
                 }
             }
         }
     });
 }
 
-/// Connect a lead client to the hub, retrying briefly since the hub binds a beat
-/// after `fleet_bootstrap` spawns this. `None` if it never comes up.
-async fn connect_lead(transport: &UnixTransport) -> Option<Client> {
-    for _ in 0..50 {
-        if let Ok(c) = Client::connect(transport, Hello::new(Party::Lead)).await {
-            return Some(c);
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-    None
-}
-
-/// Render one worker→lead event as a single TUI line, framed so the orchestrator
-/// reads it as *relayed worker traffic* (not the operator typing) and — for a
-/// question — carries the `event_id` it must pass back to `reply`.
-fn render_lead_event(ev: &LeadEvent) -> String {
-    match &ev.kind {
-        LeadEventKind::Notice { text } => format!("[fleet · worker-{}] {}", ev.from, text),
-        LeadEventKind::Question { text, options } => {
-            let opts = options
-                .as_ref()
-                .filter(|o| !o.is_empty())
-                .map(|o| format!(" [options: {}]", o.join(" / ")))
-                .unwrap_or_default();
-            format!(
-                "[fleet · worker-{} asks — reply with reply(event_id=\"{}\", …)] {}{}",
-                ev.from, ev.id, text, opts
-            )
-        }
-    }
-}
+// --- commands -----------------------------------------------------------------
 
 /// The board as it stands now, straight from the store (the source of truth the
 /// UI refetches whenever it sees a ticket move).
@@ -307,7 +330,7 @@ pub fn fleet_board(state: State<'_, FleetState>) -> Result<Vec<Ticket>, String> 
     fleet.store.tickets().map_err(|e| e.to_string())
 }
 
-/// The live fleet configuration for the top bar (real target/branch/backend).
+/// The live fleet configuration for the top bar (real target/branch).
 #[tauri::command]
 pub fn fleet_config(state: State<'_, FleetState>) -> Result<FleetConfig, String> {
     let guard = state.0.lock().map_err(|e| e.to_string())?;
@@ -316,9 +339,7 @@ pub fn fleet_config(state: State<'_, FleetState>) -> Result<FleetConfig, String>
 }
 
 /// Put a ticket on the board as `Assigned`. A real action through the store, so
-/// the move streams to the UI over the event bus like any other. Note: this only
-/// seeds the board — the *live* dispatch to a worker happens when the lead calls
-/// `assign` over the socket (which the dynamic hub turns into a spawned worker).
+/// the move streams to the UI over the event bus like any other.
 #[tauri::command]
 pub fn fleet_assign(state: State<'_, FleetState>, ticket: Ticket) -> Result<(), String> {
     let guard = state.0.lock().map_err(|e| e.to_string())?;
@@ -337,8 +358,8 @@ pub fn fleet_assign(state: State<'_, FleetState>, ticket: Ticket) -> Result<(), 
     Ok(())
 }
 
-/// Fire the shutdown gate so the dynamic runner drains workers and stops the hub.
-/// Best-effort, called on window close alongside the pty teardown.
+/// Stop the hub and unlink its socket. Best-effort, called on window close
+/// alongside the pty teardown.
 pub fn shutdown(state: &FleetState) {
     if let Ok(guard) = state.0.lock() {
         if let Some(fleet) = guard.as_ref() {
@@ -354,165 +375,23 @@ fn snapshot(store: &Arc<dyn Store>) -> Result<BootSnapshot, String> {
     })
 }
 
-// --- worker backend + factory -------------------------------------------------
-
-/// Which kind of worker the factory spawns per assigned ticket.
-#[derive(Clone)]
-pub enum WorkerBackend {
-    /// A `fake-claude` (node script) that dials the socket and drives the loop for
-    /// free — the proof path, no DeepSeek spend.
-    Fake { script: PathBuf },
-    /// A real, fully-wired DeepSeek Flash `claude` worker — costs tokens.
-    Real { api_key: String },
-}
-
-impl WorkerBackend {
-    fn label(&self) -> &'static str {
-        match self {
-            WorkerBackend::Fake { .. } => "fake",
-            WorkerBackend::Real { .. } => "flash",
-        }
-    }
-}
-
-/// Decide the worker backend from the environment, announcing the choice (and any
-/// fallback) on the feed so the token posture is never a silent surprise.
-///
-/// `FLEETOR_WORKER_BACKEND=real` opts into real Flash workers; it requires a
-/// `DEEPSEEK_API_KEY` (env or the repo's `.env`) and falls back to `fake` with a
-/// warning if the key is missing. Anything else selects `fake`.
-fn resolve_backend(store: &Arc<dyn Store>, repo: &Path) -> WorkerBackend {
-    let want_real = std::env::var("FLEETOR_WORKER_BACKEND")
-        .map(|v| v.eq_ignore_ascii_case("real"))
-        .unwrap_or(false);
-
-    if want_real {
-        match load_api_key(repo) {
-            Ok(api_key) => {
-                note(store, NoticeLevel::Info, "worker backend: real DeepSeek Flash (costs tokens)");
-                return WorkerBackend::Real { api_key };
-            }
-            Err(e) => note(
-                store,
-                NoticeLevel::Warn,
-                &format!("FLEETOR_WORKER_BACKEND=real but no DEEPSEEK_API_KEY ({e}); using fake workers"),
-            ),
-        }
-    }
-
-    let script = fake_script_path();
-    note(
-        store,
-        NoticeLevel::Info,
-        "worker backend: fake (free proof path — set FLEETOR_WORKER_BACKEND=real for live Flash)",
-    );
-    WorkerBackend::Fake { script }
-}
-
-/// Build the [`WorkerFactory`] the dynamic runner uses to turn an assigned ticket
-/// into a supervised worker. Real workers get [`FleetWiring`] (shim MCP + Stop
-/// hook), materialized by the runner before spawn; fake workers carry the socket
-/// env and dial it themselves.
-fn build_factory(backend: WorkerBackend) -> WorkerFactory {
-    let sock = socket_path();
-    let fleet_dir = shell_dir();
-    let wt_base = shell_dir().join("wt");
-    let config_base = shell_dir().join("cc-config");
-    let logs = shell_dir().join("logs");
-
-    Arc::new(move |ticket: &Ticket| {
-        let slot = ticket.slot.unwrap_or(1);
-        let raw = logs.join(format!("worker-{slot}")).join(format!("{}.jsonl", ticket.id));
-
-        match &backend {
-            WorkerBackend::Real { api_key } => {
-                let cwd = wt_base.join(format!("worker-{slot}"));
-                let _ = std::fs::create_dir_all(&cwd);
-                let config_dir = config_base.join(format!("worker-{slot}"));
-                let wiring = FleetWiring {
-                    shim_path: shim_path(),
-                    socket_path: sock.clone(),
-                    slot,
-                    fleet_dir: fleet_dir.clone(),
-                };
-                let config = WorkerConfig::probe(cwd, config_dir, api_key.clone()).with_wiring(wiring);
-                WorkerSpec::real(config, ticket.clone(), slot, Some(raw), WORKER_WALL_SECS)
-            }
-            WorkerBackend::Fake { script } => {
-                let _ = std::fs::create_dir_all(&wt_base);
-                let agent = FakeWithEnv {
-                    inner: FakeClaude {
-                        script: script.clone(),
-                        cwd: wt_base.clone(),
-                        scenario: "standby".into(),
-                    },
-                    env: vec![
-                        ("FLEET_SOCKET".into(), sock.to_string_lossy().into_owned()),
-                        ("FLEETOR_SLOT".into(), slot.to_string()),
-                    ],
-                };
-                WorkerSpec::fake(Box::new(agent), ticket.clone(), slot, Some(raw), WORKER_WALL_SECS)
-            }
-        }
-    })
-}
-
-/// A fake worker carrying the fleet env a wired real worker would get, so its
-/// socket half can find the hub. (Mirrors the server integration-test helper.)
-struct FakeWithEnv {
-    inner: FakeClaude,
-    env: Vec<(String, String)>,
-}
-
-impl AgentProcess for FakeWithEnv {
-    fn command(&self) -> std::process::Command {
-        let mut cmd = self.inner.command();
-        for (k, v) in &self.env {
-            cmd.env(k, v);
-        }
-        cmd
-    }
-    fn label(&self) -> String {
-        self.inner.label()
-    }
-}
-
-/// The `fleetor-shim` binary sits next to this executable's siblings. In a Tauri
-/// dev build the shim is built by the workspace into the same target dir; in a
-/// bundle it is shipped as a sidecar. Best-effort: a wrong path fails observably
-/// at worker spawn (a dead worker + notice), not a crash.
-pub(crate) fn shim_path() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .map(|exe| exe.with_file_name("fleetor-shim"))
-        .unwrap_or_else(|| PathBuf::from("fleetor-shim"))
-}
-
-/// Locate the `fake-claude.mjs` proof script: `FLEETOR_FAKE_CLAUDE` if set, else a
-/// repo-relative default (present when running from the workspace).
-fn fake_script_path() -> PathBuf {
-    if let Ok(p) = std::env::var("FLEETOR_FAKE_CLAUDE") {
-        if !p.is_empty() {
-            return PathBuf::from(p);
-        }
-    }
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    cwd.join("tests").join("fake-claude").join("fake-claude.mjs")
-}
+// --- worker credentials -------------------------------------------------------
 
 /// Read `DEEPSEEK_API_KEY` from the env or the nearest `.env` on the path from the
 /// cwd up to the filesystem root. Under `tauri dev` the cwd is `src-tauri/`, so a
 /// repo-root `.env` is found by walking up (not just `<cwd>/.env`) — otherwise a
-/// key sitting at the repo root silently downgrades workers to the fake path.
-/// Never logged.
+/// key sitting at the repo root silently goes unseen. Never logged.
+///
+/// Unused until Phase 3, which spawns the worker panes: it is what they set
+/// `ANTHROPIC_AUTH_TOKEN` from. Never `ANTHROPIC_API_KEY` — with that set, the
+/// interactive TUI blocks on api-key approval and never reaches its prompt (L2).
+#[allow(dead_code)]
 fn load_api_key(repo_root: &Path) -> Result<String, String> {
     if let Ok(k) = std::env::var("DEEPSEEK_API_KEY") {
         if !k.is_empty() {
             return Ok(k);
         }
     }
-    // Walk up from the cwd (falling back to repo_root) looking for a `.env` that
-    // carries the key — the first match wins.
     let start = std::env::current_dir().unwrap_or_else(|_| repo_root.to_path_buf());
     for dir in start.ancestors() {
         let Ok(text) = std::fs::read_to_string(dir.join(".env")) else { continue };
@@ -538,26 +417,7 @@ fn parse_deepseek_key(text: &str) -> Option<String> {
     None
 }
 
-// --- scratch repo + config ----------------------------------------------------
-
-/// Ensure the scratch repo exists and is a git repo, so the lead operates on real
-/// version control with zero blast radius. Idempotent.
-fn ensure_scratch_repo() -> Result<PathBuf, String> {
-    let repo = scratch_repo();
-    std::fs::create_dir_all(&repo).map_err(|e| format!("create scratch repo: {e}"))?;
-    if !repo.join(".git").exists() {
-        let ok = std::process::Command::new("git")
-            .args(["init", "-q"])
-            .current_dir(&repo)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if !ok {
-            eprintln!("fleet: could not `git init` the scratch repo at {repo:?}");
-        }
-    }
-    Ok(repo)
-}
+// --- display ------------------------------------------------------------------
 
 /// The current git branch of `repo`, or a sensible default when git is silent.
 fn git_branch(repo: &Path) -> String {
@@ -572,15 +432,15 @@ fn git_branch(repo: &Path) -> String {
         .unwrap_or_else(|| "main".to_string())
 }
 
-fn fleet_config_for(backend: &WorkerBackend, repo: &Path) -> FleetConfig {
-    let target = repo
+fn fleet_config_for(target: &Path) -> FleetConfig {
+    let name = target
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| repo.to_string_lossy().into_owned());
+        .unwrap_or_else(|| target.to_string_lossy().into_owned());
     FleetConfig {
-        target,
-        branch: git_branch(repo),
-        worker_backend: backend.label().to_string(),
+        target: name,
+        branch: git_branch(target),
+        worker_backend: "none".to_string(),
         lead_model: "opus (operator)".to_string(),
         gate: "shell gate + peer review".to_string(),
     }
@@ -596,48 +456,96 @@ fn note(store: &Arc<dyn Store>, level: NoticeLevel, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fleetor_core::pane::PaneId;
+    use fleetor_core::wire::{Hello, Op, OpResult};
+    use fleetor_ipc::Client;
+    use std::time::Duration;
 
-    /// The real factory produces a fully-wired worker: a config carrying the shim
-    /// + socket so the runner materializes its MCP/Stop-hook files before spawn,
-    /// in the ticket's slot.
+    /// The Phase-2 wiring, end to end over a **real unix socket**: bootstrap's
+    /// hub + seam, dialled by a real client the way the `fleet` CLI will.
+    ///
+    /// Everything proven so far was in-process against a fake app. This is the
+    /// first thing that shows the socket binds, the hub serves a pane op, and an
+    /// answer comes back — the mechanism itself, minus the pty.
     #[test]
-    fn real_factory_wires_the_worker_to_the_hub() {
-        let factory = build_factory(WorkerBackend::Real { api_key: "sk-test".into() });
-        let ticket = Ticket { slot: Some(3), ..Ticket::new("T-1", "t", "b") };
+    fn a_pane_op_crosses_the_real_socket_and_is_answered() {
+        let dir = std::env::temp_dir().join(format!("fleetor-hub-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("fleet.sock");
 
-        let spec = factory(&ticket);
-        assert_eq!(spec.slot, 3, "worker runs in the ticket's slot");
-        let config = spec.config.expect("a real worker carries a config for the runner to materialize");
-        let wiring = config.wiring.expect("a real worker is wired to the hub");
-        assert_eq!(wiring.slot, 3);
-        assert_eq!(wiring.socket_path, socket_path());
-        assert_eq!(config.api_key, "sk-test");
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let store: Arc<dyn Store> =
+            Arc::new(SqliteStore::open(&dir.join("state.db")).unwrap());
+
+        let (app_tx, app_rx) = mpsc::unbounded_channel();
+        spawn_pane_seam(&rt, app_rx);
+        let shutdown = spawn_hub(&rt, store.clone(), app_tx, sock.clone());
+
+        let result = rt.block_on(async {
+            let transport = UnixTransport::new(&sock);
+            let mut client = connect(&transport, PaneId::Orch).await.expect("hub never came up");
+            client
+                .call(Op::PaneSend { to: PaneId::Worker(1), text: "take T-4".into() })
+                .await
+                .expect("the hub answered")
+        });
+
+        // No panes exist yet, so the honest answer is a refusal that says why —
+        // not a park, and not a success the feed would then have to walk back.
+        let OpResult::Delivered { accepted, detail, .. } = result else {
+            panic!("expected a delivery result, got {result:?}");
+        };
+        assert!(!accepted, "nothing can be accepted before the pane registry exists");
+        assert_eq!(detail.as_deref(), Some(NO_PANES));
+
+        // And the attempt is on the record, body included.
+        let logged = store
+            .events_since(0)
+            .unwrap()
+            .into_iter()
+            .any(|(_, e)| matches!(&e, FleetEvent::Message { body, accepted, .. } if body == "take T-4" && !accepted));
+        assert!(logged, "a refused send must still reach the feed with its body");
+
+        shutdown.notify_one();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The fake factory produces a config-less worker (nothing for the runner to
-    /// materialize) that still carries the socket identity in its env, so it can
-    /// dial the hub itself — the free proof path.
+    /// The hub binds a beat after it is spawned, so a client that dials once loses
+    /// a race the real CLI doesn't (it is started by hand, long after boot).
+    async fn connect(transport: &UnixTransport, pane: PaneId) -> Option<Client> {
+        for _ in 0..100 {
+            if let Ok(c) = Client::connect(transport, Hello::for_pane(pane)).await {
+                return Some(c);
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        None
+    }
+
     #[test]
-    fn fake_factory_carries_socket_identity_without_a_config() {
-        let factory = build_factory(WorkerBackend::Fake { script: "/tmp/fake.mjs".into() });
-        let ticket = Ticket { slot: Some(2), ..Ticket::new("T-2", "t", "b") };
-
-        let spec = factory(&ticket);
-        assert_eq!(spec.slot, 2);
-        assert!(spec.config.is_none(), "a fake worker has no fleet config to materialize");
-
-        // The command carries FLEET_SOCKET + FLEETOR_SLOT so the fake dials the hub.
-        let cmd = spec.agent.command();
-        let envs: Vec<_> = cmd.get_envs().collect();
-        let has = |k: &str, v: &str| {
-            envs.iter()
-                .any(|(ek, ev)| *ek == k && ev.map(|x| x == v).unwrap_or(false))
-        };
-        assert!(has("FLEETOR_SLOT", "2"), "fake worker knows its slot");
-        assert!(
-            has("FLEET_SOCKET", &socket_path().to_string_lossy()),
-            "fake worker knows the socket to dial"
+    fn reads_the_configured_target_from_config_text() {
+        assert_eq!(
+            parse_target(r#"{"target": "/Users/me/code/thing"}"#).unwrap(),
+            Some(PathBuf::from("/Users/me/code/thing")),
         );
+    }
+
+    /// A config that simply doesn't name a target is the ordinary case, not an
+    /// error — it falls back to the testbed with a notice.
+    #[test]
+    fn a_config_without_a_target_is_not_an_error() {
+        assert_eq!(parse_target("{}").unwrap(), None);
+        assert_eq!(parse_target(r#"{"target": ""}"#).unwrap(), None);
+        assert_eq!(parse_target(r#"{"target": "   "}"#).unwrap(), None);
+    }
+
+    /// A broken config must be loud. Reading it as "nothing configured" would put
+    /// the fleet in the testbed while the operator believes it is in their repo.
+    #[test]
+    fn a_malformed_config_is_reported_rather_than_ignored() {
+        assert!(parse_target("not json at all").is_err());
+        assert!(parse_target(r#"{"target": 7}"#).is_err(), "a non-string target is a mistake, not an absence");
     }
 
     /// The `.env` parse tolerates quotes/comments and ignores an empty value, so a
@@ -651,39 +559,5 @@ mod tests {
         );
         assert_eq!(parse_deepseek_key("OTHER=1\n"), None);
         assert_eq!(parse_deepseek_key("DEEPSEEK_API_KEY=\n"), None);
-    }
-
-    /// A worker notice renders as one framed line attributed to its sender, so the
-    /// orchestrator reads it as relayed traffic rather than its own input.
-    #[test]
-    fn renders_a_worker_notice_as_a_framed_line() {
-        let ev = LeadEvent {
-            id: "n-1".into(),
-            from: 2,
-            kind: LeadEventKind::Notice { text: "rebased and pushed".into() },
-        };
-        let line = render_lead_event(&ev);
-        assert!(line.contains("worker-2"), "line: {line}");
-        assert!(line.contains("rebased and pushed"), "line: {line}");
-        assert!(line.contains("fleet"), "line should mark it as fleet traffic: {line}");
-    }
-
-    /// A question carries its `event_id` (and the reply hint) so the orchestrator
-    /// can answer it with `reply(event_id, …)` straight from the injected line.
-    #[test]
-    fn renders_a_question_with_its_event_id_for_reply() {
-        let ev = LeadEvent {
-            id: "q-7".into(),
-            from: 3,
-            kind: LeadEventKind::Question {
-                text: "Approach A or B?".into(),
-                options: Some(vec!["A".into(), "B".into()]),
-            },
-        };
-        let line = render_lead_event(&ev);
-        assert!(line.contains("worker-3"), "line: {line}");
-        assert!(line.contains("q-7"), "question must carry its event_id: {line}");
-        assert!(line.contains("reply"), "question must hint at how to answer: {line}");
-        assert!(line.contains("A / B"), "options should be surfaced: {line}");
     }
 }

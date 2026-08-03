@@ -7,6 +7,7 @@
 
 mod fleet;
 mod pty;
+mod testbed;
 
 use fleet::FleetState;
 use pty::PtyState;
