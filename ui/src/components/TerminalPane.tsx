@@ -17,6 +17,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import { warmTheme } from "../theme";
 import { onPaneExit, onPaneOutput, resizePane, spawnPane, writePane } from "../fleet/api";
@@ -123,6 +124,35 @@ export function TerminalPane({
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
+
+    // Render on the GPU. Without this addon xterm falls back to its DOM
+    // renderer — a <span> per styled run, per row, per terminal — and this app
+    // has five of them live at once. That cost is paid on every repaint, so it
+    // shows up as sluggish typing and scrolling, and it is why any layout
+    // animation over the panes (the sidebar rail, a divider drag, a window
+    // resize) drops frames: the browser re-lays-out and repaints that whole
+    // DOM tree every frame.
+    //
+    // Must be loaded AFTER term.open() — the addon needs a rendered element to
+    // attach its canvas to.
+    let webgl: WebglAddon | null = null;
+    try {
+      webgl = new WebglAddon();
+      // A lost GPU context leaves the terminal permanently blank if we hold on
+      // to a dead addon. Disposing it drops xterm back to the DOM renderer —
+      // slower, but visible, which is the only thing that matters here.
+      webgl.onContextLoss(() => {
+        webgl?.dispose();
+        webgl = null;
+      });
+      term.loadAddon(webgl);
+    } catch {
+      // No WebGL (software rendering, a driver blocklist, an exhausted context
+      // pool). The DOM renderer still works; this is a performance
+      // optimization, never a requirement.
+      webgl = null;
+    }
+
     fit.fit();
     termRef.current = term;
     fitRef.current = fit;
@@ -196,6 +226,10 @@ export function TerminalPane({
       onResize.dispose();
       onScroll.dispose();
       disposers.forEach((un) => un());
+      // Before term.dispose(), so the GPU context is released rather than
+      // leaked — a browser only allows so many live WebGL contexts, and this
+      // app opens five.
+      webgl?.dispose();
       term.dispose();
     };
   }, [pane, label, scrollback]);

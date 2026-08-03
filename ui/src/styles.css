@@ -80,6 +80,24 @@
      text appears to be crushed and on the way in it appears before it fits. */
   --transition-label-out: opacity 60ms ease;
   --transition-label-in: opacity 110ms ease 60ms;
+
+  /* ── Before adding another transition, read this ──────────────────────────
+     `transform` and `opacity` are the only two properties the compositor can
+     animate on its own. Everything else — width, flex-basis, height, padding,
+     margin, top/left, font-size — re-runs layout and paint on EVERY frame,
+     for the whole document, and this document contains five live terminals.
+     That is not a general "layout is slower" caution: it is why the rail
+     animation dropped frames before the panes were given `contain` and the
+     terminals were moved onto the GPU.
+
+     So: reach for transform/opacity first. If a transition genuinely has to
+     move layout (the rail does — the workspace really must get wider), then
+       1. keep it short,
+       2. make sure the expensive subtree it resizes carries `contain`
+          (see .terminal-pane), and
+       3. make sure nothing re-measures per frame — TerminalPane's refit is
+          debounced for exactly this reason.
+     ─────────────────────────────────────────────────────────────────────── */
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -474,6 +492,14 @@ body,
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  /* Scope reflow and repaint to this box. A terminal subtree is the most
+     expensive thing on screen, and without containment any layout change
+     anywhere above it (the sidebar rail animating, a divider drag, a window
+     resize) invalidates the whole document and drags all five panes into
+     every frame. `paint` is nearly free here since the box already clips.
+     Deliberately NOT `size` — the pane must still be sized by its parent for
+     fit() to reflow the grid. */
+  contain: layout paint;
 }
 /* the focused-pane frame: five live terminals, one keyboard — this is the
    one persistent, always-on signal for which pane owns it, so it earns the
