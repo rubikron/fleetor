@@ -205,6 +205,16 @@ Next: the first live run (operator-triggered) — start the session, let the lea
 assign a scratch ticket, watch the band/board/graph animate; then real Flash
 workers exercising the live idle/piggyback paths; then Phase 5 (Memory).
 
+## In progress — the 5-TUI messaging pivot (branch `feat/tui-fleet`)
+
+The architecture described above is being replaced. MCP and the headless supervision model are
+being deleted; all five agents become live `claude` TUIs that message each other through a small
+`fleet` CLI. See **D-030**. Start here if you are picking this up:
+
+1. `docs/tui-pivot-plan.md` — the phased plan (Phase 0 done, 1–6 to go)
+2. `docs/tui-spawn-notes.md` — Phase 0 measured findings; **these override the plan where they differ**
+3. `docs/fleet-comms-map.md` — how the current (pre-pivot) system actually works
+
 ## Reading order
 
 1. `docs/handoff.md` — architecture: what and why
