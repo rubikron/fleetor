@@ -1,16 +1,19 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
   <defs>
-    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#2b2620"/><stop offset="1" stop-color="#17140f"/>
-    </linearGradient>
-
-    <!-- One ramp in user space, shared by every stroke, so the trunk and the four
-         arms sample a single continuous gradient and no seam appears at a junction. -->
-    <linearGradient id="ramp" gradientUnits="userSpaceOnUse" x1="512" y1="838" x2="512" y2="210">
+    <!-- The ground carries the ramp now. Same four stops the mark used to have, re-aimed
+         25 degrees off vertical so the axis runs bottom-right to top-left: deep ember in
+         the low corner, warm amber in the high one. -->
+    <linearGradient id="ground" gradientUnits="userSpaceOnUse" x1="686" y1="885" x2="338" y2="139">
       <stop offset="0"   stop-color="#8f2f14"/>
       <stop offset=".38" stop-color="#cf5f2e"/>
       <stop offset=".76" stop-color="#ef9a4e"/>
       <stop offset="1"   stop-color="#ffbe72"/>
+    </linearGradient>
+
+    <!-- ...and the mark carries what used to be the tile: near-black, top to bottom. -->
+    <linearGradient id="branch" gradientUnits="userSpaceOnUse" x1="512" y1="100" x2="512" y2="924">
+      <stop offset="0" stop-color="#2b2620"/>
+      <stop offset="1" stop-color="#17140f"/>
     </linearGradient>
 
     <g id="mark" fill="none" stroke-linecap="round">
@@ -23,58 +26,27 @@
            closes to a mathematically sharp point at ~(512, 377) — a visible dimple.
            This ellipse fills that point; wider than tall so it meets each arm at a
            shallow angle and the valley floor reads as one smooth curve. -->
-      <ellipse cx="512" cy="381" rx="40" ry="27" fill="url(#ramp)" stroke="none"/>
+      <ellipse cx="512" cy="381" rx="40" ry="27" fill="url(#branch)" stroke="none"/>
     </g>
 
-    <!-- Halo: blur the GRAPHIC, not a flood. The blurred copy carries the ramp with it,
-         so every point of the glow is tinted by the source pixels nearest it — amber by
-         the tips, ember by the root — and fades out with distance. A flood-and-composite
-         glow paints one flat colour and ends at a visible edge; this does not.
-         sigma 18 -> visible reach ~45 units, about 5.6px once drawn at 128. -->
-    <filter id="glow" x="-70%" y="-70%" width="240%" height="240%">
+    <!-- Blur the GRAPHIC, not a flood, so the spread is tinted by the source pixels
+         nearest it and fades with distance rather than ending at an edge. With a dark
+         mark on a light ground this reads as a soft contact shadow rather than a glow —
+         the mechanism is unchanged, only what it is made of. -->
+    <filter id="halo" x="-70%" y="-70%" width="240%" height="240%">
       <feGaussianBlur in="SourceGraphic" stdDeviation="18" result="b"/>
       <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
-
-    <!-- Extra reach for the dark end. The ember at the root is dim, so at a shared sigma
-         its glow dies sooner than the amber at the tips. This second, wider glow is laid
-         underneath and masked to the lower half, buying the dark colours more distance
-         without touching their hue. Blur only — the mark itself is drawn by the layer above. -->
-    <filter id="glowWide" x="-90%" y="-90%" width="280%" height="280%">
-      <feGaussianBlur in="SourceGraphic" stdDeviation="30"/>
-    </filter>
-    <linearGradient id="lowerFade" gradientUnits="userSpaceOnUse" x1="512" y1="900" x2="512" y2="500">
-      <stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#000"/>
-    </linearGradient>
-    <mask id="lowerOnly" maskUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024">
-      <rect width="1024" height="1024" fill="url(#lowerFade)"/>
-    </mask>
 
     <!-- keeps the tail from hazing the transparent corners outside the squircle -->
     <clipPath id="clipTile">
       <rect x="100" y="100" width="824" height="824" rx="185"/>
     </clipPath>
-
-    <!-- Edge ring. Every stop is kept high-luminance on purpose: a dark orange would
-         sink into the tile and into a dark menu bar, which is the thing this exists to
-         prevent. Runs top-down so it reads as lit rather than as a flat outline. -->
-    <linearGradient id="ring" gradientUnits="userSpaceOnUse" x1="512" y1="100" x2="512" y2="924">
-      <stop offset="0"  stop-color="#ffd9a0"/>
-      <stop offset=".5" stop-color="#ffab5c"/>
-      <stop offset="1"  stop-color="#ff8f4a"/>
-    </linearGradient>
   </defs>
 
-  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#tile)"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#ground)"/>
 
   <g clip-path="url(#clipTile)">
-    <g mask="url(#lowerOnly)">
-      <g filter="url(#glowWide)" stroke="url(#ramp)"><use href="#mark"/></g>
-    </g>
-    <g filter="url(#glow)" stroke="url(#ramp)"><use href="#mark"/></g>
+    <g filter="url(#halo)" stroke="url(#branch)"><use href="#mark"/></g>
   </g>
-
-  <!-- Inset by half the stroke width so the ring's outer edge lands exactly on the
-       squircle boundary and the icon keeps its footprint on the macOS grid. -->
-  <rect x="116" y="116" width="792" height="792" rx="169" fill="none" stroke="url(#ring)" stroke-width="32"/>
 </svg>
