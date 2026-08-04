@@ -17,24 +17,30 @@
     </linearGradient>
 
     <g id="mark" fill="none" stroke-linecap="round">
-      <path d="M512 566 C512 386, 268 380, 268 226" stroke-width="84"/>
-      <path d="M512 566 C512 386, 428 356, 428 226" stroke-width="84"/>
-      <path d="M512 566 C512 386, 596 356, 596 226" stroke-width="84"/>
-      <path d="M512 566 C512 386, 756 380, 756 226" stroke-width="84"/>
+      <path d="M512 611 C512 465, 268 380, 268 226" stroke-width="84"/>
+      <path d="M512 611 C512 465, 428 356, 428 226" stroke-width="84"/>
+      <path d="M512 611 C512 465, 596 356, 596 226" stroke-width="84"/>
+      <path d="M512 611 C512 465, 756 380, 756 226" stroke-width="84"/>
       <path d="M512 822 L512 572" stroke-width="96"/>
-      <!-- Fillet. The two inner arms leave the same origin, so the gap between them
-           closes to a mathematically sharp point at ~(512, 377) — a visible dimple.
-           This ellipse fills that point; wider than tall so it meets each arm at a
-           shallow angle and the valley floor reads as one smooth curve. -->
-      <ellipse cx="512" cy="381" rx="40" ry="27" fill="url(#branch)" stroke="none"/>
+      <!-- Fillet. The two inner arms leave the same origin, so their inner edges close
+           to a mathematically sharp point at (512, 405.56), meeting at 37.4° — the dimple.
+           This fills the wedge below an r=17.65 arc that is tangent to both edges at
+           (495.28, 356.23) and (528.72, 356.23), so the valley floor leaves each arm at
+           zero angle and reads as one continuous curve. The straight sides run down to
+           y=436, well inside the solid trunk, purely to close the path. -->
+      <path d="M495.28 356.23 A17.65 17.65 0 0 0 528.72 356.23 L528.72 436 L495.28 436 Z"
+            fill="url(#branch)" stroke="none"/>
     </g>
 
     <!-- Blur the GRAPHIC, not a flood, so the spread is tinted by the source pixels
          nearest it and fades with distance rather than ending at an edge. With a dark
          mark on a light ground this reads as a soft contact shadow rather than a glow —
-         the mechanism is unchanged, only what it is made of. -->
+         the mechanism is unchanged, only what it is made of. sigma 14 with the blurred
+         copy dropped to 40% alpha keeps the shadow a soft seat under the mark instead
+         of hazing its edges into the ground, so the sharp shape on top stays crisp. -->
     <filter id="halo" x="-70%" y="-70%" width="240%" height="240%">
-      <feGaussianBlur in="SourceGraphic" stdDeviation="18" result="b"/>
+      <feGaussianBlur in="SourceGraphic" stdDeviation="14" result="b0"/>
+      <feComponentTransfer in="b0" result="b"><feFuncA type="linear" slope="0.4"/></feComponentTransfer>
       <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
 

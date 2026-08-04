@@ -5,34 +5,42 @@
     </linearGradient>
 
     <!-- One ramp in user space, shared by every stroke, so the trunk and the four
-         arms sample a single continuous gradient and no seam appears at a junction. -->
-    <linearGradient id="ramp" gradientUnits="userSpaceOnUse" x1="512" y1="838" x2="512" y2="210">
-      <stop offset="0"   stop-color="#8f2f14"/>
-      <stop offset=".38" stop-color="#cf5f2e"/>
+         arms sample a single continuous gradient and no seam appears at a junction.
+         Axis is tilted 25° off vertical (same length/centre as a vertical ramp, just
+         rotated), so the light end leans to the upper-right and the mark reads as lit
+         from that side. -->
+    <linearGradient id="ramp" gradientUnits="userSpaceOnUse" x1="379.30" y1="808.58" x2="644.70" y2="239.42">
+      <stop offset="0"   stop-color="#a83f1e"/>
+      <stop offset=".38" stop-color="#d6672f"/>
       <stop offset=".76" stop-color="#ef9a4e"/>
       <stop offset="1"   stop-color="#ffbe72"/>
     </linearGradient>
 
     <g id="mark" fill="none" stroke-linecap="round">
-      <path d="M512 566 C512 386, 268 380, 268 226" stroke-width="84"/>
-      <path d="M512 566 C512 386, 428 356, 428 226" stroke-width="84"/>
-      <path d="M512 566 C512 386, 596 356, 596 226" stroke-width="84"/>
-      <path d="M512 566 C512 386, 756 380, 756 226" stroke-width="84"/>
+      <path d="M512 611 C512 465, 268 380, 268 226" stroke-width="84"/>
+      <path d="M512 611 C512 465, 428 356, 428 226" stroke-width="84"/>
+      <path d="M512 611 C512 465, 596 356, 596 226" stroke-width="84"/>
+      <path d="M512 611 C512 465, 756 380, 756 226" stroke-width="84"/>
       <path d="M512 822 L512 572" stroke-width="96"/>
-      <!-- Fillet. The two inner arms leave the same origin, so the gap between them
-           closes to a mathematically sharp point at ~(512, 377) — a visible dimple.
-           This ellipse fills that point; wider than tall so it meets each arm at a
-           shallow angle and the valley floor reads as one smooth curve. -->
-      <ellipse cx="512" cy="381" rx="40" ry="27" fill="url(#ramp)" stroke="none"/>
+      <!-- Fillet. The two inner arms leave the same origin, so their inner edges close
+           to a mathematically sharp point at (512, 405.56), meeting at 37.4° — the dimple.
+           This fills the wedge below an r=17.65 arc that is tangent to both edges at
+           (495.28, 356.23) and (528.72, 356.23), so the valley floor leaves each arm at
+           zero angle and reads as one continuous curve. The straight sides run down to
+           y=436, well inside the solid trunk, purely to close the path. -->
+      <path d="M495.28 356.23 A17.65 17.65 0 0 0 528.72 356.23 L528.72 436 L495.28 436 Z"
+            fill="url(#ramp)" stroke="none"/>
     </g>
 
     <!-- Halo: blur the GRAPHIC, not a flood. The blurred copy carries the ramp with it,
          so every point of the glow is tinted by the source pixels nearest it — amber by
          the tips, ember by the root — and fades out with distance. A flood-and-composite
          glow paints one flat colour and ends at a visible edge; this does not.
-         sigma 18 -> visible reach ~45 units, about 5.6px once drawn at 128. -->
+         sigma 14 with the blurred copy dropped to 40% alpha keeps the halo a soft
+         ambient presence felt over the tile, so the sharp mark on top stays the subject. -->
     <filter id="glow" x="-70%" y="-70%" width="240%" height="240%">
-      <feGaussianBlur in="SourceGraphic" stdDeviation="18" result="b"/>
+      <feGaussianBlur in="SourceGraphic" stdDeviation="14" result="b0"/>
+      <feComponentTransfer in="b0" result="b"><feFuncA type="linear" slope="0.4"/></feComponentTransfer>
       <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
 
@@ -41,7 +49,8 @@
          underneath and masked to the lower half, buying the dark colours more distance
          without touching their hue. Blur only — the mark itself is drawn by the layer above. -->
     <filter id="glowWide" x="-90%" y="-90%" width="280%" height="280%">
-      <feGaussianBlur in="SourceGraphic" stdDeviation="30"/>
+      <feGaussianBlur in="SourceGraphic" stdDeviation="26"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.35"/></feComponentTransfer>
     </filter>
     <linearGradient id="lowerFade" gradientUnits="userSpaceOnUse" x1="512" y1="900" x2="512" y2="500">
       <stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#000"/>
@@ -54,15 +63,6 @@
     <clipPath id="clipTile">
       <rect x="100" y="100" width="824" height="824" rx="185"/>
     </clipPath>
-
-    <!-- Edge ring. Every stop is kept high-luminance on purpose: a dark orange would
-         sink into the tile and into a dark menu bar, which is the thing this exists to
-         prevent. Runs top-down so it reads as lit rather than as a flat outline. -->
-    <linearGradient id="ring" gradientUnits="userSpaceOnUse" x1="512" y1="100" x2="512" y2="924">
-      <stop offset="0"  stop-color="#ffd9a0"/>
-      <stop offset=".5" stop-color="#ffab5c"/>
-      <stop offset="1"  stop-color="#ff8f4a"/>
-    </linearGradient>
   </defs>
 
   <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#tile)"/>
@@ -73,8 +73,4 @@
     </g>
     <g filter="url(#glow)" stroke="url(#ramp)"><use href="#mark"/></g>
   </g>
-
-  <!-- Inset by half the stroke width so the ring's outer edge lands exactly on the
-       squircle boundary and the icon keeps its footprint on the macOS grid. -->
-  <rect x="116" y="116" width="792" height="792" rx="169" fill="none" stroke="url(#ring)" stroke-width="32"/>
 </svg>
