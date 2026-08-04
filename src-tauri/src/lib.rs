@@ -22,6 +22,12 @@ use fleet::FleetState;
 use pty::PaneRegistry;
 use tauri::{Emitter, Manager, WindowEvent};
 
+/// How long the shell waits for the frontend to size and reveal the window
+/// before doing it anyway. Long enough for a cold webview to boot and apply
+/// geometry, short enough that a broken frontend does not look like an app
+/// that failed to launch.
+const WINDOW_REVEAL_FALLBACK_MS: u64 = 2500;
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -36,6 +42,25 @@ pub fn run() {
                     let _ = handle.emit(channel, payload);
                 },
             ))));
+
+            // The window is created hidden (`visible: false` in tauri.conf.json)
+            // so the frontend can apply the saved geometry before it is ever
+            // seen — otherwise it opens at the configured default and visibly
+            // jumps to the remembered size.
+            //
+            // This is the safety net for that. If the frontend never gets far
+            // enough to reveal it — a bundle that fails to load, a render that
+            // throws — the window must still appear, or the app is simply
+            // invisible with no way to tell it even started. Showing twice is
+            // harmless; never showing is not.
+            let reveal = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(WINDOW_REVEAL_FALLBACK_MS));
+                if let Some(window) = reveal.get_webview_window("main") {
+                    let _ = window.show();
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

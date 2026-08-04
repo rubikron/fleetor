@@ -1,12 +1,17 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Core events, the pane commands, the folder picker the target chooser needs, and the two window writes that restore a saved size/position on launch.",
-  "windows": ["main"],
+  "description": "Core events, the pane commands, the folder picker the target chooser needs, the two window writes that restore a saved size/position on launch, and the drag the overlay title bar needs to move the window.",
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
     "dialog:allow-open",
     "core:window:allow-set-size",
-    "core:window:allow-set-position"
+    "core:window:allow-set-position",
+    "core:window:allow-start-dragging",
+    "core:window:allow-maximize",
+    "core:window:allow-show"
   ]
 }
