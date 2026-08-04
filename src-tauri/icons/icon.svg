@@ -17,34 +17,24 @@
     </linearGradient>
 
     <g id="mark" fill="none" stroke-linecap="round">
-      <path d="M512 611 C512 465, 268 380, 268 226" stroke-width="84"/>
-      <path d="M512 611 C512 465, 428 356, 428 226" stroke-width="84"/>
-      <path d="M512 611 C512 465, 596 356, 596 226" stroke-width="84"/>
-      <path d="M512 611 C512 465, 756 380, 756 226" stroke-width="84"/>
-      <path d="M512 822 L512 572" stroke-width="96"/>
+      <path d="M512 611 C512 465, 268 380, 268 226" stroke-width="92"/>
+      <path d="M512 611 C512 465, 428 356, 428 226" stroke-width="92"/>
+      <path d="M512 611 C512 465, 596 356, 596 226" stroke-width="92"/>
+      <path d="M512 611 C512 465, 756 380, 756 226" stroke-width="92"/>
+      <path d="M512 822 L512 572" stroke-width="104"/>
       <!-- Fillet. The two inner arms leave the same origin, so their inner edges close
-           to a mathematically sharp point at (512, 405.56), meeting at 37.4° — the dimple.
-           This fills the wedge below an r=17.65 arc that is tangent to both edges at
-           (495.28, 356.23) and (528.72, 356.23), so the valley floor leaves each arm at
+           to a mathematically sharp point at (512, 393.13), meeting at 37.6° — the dimple.
+           This fills the wedge below an r=17.72 arc that is tangent to both edges at
+           (495.22, 343.84) and (528.78, 343.84), so the valley floor leaves each arm at
            zero angle and reads as one continuous curve. The straight sides run down to
-           y=436, well inside the solid trunk, purely to close the path. -->
-      <path d="M495.28 356.23 A17.65 17.65 0 0 0 528.72 356.23 L528.72 436 L495.28 436 Z"
+           y=431, well inside the solid trunk, purely to close the path. -->
+      <path d="M495.22 343.84 A17.72 17.72 0 0 0 528.78 343.84 L528.78 431 L495.22 431 Z"
             fill="url(#branch)" stroke="none"/>
     </g>
 
-    <!-- Blur the GRAPHIC, not a flood, so the spread is tinted by the source pixels
-         nearest it and fades with distance rather than ending at an edge. With a dark
-         mark on a light ground this reads as a soft contact shadow rather than a glow —
-         the mechanism is unchanged, only what it is made of. sigma 14 with the blurred
-         copy dropped to 40% alpha keeps the shadow a soft seat under the mark instead
-         of hazing its edges into the ground, so the sharp shape on top stays crisp. -->
-    <filter id="halo" x="-70%" y="-70%" width="240%" height="240%">
-      <feGaussianBlur in="SourceGraphic" stdDeviation="14" result="b0"/>
-      <feComponentTransfer in="b0" result="b"><feFuncA type="linear" slope="0.4"/></feComponentTransfer>
-      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
-    </filter>
-
-    <!-- keeps the tail from hazing the transparent corners outside the squircle -->
+    <!-- No halo: the mark reads as a hard-edged silhouette straight on the ground, so
+         the shape stays sharp. This clip keeps the mark inside the squircle's rounded
+         corners as a guard. -->
     <clipPath id="clipTile">
       <rect x="100" y="100" width="824" height="824" rx="185"/>
     </clipPath>
@@ -53,6 +43,6 @@
   <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#ground)"/>
 
   <g clip-path="url(#clipTile)">
-    <g filter="url(#halo)" stroke="url(#branch)"><use href="#mark"/></g>
+    <g stroke="url(#branch)"><use href="#mark"/></g>
   </g>
 </svg>
