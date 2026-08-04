@@ -54,6 +54,15 @@
     <clipPath id="clipTile">
       <rect x="100" y="100" width="824" height="824" rx="185"/>
     </clipPath>
+
+    <!-- Edge ring. Every stop is kept high-luminance on purpose: a dark orange would
+         sink into the tile and into a dark menu bar, which is the thing this exists to
+         prevent. Runs top-down so it reads as lit rather than as a flat outline. -->
+    <linearGradient id="ring" gradientUnits="userSpaceOnUse" x1="512" y1="100" x2="512" y2="924">
+      <stop offset="0"  stop-color="#ffd9a0"/>
+      <stop offset=".5" stop-color="#ffab5c"/>
+      <stop offset="1"  stop-color="#ff8f4a"/>
+    </linearGradient>
   </defs>
 
   <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#tile)"/>
@@ -65,5 +74,7 @@
     <g filter="url(#glow)" stroke="url(#ramp)"><use href="#mark"/></g>
   </g>
 
-  <rect x="101.5" y="101.5" width="821" height="821" rx="183.5" fill="none" stroke="#4a4238" stroke-width="3" opacity=".55"/>
+  <!-- Inset by half the stroke width so the ring's outer edge lands exactly on the
+       squircle boundary and the icon keeps its footprint on the macOS grid. -->
+  <rect x="108" y="108" width="808" height="808" rx="177" fill="none" stroke="url(#ring)" stroke-width="16"/>
 </svg>
