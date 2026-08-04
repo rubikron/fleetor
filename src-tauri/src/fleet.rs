@@ -687,7 +687,8 @@ mod tests {
             Arc::new(SqliteStore::open(&dir.join("state.db")).unwrap());
 
         let (app_tx, app_rx) = mpsc::unbounded_channel();
-        deliver::spawn_delivery(&rt, Arc::new(PaneRegistry::new(Arc::new(|_, _| {}))), app_rx);
+        let registry = Arc::new(PaneRegistry::new(Arc::new(|_, _| {}), dir.join("panes.pids")));
+        deliver::spawn_delivery(&rt, registry, app_rx);
         let shutdown = spawn_hub(&rt, store.clone(), app_tx, sock.clone());
 
         let result = rt.block_on(async {

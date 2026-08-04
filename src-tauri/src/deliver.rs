@@ -149,7 +149,12 @@ mod tests {
     use fleetor_core::message::frame_for_pane;
 
     fn registry() -> Arc<PaneRegistry> {
-        Arc::new(PaneRegistry::new(Arc::new(|_, _| {})))
+        let path = std::env::temp_dir().join(format!(
+            "fleetor-deliver-test-registry-{}-{:?}.pids",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        Arc::new(PaneRegistry::new(Arc::new(|_, _| {}), path))
     }
 
     fn runtime() -> Runtime {

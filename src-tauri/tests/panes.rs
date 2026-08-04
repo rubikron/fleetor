@@ -24,6 +24,7 @@ use fleetor_shell::deliver::spawn_delivery;
 use fleetor_shell::pty::{exit_channel, out_channel, Emit, PaneRegistry};
 use fleetor_shell::spawn;
 use fleetor_server::AppCommand;
+use portable_pty::CommandBuilder;
 use tokio::sync::{mpsc, oneshot};
 
 /// Long enough for a shell to start and echo on a loaded machine; short enough
@@ -84,15 +85,34 @@ fn fake_pane_script() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fake-pane/fake-pane.sh")
 }
 
+/// A pid-registry path this test alone owns, never the operator's real
+/// `~/.fleetor/_shell/panes.pids` — unique per call so concurrently-running
+/// tests (each on its own thread) never share, and corrupt, one another's file.
+fn scratch_registry_path() -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "fleetor-panes-registry-{}-{:?}.pids",
+        std::process::id(),
+        std::thread::current().id()
+    ))
+}
+
 /// Bring up a registry with every pane running the stand-in, through the real
 /// `spawn.rs` command builders so their environment work is exercised too.
 fn fleet() -> (Arc<PaneRegistry>, Arc<Transcript>) {
+    let (registry, transcript, _registry_path) = fleet_with_registry_path();
+    (registry, transcript)
+}
+
+/// [`fleet`], plus the scratch pid-registry path it used — for the one test
+/// that needs to read that file back and check what landed in it.
+fn fleet_with_registry_path() -> (Arc<PaneRegistry>, Arc<Transcript>, PathBuf) {
     // Process-global, but every test in this binary sets it to the same value,
     // so the parallel writes are all identical.
     std::env::set_var("FLEETOR_PANE_CMD", fake_pane_script());
 
     let transcript = Arc::new(Transcript::default());
-    let registry = Arc::new(PaneRegistry::new(transcript.emitter()));
+    let registry_path = scratch_registry_path();
+    let registry = Arc::new(PaneRegistry::new(transcript.emitter(), registry_path.clone()));
 
     let cwd = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let socket = PathBuf::from("/tmp/fleetor-panes-test.sock");
@@ -101,7 +121,7 @@ fn fleet() -> (Arc<PaneRegistry>, Arc<Transcript>) {
         let command = spawn::worker_command(slot, &cwd, &cwd.join("unused-cfg"), &socket, "sk-test");
         registry.spawn(PaneId::Worker(slot), command, 24, 80).unwrap();
     }
-    (registry, transcript)
+    (registry, transcript, registry_path)
 }
 
 /// The reason per-pane channels exist. Five panes announce themselves; each
@@ -238,6 +258,103 @@ fn kill_all_reaps_the_whole_fleet() {
             "{pane} still accepted input after kill_all"
         );
     }
+}
+
+/// The wiring `orphans.rs`'s own tests cannot see: `write_registry` is only as
+/// good as the caller that feeds it, and nothing in `orphans::tests` proves
+/// `spawn`/`kill`/`kill_all` actually call it, with the right pids, at the
+/// right time. This drives the real `PaneRegistry` and reads the on-disk
+/// registry back after each mutation, so a break in that wiring — pids never
+/// written, a kill that leaves a stale entry, `kill_all` that leaves the file
+/// non-empty — fails here instead of only surfacing as an orphan sweep that
+/// quietly does nothing on the next launch.
+#[cfg(unix)]
+#[test]
+fn spawn_kill_and_kill_all_keep_the_pid_registry_in_sync_with_reality() {
+    let (registry, transcript, registry_path) = fleet_with_registry_path();
+    for pane in PaneId::roster(&WORKER_SLOTS) {
+        transcript.wait_for(&out_channel(pane), "ready");
+    }
+
+    let pids = read_registry(&registry_path);
+    assert_eq!(pids.len(), 5, "every spawned pane is recorded: {pids:?}");
+    for pid in &pids {
+        assert!(process_alive(*pid as i32), "recorded pid {pid} is not actually running");
+    }
+
+    registry.kill(PaneId::Worker(2)).unwrap();
+    let after_one_kill = read_registry(&registry_path);
+    assert_eq!(after_one_kill.len(), 4, "the killed pane's pid drops out: {after_one_kill:?}");
+
+    registry.kill_all();
+    let after_kill_all = read_registry(&registry_path);
+    assert!(after_kill_all.is_empty(), "kill_all clears the registry: {after_kill_all:?}");
+
+    let _ = std::fs::remove_file(&registry_path);
+}
+
+#[cfg(unix)]
+fn read_registry(path: &std::path::Path) -> Vec<u32> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| line.trim().parse().ok())
+        .collect()
+}
+
+/// **The money-bug regression.** `terminate` SIGTERMs the pane's whole *process
+/// group*, not just the shell `portable-pty` handed back — because a real
+/// `claude` spawns children of its own that share its pgid, and killing the pid
+/// alone leaves them running with no terminal and nobody watching (pty.rs:
+/// "A leaked Opus after window close is a money bug"). `kill_all_reaps_the_whole_
+/// fleet` only proves the *registry* forgets the pane; it never asked the OS
+/// whether anything survived. This spawns a background job inside the pane's own
+/// shell — the same relationship a `claude` process has to *its* children — and
+/// checks the OS process table directly, so a future change that narrows the
+/// kill back down to a single pid fails here instead of in front of an operator.
+#[cfg(unix)]
+#[test]
+fn kill_all_reaps_a_panes_background_grandchild_too() {
+    let transcript = Arc::new(Transcript::default());
+    let registry = Arc::new(PaneRegistry::new(transcript.emitter(), scratch_registry_path()));
+
+    let mut cmd = CommandBuilder::new("bash");
+    cmd.arg("-c");
+    cmd.arg(
+        "sleep 300 & echo \"grandchild-pid:$!\"; echo ready; \
+         while IFS= read -r line; do echo \"echo: $line\"; done",
+    );
+
+    let pane = PaneId::Worker(1);
+    registry.spawn(pane, cmd, 24, 80).unwrap();
+
+    let seen = transcript.wait_for(&out_channel(pane), "grandchild-pid:");
+    let pid: i32 = seen
+        .lines()
+        .find_map(|line| line.strip_prefix("grandchild-pid:"))
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or_else(|| panic!("no grandchild pid in pty output: {seen:?}"));
+
+    assert!(process_alive(pid), "grandchild {pid} must be running before teardown");
+
+    registry.kill_all();
+
+    let deadline = Instant::now() + PATIENCE;
+    while Instant::now() < deadline && process_alive(pid) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        !process_alive(pid),
+        "kill_all left the pane's background grandchild (pid {pid}) running — \
+         a leaked Opus after window close is a money bug"
+    );
+}
+
+/// `kill -0`: delivers no signal, only reports whether one *could* be — the
+/// standard way to ask "is this pid still alive" without touching it.
+#[cfg(unix)]
+fn process_alive(pid: i32) -> bool {
+    unsafe { libc::kill(pid, 0) == 0 }
 }
 
 /// **The D-039 burst.** Four peers messaging one pane at the same moment must all

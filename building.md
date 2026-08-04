@@ -181,7 +181,7 @@ Rules, in priority order:
 | The `fleet` binary is not where the app looks | Panes spawn fine and cannot message | Explicit resolution ladder with an existence check at every rung, and a loud `Notice` when empty | `FLEETOR_FLEET_BIN` |
 | Tauri event firehose from five repainting TUIs | Visible stutter; a chunks/sec instrument would settle it | Per-pane channels + ~16 ms / 64 KB coalescing | `addon-canvas` on the two visible panes only. **Not** `addon-webgl` — context limits and context-loss-on-hide in WKWebView are worse than what they fix |
 | CC's flags or config keys drift across versions | A pane that no longer reaches its prompt | `docs/tui-spawn-notes.md` is version-stamped; re-measure on a CC update | Adapter in `spawn.rs` absorbs it |
-| Leaked `claude` processes after window close | `ps` after quitting | `kill_all` SIGTERMs each pane's **process group**, then SIGKILLs | Startup sweep |
+| Leaked `claude` processes after window close | `ps` after quitting | `kill_all` SIGTERMs each pane's **process group**, then SIGKILLs; `RunEvent::Exit` backstop for Cmd+Q (D-041) | Startup sweep in `orphans.rs` — reaps leftover pids on next launch (D-041) |
 | SQLite write contention | Busy errors under load | One connection behind a mutex; WAL | — |
 | Token burn in tests | CI cost | `fake-pane` for everything; the one live gate is operator-triggered | — |
 | Over-abstraction | Traits nobody implements twice | The two-seam rule (§3) | Collapse the trait |

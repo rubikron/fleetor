@@ -12,6 +12,7 @@
 
 pub mod deliver;
 pub mod fleet;
+mod orphans;
 pub mod pty;
 pub mod spawn;
 pub mod testbed;
@@ -33,15 +34,23 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(FleetState::default())
         .setup(|app| {
+            // Before this session spawns anything of its own: reap whatever a
+            // crash or Force Quit left running from the last one. The close
+            // handlers below are best-effort and can only run if the process
+            // gets a chance to — this is what bounds a missed teardown to "one
+            // session" instead of "forever" (`orphans.rs`).
+            orphans::sweep();
+
             // The registry emits through a callback rather than holding an
             // `AppHandle`, which is what lets the tests drive five real ptys with
             // no window. This is the one place the two are joined.
             let handle = app.handle().clone();
-            app.manage(Arc::new(PaneRegistry::new(Arc::new(
-                move |channel: &str, payload: String| {
+            app.manage(Arc::new(PaneRegistry::new(
+                Arc::new(move |channel: &str, payload: String| {
                     let _ = handle.emit(channel, payload);
-                },
-            ))));
+                }),
+                orphans::registry_path(),
+            )));
 
             // The window is created hidden (`visible: false` in tauri.conf.json)
             // so the frontend can apply the saved geometry before it is ever
@@ -76,11 +85,28 @@ pub fn run() {
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { .. } = event {
-                // Panes first: they are the processes that cost money.
-                pty::kill_all(&window.state::<Arc<PaneRegistry>>());
-                fleet::shutdown(&window.state::<FleetState>());
+                teardown_fleet(window);
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running the fleetor shell");
+        .build(tauri::generate_context!())
+        .expect("error while building the fleetor shell")
+        .run(|app_handle, event| {
+            // macOS Cmd+Q and Dock → Quit skip `WindowEvent::CloseRequested`
+            // entirely (tauri-apps/tauri#9198, #13778) — the handler above never
+            // runs for them. `RunEvent::Exit` is the one hook that still fires
+            // before the process actually exits regardless of *how* it was
+            // asked to quit, so it is the real teardown; the window-close
+            // handler above is just the fast path for the common case. Calling
+            // both is safe — `kill_all` and `fleet::shutdown` are idempotent on
+            // an already-torn-down fleet.
+            if let tauri::RunEvent::Exit = event {
+                teardown_fleet(app_handle);
+            }
+        });
+}
+
+/// Panes first: they are the processes that cost money.
+fn teardown_fleet(handle: &impl Manager<tauri::Wry>) {
+    pty::kill_all(&handle.state::<Arc<PaneRegistry>>());
+    fleet::shutdown(&handle.state::<FleetState>());
 }

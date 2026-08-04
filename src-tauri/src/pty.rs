@@ -99,11 +99,16 @@ fn decode_state(raw: u8) -> PaneState {
 pub struct PaneRegistry {
     panes: Mutex<HashMap<PaneId, Pane>>,
     emit: Emit,
+    /// Where live pane pids are durably recorded, for `orphans::sweep` to find
+    /// on the next launch. Explicit rather than resolved internally, so a test
+    /// can point it at a scratch file instead of the operator's real
+    /// `~/.fleetor` — the same reason `orphans::write_registry` takes a path.
+    registry_path: std::path::PathBuf,
 }
 
 impl PaneRegistry {
-    pub fn new(emit: Emit) -> Self {
-        Self { panes: Mutex::new(HashMap::new()), emit }
+    pub fn new(emit: Emit, registry_path: std::path::PathBuf) -> Self {
+        Self { panes: Mutex::new(HashMap::new()), emit, registry_path }
     }
 
     /// Spawn `cmd` under a fresh pty as `pane`.
@@ -148,6 +153,7 @@ impl PaneRegistry {
             pane,
             Pane { master: pair.master, writer: Arc::new(Mutex::new(writer)), child, state },
         );
+        record_live_pids(&panes, &self.registry_path);
         Ok(())
     }
 
@@ -200,6 +206,7 @@ impl PaneRegistry {
         let mut panes = self.lock()?;
         let mut entry = panes.remove(&pane).ok_or_else(|| format!("{pane} is not running"))?;
         terminate(&mut entry);
+        record_live_pids(&panes, &self.registry_path);
         Ok(())
     }
 
@@ -210,6 +217,7 @@ impl PaneRegistry {
         for (_, mut entry) in panes.drain() {
             terminate(&mut entry);
         }
+        crate::orphans::write_registry(&self.registry_path, &[]);
     }
 
     /// Every pane the shell is running, orch first. The hub's single source of
@@ -326,6 +334,21 @@ fn spawn_pump(
         state.store(DEAD, Ordering::Relaxed);
         emit(&exit_channel, String::new());
     });
+}
+
+/// Durably record which pids should still be running, so a launch after a
+/// crash or Force Quit — which skips [`PaneRegistry::kill_all`] entirely — has
+/// something to reap them from (`orphans::sweep`).
+///
+/// Only called from `spawn`/`kill`/`kill_all` — a pane that exits on its own
+/// (the pump thread notices EOF, `spawn_pump`) does not trigger a rewrite, so
+/// the registry can briefly lag one dead pid behind reality. Harmless: the
+/// sweep's own liveness+identity check already treats "gone" as a no-op, so a
+/// stale entry costs nothing on the next launch — it just isn't worth a write
+/// on every pty EOF to keep it byte-exact between explicit mutations.
+fn record_live_pids(panes: &HashMap<PaneId, Pane>, registry_path: &std::path::Path) {
+    let pids: Vec<u32> = panes.values().filter_map(|p| p.child.process_id()).collect();
+    crate::orphans::write_registry(registry_path, &pids);
 }
 
 /// SIGTERM the child's **process group**, then SIGKILL what is left.
