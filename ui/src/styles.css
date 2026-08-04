@@ -18,7 +18,17 @@
    prose paragraphs, where mono hurts readability at paragraph length. This
    override was requested and approved explicitly; it is not drift — do not
    "fix" `.msg__body` back to `--mono` or start re-introducing `--sans`
-   elsewhere without the same conversation. */
+   elsewhere without the same conversation.
+
+   WARMTH + CONTRAST PASS: the bg/fg/border ramps were re-tuned in place —
+   same roles, more real chroma (hue pulled toward gold's ~38°, saturation
+   roughly doubled) and, for `--fg-mute` and `--fg-dim` specifically, more
+   lightness so measured contrast rose on every surface step, not just the
+   ones that were failing. This is how "gold in the background" happens
+   without spending `--gold` itself: the token still means exactly what it
+   meant before, awareness/unread/pending/cost, and nothing new reaches for
+   it. `--red` also moved (warmer + lighter) — it was failing AA as text in
+   `.line__kind--red`, not just decoration, so it isn't purely cosmetic. */
 
 :root {
   /* ZOOM PIVOT — the only value a Cmd+/Cmd-/Cmd+0 zoom feature needs to touch.
@@ -27,22 +37,22 @@
      hairlines are intentionally left in px — they are structural, not type. */
   font-size: 18px; /* must equal ROOT_FONT_SIZE_PX in ui/zoomConstants.ts */
 
-  --bg-0: #191815;
-  --bg-1: #1f1e1b;
-  --bg-2: #262420;
-  --bg-3: #2f2c27;
+  --bg-0: #1b1813;
+  --bg-1: #201d18;
+  --bg-2: #29251e;
+  --bg-3: #312c25;
 
-  --fg: #e8e6e1;
-  --fg-dim: #b8b4ab;
-  --fg-mute: #9b978c; /* AA-safe on bg-2 at small sizes */
+  --fg: #e9e7e2;
+  --fg-dim: #c2baae;
+  --fg-mute: #b6aa96; /* 6.05:1+ on every surface step, bg-3 included */
 
   --accent: #d97757; /* coral — attention / active / the one eye-catch */
   --gold: #c69a4e; /* awareness — review / pending / unread / cost */
   --green: #7fa36a;
-  --red: #c25d4f;
+  --red: #d66f66; /* was failing AA as text (.line__kind--red); relit warmer */
 
-  --border: #34322d;
-  --border-soft: #2a2823;
+  --border: #383229;
+  --border-soft: #2c2720;
 
   --mono: ui-monospace, "SF Mono", Menlo, monospace;
   --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -397,8 +407,8 @@ body,
 .nav__icon {
   flex: 0 0 auto;
   display: inline-flex;
-  width: 1rem;
-  height: 1rem;
+  width: 1.125rem;
+  height: 1.125rem;
 }
 .nav__icon svg {
   width: 100%;

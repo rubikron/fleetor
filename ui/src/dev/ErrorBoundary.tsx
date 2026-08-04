@@ -43,8 +43,8 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
       <div
         style={{
           padding: "24px",
-          color: "#e8e6e1",
-          background: "#1f1e1b",
+          color: "#e9e7e2",
+          background: "#201d18",
           font: "13px ui-monospace, Menlo, monospace",
           height: "100%",
         }}
