@@ -76,5 +76,5 @@
 
   <!-- Inset by half the stroke width so the ring's outer edge lands exactly on the
        squircle boundary and the icon keeps its footprint on the macOS grid. -->
-  <rect x="108" y="108" width="808" height="808" rx="177" fill="none" stroke="url(#ring)" stroke-width="16"/>
+  <rect x="112" y="112" width="800" height="800" rx="173" fill="none" stroke="url(#ring)" stroke-width="24"/>
 </svg>
