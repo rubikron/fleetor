@@ -20,6 +20,7 @@ import {
   type PaneId,
   type PaneStatus,
 } from "../fleet/types";
+import type { Theme } from "../ui/useTheme";
 
 /// The orchestrator is the operator's own session and the one they read back
 /// through; the workers are watched, not scrolled.
@@ -38,6 +39,9 @@ interface TerminalGridProps {
   /// xterm fontSize in px, from the app-wide zoom factor — forwarded
   /// unchanged to every pane so all five terminals zoom in lockstep.
   fontSize: number;
+  /// The app-wide light/dark preference — forwarded unchanged so all five
+  /// terminals theme in lockstep with the chrome.
+  theme: Theme;
   onStatus: (pane: PaneId, status: PaneStatus) => void;
   onRestart: (pane: PaneId) => void;
   /// Worker slots that have produced output since the operator last viewed
@@ -56,6 +60,7 @@ export function TerminalGrid({
   statuses,
   config,
   fontSize,
+  theme,
   onStatus,
   onRestart,
   unreadWorkers,
@@ -76,6 +81,7 @@ export function TerminalGrid({
           status={orchStatus}
           model={leadModel}
           fontSize={fontSize}
+          theme={theme}
           onStatus={onStatus}
           onRestart={() => onRestart(ORCH)}
           onFocusReady={(focus) => onRegisterFocus(ORCH, focus)}
@@ -125,6 +131,7 @@ export function TerminalGrid({
                   status={statuses[pane] ?? "idle"}
                   model={workerModel}
                   fontSize={fontSize}
+                  theme={theme}
                   onStatus={onStatus}
                   onRestart={() => onRestart(pane)}
                   onFocusReady={(focus) => onRegisterFocus(pane, focus)}

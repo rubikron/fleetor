@@ -18,6 +18,7 @@ import { TopBar } from "./components/TopBar";
 import { Sidebar } from "./components/Sidebar";
 import { MessageFeed } from "./components/MessageFeed";
 import { EventFeed } from "./components/EventFeed";
+import { SettingsPanel } from "./components/SettingsPanel";
 import { TerminalGrid } from "./components/TerminalGrid";
 import { StartGate } from "./components/StartGate";
 import { useFleet } from "./fleet/useFleet";
@@ -26,6 +27,7 @@ import { useSidebarCollapse } from "./ui/useSidebarCollapse";
 import { usePersistedNav } from "./ui/usePersistedNav";
 import { usePaneJump } from "./ui/usePaneJump";
 import { useWindowState } from "./ui/useWindowState";
+import { useTheme } from "./ui/useTheme";
 import { killPane } from "./fleet/api";
 import { ORCH, paneSlot, type PaneId, type PaneStatus } from "./fleet/types";
 
@@ -46,6 +48,7 @@ export function App() {
   const fleet = useFleet();
   const zoom = useZoom();
   const sidebar = useSidebarCollapse();
+  const themeControls = useTheme();
   // Restores the window's saved size/position, then keeps them current. Pure
   // side effect on the OS window — see useWindowState.ts for why a saved
   // position is re-validated against the connected monitors before use.
@@ -157,6 +160,7 @@ export function App() {
                 onRegisterFocus={registerPaneFocus}
                 config={fleet.config}
                 fontSize={zoom.terminalFontSize}
+                theme={themeControls.theme}
                 onStatus={onStatus}
                 onRestart={restart}
               />
@@ -168,6 +172,10 @@ export function App() {
 
             <div className={`stage-view ${view === "activity" ? "" : "is-hidden"}`}>
               <EventFeed feed={fleet.feed} />
+            </div>
+
+            <div className={`stage-view ${view === "settings" ? "" : "is-hidden"}`}>
+              <SettingsPanel theme={themeControls.theme} onToggleTheme={themeControls.toggle} />
             </div>
 
 
