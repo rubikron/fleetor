@@ -150,7 +150,7 @@ pub(crate) fn socket_path() -> PathBuf {
 
 /// A worker's isolated `CLAUDE_CONFIG_DIR`. Deliberately *not* the Phase-2
 /// `cc-config/worker-*` dirs: those were built by headless `-p` runs and carry no
-/// onboarding keys at all, which is precisely L1 (`docs/tui-spawn-notes.md` §1).
+/// onboarding keys at all, which is precisely L1 (`docs/notes/tui-spawn-notes.md` §1).
 fn worker_config_dir(slot: u8) -> PathBuf {
     shell_dir().join("pane-config").join(format!("worker-{slot}"))
 }

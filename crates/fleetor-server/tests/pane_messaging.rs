@@ -473,7 +473,7 @@ fn commands(store: &SqliteStore) -> Vec<FleetEvent> {
 /// The happy path, and the byte-level claim the whole package rests on: what
 /// reaches the pty is the command **unframed**, so its `/` is the first character
 /// the input box sees. A `[fleet · orch] /compact …` would be prose about a
-/// command (`docs/command-channel-notes.md` §3).
+/// command (`docs/notes/command-channel-notes.md` §3).
 #[tokio::test]
 async fn a_command_reaches_the_pty_unframed_and_the_why_lands_in_the_log() {
     let (transport, store, writes) = start_hub(all_live()).await;

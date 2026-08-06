@@ -11,7 +11,7 @@
 //!    auto`, and the DeepSeek endpoint.
 //!
 //! Everything here that looks like a detail was measured in Phase 0
-//! (`docs/tui-spawn-notes.md`) against a real interactive `claude`. The four that
+//! (`docs/notes/tui-spawn-notes.md`) against a real interactive `claude`. The four that
 //! each silently wedge a pane forever:
 //!
 //!  - **[`seed_config_dir`] is not optional (L1).** A virgin config dir does not
@@ -38,7 +38,7 @@
 //!
 //! **The brief is `--system-prompt`, not `--append-system-prompt` (D-043).** It
 //! *replaces* Claude Code's own prompt rather than following it, so the rendered
-//! file is the whole of what a pane is told. `docs/system-prompt-notes.md` is the
+//! file is the whole of what a pane is told. `docs/notes/system-prompt-notes.md` is the
 //! measurement behind that switch, against CC 2.1.223. Note the one thing it made
 //! this module responsible for: `cwd` is passed into the renderer as well as onto
 //! the command, because CC's `# Environment` section carried the working directory
@@ -205,7 +205,7 @@ pub fn augmented_path() -> String {
 /// `existing` — the PATH inherited from the app's own process — is left alone.
 /// It is not an operator-HOME rung by construction (it is whatever launched the
 /// app), and stripping it is a sandboxing decision this package's spec rules
-/// out; see `docs/fence-notes.md` for what that leaves reachable.
+/// out; see `docs/notes/fence-notes.md` for what that leaves reachable.
 pub fn worker_augmented_path() -> String {
     let existing = std::env::var("PATH").unwrap_or_default();
     let mut prefix = String::new();

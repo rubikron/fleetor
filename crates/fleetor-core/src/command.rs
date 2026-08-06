@@ -26,7 +26,7 @@
 //! to clear or compact is the reasoning chain a later self-improvement pass reads.
 //!
 //! What the bytes do at the other end is measured in
-//! `docs/command-channel-notes.md`, not assumed. The short version: the command
+//! `docs/notes/command-channel-notes.md`, not assumed. The short version: the command
 //! is delivered by the same bracketed paste every message uses, **unframed**, so
 //! `/` lands in column 0 — and `accepted` still means only that the bytes reached
 //! a live pty.
@@ -90,7 +90,7 @@ impl Command {
     ///
     /// No `[fleet · …]` prefix, and nothing else prepended, because a slash
     /// command is only a command when `/` is the first character in the input
-    /// box (`docs/command-channel-notes.md` §3). This is the one place in the
+    /// box (`docs/notes/command-channel-notes.md` §3). This is the one place in the
     /// product where a delivery is deliberately not attributed to its sender —
     /// the attribution lives in the log instead.
     pub fn keystrokes(&self) -> &str {

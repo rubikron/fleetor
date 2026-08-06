@@ -62,7 +62,7 @@ pub enum FleetEvent {
     /// pane was live and the bytes were queued to its pty. Whether the command
     /// actually ran is not observable from outside the TUI — it may have been
     /// queued behind a turn, or landed after unsubmitted text and been swallowed
-    /// as prose (`docs/command-channel-notes.md` §3–4). Nothing may render this
+    /// as prose (`docs/notes/command-channel-notes.md` §3–4). Nothing may render this
     /// as "executed".
     Command {
         id: String,

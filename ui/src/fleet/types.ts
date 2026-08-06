@@ -126,7 +126,7 @@ export type FleetEvent =
       why: string;
       /// The bytes reached a live pty. **Never** render this as "executed" — the
       /// command may have been queued behind a turn, or landed after unsubmitted
-      /// text and been swallowed as prose (`docs/command-channel-notes.md`).
+      /// text and been swallowed as prose (`docs/notes/command-channel-notes.md`).
       accepted: boolean;
       detail?: string | null;
     }
