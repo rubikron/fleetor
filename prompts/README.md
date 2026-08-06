@@ -18,7 +18,7 @@ For *when* each piece arrives and where it lands inside the pane's context windo
 
 All four workers render the same `worker.md`. They differ only in `{me}`, `{peers}` and `{cwd}`.
 
-**These briefs are the pane's *whole* system prompt (D-043).** They go in via `--system-prompt`, which replaces Claude Code's own rather than appending to it. What that does and does not take away is measured in [`docs/system-prompt-notes.md`](../docs/system-prompt-notes.md) — the short version is that CC's guidance leaves and its tools, memory files, skills and git-status section stay. `scaffolding.md` is the part worth restating, and `{cwd}` covers the one thing genuinely lost.
+**These briefs are the pane's *whole* system prompt (D-043).** They go in via `--system-prompt`, which replaces Claude Code's own rather than appending to it. What that does and does not take away is measured in [`docs/notes/system-prompt-notes.md`](../docs/notes/system-prompt-notes.md) — the short version is that CC's guidance leaves and its tools, memory files, skills and git-status section stay. `scaffolding.md` is the part worth restating, and `{cwd}` covers the one thing genuinely lost.
 
 ## Placeholders
 

@@ -15,7 +15,7 @@ Two changes that belong together, landed as two commits:
 
 ### Technical
 - [x] Commit 1 — **parity switch**: `spawn.rs` passes `--system-prompt` for all five panes with a replacement prompt that preserves current behavior (existing brief content + whatever CC-default scaffolding the spike shows a pane still needs). No content rewrite in this commit.
-- [x] Spike first (`building.md` §4): `examples/` throwaway + `docs/system-prompt-notes.md`, version-stamped **CC 2.1.223**. Must answer: does an interactive pane under `--system-prompt` reach its prompt and run Bash/Read normally? does `--permission-mode auto` still hold? do `/clear` and `/compact` still work? which default sections vanish (cwd/env/git-status are dynamic sections — the `--exclude-dynamic-system-prompt-sections` help text confirms they're skipped under `--system-prompt`) and which does a worker actually need restated? does the target repo's CLAUDE.md / skills still load for orch? **Where the spike and this doc disagree, the spike wins.**
+- [x] Spike first (`building.md` §4): `examples/` throwaway + `docs/notes/system-prompt-notes.md`, version-stamped **CC 2.1.223**. Must answer: does an interactive pane under `--system-prompt` reach its prompt and run Bash/Read normally? does `--permission-mode auto` still hold? do `/clear` and `/compact` still work? which default sections vanish (cwd/env/git-status are dynamic sections — the `--exclude-dynamic-system-prompt-sections` help text confirms they're skipped under `--system-prompt`) and which does a worker actually need restated? does the target repo's CLAUDE.md / skills still load for orch? **Where the spike and this doc disagree, the spike wins.**
 - [x] Commit 2 — **content**: rewritten `prompts/orch.md` / `prompts/worker.md`; both still validate (every `VERBS` entry taught, all placeholders present); the anti-amplification clause ("Never reply to a broadcast unless it names you") and the delivery contract survive verbatim — their pinned tests stay green.
 - [x] New pinned-literal tests for the new load-bearing clauses (mirror `the_worker_brief_carries_the_anti_amplification_clause`): the confirm-vision-before-decomposing rule, the propose-bigger-once bound, the three attitudes.
 - [x] The spawn-site test updated: master `spawn.rs:385-394` pins `--append-system-prompt`; it must pin the new flag.
@@ -66,7 +66,7 @@ building.md §1, §4 (measure before coding), and §9. Execute WP-02 in two
 commits: (1) switch all five panes from --append-system-prompt to
 --system-prompt with a behavior-parity replacement prompt, spike-first
 against the real claude 2.1.223 (examples/ throwaway +
-docs/system-prompt-notes.md, version-stamped — the spike's findings win);
+docs/notes/system-prompt-notes.md, version-stamped — the spike's findings win);
 (2) rewrite prompts/orch.md and prompts/worker.md for the vision-partner
 orchestrator, the three worker attitudes, and the distilled tenets from
 docs/futureDesign/vision_tenets.md, keeping the anti-amplification clause
@@ -78,7 +78,7 @@ invariant guardrails. Finish with the session exit checklist.
 
 Three commits: the spike, the parity switch (D-043), the content rewrite (D-044). Green: 71 workspace tests, 53 shell tests, `tsc --noEmit` and `vite build` clean.
 
-**The spike deleted two planned items and found one the plan missed.** `docs/system-prompt-notes.md` has it in full; the short version is that `--system-prompt` drops CC's guidance and nothing else — tools, memory files, skills, agents and the whole first-user-message context block are byte-identical under either flag.
+**The spike deleted two planned items and found one the plan missed.** `docs/notes/system-prompt-notes.md` has it in full; the short version is that `--system-prompt` drops CC's guidance and nothing else — tools, memory files, skills, agents and the whole first-user-message context block are byte-identical under either flag.
 
 - **Deleted:** restating the worker's branch. The git-status section *survives* `--system-prompt`; the `--exclude-dynamic-system-prompt-sections` help text describes that flag being ignored, not the section being skipped. Design sketch #2 was wrong about this.
 - **Deleted:** the open question about orch losing its `CLAUDE.md` and skills (#5), and with it the whole per-pane-class fallback ladder. Memory files never travelled in the system prompt, so nothing was at risk. Nothing degraded on any axis tested, so all five panes replace.
@@ -97,7 +97,7 @@ Three commits: the spike, the parity switch (D-043), the content rewrite (D-044)
 
 ## Session exit checklist
 
-- [x] Spike notes committed (`docs/system-prompt-notes.md`, version-stamped).
+- [x] Spike notes committed (`docs/notes/system-prompt-notes.md`, version-stamped).
 - [x] Full test matrix green; new pinned-literal tests added; spawn-site flag test updated.
 - [x] `decisions.md`: one entry for the flag switch, one for the content rewrite (Tier 2).
 - [x] Rendered token counts recorded (WP-09 baseline).

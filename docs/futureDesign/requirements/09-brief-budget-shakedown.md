@@ -9,7 +9,7 @@ brief-cost: negative — this package prunes
 Two halves:
 
 1. **Budget (no live spend):** someone finally owns the prompt token budget the autonomy review said nobody owns. Measure both rendered prompts after 02/03/05/06/07 all added text (with the `--system-prompt` switch, the budget is the *whole* prompt). Set a cap as a Tier 2 constant, recorded in `decisions.md`. Prune to fit — the vision's own tenet: what no longer fits gets cut.
-2. **Shakedown (operator present — real Opus + DeepSeek spend, named and approved first per `building.md` §9.5):** run the full loop live **once** — vision conversation → task blocks posted → assignment → execution with at least one `fleet cmd` `/compact` (why logged) → receipt → peer review → merge to `fleet/integration` — and write `docs/blackboard-shakedown.md`. This is the manual pass that produces the data to justify (or kill) Shakedown-as-code.
+2. **Shakedown (operator present — real Opus + DeepSeek spend, named and approved first per `building.md` §9.5):** run the full loop live **once** — vision conversation → task blocks posted → assignment → execution with at least one `fleet cmd` `/compact` (why logged) → receipt → peer review → merge to `fleet/integration` — and write `docs/notes/blackboard-shakedown.md`. This is the manual pass that produces the data to justify (or kill) Shakedown-as-code.
 
 ## Performance criteria
 
@@ -37,7 +37,7 @@ Two halves:
 ## Scope
 
 ### In
-Measurement + cap + pruning + decisions entry; the one live run; `docs/blackboard-shakedown.md`; follow-up requirement docs as findings demand.
+Measurement + cap + pruning + decisions entry; the one live run; `docs/notes/blackboard-shakedown.md`; follow-up requirement docs as findings demand.
 
 ### Out
 Shakedown-as-code, Double Entry, any observer automation — those wait for this package's data.
@@ -54,7 +54,7 @@ fit without touching the pinned clauses. Shakedown half ONLY with the
 operator present and spend approved: run the full Blackboard loop once
 (vision → task blocks → execution with a logged /compact → receipt →
 review → merge to fleet/integration) and write
-docs/blackboard-shakedown.md with findings as outcomes, each closed as
+docs/notes/blackboard-shakedown.md with findings as outcomes, each closed as
 fine / new requirement doc / prompt amendment. Finish with the session
 exit checklist.
 ```

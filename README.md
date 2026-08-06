@@ -108,7 +108,7 @@ Known gaps, in rough priority order:
 ## Reading order
 
 1. **`docs/fleet-comms-map.md`** — how a message actually gets from `fleet send` to a terminal. Start here.
-2. **`docs/tui-spawn-notes.md`** — what was measured against real Claude Code 2.1.220 about spawning an interactive pane. Several of these findings are load-bearing and non-obvious.
+2. **`docs/notes/tui-spawn-notes.md`** — what was measured against real Claude Code 2.1.220 about spawning an interactive pane. Several of these findings are load-bearing and non-obvious.
 3. **`building.md`** — decision tiers, the seams, the risk register.
 4. **`decisions.md`** — the running log of where defaults lost, and why.
 5. **`docs/archive/tui-pivot-plan.md`** — the plan the pivot executed, with each phase's deviations recorded.

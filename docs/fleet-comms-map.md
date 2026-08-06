@@ -82,7 +82,7 @@ A broadcast leg deliberately does **not** become the recipient's reply target. I
 | accept-time check | none; the body is whatever was typed | **allowlisted** against `command::ALLOWED_COMMANDS` |
 | batching | concurrent messages join into one paste (D-039) | **always a write of its own** |
 
-The last two rows are the same fact from two directions. `docs/command-channel-notes.md` measured what happens when a command is *not* alone at column 0: the input box concatenates, and `another unfinished thought/clear` is submitted as prose. So the writer splits a drained batch into runs — consecutive messages join exactly as they did before, a command never joins anything.
+The last two rows are the same fact from two directions. `docs/notes/command-channel-notes.md` measured what happens when a command is *not* alone at column 0: the input box concatenates, and `another unfinished thought/clear` is submitted as prose. So the writer splits a drained batch into runs — consecutive messages join exactly as they did before, a command never joins anything.
 
 **The refusal is at accept time only.** `Command::new` checks the allowlist, the leading `/`, the absence of control characters and a non-empty `--why`, and answers with a sentence for the sender's stderr. Nothing is written and nothing is logged — the same shape as the self-send refusal, which is the class D-034 keeps. After acceptance nothing may delay, drop or alter it: there is no queue, no retry and no deadline on this arm either.
 
@@ -205,7 +205,7 @@ The two framings differ on purpose. A worker can only obey the do-not-answer-a-b
 | Pane wedged on onboarding | looks exactly like a working pane; every send reports success | `spawn::seed_config_dir`, called at the spawn site so it is keyed by the cwd actually used |
 | Body contains `ESC[201~` | would end the paste early and turn its tail into live keystrokes | `message::sanitize` |
 | Same, in a `fleet cmd` | exits 1, `refused rather than repaired` | `command::check_command`. **Refused, not stripped** — a mangled message is still the message, a mangled command is a *different command* |
-| **`fleet cmd` lands on a non-empty input box** | **exits 0, `accepted`, and the command runs as prose instead** | **nothing on this side can see it.** Measured in `docs/command-channel-notes.md` §3; the second residual, and the second reason `accepted` never means "executed" |
+| **`fleet cmd` lands on a non-empty input box** | **exits 0, `accepted`, and the command runs as prose instead** | **nothing on this side can see it.** Measured in `docs/notes/command-channel-notes.md` §3; the second residual, and the second reason `accepted` never means "executed" |
 | Worktree creation failed | `Warn` on Activity; that worker shares the target checkout | `fleet::worker_cwd` |
 | Message to `operator`, log write failed | exits 1, `nothing was recorded` | `Hub::record`. The one place a store error *fails* a send — for the human the log is the delivery, not a record of one |
 | **Operator never reads their inbox** | **exits 0, `recorded`, and nobody answers** | **nothing on this side can see it** — the third residual, and the reason `recorded` promises the log and not a person |

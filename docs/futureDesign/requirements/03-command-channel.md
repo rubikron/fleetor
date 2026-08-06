@@ -6,7 +6,7 @@ brief-cost: estimated +~120 tokens across both prompt files; **actually spent +2
 
 **Two things in this doc were overruled by measurement and are left standing so the reasoning is legible:**
 
-1. **"The bytes land raw: no bracketed paste"** (Outcome, and criterion 3 under Design sketch) is **wrong**. A typed slash command opens Claude Code's menu and `Enter` selects the wrong entry; a bracketed paste filters and selects correctly. The command channel is a new *caller* of `write_paste` with an unframed body, and the 30 ms `SUBMIT_GAP` needed no change. `docs/command-channel-notes.md`.
+1. **"The bytes land raw: no bracketed paste"** (Outcome, and criterion 3 under Design sketch) is **wrong**. A typed slash command opens Claude Code's menu and `Enter` selects the wrong entry; a bracketed paste filters and selects correctly. The command channel is a new *caller* of `write_paste` with an unframed body, and the 30 ms `SUBMIT_GAP` needed no change. `docs/notes/command-channel-notes.md`.
 2. **The spike question "does typing `/compact` + CR execute it"** was answered before this session started, as an incidental finding of WP-02's spike. The six probes here answered what was left: empty box (both run), unsubmitted text in the box (the command becomes prose — a real, undetectable failure), and mid-turn (queued by CC, runs when the turn ends).
 
 ## Outcome
@@ -22,7 +22,7 @@ Any pane — including a pane targeting **itself** — can run `fleet cmd <pane|
 - [ ] Raw write goes through the same per-pane serial writer path so a command can never interleave with an in-flight paste; the write uses the pane's writer mutex exactly as `write`/`write_paste` do.
 - [ ] Log after the write (Tier 1.6). The outcome word is `accepted` with its honest meaning — bytes reached a live pty. Whether the command *fired* (the input box may not have been empty; a menu may have swallowed it) is unknowable from this side and never claimed (Tier 1.5).
 - [ ] **The diff of the message path is empty.** `Op::Send/Broadcast/Reply`, `Message::framed`, `sanitize`, and `write_paste` are untouched. State this as a checked criterion in the PR description.
-- [ ] Spike first (`building.md` §4): `examples/` + `docs/command-channel-notes.md`, version-stamped. Must answer: does typing `/compact` + CR into a real `claude` execute it when the input is empty? with queued text already in the box? mid-turn? Does the slash-command menu popup swallow the CR (does it need the 30 ms gap, a longer gap, or no gap)? Findings win over this plan.
+- [ ] Spike first (`building.md` §4): `examples/` + `docs/notes/command-channel-notes.md`, version-stamped. Must answer: does typing `/compact` + CR into a real `claude` execute it when the input is empty? with queued text already in the box? mid-turn? Does the slash-command menu popup swallow the CR (does it need the 30 ms gap, a longer gap, or no gap)? Findings win over this plan.
 - [ ] New event representation rendered distinctly in the UI — never as a message row. Recommended: a new `FleetEvent::Command` variant. The frontend renders unknown event kinds as *nothing*, so `ui/src/fleet/types.ts` + the feeds must be extended in the same session.
 
 ### Semantic
@@ -71,7 +71,7 @@ docs/futureDesign/requirements/03-command-channel.md in full, then
 building.md §1, §4, §9 — especially Tier 1.4 and the guardrails section of
 the doc: commands are a new parallel path, NOT a transform on messages; the
 message path's diff must be empty. Spike first against a real claude TUI
-(examples/ + docs/command-channel-notes.md): verify typed-slash-command +
+(examples/ + docs/notes/command-channel-notes.md): verify typed-slash-command +
 CR execution semantics (empty input / queued text / mid-turn / menu
 timing). Then implement fleet cmd with the mandatory --why, the
 ["/clear","/compact"] allowlist refused only at accept time, self-targeting

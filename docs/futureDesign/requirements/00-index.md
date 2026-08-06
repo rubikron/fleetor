@@ -8,7 +8,7 @@ The Blackboard vision, split into nine session-sized work packages. The vision i
 
 1. **Panes own the entire system prompt.** Switch `--append-system-prompt` → `--system-prompt` so the prompt files *replace* Claude Code's default system prompt rather than appending to it. Owned by WP-02, spike-first (interactive-mode support must be measured, and the replacement must carry whatever CC-default behavior the panes still need). Sanctioned by Tier 1.2 — `building.md:16` places "system prompt" in harness territory.
 2. **The Fence is in scope** (WP-08) even though it wasn't in the original dump — the command channel, receipts, and merge flow raise the stakes.
-3. **Worktrees stay.** Peer review happens from each worker's own worktree via the shared git object DB; orch merges reviewed branches to `fleet/integration`, never trunk (WP-06). *Validated live and closed — D-048, transcript in `docs/peer-review-notes.md`.*
+3. **Worktrees stay.** Peer review happens from each worker's own worktree via the shared git object DB; orch merges reviewed branches to `fleet/integration`, never trunk (WP-06). *Validated live and closed — D-048, transcript in `docs/notes/peer-review-notes.md`.*
 4. **Task blocks ship as the full package** — verb + event + Tasks UI view in one session (WP-05).
 
 ## The packages
@@ -42,7 +42,7 @@ WP-01 ─┬─→ WP-02 ─→ WP-05 ─→ WP-06 ─┐
 ## Contention warning — read before running packages in parallel
 
 - WP-03, WP-05, WP-06, WP-07 all edit `prompts/orch.md` + `prompts/worker.md`, `VERBS`, and the clap enum. The validation WP-01 lands **refuses** a prompt that fails to teach every verb, so a verb and its prompt text must move in one commit. Run **at most one verb-adding package (03, 05, 06) at a time**. *WP-07 landed and added no verb — `VERBS` and the clap enum are untouched; it edited both prompt files and `prompts/delivery-contract.md`.*
-- **WP-06 landed first, so WP-08 discharged the debt (D-052).** A private HOME drops the global `user.name`/`user.email`, and WP-06 made worker commits load-bearing rather than incidental: the receipt names a commit and the reviewer reads it, so a worker that cannot commit produces a receipt pointing at nothing. WP-08 seeds a gitconfig for exactly this, and re-validated both a real worker commit and a peer's `git diff HEAD...fleet/worker-N` live, under the fenced env — `docs/fence-notes.md` is the transcript; the worktree mechanism `peer-review-notes.md` measured turned out not to route through `HOME` at all, so peer review is unaffected.
+- **WP-06 landed first, so WP-08 discharged the debt (D-052).** A private HOME drops the global `user.name`/`user.email`, and WP-06 made worker commits load-bearing rather than incidental: the receipt names a commit and the reviewer reads it, so a worker that cannot commit produces a receipt pointing at nothing. WP-08 seeds a gitconfig for exactly this, and re-validated both a real worker commit and a peer's `git diff HEAD...fleet/worker-N` live, under the fenced env — `docs/notes/fence-notes.md` is the transcript; the worktree mechanism `peer-review-notes.md` measured turned out not to route through `HOME` at all, so peer review is unaffected.
 
 ## Reconciliation with the autonomy-designs build order
 

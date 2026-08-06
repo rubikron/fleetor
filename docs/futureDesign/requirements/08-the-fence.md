@@ -15,7 +15,7 @@ Each worker gets a private `HOME` at `~/.fleetor/_shell/home/worker-N`, and the 
 - [ ] `augmented_path()` fixed in the same commit: today it bakes `~/.local/bin` and `~/.bun/bin` from the **app's** HOME (`spawn.rs:137-145`) — decide each entry deliberately (keep system dirs; drop or re-point operator-HOME dirs).
 - [ ] Seeded minimal gitconfig in the private HOME (`user.name "fleet worker-N"`, an email, `init.defaultBranch` irrelevant) so worker commits keep working — the WP-06 interaction.
 - [ ] The design's falsification test, run live once and recorded: ask a pane to read `~/.ssh` — it must fail *by path resolution*, and the finding goes in the notes doc.
-- [ ] Breakage catalogue: `gh`, `git`, `nvm`-style tools that read HOME — what broke, what was seeded, what was deliberately left broken (`docs/fence-notes.md`).
+- [ ] Breakage catalogue: `gh`, `git`, `nvm`-style tools that read HOME — what broke, what was seeded, what was deliberately left broken (`docs/notes/fence-notes.md`).
 - [ ] Fake-pane tests green; L1/L2 seeding (`seed_config_dir`, `ANTHROPIC_API_KEY` removal) unaffected — `CLAUDE_CONFIG_DIR` already points elsewhere and stays authoritative.
 
 ### Semantic
@@ -55,7 +55,7 @@ docs/futureDesign/requirements/08-the-fence.md in full, then building.md
 §1 and §9. Execute WP-08: private HOME per worker under
 ~/.fleetor/_shell/home/worker-N, the augmented_path() operator-HOME fix in
 the same commit, a seeded minimal gitconfig, the ~/.ssh falsification
-check recorded in docs/fence-notes.md with a breakage catalogue, and the
+check recorded in docs/notes/fence-notes.md with a breakage catalogue, and the
 posture default in prompts/launch.conf. Orch untouched. No OS sandboxing.
 Finish with the session exit checklist.
 ```
@@ -63,7 +63,7 @@ Finish with the session exit checklist.
 ## Session exit checklist
 
 - [ ] Full test matrix green (incl. spawn.rs L1/L2 pins).
-- [ ] `docs/fence-notes.md` committed with the falsification result.
+- [ ] `docs/notes/fence-notes.md` committed with the falsification result.
 - [ ] `decisions.md` entry.
 - [ ] If WP-06 already landed: worker commit flow re-validated.
 - [ ] `00-index.md` status updated.
