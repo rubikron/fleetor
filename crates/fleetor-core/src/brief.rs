@@ -1,4 +1,4 @@
-//! The briefings appended to each pane's system prompt at spawn (D-030, D-041).
+//! The briefings appended to each pane's system prompt at spawn (D-030, D-042).
 //!
 //! These are the *only* thing that tells a live `claude` it is part of a fleet.
 //! They go in via `--append-system-prompt`, never as a `CLAUDE.md` in the pane's

@@ -28,7 +28,7 @@
 //! bootstrap by [`crate::prompts`] and handed in as a [`PaneContext`]. This module
 //! decides how a process is shaped; that one decides what goes in its head. The
 //! two `env_remove` calls below are the deliberate exception: they are not
-//! settings, they are the three ways a pane wedges forever (D-041).
+//! settings, they are the three ways a pane wedges forever (D-042).
 
 use std::path::{Path, PathBuf};
 

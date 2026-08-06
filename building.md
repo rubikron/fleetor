@@ -86,13 +86,17 @@ The seam that replaced them is not a trait but a channel: `AppCommand`, request/
 
 ## 4. Contracts first
 
-Defined in `fleetor-core` and frozen behind serde:
+The first four are defined in `fleetor-core` and frozen behind serde. The fifth is a contract of a different kind — prose, frozen by tests rather than by a wire format:
 
 1. **`PaneId`** — serializes as a bare string (`"orch"`, `"worker-2"`), so the CLI argument, the DB payload, the event field and the TypeScript type are all the same thing with no second spelling to keep in sync.
 2. **`Message`** — the record, **body included**, plus the exact framing typed into the receiving TUI. Single-sourced, so the one delivery path can never invent a second spelling. Its `sanitize` is a security boundary: a body containing `\x1b[201~` would otherwise end the bracketed paste that carries it and turn its own tail into live keystrokes at a `claude` prompt.
 3. **`FleetEvent`** — three variants. What the backend appends and the UI replays.
 4. **The wire** (`Op` / `OpResult` / `Hello`) — four ops, and the wire tag *is* the CLI verb.
 5. **The briefs** — what each pane is told about the fleet at spawn, via `--append-system-prompt`. Never a `CLAUDE.md` in the pane's cwd: that would show up in `git status` and the worker could delete it.
+
+**The brief prose is `prompts/*.md`, not a Rust literal (D-042).** `fleetor-core::brief` bakes those files in with `include_str!` — so the binary always has a working brief and the tests still pin it — and renders `{me}` `{peers}` `{workers}` into them. The operator's own copies in `~/.fleetor/prompts/` are read once at bootstrap and override the built-ins, announced on the Activity feed: Info when one loads, Warn naming the fix when one is refused, silence when there is none. `prompts/launch.conf` does the same for a worker's model, endpoint and permission mode.
+
+Two fragments — `delivery-contract.md` and `broadcast-rule.md` — are *composed into* the briefs at a placeholder rather than written out in them, and a template that dropped its placeholder is refused rather than rendered. They are the two clauses the fleet cannot run without: the first is the only reason a model can tell a failed send from a good one, the second is the only mitigation left for broadcast amplification after the rate limiter was removed (D-031, and Tier 1.4 forbids putting it back). Everything around them is the operator's to rewrite. `prompts/README.md` is the full account.
 
 The `fleet` CLI surface is the *stable* contract — internals may churn freely behind it. A test pins its clap subcommands to `brief::VERBS`, because a rename that lands in only one place teaches every pane in the fleet a command that exits 2.
 

@@ -34,16 +34,18 @@ graph TB
     L4 -->|"bracketed paste into stdin"| PANE
 ```
 
-### Layer 1 — The brief (`crates/fleetor-core/src/brief.rs`)
+### Layer 1 — The brief (`prompts/*.md`, rendered by `crates/fleetor-core/src/brief.rs`)
 
-The only thing that tells a `claude` it is part of a fleet. Two functions, `orch_brief(roster)` and `worker_brief(me, roster)`, each a single `format!` literal, passed via `--append-system-prompt`.
+The only thing that tells a `claude` it is part of a fleet. Two templates, `prompts/orch.md` and `prompts/worker.md`, rendered by `orch_brief(roster)` and `worker_brief(me, roster)` and passed via `--append-system-prompt`.
+
+> When this survey was taken the prose lived in two `format!` literals in `brief.rs`, and §4 below is the argument for getting it out of there. That argument was made and won — D-042. The rendered briefs did not change a byte; where they come from did. `brief.rs` is now the renderer and the validator, and `prompts/README.md` is the account of the files.
 
 Deliberately **not** a `CLAUDE.md` written into the pane's cwd — that would show up in the worker's own `git status`, and the worker could delete the file that tells it how to behave.
 
 Both briefs carry:
 - who else exists (`peer_list` — the roster minus yourself, in prose)
 - the five `fleet` verbs, with examples
-- `DELIVERY_CONTRACT` — verbatim in both, the paragraph explaining that non-zero exit means *not delivered*
+- `delivery-contract.md` — composed into both at `{delivery_contract}`, the paragraph explaining that non-zero exit means *not delivered*
 - the two framings a message can arrive in, so the receiver can tell a direct message from a broadcast
 
 The **orch brief** adds: delegate rather than do it yourself, tell workers what the others have, answer their questions. The **worker brief** adds the L5 anti-amplification clause — *never reply to a broadcast unless it names you* — which is the only thing standing between the fleet and a token fire where five helpful peers answer each other forever.
@@ -92,7 +94,7 @@ Single-sourced in `message.rs` so the delivery path cannot invent a second spell
 
 ## 3. Where every decision currently lives
 
-*Updated for D-041 — the prose and launch settings moved out of Rust into `prompts/`. See [`prompts/README.md`](../prompts/README.md) and [`context-injection-flow.md`](./context-injection-flow.md).*
+*Updated for D-042 — the prose and launch settings moved out of Rust into `prompts/`. See [`prompts/README.md`](../prompts/README.md) and [`context-injection-flow.md`](./context-injection-flow.md).*
 
 | Decision | Where it lives | Form | Operator-editable? |
 |---|---|---|---|

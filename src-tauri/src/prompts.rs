@@ -1,4 +1,4 @@
-//! Where a pane's prompts and launch settings actually come from (D-041).
+//! Where a pane's prompts and launch settings actually come from (D-042).
 //!
 //! Every word a pane is told, and every flag it is launched with, lives in
 //! `prompts/` at the repo root as an ordinary file. Those files are baked into
