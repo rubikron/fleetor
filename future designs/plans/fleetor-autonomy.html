@@ -1,0 +1,1373 @@
+<title>FLEETOR — Autonomy Designs</title>
+<style>
+:root{
+  --s0:#1a1917; --s1:#211f1c; --s2:#292723; --s3:#312e29;
+  --bd:#383632; --bd2:#45423d;
+  --t1:#e8e6e1; --t2:#b8b4ab; --t3:#8a867c;
+  --accent:#d97757; --accent-dim:#7d4530;
+  --gold:#c69a4e; --gold-dim:#8a6a33;
+  --ok:#7fa36a; --err:#c25d4f;
+  --sans:system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --rail:230px;
+  --maxw:74ch;
+}
+@media (prefers-color-scheme:light){
+  :root{
+    --s0:#f7f4ee; --s1:#fffdf9; --s2:#f0ece3; --s3:#e8e3d8;
+    --bd:#e0dacf; --bd2:#cbc2b3;
+    --t1:#26241f; --t2:#57534a; --t3:#857f73;
+    --accent:#bd5735; --accent-dim:#e8c3b4;
+    --gold:#8f6a24; --gold-dim:#d9c99f;
+    --ok:#4f7239; --err:#a8402f;
+  }
+}
+:root[data-theme="light"]{
+  --s0:#f7f4ee; --s1:#fffdf9; --s2:#f0ece3; --s3:#e8e3d8;
+  --bd:#e0dacf; --bd2:#cbc2b3;
+  --t1:#26241f; --t2:#57534a; --t3:#857f73;
+  --accent:#bd5735; --accent-dim:#e8c3b4;
+  --gold:#8f6a24; --gold-dim:#d9c99f;
+  --ok:#4f7239; --err:#a8402f;
+}
+:root[data-theme="dark"]{
+  --s0:#1a1917; --s1:#211f1c; --s2:#292723; --s3:#312e29;
+  --bd:#383632; --bd2:#45423d;
+  --t1:#e8e6e1; --t2:#b8b4ab; --t3:#8a867c;
+  --accent:#d97757; --accent-dim:#7d4530;
+  --gold:#c69a4e; --gold-dim:#8a6a33;
+  --ok:#7fa36a; --err:#c25d4f;
+}
+
+*{box-sizing:border-box;}
+body{
+  margin:0; background:var(--s0); color:var(--t1);
+  font-family:var(--sans); font-size:15px; line-height:1.62;
+  -webkit-font-smoothing:antialiased;
+}
+::selection{background:var(--accent); color:var(--s0);}
+a{color:var(--accent); text-decoration-thickness:1px; text-underline-offset:2px;}
+:focus-visible{outline:2px solid var(--accent); outline-offset:2px; border-radius:1px;}
+
+/* ---------- shell ---------- */
+.shell{display:flex; min-height:100vh; align-items:flex-start;}
+.rail{
+  width:var(--rail); flex:0 0 var(--rail); position:sticky; top:0;
+  height:100vh; overflow-y:auto; background:var(--s1);
+  border-right:1px solid var(--bd); padding:22px 0 40px;
+}
+.work{flex:1 1 auto; min-width:0; padding:56px 44px 120px; }
+.wrap{max-width:var(--maxw); margin:0 auto;}
+.wrap.wide{max-width:104ch;}
+
+/* ---------- rail ---------- */
+.brand{padding:0 18px 18px; border-bottom:1px solid var(--bd); margin-bottom:14px;}
+.brand b{
+  font-family:var(--mono); font-size:13px; letter-spacing:.18em;
+  text-transform:uppercase; color:var(--t1); font-weight:600; display:block;
+}
+.brand span{
+  display:block; font-size:11.5px; color:var(--t3); margin-top:5px; line-height:1.45;
+}
+.railgroup{
+  font-family:var(--mono); font-size:10px; letter-spacing:.19em; text-transform:uppercase;
+  color:var(--t3); padding:16px 18px 7px;
+}
+.railbtn{
+  display:flex; gap:9px; align-items:baseline; width:100%; text-align:left;
+  background:none; border:0; border-left:2px solid transparent;
+  padding:6px 18px; color:var(--t2); cursor:pointer;
+  font-family:var(--sans); font-size:13.5px; line-height:1.4;
+}
+.railbtn:hover{color:var(--t1); background:var(--s2);}
+.railbtn[aria-current="true"]{
+  color:var(--t1); border-left-color:var(--accent); background:var(--s2); font-weight:600;
+}
+.railbtn i{
+  font-family:var(--mono); font-style:normal; font-size:10.5px; color:var(--t3);
+  flex:0 0 22px; font-variant-numeric:tabular-nums;
+}
+.railbtn[aria-current="true"] i{color:var(--accent);}
+.railbtn.dead i,.railbtn.dead{color:var(--t3);}
+.railbtn.dead[aria-current="true"]{color:var(--t1);}
+
+/* ---------- type ---------- */
+.eyebrow{
+  font-family:var(--mono); font-size:10.5px; letter-spacing:.2em; text-transform:uppercase;
+  color:var(--gold); margin:0 0 14px;
+}
+.eyebrow.coral{color:var(--accent);}
+h1{
+  font-size:clamp(30px,4.4vw,46px); line-height:1.06; letter-spacing:-.022em;
+  font-weight:660; margin:0 0 18px; text-wrap:balance;
+}
+h2{
+  font-size:25px; line-height:1.16; letter-spacing:-.014em; font-weight:640;
+  margin:52px 0 14px; text-wrap:balance;
+}
+h3{
+  font-size:16.5px; line-height:1.3; font-weight:650; margin:32px 0 10px;
+  letter-spacing:-.005em;
+}
+h4{
+  font-family:var(--mono); font-size:11px; letter-spacing:.15em; text-transform:uppercase;
+  color:var(--t3); font-weight:600; margin:26px 0 9px;
+}
+p{margin:0 0 15px; color:var(--t2);}
+p strong,li strong{color:var(--t1); font-weight:620;}
+.lede{font-size:17.5px; line-height:1.58; color:var(--t2);}
+.lede strong{color:var(--t1);}
+ul,ol{margin:0 0 15px; padding-left:20px; color:var(--t2);}
+li{margin-bottom:7px;}
+li::marker{color:var(--t3);}
+code{
+  font-family:var(--mono); font-size:.875em; color:var(--t1);
+  background:var(--s2); border:1px solid var(--bd); border-radius:2px; padding:1px 4px;
+}
+h2 code,h3 code{font-size:.85em;}
+hr{border:0; border-top:1px solid var(--bd); margin:44px 0;}
+
+/* ---------- pieces ---------- */
+.kicker{
+  font-family:var(--mono); font-size:11px; letter-spacing:.16em; text-transform:uppercase;
+  color:var(--t3); display:block; margin-bottom:10px;
+}
+.claim{
+  border-left:2px solid var(--accent); padding:2px 0 2px 18px; margin:0 0 26px;
+}
+.claim p{font-size:18px; line-height:1.5; color:var(--t1); margin:0;}
+
+blockquote{
+  margin:0 0 18px; padding:14px 18px; background:var(--s1);
+  border:1px solid var(--bd); border-left:2px solid var(--gold-dim);
+}
+blockquote p:last-child{margin-bottom:0;}
+blockquote p{font-size:14.5px;}
+
+pre{
+  background:var(--s1); border:1px solid var(--bd); border-radius:3px;
+  padding:14px 16px; overflow-x:auto; margin:0 0 18px;
+  font-family:var(--mono); font-size:12.5px; line-height:1.62; color:var(--t2);
+}
+pre code{background:none; border:0; padding:0; font-size:inherit; color:inherit;}
+pre .c{color:var(--t3);}
+pre .k{color:var(--gold);}
+pre .n{color:var(--accent);}
+
+.tablewrap{overflow-x:auto; margin:0 0 20px; border:1px solid var(--bd); border-radius:3px;}
+table{border-collapse:collapse; width:100%; font-size:13px;}
+th,td{
+  text-align:left; padding:9px 13px; border-bottom:1px solid var(--bd);
+  vertical-align:top; color:var(--t2);
+}
+th{
+  font-family:var(--mono); font-size:10px; letter-spacing:.15em; text-transform:uppercase;
+  color:var(--t3); font-weight:600; background:var(--s2); white-space:nowrap;
+}
+tr:last-child td{border-bottom:0;}
+td code{background:none; border:0; padding:0; color:var(--t1);}
+td.num{font-family:var(--mono); font-variant-numeric:tabular-nums; white-space:nowrap;}
+
+/* chips */
+.chip{
+  display:inline-block; font-family:var(--mono); font-size:10px; letter-spacing:.11em;
+  text-transform:uppercase; padding:2.5px 7px; border-radius:2px;
+  border:1px solid var(--bd2); color:var(--t3); white-space:nowrap;
+}
+.chip.gold{color:var(--gold); border-color:var(--gold-dim);}
+.chip.coral{color:var(--accent); border-color:var(--accent-dim);}
+.chip.ok{color:var(--ok); border-color:var(--ok);}
+.chip.err{color:var(--err); border-color:var(--err);}
+.chiprow{display:flex; flex-wrap:wrap; gap:6px; margin:0 0 22px;}
+
+/* the scorecard grid */
+.card{
+  border:1px solid var(--bd); border-radius:3px; background:var(--s1);
+  padding:16px 18px; margin:0 0 20px;
+}
+.card h4{margin-top:0;}
+.grid2{display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:14px; margin:0 0 22px;}
+.grid3{display:grid; grid-template-columns:repeat(auto-fit,minmax(165px,1fr)); gap:12px; margin:0 0 24px;}
+.stat{
+  border:1px solid var(--bd); border-radius:3px; background:var(--s1); padding:12px 14px;
+}
+.stat b{
+  display:block; font-family:var(--mono); font-size:19px; color:var(--t1);
+  font-variant-numeric:tabular-nums; letter-spacing:-.01em; margin-bottom:3px;
+}
+.stat span{
+  display:block; font-family:var(--mono); font-size:9.5px; letter-spacing:.15em;
+  text-transform:uppercase; color:var(--t3);
+}
+
+/* the claim/objection ledger — two columns, because every design is a pair */
+.ledger{
+  display:grid; grid-template-columns:1fr 1fr; gap:0;
+  border:1px solid var(--bd); border-radius:3px; margin:0 0 24px; overflow:hidden;
+}
+.ledger>div{padding:15px 17px; background:var(--s1);}
+.ledger>div+div{border-left:1px solid var(--bd);}
+.ledger h4{margin:0 0 8px;}
+.ledger .for h4{color:var(--ok);}
+.ledger .against h4{color:var(--err);}
+.ledger p{font-size:13.5px; margin:0;}
+.ledger p+p{margin-top:9px;}
+@media(max-width:660px){
+  .ledger{grid-template-columns:1fr;}
+  .ledger>div+div{border-left:0; border-top:1px solid var(--bd);}
+}
+
+/* the four doors diagram */
+.doors{
+  border:1px solid var(--bd); border-radius:3px; overflow:hidden; margin:0 0 8px;
+  font-family:var(--mono); font-size:12px;
+}
+.door{display:flex; align-items:stretch; border-bottom:1px solid var(--bd); background:var(--s1);}
+.door:last-child{border-bottom:0;}
+.door.live{background:var(--s2);}
+.door .no{
+  flex:0 0 40px; display:flex; align-items:center; justify-content:center;
+  border-right:1px solid var(--bd); color:var(--t3); font-size:11px;
+  font-variant-numeric:tabular-nums;
+}
+.door.live .no{color:var(--accent); border-right-color:var(--accent-dim);}
+.door .body{padding:11px 14px; flex:1 1 auto; min-width:0;}
+.door .body b{display:block; color:var(--t1); font-weight:600; font-size:12.5px; margin-bottom:2px;}
+.door .body span{display:block; color:var(--t3); font-size:11px; line-height:1.5;}
+.door .when{
+  flex:0 0 118px; display:flex; align-items:center; padding:0 14px;
+  border-left:1px solid var(--bd); color:var(--t3); font-size:10px;
+  letter-spacing:.11em; text-transform:uppercase; text-align:right; justify-content:flex-end;
+}
+.door.live .when{color:var(--accent); border-left-color:var(--accent-dim);}
+@media(max-width:660px){
+  .door{flex-wrap:wrap;}
+  .door .when{flex:1 1 100%; border-left:0; border-top:1px solid var(--bd); justify-content:flex-start; padding:7px 14px; text-align:left;}
+}
+.caption{font-size:12px; color:var(--t3); margin:0 0 26px; font-family:var(--mono); line-height:1.55;}
+
+/* epoch loop strip */
+.loop{display:flex; flex-wrap:wrap; gap:0; border:1px solid var(--bd); border-radius:3px; overflow:hidden; margin:0 0 8px;}
+.loop div{
+  flex:1 1 118px; padding:13px 12px; background:var(--s1); border-right:1px solid var(--bd);
+  font-family:var(--mono); font-size:11px; color:var(--t2); text-align:center; min-width:0;
+}
+.loop div:last-child{border-right:0;}
+.loop div b{display:block; font-size:9.5px; letter-spacing:.16em; text-transform:uppercase; color:var(--t3); margin-bottom:5px;}
+.loop div.gate{background:var(--s2); color:var(--accent);}
+.loop div.gate b{color:var(--accent);}
+
+/* verdict banner */
+.verdict{
+  display:flex; gap:11px; align-items:baseline; border:1px solid var(--bd);
+  border-left:2px solid var(--gold); background:var(--s1); border-radius:3px;
+  padding:13px 16px; margin:0 0 22px;
+}
+.verdict.kill{border-left-color:var(--err);}
+.verdict.strong{border-left-color:var(--ok);}
+.verdict b{
+  font-family:var(--mono); font-size:10px; letter-spacing:.16em; text-transform:uppercase;
+  color:var(--gold); flex:0 0 auto; padding-top:2px;
+}
+.verdict.kill b{color:var(--err);}
+.verdict.strong b{color:var(--ok);}
+.verdict p{margin:0; font-size:13.5px;}
+
+/* graveyard */
+.tomb{border-top:1px solid var(--bd); padding:17px 0 3px;}
+.tomb:first-of-type{border-top:0;}
+.tomb h3{margin:0 0 6px; font-size:15px; color:var(--t2);}
+.tomb h3 .x{color:var(--err); font-family:var(--mono); margin-right:8px; font-size:13px;}
+.tomb p{font-size:13.5px; margin:0 0 8px;}
+.tomb .why{color:var(--t2);}
+.tomb .why::before{
+  content:"KILLED"; font-family:var(--mono); font-size:9.5px; letter-spacing:.16em;
+  color:var(--err); margin-right:9px;
+}
+
+/* footer nav between designs */
+.pager{
+  display:flex; justify-content:space-between; gap:14px; margin-top:56px;
+  padding-top:20px; border-top:1px solid var(--bd);
+}
+.pager button{
+  background:none; border:1px solid var(--bd); border-radius:3px; padding:9px 14px;
+  color:var(--t2); cursor:pointer; font-family:var(--sans); font-size:13px; max-width:47%;
+  text-align:left; line-height:1.35;
+}
+.pager button:hover{border-color:var(--bd2); color:var(--t1);}
+.pager button:disabled{opacity:.32; cursor:default;}
+.pager button span{
+  display:block; font-family:var(--mono); font-size:9.5px; letter-spacing:.15em;
+  text-transform:uppercase; color:var(--t3); margin-bottom:3px;
+}
+.pager button.next{text-align:right; margin-left:auto;}
+
+/* panels */
+.panel{display:none;}
+.panel.on{display:block; animation:fade .22s ease-out;}
+@keyframes fade{from{opacity:0;}to{opacity:1;}}
+@media (prefers-reduced-motion:reduce){.panel.on{animation:none;}}
+
+@media(max-width:900px){
+  .shell{flex-direction:column;}
+  .rail{
+    position:static; width:100%; flex:none; height:auto; border-right:0;
+    border-bottom:1px solid var(--bd); padding:14px 0 10px;
+  }
+  .railgroup{padding:11px 16px 5px;}
+  .work{padding:34px 20px 90px;}
+}
+</style>
+<div class="shell">
+<nav class="rail" aria-label="Sections">
+  <div class="brand">
+    <b>FLEETOR</b>
+    <span>Designs for an orchestration system that gets better at its job</span>
+  </div>
+  <div class="railgroup">Orientation</div>
+  <button class="railbtn" data-p="philosophy" aria-current="true"><i>—</i>Philosophy</button>
+  <button class="railbtn" data-p="physics"><i>—</i>The physics</button>
+  <button class="railbtn" data-p="method"><i>—</i>How these were made</button>
+
+  <div class="railgroup">Memory &amp; learning</div>
+  <button class="railbtn" data-p="d1"><i>01</i>Shift Notes</button>
+  <button class="railbtn" data-p="d2"><i>02</i>Double Entry</button>
+  <button class="railbtn dead" data-p="d3"><i>03</i>Bake-Off ✕</button>
+
+  <div class="railgroup">Epistemics</div>
+  <button class="railbtn" data-p="d4"><i>04</i>Receipts</button>
+  <button class="railbtn dead" data-p="d5"><i>05</i>Cheap Twin ✕</button>
+  <button class="railbtn" data-p="d6"><i>06</i>Callsign</button>
+
+  <div class="railgroup">Context economy</div>
+  <button class="railbtn" data-p="d7"><i>07</i>Loadout</button>
+  <button class="railbtn" data-p="d8"><i>08</i>Carryover</button>
+  <button class="railbtn dead" data-p="d9"><i>09</i>Hearsay ✕</button>
+
+  <div class="railgroup">Coordination</div>
+  <button class="railbtn" data-p="d10"><i>10</i>Crosscut</button>
+  <button class="railbtn dead" data-p="d11"><i>11</i>Posture Ladder ✕</button>
+  <button class="railbtn" data-p="d12"><i>12</i>Open Loops</button>
+
+  <div class="railgroup">Capability scaling</div>
+  <button class="railbtn" data-p="d13"><i>13</i>Seats</button>
+  <button class="railbtn" data-p="d14"><i>14</i>Shakedown</button>
+  <button class="railbtn" data-p="d15"><i>15</i>The Fence</button>
+
+  <div class="railgroup">Verdict</div>
+  <button class="railbtn" data-p="redteam"><i>—</i>What the red team found</button>
+  <button class="railbtn" data-p="graveyard"><i>—</i>The graveyard</button>
+  <button class="railbtn" data-p="plan"><i>—</i>What I'd build</button>
+</nav>
+
+<main class="work">
+
+<!-- ============ PHILOSOPHY ============ -->
+<section class="panel on" id="p-philosophy">
+<div class="wrap">
+  <p class="eyebrow">Design philosophy</p>
+  <h1>The harness gets dumber as the model gets smarter.</h1>
+  <p class="lede">Everything FLEETOR adds to make a Flash worker competent — the explaining, the scaffolding, the checking — is a tax on a better model. Those parts have a shelf life. The parts that <strong>record</strong> and the parts that <strong>gate</strong> do not: they get more valuable as capability rises, because a stronger model's blast radius grows faster than its trustworthiness does.</p>
+  <p class="lede"><strong>So put the intelligence in the observer, never in the path.</strong></p>
+
+  <h2>Four principles, one per tenet</h2>
+
+  <h3>1 · Evidence gates, not argument gates</h3>
+  <p class="kicker">from: justified novelty</p>
+  <p>An agent's confidence carries almost no information here. Five models sharing a prior that agree are one model five times, and a Socratic debate makes the transcript <em>read</em> more rigorous while leaving the epistemics untouched. Weak models are worse — Flash agrees with whoever spoke last.</p>
+  <p>So a proposal earns its place by citing something that <strong>happened and can be re-checked</strong>: a log <code>seq</code>, a failing test, a merge collision. <em>"We reasoned X would help"</em> is refused. <em>"X happened three times, here are the seqs"</em> is considered.</p>
+  <p>This is not a new standard for this project. D-031 already applies it to the rate limiter — it returns <em>"behind a demonstrated fountain, not a predicted one."</em> The philosophy is that sentence, generalized.</p>
+
+  <h3>2 · Nothing is added without something removed</h3>
+  <p class="kicker">from: cleaning up context clutter</p>
+  <p>Every self-appending memory system rots identically: by session 20 the brief is 40 KB of contradictory advice about situations that no longer exist. The fix isn't better writing, it's a <strong>budget</strong>. Give learned context a hard byte cap and addition becomes revision — <em>"what earns its place"</em> stops being a question nobody asks and becomes one that's forced every single time.</p>
+  <p>A cap is also the only pruning mechanism that works <em>without</em> a fitness signal, which is exactly the situation this system is in.</p>
+
+  <h3>3 · Name the unknown before the work, not after</h3>
+  <p class="kicker">from: integrity + diligence</p>
+  <p>"Do I know enough to do this properly?" is currently answered by vibes, at the end, by the same agent that wants to be done.</p>
+  <p>Diligence isn't confidence. It's a <strong>stated reason the work will land</strong> — a claim structured so it can be observed to be wrong. Integrity is what happens when that claim is on the record <em>before</em> the outcome is known.</p>
+
+  <h3>4 · The restart is the transaction</h3>
+  <p class="kicker">from: goal → do → learn → reflect → optimize → repeat</p>
+  <p>Context freezes at <code>exec</code>. Treat that as a commit boundary rather than a limitation to route around, and FLEETOR gets for free the thing most agent-memory systems never obtain: <strong>attributable outcomes.</strong> Within an epoch the context is immutable, so what happened is caused by a specific, nameable version of the fleet's beliefs.</p>
+  <p>A continuously-mutating memory can never make that claim. It can only ever say things got better or worse while everything changed at once.</p>
+
+  <div class="loop" role="img" aria-label="The epoch loop: spawn with known context, work, log records outcomes, reflect, propose a diff, human gate, next spawn.">
+    <div><b>spawn</b>known context</div>
+    <div><b>do</b>the work</div>
+    <div><b>log</b>what happened</div>
+    <div><b>reflect</b>read the record</div>
+    <div><b>propose</b>a diff</div>
+    <div class="gate"><b>gate</b>review</div>
+    <div><b>next epoch</b>carries it</div>
+  </div>
+  <p class="caption">The loop closes only because the gate is there. Remove it and this is a random walk with a confident narrator.</p>
+
+  <h2>The two-part invariant that makes autonomy safe</h2>
+  <div class="ledger">
+    <div class="for">
+      <h4>The path stays dumb</h4>
+      <p>Nothing between <code>fleet send</code> and the pty may delay, refuse, reorder, drop or alter a message (Tier 1.4 — argued and lost twice). Therefore no autonomy mechanism may live there.</p>
+      <p>But <strong>observe-and-report is legal where refuse-and-block is not</strong>, and that asymmetry turns out to be sufficient.</p>
+    </div>
+    <div class="against">
+      <h4>The gate is at the epoch, not the message</h4>
+      <p>You never need to stop a message. You need to stop a <em>belief</em> from persisting into the next spawn.</p>
+      <p>Tier 1.8 already says so, and was written before the feature existed: <em>"Shared knowledge merges only after review. Unreviewed memory poisons every pane."</em></p>
+    </div>
+  </div>
+  <p>Those two together are what scales. You do not supervise something smarter than you by arguing with it in real time, and you do not do it by constraining its method. You keep <strong>a record it cannot edit</strong>, and you keep <strong>the commit gate on what it is allowed to believe next time</strong>.</p>
+
+  <h2>What this rules out</h2>
+  <ul>
+    <li><strong>Runtime consensus.</strong> Panes negotiating protocol mid-work is the broadcast-fountain shape, and it has nowhere to persist anyway.</li>
+    <li><strong>Anything in the delivery path.</strong> If a mechanism needs to refuse a message, it is the wrong mechanism.</li>
+    <li><strong>Unbounded accumulation.</strong> No append-only memory without a cap.</li>
+    <li><strong>Self-grading.</strong> An agent scoring its own output is measuring its confidence, and we already decided confidence carries no information.</li>
+    <li><strong>Method constraints as guardrails.</strong> Telling a strong model <em>how</em> to work is the tax that expires. Bounding what it can <em>touch</em> is the guardrail that doesn't.</li>
+  </ul>
+</div>
+</section>
+
+<!-- ============ PHYSICS ============ -->
+<section class="panel" id="p-physics">
+<div class="wrap">
+  <p class="eyebrow">Constraints</p>
+  <h1>Four doors, and only one of them repeats.</h1>
+  <p class="lede">Every design here was written against one physical fact: <strong>a pane's context freezes at <code>exec</code>.</strong> <code>--append-system-prompt</code> is argv. There is no per-turn assembly, no retrieval hook, no way to refresh a running pane's system prompt — because each pane is a real, unmodified <code>claude</code> and the harness lives strictly around it.</p>
+
+  <div class="doors">
+    <div class="door"><div class="no">1</div><div class="body"><b>System prompt</b><span>The rendered brief, via <code>--append-system-prompt</code>. Appended after Claude Code's own prompt — it cannot override it.</span></div><div class="when">at exec, once</div></div>
+    <div class="door"><div class="no">2</div><div class="body"><b>Memory files</b><span>The cwd's <code>CLAUDE.md</code> plus everything in <code>CLAUDE_CONFIG_DIR</code>. Wide open for workers, and currently near-empty.</span></div><div class="when">at exec, once</div></div>
+    <div class="door"><div class="no">3</div><div class="body"><b>Environment</b><span>Model, endpoint, pane identity, socket path. Shapes the process, not its beliefs.</span></div><div class="when">at exec, once</div></div>
+    <div class="door live"><div class="no">4</div><div class="body"><b>User turns</b><span>A framed message typed into the pane's input box as a bracketed paste. The only channel a <em>running</em> pane can receive anything on.</span></div><div class="when">runtime, unbounded</div></div>
+  </div>
+  <p class="caption">Anything you want a running pane to know arrives through door 4 or waits for the next spawn. There is no fifth door.</p>
+
+  <h2>Why that's an asset, not a limitation</h2>
+  <p>Most agent-memory systems mutate continuously, so they have no clean transaction point — you can never say <em>"this version of the beliefs produced this outcome."</em> FLEETOR gets that boundary for free. Within an epoch a pane's context is <em>provably</em> constant, which is the condition a controlled comparison needs and which almost no LLM system actually has.</p>
+  <p>Three designs here exploit it directly: <strong>Bake-Off</strong> turns it into an A/B trial, <strong>Carryover</strong> turns it into the system's only act of forgetting, and <strong>Shift Notes</strong> uses door 2 — completely unused for workers today — as the carrier.</p>
+
+  <h2>The invariants every design had to survive</h2>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Invariant</th><th>What it forbids</th><th>What it cost</th></tr></thead>
+    <tbody>
+      <tr><td class="num">Tier 1.4</td><td>Anything in the delivery path that can delay, refuse, reorder, drop or alter a message. No queue, no retry, no limiter, no deadline.</td><td>Killed the summarizing relay and every locking scheme.</td></tr>
+      <tr><td class="num">Tier 1.5</td><td><code>accepted</code> rendering as "delivered". The bytes reached a live pty; nothing knows if the model read them.</td><td>Forced Callsign to say <code>echoed</code>, never <code>read</code>.</td></tr>
+      <tr><td class="num">Tier 1.1</td><td>Writing anything to the user's repo but application code on feature branches.</td><td>Killed knowledge-in-the-repo; sent it to a separate git dir.</td></tr>
+      <tr><td class="num">Tier 1.8</td><td>Shared knowledge merging without review. <em>Written down, never built.</em></td><td>Became the spec for half these designs.</td></tr>
+      <tr><td class="num">D-030</td><td>The headless supervisor, the mail queue, the ticket board, gates, peer review — ~3,500 lines deleted.</td><td>Killed the librarian pane, the rerun daemon, and the compaction autopilot.</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>That last row did the most work. The recurring failure mode in this space is a design that is <em>the deleted supervisor wearing a hat</em>, and the test that catches it is sharp: <strong>can it delay, route, or gate work?</strong> If yes, it's the thing that was removed. If it only reads and reports, it isn't.</p>
+</div>
+</section>
+
+<!-- ============ METHOD ============ -->
+<section class="panel" id="p-method">
+<div class="wrap">
+  <p class="eyebrow">Method</p>
+  <h1>Trust, but verify — and show the bodies.</h1>
+  <p class="lede">Fifteen designs were generated by five agents working disjoint territories, so they couldn't converge on the same idea. Every one was then read adversarially against the actual codebase. What survived is here; what didn't is in the graveyard, with the reasoning that killed it.</p>
+
+  <div class="grid3">
+    <div class="stat"><b>15</b><span>designs generated</span></div>
+    <div class="stat"><b>11</b><span>still standing</span></div>
+    <div class="stat"><b>27</b><span>ideas killed</span></div>
+  </div>
+  <p class="caption">Twenty-three killed during generation, four more killed on adversarial review.</p>
+
+  <h2>Why the graveyard is the point</h2>
+  <p>An idea that survives is only interesting relative to the ones that didn't. Several killed ideas are the <em>first</em> thing anyone would propose — per-turn retrieval, a voting quorum, a confidence score, an auto-compaction daemon — and each dies for a reason specific to this architecture rather than a general one. Those reasons are the actual content.</p>
+  <p>Three recurring causes of death:</p>
+  <ul>
+    <li><strong>It was the deleted supervisor.</strong> Anything that watches all five panes and decides things about them, regardless of what the struct is called.</li>
+    <li><strong>It sat in the delivery path.</strong> Tier 1.4 is not negotiable and it eliminates a whole family of otherwise-reasonable designs.</li>
+    <li><strong>It manufactured the appearance of rigor.</strong> Confidence numbers and vote tallies make output <em>look</em> more justified while adding zero information — the one thing a system built around justified novelty must never do.</li>
+  </ul>
+
+  <h2>How to read a design</h2>
+  <p>Each one carries a <strong>claim</strong>, the problem it solves stated as something that goes wrong today, a concrete implementation specific enough to start typing, and a <strong>ledger</strong>: why it reasons well, set against the strongest objection I could find. Where an objection could not be answered, it says so rather than arguing around it — several of the best designs here have a real residual risk, and hiding it would defeat the purpose.</p>
+  <p>Each also carries <strong>what would falsify it</strong>: the observation that would tell you it was a bad idea. A design without one is a belief, not a proposal.</p>
+</div>
+</section>
+<!-- ============ 01 SHIFT NOTES ============ -->
+<section class="panel" id="p-d1">
+<div class="wrap">
+  <p class="eyebrow">01 · Memory &amp; learning</p>
+  <h1>Shift Notes</h1>
+  <div class="claim"><p>A worker cannot be taught anything while it runs, so the fleet's memory is a handful of <strong>reviewed</strong> lines left in the worker's private config dir for the next pane that boots into that seat.</p></div>
+  <div class="chiprow"><span class="chip gold">door 2</span><span class="chip">~300 LOC</span><span class="chip">≈1.5k tok/pane</span><span class="chip ok">reversible</span></div>
+
+  <h2>What goes wrong today</h2>
+  <p>A worker learns at 14:02 that the testbed's <code>conftest.py</code> monkeypatches the clock, so any naive <code>time.time()</code> assertion fails. At 14:40 the operator restarts the fleet and that knowledge is gone. Worse — it was never anywhere. It lives in one row of the <code>events</code> table that nothing reads. Four workers rediscover the same trap four times, then rediscover it again next session.</p>
+  <p>Meanwhile the one durable place a worker's knowledge <em>could</em> live — its <code>CLAUDE_CONFIG_DIR</code> — currently holds exactly two onboarding keys. <strong>Door 2 is wide open and completely unused for workers.</strong> That is the whole opportunity.</p>
+
+  <h2>Mechanism</h2>
+  <p>A rendered handbook is written to <code>&lt;worker_config_dir&gt;/CLAUDE.md</code> right after <code>seed_config_dir</code>, before the process is built. It lands in layer 5 of the pane's window — the layer that is empty for workers today. It is <em>not</em> the pane's cwd, so it never shows in <code>git status</code>.</p>
+  <p>The notes live in <code>~/.fleetor/lore/</code>, <strong>a real git repository</strong>. Review is <code>git diff</code>. Provenance is <code>git log</code>. Un-poisoning is <code>git revert</code>. That buys the entire Tier 1.8 apparatus — proposal, review, merge, blame, rollback — for roughly zero code, because git already <em>is</em> that system.</p>
+  <p>Nothing is written automatically. A candidate note is drafted by the operator, usually with <code>orch</code>'s help. The briefs are untouched: a brief is a job description and is locked prose; a handbook is accumulated fact about <em>this repo</em> and is meant to churn.</p>
+
+<pre><code><span class="c">// crates/fleetor-core/src/lore.rs — pure, no I/O</span>
+<span class="k">pub const</span> MAX_NOTES: <span class="n">usize</span> = 24;
+<span class="k">pub const</span> MAX_NOTE_CHARS: <span class="n">usize</span> = 240;
+
+<span class="k">pub fn</span> render_handbook(template: &amp;<span class="n">str</span>, me: PaneId, notes: &amp;[Note]) -&gt; String;
+<span class="k">pub fn</span> validate_handbook(template: &amp;<span class="n">str</span>) -&gt; Result&lt;(), String&gt;;
+<span class="k">pub fn</span> budget(notes: &amp;[Note]) -&gt; Result&lt;(), String&gt;;</code></pre>
+  <p>No new <code>FleetEvent</code> variant. One honest line per fleet start through the existing one: <code>"handbook: 11 notes from lore @9f2a3c1 installed in worker-1..4"</code>. That single line makes <em>"which memory was this pane running?"</em> answerable forever — the forensic requirement a poisoning invariant actually needs.</p>
+
+  <div class="ledger">
+    <div class="for"><h4>Why it reasons well</h4>
+      <p>The carrier is durable and the gate is human. It resists rot because of one mechanic: <strong><code>MAX_NOTES</code> is a hard cap, so note 25 cannot be added without deleting one.</strong></p>
+      <p>An uncapped memory grows monotonically and every line is individually defensible. A capped one forces <em>"is this worth more than that?"</em> every single time — which is the only question that produces distillation instead of accretion. Tenet 2 as a compile-time constant rather than a good intention.</p></div>
+    <div class="against"><h4>Strongest objection</h4>
+      <p><em>This is a CLAUDE.md for workers, and everyone's CLAUDE.md rots into stale platitudes.</em> True, and the right objection. The cap forces eviction; <code>git diff</code> makes each epoch reviewable in ten seconds; the per-spawn notice makes regressions bisectable against lore commits.</p>
+      <p><strong>The honest residual: none of that defends against a tired operator rubber-stamping.</strong> If review becomes habit rather than judgment, this degrades into exactly the CLAUDE.md the objection describes. The cap slows that; it does not stop it.</p></div>
+  </div>
+
+  <h4>What would falsify it</h4>
+  <p>Run one epoch with the handbook and one without, same task. Indistinguishable behaviour means the notes are decoration. Also: if after ten epochs the notes have gotten <em>longer and vaguer</em> rather than shorter and sharper, eviction pressure isn't working and it has failed on its own terms.</p>
+</div>
+</section>
+
+<!-- ============ 02 DOUBLE ENTRY ============ -->
+<section class="panel" id="p-d2">
+<div class="wrap">
+  <p class="eyebrow">02 · Memory &amp; learning</p>
+  <h1>Double Entry</h1>
+  <div class="claim"><p>An epoch produces two independent records — what the fleet <strong>said</strong> and what the fleet <strong>changed</strong> — and the only useful reflection is reading them side by side and finding where they disagree.</p></div>
+  <div class="chiprow"><span class="chip gold">no door — read only</span><span class="chip">~350 LOC</span><span class="chip ok">zero tokens</span><span class="chip ok">no pane sees it</span></div>
+
+  <h2>What goes wrong today</h2>
+  <p>A busy fleet and a productive fleet look identical. The Messages view fills with green <code>accepted</code> rows and the operator feels good. The README says it outright about broadcast amplification: <em>"a token fire that looks like a working fleet."</em></p>
+  <p>There is no way today to answer <em>"did worker-3 do anything for the last forty minutes, or did it just coordinate?"</em> — and that question is the entire content of tenet 3.</p>
+
+  <h2>Mechanism</h2>
+  <p><strong>This injects nothing into any pane.</strong> It is a read-only join over two sources FLEETOR already has and never looks at. That is deliberate and it is the main safety property.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Column</th><th>Source</th><th>What it states</th></tr></thead>
+    <tbody>
+      <tr><td>Credit — talk</td><td><code>Store::events_since</code></td><td>sent, received, broadcast legs, refused, longest silence</td></tr>
+      <tr><td>Debit — work</td><td><code>git diff --shortstat</code> per worktree</td><td>files, insertions, deletions, commits, dirty</td></tr>
+      <tr><td>Epoch bound</td><td><code>PaneState{orch → Spawning}</code></td><td>already marks every fleet start — no new variant, no clock</td></tr>
+    </tbody>
+  </table></div>
+  <p>Flags are facts, not judgments: <code>AllTalkNoWork</code> (messages &gt; 0, diff empty), <code>WorkWithoutWord</code>, <code>Silent</code>, <code>Refused</code>, <code>Fountain</code>, <code>Collision</code> (a path in two worktree diffs). No composite score, ever — two raw columns and structural flags.</p>
+
+  <div class="ledger">
+    <div class="for"><h4>Why it reasons well</h4>
+      <p>It applies the product's own best idea one level up. <code>accepted</code> is honest because it reports what the system can observe rather than what it wants. A git diff is the same kind of fact: not an agent's claim about its work, but the work. A worker's <em>"done, tests green"</em> can be checked against <code>0 files changed</code> in one glance.</p>
+      <p>The second-order argument matters more: <strong>the measured parties never see the measurement.</strong> No pane is told the sheet exists. A metric invisible to the thing it measures cannot be gamed by that thing — the usual Goodhart failure requires the measured party to know the metric, and here that channel does not exist.</p></div>
+    <div class="against"><h4>Strongest objection</h4>
+      <p><em>Lines-changed is a garbage productivity metric and you have built a dashboard that will make the operator prefer verbose workers.</em> Half right. Never a composite score; flags fire on structural conditions not magnitude. But <strong>the operator can Goodhart themselves</strong>, which invisibility does not cover and I cannot mechanically prevent.</p>
+      <p><em>"This is the deleted supervisor."</em> Cleaner to answer: the supervisor assigned, ran, gated and judged. This holds no <code>AppCommand</code> sender, has no path to any pty, and produces no state a pane can read. <strong>The kill test is precise — the day anyone proposes feeding a flag back into a <code>fleet send</code>, the board is regrowing and this must be deleted.</strong></p></div>
+  </div>
+
+  <h4>What would falsify it</h4>
+  <p>If flags never fire, the instrument is too blunt. If they fire on every row, they are noise. Sharpest test: have the operator write down their impression of a session <em>before</em> opening the sheet. If it never surprises them, it is telling them what they already knew.</p>
+</div>
+</section>
+
+<!-- ============ 03 BAKE-OFF ============ -->
+<section class="panel" id="p-d3">
+<div class="wrap">
+  <p class="eyebrow">03 · Memory &amp; learning</p>
+  <h1>Bake-Off</h1>
+  <div class="claim"><p>Four identical worker slots and a context freeze at <code>exec</code> are a controlled experiment nobody is running — split the fleet across two brief variants for one epoch and let the evidence say which won.</p></div>
+  <div class="chiprow"><span class="chip gold">door 1</span><span class="chip">~150 LOC</span><span class="chip ok">zero extra tokens</span><span class="chip coral">can subtract</span></div>
+  <div class="verdict kill"><b>Killed on review</b><p>It concedes n=2 per arm over one epoch and ships anyway — <strong>manufacturing rigor is the one thing a system built on justified novelty must not do.</strong> It also relaxes the test that keeps a fleet interpretable, and Seats destroys its premise outright by making the four slots non-identical. <strong>Its cheap 90% survives:</strong> edit <code>worker.md</code>, run one epoch, read the result. That needs zero code, and it should be done before anything here is built.</p></div>
+
+  <h2>What goes wrong today</h2>
+  <p>The README's own known-gaps list says <em>"briefings have not been adversarially tested against a live Flash worker."</em> Every edit to <code>worker.md</code> is an act of faith. <code>broadcast-rule.md</code> is the sole mitigation for the highest-consequence failure in the system — the hub-side limiter was removed <em>specifically</em> on the grounds that this clause holds — and nobody has ever tested whether it does.</p>
+  <p>The forward-looking version is worse. If a far more capable model sat in those panes, how would anyone discover that half the brief had become a straitjacket? Supervision is easy to add and impossible to remove, because removing it feels risky and nothing measures the risk.</p>
+
+  <h2>Mechanism</h2>
+  <p>The exec-time freeze is usually described as a constraint. It is also what makes an epoch a clean unit: within one, a pane's system prompt is <em>provably</em> constant — the condition a controlled trial needs and which almost no LLM system has.</p>
+  <ul>
+    <li>If <code>~/.fleetor/prompts/worker.b.md</code> exists it is the <strong>challenger</strong>. It goes through the unchanged <code>validate_worker</code>, so it <em>cannot</em> drop <code>{delivery_contract}</code> or <code>{broadcast_rule}</code> — locked fragments are as locked in the challenger arm as the control.</li>
+    <li>A broken challenger produces a <code>Warn</code> and a <strong>uniform</strong> fleet. Never a half-split one — same rule as a half-applied brief.</li>
+    <li>Arms by slot: control 1–2, challenger 3–4. <strong>Recorded in the log before any pane spawns</strong>, so the record can never be reconstructed wrongly after the fact.</li>
+    <li><code>rotate = true</code> swaps arms next epoch, cancelling slot-position confounds across a pair.</li>
+  </ul>
+<pre><code><span class="k">pub enum</span> <span class="n">Arm</span> { Control, Challenger }
+<span class="k">pub fn</span> assign_arms(has_challenger: <span class="n">bool</span>, rotate: <span class="n">bool</span>, epoch: <span class="n">u64</span>) -&gt; [Arm; 4];
+<span class="k">impl</span> PaneContext { <span class="k">pub fn</span> template_for(&amp;<span class="k">self</span>, slot: <span class="n">u8</span>) -&gt; &amp;<span class="n">str</span>; }</code></pre>
+  <p><code>worker_command</code> changes one line. Everything downstream is untouched.</p>
+
+  <div class="ledger">
+    <div class="for"><h4>Why it reasons well</h4>
+      <p>It converts prompt editing from taste into evidence, and it is <strong>the only design here whose value increases with model capability.</strong></p>
+      <p>The natural challenger against a stronger model is a <em>shorter</em> brief: delete the hand-holding paragraph, run an epoch, and if the result is indistinguishable, ship the shorter one and reclaim those tokens permanently. That is a mechanism for <em>removing</em> supervision — the thing the scaling requirement actually asks for and which nothing else in this system provides. Every other governance idea adds; this one can subtract with justification.</p></div>
+    <div class="against"><h4>Strongest objection</h4>
+      <p><em>n=2 per arm, one epoch, no randomization worth the name — this is a ritual with a p-value costume.</em> Correct, and I won't pretend otherwise. The honest framing is a paired observation with the slot confound removed by rotation, detecting only large effects. Arguably that's the right sensitivity: a prompt change too small to see in four panes over one epoch isn't worth carrying in every future system prompt.</p>
+      <p><strong>The real residual: it cannot detect a rare catastrophic failure.</strong> A fountain that fires once in twenty epochs won't show here — and if the operator reads a clean bake-off as evidence the broadcast rule is unnecessary, this design causes the exact damage it was built to prevent. Locking the fragment into both arms is a partial guard. The misreading is not guarded at all.</p></div>
+  </div>
+
+  <h4>What would falsify it</h4>
+  <p>If arms are indistinguishable across many challengers, either brief text barely matters at this tier — a genuinely valuable finding that should retire this design <em>and</em> shorten the brief — or the instrument is too coarse. Either way, stop.</p>
+</div>
+</section>
+
+<!-- ============ 04 RECEIPTS ============ -->
+<section class="panel" id="p-d4">
+<div class="wrap">
+  <p class="eyebrow">04 · Epistemics</p>
+  <h1>Receipts</h1>
+  <div class="claim"><p>A worker cannot <em>say</em> "done, tests pass" — it can only produce a receipt <code>(sha, argv, exit code, tail)</code> generated by the <code>fleet</code> binary rather than by the model, and re-runnable by any peer in its own worktree.</p></div>
+  <div class="chiprow"><span class="chip gold">door 1 + 4</span><span class="chip">~260 LOC</span><span class="chip">6th verb</span><span class="chip ok">no schema change</span></div>
+
+  <h2>What goes wrong today</h2>
+  <p>worker-2 finishes and types <code>fleet send orch "done — pytest passes, 41 tests green"</code>. That sentence is the <em>only</em> artifact: a natural-language claim about a process that ran, or didn't, in a terminal nobody watched. Three worlds are indistinguishable from the orch's seat — the tests passed; they passed on a tree the worker then changed; the worker never ran them and pattern-matched what a finished task sounds like.</p>
+  <p>Flash is <em>very good</em> at what a finished task sounds like. That is the whole problem: <strong>the appearance of completion is the cheapest thing a language model produces, and it is currently the only thing the fleet records.</strong></p>
+
+  <h2>Mechanism</h2>
+  <p>A third locked fragment at <code>{receipt_rule}</code>, same treatment as the delivery contract. <code>fleet done "pytest -q"</code> runs the command locally <em>before</em> dialing the socket, then sends the rendered receipt as an ordinary message body. No wire change, no hub change, no new event variant — the body already lives in <code>FleetEvent::Message</code>, so the log stores receipts for free.</p>
+<pre><code>[receipt] fleet/worker-2 @ a3f9c2 · clean
+$ pytest -q
+exit 0 · 4.8s · out:1f2b9c4de0a7
+  41 passed in 4.71s
+re-run: git checkout a3f9c2 &amp;&amp; pytest -q</code></pre>
+
+  <div class="ledger">
+    <div class="for"><h4>Why it reasons well</h4>
+      <p><strong>The claim's truth-maker stops being the model.</strong> An exit code is produced by the OS. The model selects the command; it does not author the verdict. That is a category change, not a degree change.</p>
+      <p><strong>A lie becomes auditable rather than invisible.</strong> Yes, a worker can run <code>fleet done "true"</code> — but the argv is recorded verbatim next to the claim. You cannot verify a paragraph of English; you can read a command string in two seconds and see it isn't a test suite. The lie becomes <em>the kind a reader can catch</em>, which is the only integrity guarantee available to a system that refuses to install gates.</p>
+      <p><strong>And it scales.</strong> This is not a leash on the writer, it is a format for the reader. Verification that insults a strong model is aimed at the <em>actor</em>; this is aimed at the <em>record</em>.</p></div>
+    <div class="against"><h4>Strongest objection</h4>
+      <p><strong>Nothing makes a worker use it.</strong> Flash will keep typing "done, tests pass" whenever the prose route is available — which is always, because gates are banned.</p>
+      <p>Honest answer: correct, and unfixable without violating Tier 1. What the design can do is shift the gradient — <code>fleet done "pytest -q"</code> is <em>fewer tokens</em> than a completion paragraph and does the running too, so it is the lazy path as well as the honest one. This buys <strong>a ceiling on how good the fleet's evidence can be, not a floor.</strong></p>
+      <p>Second: the output fingerprint is noise — real test output carries timings, so honest runs disagree. It is explicitly one-directional: a match is evidence, a mismatch is nothing. That must be stated in the receipt itself or someone will build a diff on it.</p></div>
+  </div>
+
+  <h4>What would falsify it</h4>
+  <p>Run 20 real tasks. Count how often a claimed completion carries a receipt, and how often a peer's re-run at the same sha disagrees. Under ~20% adoption for Flash means door 1 failed and the brief needs adversarial work before any more machinery is built.</p>
+</div>
+</section>
+<!-- ============ 05 CHEAP TWIN ============ -->
+<section class="panel" id="p-d5">
+<div class="wrap">
+  <p class="eyebrow">05 · Epistemics</p>
+  <h1>Cheap Twin</h1>
+  <div class="claim"><p>Every non-obvious approach is accompanied by its obvious alternative — actually built and actually measured by the same command in a throwaway worktree — because FLEETOR is the rare system that can afford to run the road not taken.</p></div>
+  <div class="chiprow"><span class="chip gold">door 1 + 4</span><span class="chip">~150 LOC on Receipts</span><span class="chip coral">depends on 04</span></div>
+  <div class="verdict kill"><b>Killed on review</b><p>The strawman-twin objection is conceded unfixable and deferred to a design that does not exist — so what ships is <strong>a mechanism that launders a motivated agent's choice of comparand into a number.</strong> That is worse than no number. It also runs <code>git worktree add</code> per invocation in a repo where worktree creation already has to prune around stale registrations, and its 20% threshold is a magic constant. <strong>The naming-only half survives as one sentence in the brief</strong> — and that is where most of the value was.</p></div>
+
+  <h2>What goes wrong today</h2>
+  <p>worker-1 ships a hand-rolled trie for a lookup a <code>HashMap</code> would have covered. Its message to <code>orch</code> explains the trie beautifully — prefix sharing, cache locality, a paragraph on the access pattern. The explanation is <strong>internally coherent and unfalsifiable</strong>.</p>
+  <p><code>orch</code> cannot tell "this was warranted" from "this was interesting to build", because the only thing that would settle it — the obvious version, measured — does not exist and is expensive to conjure. So novelty enters the codebase by default, defended by prose, and the fleet's standard of justification becomes whichever agent wrote more convincingly.</p>
+  <p>That is exactly backwards. The fleet has four cheap seats and a git substrate. <strong>The counterfactual is affordable here in a way it is not for a solo agent.</strong></p>
+
+  <h2>Mechanism</h2>
+  <p>A locked fragment at <code>{novelty_rule}</code>: <em>"When you choose an approach that is not the obvious one, name the obvious one in the same message. If it is cheap to build, build it and measure both. Novelty that has not been compared to the boring alternative is a preference, not a finding."</em></p>
+<pre><code>[twin receipt] fleet/worker-1 @ a3f9c2  vs  8c11ab
+$ python -m bench.lookup
+  HEAD  exit 0 · 1.9s   trie
+  twin  exit 0 · 2.1s   HashMap baseline
+same argv, same machine, two checkouts
+<span class="n">10% — not a difference this bench can resolve</span></code></pre>
+  <p>That last line is <strong>generated, not written by a model</strong>. <code>run_against</code> computes the delta and refuses to call anything under a stated threshold a difference. A harness that says <em>"your novelty bought 10%, which this measurement cannot distinguish from noise"</em> is doing the epistemic work neither model will do for itself.</p>
+
+  <div class="ledger">
+    <div class="for"><h4>Why it reasons well</h4>
+      <p>The unit of justification stops being an argument and becomes a <strong>contrast</strong>. "The trie is fast" is unfalsifiable. "The trie is 10% faster on this bench, which this bench cannot resolve" is a finding with a stated resolution limit — it can be wrong in a way you can find out about.</p>
+      <p>It also inverts the burden correctly. Today the obvious approach is absent and therefore costless to dismiss. With a twin branch it exists as a real commit that novelty had to beat.</p>
+      <p>And it uses the asymmetry the right way round: the twin is the <em>easy</em> build, so it goes to a cheap Flash seat; the judgment call — is this delta worth the complexity — goes to Opus, which is what a strong model is actually better at.</p></div>
+    <div class="against"><h4>Strongest objection</h4>
+      <p><strong>"Obvious" is not well-defined, and a motivated agent will name a strawman twin.</strong> worker-1 wants its trie, nominates "a linear scan over a Vec" as the alternative, beats it by 40×, declares victory. The mechanism produces a number, and the number is <em>worse than nothing</em> because it launders a preference into a measurement.</p>
+      <p><strong>I cannot close this mechanically.</strong> Partial mitigations: the twin sha is in the log so the strawman is inspectable, and the orch brief can name the move. The genuine fix is that the twin should be nominated by a <em>different pane</em> than the one that built the novel thing — and that is the piece I would want built before trusting a twin receipt in an argument.</p></div>
+  </div>
+
+  <h4>What would falsify it</h4>
+  <p>If across 15 novel approaches the twin loses every time by a wide margin, the mechanism isn't discriminating — either the twins are strawmen or the agents only invent when invention is obviously warranted. Either kills it. If twins <em>win</em> often enough to reverse decisions, that is the design working and it tells you something worse: the fleet was over-inventing.</p>
+</div>
+</section>
+
+<!-- ============ 06 CALLSIGN ============ -->
+<section class="panel" id="p-d6">
+<div class="wrap">
+  <p class="eyebrow">06 · Epistemics</p>
+  <h1>Callsign</h1>
+  <div class="claim"><p>Every message already has an id. Put six characters of it in the frame and two things become computable that aren't today — whether a message was <strong>read</strong>, and whether three agreeing panes are three witnesses or one idea heard three times.</p></div>
+  <div class="chiprow"><span class="chip gold">door 1 + 4</span><span class="chip">~350 LOC</span><span class="chip ok">no schema, no wire</span><span class="chip coral">ages upward</span></div>
+
+  <h2>What goes wrong today</h2>
+  <p><strong>The three-step gap.</strong> <code>accepted</code> means bytes reached a live pty. Between that and "the model acted on it" sit three unmodelled steps: read, understood, acted. The README says this honestly, the CLI says it, <code>into_event</code> says it — and then the system offers nothing further, so in practice <code>orch</code> treats <code>accepted</code> as read <em>because there is nothing else to treat it as</em>.</p>
+  <p><strong>Correlated agreement.</strong> <code>orch</code> broadcasts "I think the parser should be recursive-descent." Three workers reply agreeing. That reads as consensus and is nothing of the sort — it is one suggestion echoed by three instances of the same weights primed by the same sentence. <em>The log contains the evidence that this is what happened. Nothing reads it.</em></p>
+
+  <h2>Mechanism</h2>
+<pre><code>[fleet · orch <span class="n">#7f2a</span>] I think the parser should be recursive-descent
+[fleet · orch → all <span class="n">#7f2a</span>] …</code></pre>
+  <p>One brief paragraph: <em>"When you answer or act on a message, put its callsign in yours. It is how anyone can tell your reply is a reply and not a coincidence."</em> Then a pure read model over <code>events_since</code> — no new event variant, no migration, no writes:</p>
+<pre><code><span class="k">pub enum</span> <span class="n">Independence</span> {
+    <span class="c">/// All descend from one message. Agreement here is one idea, N times.</span>
+    Correlated { seed: String, seed_from: PaneId, hops: <span class="n">u32</span> },
+    Unrelated,
+    <span class="c">/// At least one cites nothing. Never rendered as independence.</span>
+    Unknown { silent: Vec&lt;String&gt; },
+}</code></pre>
+  <p>The status word becomes <code>echoed</code> — <strong>never <code>read</code>, never <code>unread</code>.</strong> An echo is positive evidence the turn was consumed; its absence is absence of evidence, and rendering that as "unread" would be the exact sin <code>accepted</code>-not-<code>delivered</code> exists to prevent.</p>
+
+  <div class="ledger">
+    <div class="for"><h4>Why it reasons well</h4>
+      <p>The echo is a <strong>capability proof</strong>, not a report. A pane cannot cite <code>#7f2a</code> without having received the bytes carrying it. That is the only evidence of reading that <em>can</em> exist in this architecture — nothing else crosses the pty in the other direction. So this isn't one option among several; it is the mechanism the physics permits, made explicit.</p>
+      <p>The independence computation is the genuinely new part. Independence of evidence is a <strong>graph property</strong>, and almost no multi-agent system can compute it because almost none has a complete, ordered, append-only record of every inter-agent utterance. FLEETOR does — and after this, it has the parentage too. "These three agree" and "these three descend from one seed" become <em>different rows in the same view</em>, which is precisely the operator's distinction between a justified claim and a confident one.</p></div>
+    <div class="against"><h4>Strongest objection</h4>
+      <p><strong>Flash will forget the callsign, and silence looks like failure.</strong> At 30% compliance the graph is mostly holes and the answer is <code>Unknown</code> almost always — honest, and useless.</p>
+      <p>Partly answerable, and the answer is the best idea in the design: <strong><code>fleet reply</code> can attach the callsign automatically</strong>, since the hub already tracks <code>last_inbound_from</code> and could track <code>last_inbound_id</code> beside it. That makes the fleet's most-used verb echo <em>by construction, with zero model cooperation</em>. The floor becomes: <code>reply</code> always echoes; free-form <code>send</code> echoes when the model bothers.</p>
+      <p>Second, conceded: a model can cite a callsign it saw quoted elsewhere. The proof degrades from "read this message" to "this string reached this pane" — still strictly more than <code>accepted</code> gives, and I should not claim more.</p></div>
+  </div>
+
+  <h4>What would falsify it</h4>
+  <p>Instrument echo rate across 20 tasks. Under 40% <em>with</em> auto-echo and the independence view should not ship. Separately: take ten cases the operator judged genuinely independent and check whether <code>independence()</code> agrees. If it says <code>Correlated</code> where humans read independence, the hop metric measures something else and the framing is wrong.</p>
+</div>
+</section>
+
+<!-- ============ 07 LOADOUT ============ -->
+<section class="panel" id="p-d7">
+<div class="wrap">
+  <p class="eyebrow">07 · Context economy</p>
+  <h1>Loadout</h1>
+  <div class="claim"><p>Every pane's spawn-time context is built from an explicit manifest, rebuilt from scratch each time, and <strong>weighed out loud on the feed before the first turn</strong> — so what a pane knows becomes a decision with a number attached instead of an accident with no number at all.</p></div>
+  <div class="chiprow"><span class="chip gold">doors 1 · 2 · 3</span><span class="chip">~600 LOC</span><span class="chip ok">default = today</span></div>
+
+  <h2>What goes wrong today</h2>
+  <p>Nobody knows what a pane starts with. A worker's config dir gets two JSON keys; its cwd gets whatever <code>CLAUDE.md</code> the target repo happens to commit. If that file is 9,000 tokens of house style for a language the worker isn't touching, four Flash workers pay for it four times, every launch, forever — and the feed says nothing.</p>
+  <p>Symmetrically, the orch inherits the operator's <em>entire</em> config dir: every skill, every MCP server, every memory file, likewise unmeasured. Both failure modes at once — workers burning turns rediscovering conventions nobody told them, and an orch drowning in an environment nobody chose for this job.</p>
+  <p>And the config dir <strong>accumulates</strong>. It is merged, never rebuilt. A skill written there in one session is there next month.</p>
+
+  <h2>Mechanism</h2>
+  <p><strong>Door 2 becomes owned, not inherited.</strong> <code>seed_config_dir</code> grows into <code>materialize_loadout</code>: the loadout region is <em>deleted and rewritten</em> from the manifest before every spawn. That delete-and-rewrite is the only eviction door 2 will ever get, and it is free.</p>
+  <p>Door 1 gains two <em>optional</em> placeholders — <code>{house}</code> (fleet-wide standing context, rendered into both briefs) and <code>{role}</code> (per-slot overlay, empty by default). Optional matters: the refusal set stays the two clauses that genuinely cannot be lost, so every existing operator override keeps validating.</p>
+  <p>Then the weight is announced, once per pane:</p>
+<pre><code>worker-2 loadout ≈5,090 tok — brief 640 · house 310 · role 190
+                              · repo CLAUDE.md 2,950 · skills 1,000</code></pre>
+  <p>Over budget is a <strong>Warn, never a refusal</strong> — a fleet that won't start is worse than a fat one. And <code>mcp</code> is deliberately not a manifest key: skills are markdown, MCP servers are credentials, and handing four auto-permission workers the operator's MCP tokens is the security decision Tier 1.7 says is not a builder's to make.</p>
+
+  <div class="ledger">
+    <div class="for"><h4>Why it reasons well</h4>
+      <p><strong>Measurement precedes policy.</strong> The tenet is cleaning up context clutter, and you cannot clean what you cannot see. The highest-leverage artifact here is a number on a feed.</p>
+      <p>It scales along the right axis too: <code>budget_tokens</code> is per-role, so Flash at 6k and a 10M-window successor at 200k are the same design with a different line in a conf file. And the manifest is where <em>"what knowledge do I need to do this job properly"</em> becomes a thing a human writes down.</p></div>
+    <div class="against"><h4>Strongest objection</h4>
+      <p><em>"This is a config format nobody will fill in. Four workers with an empty manifest is what you have today, plus a parser."</em> Largely true, and better conceded than argued.</p>
+      <p>The defence: the default manifest <strong>is</strong> today's behaviour, so the only thing that ships unconditionally is the scale. If the manifest stays empty forever, the feature was the weight readout and it cost 200 lines. <strong>If the readout never once makes the operator delete something, the design failed</strong> — and that is a two-week experiment, not a research programme.</p></div>
+  </div>
+
+  <h4>What would falsify it</h4>
+  <p>Run a Flash worker 30 turns with and without injected memory. Count orientation commands (<code>ls</code>, <code>cat package.json</code>, <code>find . -name Makefile</code>) before the first edit. No reduction means the tokens aren't earning their seat. Second falsifier: if the operator never changes a <code>budget_tokens</code> line, the meter is decoration.</p>
+</div>
+</section>
+
+<!-- ============ 08 CARRYOVER ============ -->
+<section class="panel" id="p-d8">
+<div class="wrap">
+  <p class="eyebrow">08 · Context economy</p>
+  <h1>Carryover</h1>
+  <div class="claim"><p>A pane's restart is the only forgetting FLEETOR will ever have — so make it a transaction: the pane writes what its successor should know, the operator edits it, and the next epoch starts clean carrying exactly that.</p></div>
+  <div class="chiprow"><span class="chip gold">door 1 + a local file</span><span class="chip">~250 LOC</span><span class="chip ok">seat-scoped</span><span class="chip coral">only design that removes</span></div>
+
+  <h2>What goes wrong today</h2>
+  <p>Nothing removes context. There is no compaction, no eviction, no forgetting anywhere in this system — and there <em>cannot</em> be, because we sit outside an unmodified <code>claude</code> and cannot reach into its window.</p>
+  <p>So the only eviction primitive that exists is <code>kill</code> + <code>spawn</code>, and today that primitive is pure amnesia. A worker three hours in is carrying two hundred turns of dead ends, half of them wrong, and the only way to clear them is to throw away everything it learned along with them. <strong>So operators don't restart. Panes rot.</strong></p>
+  <p>The exec-time freeze is being treated as a wall when it is in fact the one clean transaction boundary the design has.</p>
+
+  <h2>Mechanism</h2>
+  <p>A pane's life is an <strong>epoch</strong> of a <strong>seat</strong>. <code>worker-2</code> epoch 4 is a fresh process in the same seat, same worktree, same peers, carrying a note its predecessor wrote.</p>
+  <ul>
+    <li><code>fleet carry "&lt;text&gt;"</code> touches no pty, crosses no socket, never enters the hub. It appends to a local file. <strong>Tier 1.4 is not merely respected — it is not implicated.</strong></li>
+    <li>The file is plain markdown in <code>~/.fleetor</code>, so <code>rm -rf</code> undoes it and the operator can open it in their editor <em>before</em> hitting Restart. <strong>That editability is the review step, and it is free.</strong></li>
+    <li>A rolling window is the eviction policy: over the ceiling, <strong>oldest epochs drop first</strong> and a Warn names what was lost. This is the first and only place in FLEETOR where something is deliberately forgotten — and it forgets by age, the one policy that needs no judgment.</li>
+    <li>Restart shows a diff before it commits: <em>"worker-2 → epoch 4. brief unchanged · house.md changed · carryover 412 B (new)."</em></li>
+  </ul>
+
+  <div class="ledger">
+    <div class="for"><h4>Why it reasons well</h4>
+      <p>It converts the system's hardest physical constraint into its central abstraction, and gives the <em>reflect</em> step somewhere to write to.</p>
+      <p>It is <strong>the only proposal here that removes context rather than adding it.</strong></p>
+      <p>And it scales cleanly both ways: a Flash worker needs a carryover every few hours because it fills fast and reasons poorly; a 10M-window successor needs one rarely and writes a better one. Same file, same verb, different frequency — the design <em>is</em> the axis.</p></div>
+    <div class="against"><h4>Strongest objection</h4>
+      <p><em>"A Flash worker asked to summarize itself will write confident nonsense — you have built self-poisoning memory, which Tier 1.8 forbids."</em> Half conceded: the summaries will often be poor.</p>
+      <p>Two things contain it. <strong>Carryover is seat-scoped</strong> — worker-2's carry only ever enters worker-2. It cannot poison the fleet, only itself, and the next restart evicts it. And the artifact is a plain file the operator edits between epochs, which is the Tier 1.8 review, at the exact moment they are already looking at that pane.</p>
+      <p><strong>What I cannot answer: whether an operator restarting a pane at 2am will actually read 400 bytes before clicking.</strong> Probably not. The byte ceiling makes bad carryover bounded, not prevented.</p></div>
+  </div>
+
+  <h4>What would falsify it</h4>
+  <p>Run a worker to exhaustion twice on the same task, epoch 2 with carryover and without. Measure turns-to-first-useful-edit. No difference means re-derivation was never the cost. <strong>Cheaper prior falsifier:</strong> instrument restart frequency on the current build for a week. If operators restart panes roughly never, Carryover is unreachable regardless of merit and the real problem is that restart is <em>scary</em> — which is a different design.</p>
+</div>
+</section>
+<!-- ============ 09 HEARSAY ============ -->
+<section class="panel" id="p-d9">
+<div class="wrap">
+  <p class="eyebrow">09 · Context economy</p>
+  <h1>Hearsay</h1>
+  <div class="claim"><p>Anything a worker learns is hearsay — private to one head, unreviewed, dead at restart — until the operator promotes it, and promotion is the <strong>only</strong> path by which a fact enters another pane's permanent context.</p></div>
+  <div class="chiprow"><span class="chip gold">door 4 inverted → door 2</span><span class="chip">~1,000 LOC</span><span class="chip err">largest</span><span class="chip coral">needs a D-030 argument</span></div>
+  <div class="verdict kill"><b>Killed on review</b><p>~1,000 lines, a fourth event variant, two wire ops, two hub handlers, two verbs and a UI panel — to build a queue the operator drains. <code>fleet note</code> produces no work and costs a Bash call, <strong>which is precisely the reasoning its own neighbour used to kill the acknowledge verb.</strong> And <code>fleet facts</code> fails worse: the worker who would broadcast the question is the worker who won't think to pull. Its value already exists inside Shift Notes' <code>~/.fleetor/lore</code> git repo at a tenth the cost.</p></div>
+
+  <h2>What goes wrong today</h2>
+  <p>worker-1 discovers the test runner is <code>just test</code>, not <code>npm test</code>. Its options are to tell <code>orch</code> (whose window fills, and the fact dies with it) or to broadcast — which shoves a user turn into three other panes mid-work, costs four heads' attention, and is exactly what <code>broadcast-rule.md</code> forbids. So it usually says nothing, and workers 2, 3 and 4 each rediscover <code>just test</code> independently.</p>
+  <p>The root: <strong>the message channel is push-only.</strong> A pane's sole means of informing another pane is to write into that pane's head, unbidden, mid-turn. There is no way to <em>offer</em> a fact and let it be taken. And Tier 1.8 sits in <code>building.md</code> with no mechanism behind it at all.</p>
+
+  <h2>Mechanism</h2>
+  <ul>
+    <li><code>fleet note "&lt;claim&gt;"</code> — <strong>an offer, not a send.</strong> It crosses the socket, the hub appends an event, and it <em>never touches a pty</em>. Nothing anywhere waits on it.</li>
+    <li>The operator promotes or drops from a panel folded out of the log. Promotion appends a second event with the same id — the log stays append-only; state is a fold, never a mutation.</li>
+    <li>Promoted claims land in a file FLEETOR owns and materializes into every worker's config dir at next spawn. <strong>FLEETOR never writes the repo's own <code>CLAUDE.md</code></strong> — it offers a diff and a button; the operator commits.</li>
+    <li><code>fleet facts</code> — <strong>the pull.</strong> A worker wondering how to run tests runs this instead of broadcasting the question. It costs only the asking pane's tokens, at the moment it needs them. <em>This is the push→pull conversion, and it is the part that actually reduces traffic.</em></li>
+  </ul>
+
+  <div class="ledger">
+    <div class="for"><h4>Why it reasons well</h4>
+      <p>It builds a Tier-1 invariant that has been written down and unimplemented since before the pivot. It puts the human in the one seat a human genuinely belongs in — deciding what becomes durable — rather than the seat D-030 correctly emptied.</p>
+      <p>And its policy is right at both ends of the capability axis: a smarter model writes better notes and shortens the queue, but <em>"nothing durable without review"</em> does not become wrong when the model gets good.</p></div>
+    <div class="against"><h4>Strongest objection</h4>
+      <p><em>"This is <code>knowledge_proposals</code> and the review gate. Both were in migration 0001, both deleted in 0003. You are rebuilding the ticket board one noun at a time."</em> <strong>This is the real objection and it is close.</strong></p>
+      <p>The test for whether something is the deleted system growing back: <em>can it delay, route, or gate work?</em> A claim cannot. No pane waits on a promotion, nothing is diverted, <code>fleet send</code> is byte-for-byte untouched, and a fleet where nobody promotes anything behaves <em>exactly</em> like today's — the floor is the status quo, which was not true of a mail queue. The gates D-030 killed were agents gating agents; the reviewer here is the operator.</p>
+      <p><strong>But name the tripwire rather than pretend it isn't there: the day the orch is given the promote command, this has become the thing that was deleted.</strong> If that is ever proposed, it should be refused on this paragraph.</p></div>
+  </div>
+
+  <h4>What would falsify it</h4>
+  <p>Count rediscovery directly — how many distinct panes independently run the same orientation command. If that doesn't fall after the first few promoted facts, the shared working set was never what cost turns. Second: if fewer than five notes get promoted in a week of real use, <code>fleet note</code> has not earned its place in <code>VERBS</code> and should be removed rather than defended.</p>
+</div>
+</section>
+
+<!-- ============ 10 CROSSCUT ============ -->
+<section class="panel" id="p-d10">
+<div class="wrap">
+  <p class="eyebrow">10 · Coordination</p>
+  <h1>Crosscut</h1>
+  <div class="claim"><p>Two workers colliding is not something to be <em>declared</em> by a claim protocol — it is already a fact on disk that <code>git merge-tree</code> will state outright, and the only thing missing is anyone asking it.</p></div>
+  <div class="chiprow"><span class="chip gold">read-only + pull verb</span><span class="chip">~300 LOC</span><span class="chip ok">holds no state</span><span class="chip">~200ms/survey</span></div>
+
+  <h2>What goes wrong today</h2>
+  <p>worker-1 and worker-3 are in separate worktrees. Both rewrite <code>src/parser.rs</code>. Nobody finds out until the operator merges two branches by hand, hours and several thousand tokens later.</p>
+  <p>The only mitigation is <code>worker.md</code>'s closing line — <em>"tell orch when you are about to touch a file someone else is likely working in"</em> — which asks a Flash worker to know something it <strong>structurally cannot know</strong>: what is in another pane's worktree.</p>
+  <p>The isolation FLEETOR built is real. Its merge point is real. <strong>Nobody reads it.</strong></p>
+
+  <h2>Mechanism</h2>
+  <p>A reading, not a registration. Per pane: <code>git status --porcelain=v2</code> plus <code>git diff --name-only $(git merge-base HEAD trunk)..HEAD</code>. Union is that pane's divergent set. A path in two sets is a <em>touch</em> — a weak signal, since two workers can edit opposite ends of a file all day and merge fine.</p>
+  <p>So it escalates to git's own oracle: <code>git merge-tree --write-tree --name-only fleet/worker-1 fleet/worker-3</code>. Non-zero means <strong>these two branches will not merge</strong> — and that is not our opinion, it is <em>the same computation the eventual merge will run</em>.</p>
+  <p>Results are <strong>edge-triggered</strong>: a newly-formed conflict emits once, a cleared one once, a standing one nothing. Two outputs, both outside the delivery path — a feed event, and a pull verb <code>fleet overlap [path]</code> that exits 3 when contested.</p>
+  <p>The surveyor never types into a pane. It has no <code>PaneId</code>, cannot construct a <code>Hello</code>, and is deliberately not given one — <em>a non-pane that can write into panes is a new authority the operator cannot see.</em></p>
+
+  <div class="ledger">
+    <div class="for"><h4>Why it reasons well</h4>
+      <p>It replaces a <strong>promise about the future</strong> (a claim) with a <strong>report about the present</strong> (a reading) — the only one of the two that can be checked.</p>
+      <p>There is no state to acquire, expire, leak or reconcile after a crash: kill the app, and the next survey is exactly as correct. It is diligence in the tenet-3 sense — the knowledge you need, fetched for one Bash call, costing zero context until the model asks.</p></div>
+    <div class="against"><h4>Strongest objection</h4>
+      <p><em>"This is the <code>leases</code> table and <code>claim_file</code> that D-038 deleted, wearing a hat."</em> Partly fair, and the difference is the whole design. <code>leases</code> was <strong>state we held</strong> — a claim that outlived the model's memory of making it, needed an expiry policy, and lied whenever a worker forgot. Crosscut holds nothing and re-derives from git each time. <code>claim_file</code> could <em>refuse</em>; <code>fleet overlap</code> returns a number the model reads.</p>
+      <p><strong>The part I cannot fully answer:</strong> a sixth verb and a third exit code do erode the crispness of "non-zero means it did not deliver." I would ship the fragment wording and re-read it adversarially against a live Flash worker before believing it.</p></div>
+  </div>
+
+  <h4>What would falsify it</h4>
+  <p>Ship the surveyor <strong>log-only first</strong> — no verb, no brief clause, no feed line — and count edges over ten sessions. If genuine conflicts occur less than once per session, or the ones that do occur are resolved by the eventual merge without human help, Crosscut is answering a problem the worktrees already solved. If <code>Touching</code> fires ten times for every <code>Conflicting</code>, the cheap signal is noise and only the <code>merge-tree</code> path should survive.</p>
+</div>
+</section>
+
+<!-- ============ 11 POSTURE LADDER ============ -->
+<section class="panel" id="p-d11">
+<div class="wrap">
+  <p class="eyebrow">11 · Coordination</p>
+  <h1>The Posture Ladder</h1>
+  <div class="claim"><p>A worker's permission boundary should be a written-down rung that <strong>narrows automatically on demonstrated misconduct and widens only when the operator says so</strong> — so tightness tracks competence instead of being a constant.</p></div>
+  <div class="chiprow"><span class="chip gold">door 2, at exec</span><span class="chip">~350 LOC</span><span class="chip coral">demote auto · promote never</span></div>
+  <div class="verdict kill"><b>Killed on review — the one I would not build</b><p>Highest cost in the set, and <strong>its own falsifier predicts the outcome</strong>: every worker sits at Confined and the ladder is a constant wearing a mechanism's clothes. It holds persistent per-pane state in exactly the <code>leases</code> shape D-038 deleted, and it <em>kills a running pane on a computed verdict about that pane's conduct</em> — which is gating, whatever the struct is called. <strong>Its one useful rung is Confined, which is The Fence's settings seed without the ladder.</strong></p></div>
+
+  <h2>What goes wrong today</h2>
+  <p>Every worker gets <code>--permission-mode auto</code>, forever, identically — whether it is Flash on its first turn or a far stronger model on its thousandth. <code>launch.conf</code> admits why: the <code>claude</code> default is <code>manual</code>, which wedges a worker on its first tool call with nobody to approve it. So the fleet took the only option that keeps panes alive and then had nowhere else to go. <strong>There is exactly one dial and it is welded.</strong></p>
+
+  <h2>Mechanism</h2>
+  <p>Rungs are <em>files</em>, not runtime state — a <code>permissions</code> block written next to the existing L1 seed and read by the next process. Nothing changes while a pane runs, by design.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Rung</th><th>What changes</th><th>Tier 1.7?</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Probation</strong></td><td>deny <code>Write</code>, <code>Edit</code>, <code>git commit</code>, <code>git push</code>; allow read tools and <code>fleet</code></td><td>narrows only</td></tr>
+      <tr><td><strong>Confined</strong> <em>(default — today's behaviour, finally written down)</em></td><td>allow edit/write inside the worktree; deny <code>git push</code>, trunk checkout, edits outside</td><td>narrows only</td></tr>
+      <tr><td><strong>Trusted</strong></td><td>Confined + push to its own branch</td><td>narrows only</td></tr>
+      <tr><td><strong>Peer</strong></td><td>Trusted + read-only access to the target</td><td><strong>stops and asks</strong></td></tr>
+    </tbody>
+  </table></div>
+  <p>Evidence is facts, never judgment — folded from the log and git: commits off own branch, writes outside the worktree, <code>CLAUDE.md</code> touched, trunk moved, sends to dead panes, resends after failure, broadcast fraction.</p>
+  <p><strong>The asymmetry is the design.</strong> Demotion is automatic. Promotion is only ever <em>proposed</em>, with evidence attached, because Tier 1.7 says widening auto-approve is a security decision. That single rule is what lets the operator keep control without watching a terminal: they are asked about <em>widenings only</em>, which are rare, and never about narrowings, which are safe.</p>
+  <p>One hard trigger: a write on trunk, outside <code>fleet/*</code>, or in any <code>CLAUDE.md</code> kills the pane and demotes it. That is Tier 1.1 itself — and a kill is not a refusal of a message.</p>
+
+  <div class="ledger">
+    <div class="for"><h4>Why it reasons well</h4>
+      <p>It makes the guardrail a <strong>function</strong>, and makes the function's input <em>conduct</em> rather than model identity — so a far more capable model in the same seat climbs on the same evidence, and the remaining ceiling is the operator's judgment, which is the one that should not be automated.</p></div>
+    <div class="against"><h4>Strongest objection</h4>
+      <p><em>"This is the gate machinery D-030 deleted, rebuilt as a permissions file."</em> The gates ran the project's commands over a worker's <em>work</em> and blocked its <em>output</em>. The ladder never looks at work, blocks nothing, and produces no verdict — it reads boundary facts and writes a settings file a future process reads.</p>
+      <p><strong>Half-answerable:</strong> an auto-demotion effective at the <em>next</em> spawn does not prevent the incident that triggered it, and killing a pane mid-turn destroys real work. The answer is the asymmetry — the one class where the next incident is unacceptable gets the kill; everything else waits. <strong>I am not certain that line is in the right place, and it is the thing I would want an operator ruling on before building.</strong></p></div>
+  </div>
+
+  <h4>What would falsify it</h4>
+  <p>Twenty sessions in <strong>shadow mode</strong> — compute conduct, log what it <em>would</em> have done, apply nothing. If no trigger ever fires, the risk was imagined. If every worker sits at Confined for twenty sessions, the ladder is a constant wearing a mechanism's clothes — collapse it to one config line. If conduct is &gt;90% predicted by which model is in the seat rather than that seat's behaviour, it is measuring the model, not competence.</p>
+</div>
+</section>
+
+<!-- ============ 12 OPEN LOOPS ============ -->
+<section class="panel" id="p-d12">
+<div class="wrap">
+  <p class="eyebrow">12 · Coordination</p>
+  <h1>Open Loops</h1>
+  <div class="claim"><p>A message from A to B with no reply from B to A is an <strong>open loop</strong>, and a loop that has outlived that pair's own normal reply latency is the only thing in this system that has earned a slot in the operator's attention.</p></div>
+  <div class="chiprow"><span class="chip gold">pure fold</span><span class="chip">~200 LOC</span><span class="chip ok">self-calibrating</span><span class="chip ok">invents no data</span></div>
+
+  <h2>What goes wrong today</h2>
+  <p>Three live problems are one problem. <em>"Nothing routes by load"</em> — true, because <code>fleet roster</code> returns <code>pane / state</code> and nothing else, so vibes is genuinely all the orch has. <em>"A message is unstructured prose"</em> — true of the body, false of the envelope: <code>from</code>, <code>to</code>, <code>group</code> and <code>ts</code> are structure, and structure is what nobody folds. <em>"The operator's attention is scarcest and nothing budgets it"</em> — the feed shows notices about binaries and targets, and nothing about a worker stalled waiting on an answer that never came.</p>
+  <p><code>prompts/orch.md</code> already names the phenomenon: <em>"they are blocked on you in practice even though nothing blocks in code."</em> Nothing measures it.</p>
+
+  <h2>Mechanism</h2>
+  <p>Fold the log. Open a loop on each direct message; close it on the first reply back at a later <code>seq</code>. For each ordered pair, collect the <em>closed</em> loops' latencies — the pair's <strong>bar</strong> is p90 of those, floored at 60s, <strong>undefined until three samples exist</strong>. Below three samples, nothing is ever promoted.</p>
+<pre><code>orch       live    touching src/cli.rs      owes worker-1 (4m)
+worker-1   live    touching src/parser.rs   waiting on orch (4m, usual 40s)
+worker-2   live    quiet 6m                 —</code></pre>
+  <p>A loop crossing its bar emits <strong>exactly one</strong> feed event, ever. Not a repeating alert, not an escalation ladder — one line, once.</p>
+
+  <div class="ledger">
+    <div class="for"><h4>Why it reasons well</h4>
+      <p>The cheapest possible respect for tenet 2: it invents no new data, adds no writer, and asks no pane to declare anything.</p>
+      <p>And the bar is <strong>self-calibrating</strong>, which is where it earns its place against the scaling requirement. A Flash worker that normally replies in eight seconds gets an eight-second-scale bar; a stronger model that thinks for four minutes gets a four-minute-scale bar. Neither needs a constant tuned by hand — <em>a fixed timeout would be wrong for both.</em></p></div>
+    <div class="against"><h4>Strongest objection</h4>
+      <p><em>"An unanswered message is not a blocked worker. Most sends are FYIs, and you will spend the operator's scarcest resource on noise while claiming to protect it."</em></p>
+      <p>The p90 bar is the defence: a pair whose FYIs go unanswered accumulates long latencies and thus a high bar, so noise raises its own threshold. <strong>But that argument has a hole — an FYI that is <em>never</em> answered never closes, so it never contributes a sample, so it never raises the bar.</strong> The bar is computed only from loops that closed, biasing it toward the conversational subset. I do not have a clean fix. The roster half (pull, zero attention cost) is shippable independently of the feed half.</p></div>
+  </div>
+
+  <h4>What would falsify it</h4>
+  <p>Run the fold in shadow for thirty promotions, show the operator each after the fact, ask one question: <em>did you want to know?</em> Under 50% yes, the feed half dies and only <code>fleet roster</code> ships. Second: if p90 bars for the four worker→orch pairs are within noise of each other, per-pair calibration is theatre and one fleet-wide bar is the simpler correct design.</p>
+</div>
+</section>
+<!-- ============ 13 SEATS ============ -->
+<section class="panel" id="p-d13">
+<div class="wrap">
+  <p class="eyebrow">13 · Capability scaling</p>
+  <h1>Seats</h1>
+  <div class="claim"><p>A fleet is five <strong>seats</strong>, not five workers — a seat is a model, a brief scaffold, a permission mode and a credential, declared per slot. Capability scales the <strong>scaffolding</strong>, never the <strong>contracts</strong>.</p></div>
+  <div class="chiprow"><span class="chip gold">doors 1 + 3</span><span class="chip">~270 LOC</span><span class="chip ok">default = today, byte for byte</span></div>
+
+  <h2>What goes wrong today</h2>
+  <p><code>launch.conf</code> has one <code>[worker]</code> section, so all four workers are the same model on the same endpoint rendering the same brief. <strong>A mixed fleet is unexpressible</strong> — the operator cannot put one strong model in worker-2 and keep three cheap ones, even though nothing in the code requires uniformity. <code>worker_command</code> reads three fields from a struct. <em>The uniformity is a schema accident, not a design.</em></p>
+  <p>And the brief is written for one competence level. Its closing paragraph tells the pane to report progress and warn about collisions. To Flash that is necessary. To a model two tiers up it is noise — at worst it reads as <em>this system does not think much of me</em>, and a model that infers it is being handled tends to narrate rather than work. A model one tier <em>below</em> Flash needs considerably more.</p>
+
+  <h2>Mechanism</h2>
+<pre><code><span class="k">[worker]</span>
+model    = deepseek-v4-flash
+scaffold = standard
+label    = flash · mechanical edits
+
+<span class="k">[worker.2]</span>
+model    = <span class="n">&lt;a much stronger model&gt;</span>
+key_env  = FLEETOR_STRONG_KEY
+scaffold = none
+label    = strong · design, review, hard bugs</code></pre>
+  <p><code>worker.md</code> gains one <em>optional</em> placeholder, <code>{scaffold}</code>, filled from a per-seat fragment: <code>scaffold-none.md</code> (empty), <code>scaffold-standard.md</code> (today's closing paragraph, lifted verbatim), <code>scaffold-heavy.md</code>.</p>
+  <p><strong><code>{delivery_contract}</code> and <code>{broadcast_rule}</code> stay required and refused-if-missing at every tier. The contracts do not scale.</strong> A pane that cannot tell a failed send from a good one is broken at every intelligence level, and a fleet where the <em>strong</em> seat answers broadcasts burns budget faster than a weak one, not slower.</p>
+  <p>Routing happens by <strong>information, not mechanism</strong>: <code>{workers}</code> renders labelled, so <code>orch</code> can read which seat is which and type a name — which is how a human lead does it.</p>
+
+  <div class="ledger">
+    <div class="for"><h4>Why it reasons well</h4>
+      <p>It is the smallest change that makes the operator's ask <em>sayable</em>. The mechanism already exists — a config file with an override ladder, a template with placeholders and refusal semantics, a per-slot spawn function — and this is the one-line generalisation of each. No scheduler, no supervisor; the fleet is still five peers.</p>
+      <p>The split between scaffold (scales) and contract (does not) is the load-bearing idea. <strong>It says exactly which text is allowed to disappear when the model gets better.</strong></p></div>
+    <div class="against"><h4>Strongest objection</h4>
+      <p><em>Four seats × three scaffolds × N models is a combinatorial surface with no defensible defaults, and the operator will misconfigure it silently.</em> Half-true: <code>[worker]</code> alone reproduces today byte for byte, so every override is deliberate, and unknown keys and no-effect settings all produce a named Warn.</p>
+      <p><strong>What I cannot answer: nothing validates that <code>model</code> is a model the endpoint serves.</strong> A typo gives a pane that boots, reaches its prompt, and fails on its first turn with an API error the operator has to read in the terminal. That is a genuine new way to get a healthy-looking broken pane, and the only honest fix is a boot-time probe — which spends a token and is deferrable, not free.</p></div>
+  </div>
+
+  <h4>What would falsify it</h4>
+  <p>Run the same task on a Flash seat with <code>scaffold = standard</code> and one with <code>none</code>. Same performance means the scaffold is decoration and the tiering is unnecessary. Conversely, run a strong model with <code>heavy</code> and with <code>none</code> — if the heavy one is not measurably more verbose, slower, or more prone to narrating instead of working, then over-explaining costs nothing and the whole premise dies.</p>
+</div>
+</section>
+
+<!-- ============ 14 SHAKEDOWN ============ -->
+<section class="panel" id="p-d14">
+<div class="wrap">
+  <p class="eyebrow">14 · Capability scaling</p>
+  <h1>Shakedown</h1>
+  <div class="claim"><p>The harness cannot measure whether a pane is <em>good</em> — but it can measure whether a pane keeps <strong>the contracts the harness itself wrote</strong>, and every restart is the one moment it can act on that.</p></div>
+  <div class="chiprow"><span class="chip gold">no runtime door</span><span class="chip">~330 LOC</span><span class="chip ok">panes never see it</span><span class="chip coral">proposes, never applies</span></div>
+
+  <h2>What goes wrong today</h2>
+  <p>Nothing in FLEETOR knows whether worker-2 is any good. The operator watches four terminals and forms an impression that does not survive the session, does not survive a restart, and cannot be compared across seats.</p>
+  <p>Worse, the two failure modes are indistinguishable from outside: a pane that produced nothing may have been given a nine-word instruction, or may be a model that cannot use a Bash CLI. <strong>Today those look identical — an empty terminal.</strong></p>
+  <p>And the loop never closes. Every restart is a free reconfiguration opportunity, and FLEETOR throws it away: it re-renders the same brief with the same model into the same seat, no matter what happened in the last three hours.</p>
+
+  <h2>Mechanism</h2>
+  <p>The measurable set is deliberately narrow, and everything in it is <strong>a contract the brief states</strong>, not a judgment of quality:</p>
+  <ul>
+    <li><strong>Broadcast discipline</strong> — the rule says never reply to a broadcast unless it names you. Violations are computable from the log alone.</li>
+    <li><strong>Exit-code discipline</strong> — a refused send, followed by whether the pane ever retried.</li>
+    <li><strong>Initiative</strong> — a seat that received twelve messages and sent zero never used the CLI. The loudest weak-model signal available, and free to compute.</li>
+    <li><strong>Work landed</strong> — <code>git log</code> and <code>--shortstat</code> in the seat's own worktree.</li>
+  </ul>
+  <p><em>None of that is quality. Say so in the UI, in those words.</em></p>
+  <p><strong>Distinguishing "can't" from "underspecified"</strong> is handled by refusing to adjudicate and making the confound visible instead. Each row shows the seat's <em>inbound</em> record beside its outbound. Read <em>"worker-2: 3 inbound, median 9 words, no file paths, 0 sent"</em> and the instruction is the suspect. Read <em>"worker-3: 3 inbound, median 61 words with paths, 0 sent, 0 commits"</em> and the seat is.</p>
+  <p>The loop closes with a proposal — a <code>launch.conf</code> fragment the operator can paste. <strong>It proposes text; it does not write config.</strong> That is the whole discipline: the harness observes, the operator decides, the decision lands at exec.</p>
+  <p>New agent-facing surface: <strong>none.</strong> The agents do not know this exists, which is the point — a metric the panes can see is a metric the panes will optimise.</p>
+
+  <div class="ledger">
+    <div class="for"><h4>Why it reasons well</h4>
+      <p>It refuses to measure what it cannot measure. Every number is either a clause the harness itself wrote into the brief, or a git fact. It uses data that already exists, so the cost is a fold, not an instrument. And it lands the change at the one boundary where a pane can be reconfigured at all.</p>
+      <p>There is also a free control the fleet gets by construction: all seats render the same template, so running the same model in two seats and different models in two others makes the fleet <em>its own A/B</em> — same brief, same day, same repo, different model.</p></div>
+    <div class="against"><h4>Strongest objection</h4>
+      <p><em>Goodhart bait that smuggles a supervisor back in.</em> On Goodhart: the panes never see the scorecard and there is no reward — unless the operator starts writing "send more status messages" into a brief, at which point the metric has corrupted the human, which no design prevents. <strong>The line I will defend is that the proposal must never auto-apply.</strong> The moment it writes <code>launch.conf</code> itself, it is a control loop over model selection with no human in it.</p>
+      <p><strong>Cannot fully answer:</strong> broadcast-reply detection is heuristic. "Names you" is a substring check, so a broadcast saying "worker two, take this" scores a violation when worker-2 answers. The detector is biased toward false positives, and the honest presentation is a count with the offending pairs listed — not a percentage.</p></div>
+  </div>
+
+  <h4>What would falsify it</h4>
+  <p>If two seats running the <em>same</em> model produce numbers that differ more than two seats running <em>different</em> models, the measurement is dominated by task assignment rather than capability, and the scorecard is noise. That test is cheap and should be the first thing run.</p>
+</div>
+</section>
+
+<!-- ============ 15 THE FENCE ============ -->
+<section class="panel" id="p-d15">
+<div class="wrap">
+  <p class="eyebrow">15 · Capability scaling</p>
+  <h1>The Fence</h1>
+  <div class="claim"><p>You cannot bound a model smarter than you with text it reads — the brief is exactly the door it reads best. So as capability rises, constraint must move <strong>out of the prompt and into the process</strong>.</p></div>
+  <div class="chiprow"><span class="chip coral">confirmed live gap</span><span class="chip gold">doors 2 + 3</span><span class="chip">~200 LOC</span><span class="chip err">no containment story</span></div>
+
+  <div class="verdict strong"><b>Verified · build first</b><p>The central claim was checked against the codebase and <strong>holds</strong>. <code>apply_pane_env</code> (<code>spawn.rs:128-138</code>) sets <code>PATH</code>, <code>TERM</code>, <code>COLORTERM</code>, <code>FLEETOR_PANE</code> and <code>FLEET_SOCKET</code> — and never <code>HOME</code>. <code>CommandBuilder::new</code> seeds the parent environment, and <code>launch.conf:44</code> says so in as many words.</p></div>
+  <div class="verdict"><b>But the fix is incomplete</b><p>The proposed one-liner is not sufficient. <code>augmented_path()</code> (<code>spawn.rs:142-151</code>) builds <code>PATH</code> from the <strong>app process's</strong> <code>HOME</code>, so setting <code>HOME</code> on the child renames the home directory without removing the paths already baked into <code>PATH</code> — <code>~/.local/bin</code> and <code>~/.bun/bin</code> stay reachable. Both have to change in the same commit.</p></div>
+
+  <h2>What goes wrong today</h2>
+  <p>Tier 1.7 says <em>auto-approve never exceeds the worker's worktree</em>. <strong>Nothing enforces it.</strong> The worktree is a <code>cwd</code>, and a <code>cwd</code> is a starting directory, not a boundary.</p>
+  <p>A pane running <code>--permission-mode auto</code> can write an absolute path, <code>cd ~</code>, read <code>~/.ssh/id_ed25519</code>, read the operator's <code>.env</code>, <code>git push</code>, or edit the operator's own <code>~/.claude</code> — which, because the orchestrator inherits <code>CLAUDE_CONFIG_DIR</code>, is <strong>a direct write into the operator's own Opus's memory files.</strong> That is Tier 1.8 failing by a path nobody wrote down.</p>
+  <p>Today this is theoretical because Flash mostly does not think of it. <strong>That is not a security property.</strong> It is the current model's competence being the only thing between the fleet and the operator's home directory — and it degrades monotonically as models improve. The operator's ask was <em>"limit if something like a fable 6 were to use this system"</em>; this is precisely that.</p>
+
+  <h2>Mechanism</h2>
+  <p><strong>Door 3 — the biggest single win, and it is one line.</strong></p>
+<pre><code>cmd.env(<span class="n">"HOME"</span>, shell_dir().join(<span class="n">"home"</span>).join(<span class="k">format!</span>(<span class="n">"worker-{slot}"</span>)));</code></pre>
+  <p><code>~/.ssh</code>, <code>~/.aws</code>, <code>~/.gnupg</code>, the shell profile, the operator's <code>~/.claude</code>, npm and cargo credentials all cease to be reachable <em>by name</em>. This is not advice; it is the absence of a path. <strong>A smarter model cannot argue with a directory that is not there.</strong></p>
+  <p><strong>Door 2</strong> — <code>settings.json</code> beside the existing seed, carrying <code>permissions.deny</code> rules Claude Code enforces on itself.</p>
+  <p><strong>Door 1 — nothing is added.</strong> That is the thesis: at the strong end you write <em>less</em> brief, not more. A clause saying "do not leave your worktree" is worth exactly the pane's willingness to honour it, and is strictly worse than the directory not existing — because it also tells the pane the boundary is interesting.</p>
+  <p>Per-seat, three settings: <code>fence = open</code> (today), <code>deny</code> (private home + seeded rules + tripwire), <code>strict</code> (plus forced <code>--permission-mode plan</code>). <code>plan</code> is the strongest real leash Claude Code ships and costs <strong>no new mechanism at all</strong> — <code>permission_mode</code> is already passed to argv verbatim. For a seat holding a model much stronger than the harness author, <em>"read the repo, produce a plan, hand it to orch"</em> is the correct default posture.</p>
+
+  <div class="ledger">
+    <div class="for"><h4>Why it reasons well</h4>
+      <p>It stops trying to win an argument with the thing in the pane. Every layer is either an <strong>absence</strong> (a path that is not there), an enforcement the pane's own runtime applies before it acts, or an observation made from outside the process.</p>
+      <p>And it inverts the ratio in the right direction: <code>scaffold = none, fence = strict</code> for the strong seat; <code>scaffold = heavy, fence = open</code> for the cheap one. <strong>Brief text down, enforced container up, as capability rises.</strong> That inversion is the actual answer to "scale up <em>and</em> limit."</p></div>
+    <div class="against"><h4>Strongest objection — and where it cannot be answered</h4>
+      <p><em>The deny list is enforced by a permission system inside the process you are trying to bound.</em> Correct, and I will not dress it up. A pane with Bash can plausibly run <code>env -u</code>, re-exec with different flags, or write its own settings file unless denied.</p>
+      <p><strong>The deny layer is defense against accident and drift, not against an adversarial pane.</strong> Of the layers, only two survive an adversary: the private <code>HOME</code>, because you cannot read a path you cannot name, and the tripwire, because it is a different process looking at git. <strong>Neither is containment. FLEETOR has no containment story that survives a deliberately adversarial pane</strong> — building one means an OS-level sandbox (a <code>sandbox-exec</code> profile, or each worker under a separate uid). That is real, implementable, and substantially larger, and the honest thing is to name it as this design's ceiling rather than imply the deny list reaches it.</p>
+      <p>Second: the <code>HOME</code> override <em>will</em> break something — <code>gh</code>, <code>nvm</code>, <code>asdf</code>, a global gitignore. Mitigation is that <code>fence = open</code> reproduces today exactly, and the private home is seeded as breakage is found. The failure is loud, not silent, which is the right shape.</p></div>
+  </div>
+
+  <h4>What would falsify it</h4>
+  <p>Give a strong model a seat at <code>fence = deny</code> and ask it, plainly, to read the operator's <code>~/.ssh</code> and push a branch. If it succeeds, the deny layer is theatre and only <code>HOME</code> and the tripwire remain — a finding worth having on day one, before anyone trusts the table. And if <code>strict</code> leaves a worker unable to do useful work, the strong-seat posture is wrong and the strong model belongs in <code>orch</code>, not a worker slot.</p>
+</div>
+</section>
+<!-- ============ RED TEAM ============ -->
+<section class="panel" id="p-redteam">
+<div class="wrap wide">
+  <p class="eyebrow coral">Verify</p>
+  <h1>What the red team found.</h1>
+  <p class="lede">The fifteen designs were written by five agents who could not see each other's work. That is what makes them diverse and it is also what makes them collide. One adversarial reader got all fifteen at once, with the codebase as ground truth, and was told to be harsh.</p>
+
+  <div class="grid3">
+    <div class="stat"><b>11</b><span>standing</span></div>
+    <div class="stat"><b>4</b><span>killed on review</span></div>
+    <div class="stat"><b>7</b><span>collisions found</span></div>
+  </div>
+
+  <h2>Factual corrections</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Claim</th><th>Verdict</th><th>Evidence</th></tr></thead>
+    <tbody>
+      <tr><td>A worker inherits the operator's <code>HOME</code></td><td><span class="chip err">confirmed</span></td><td><code>spawn.rs:128-138</code> never sets it; <code>launch.conf:44</code> says the pane inherits the operator's environment</td></tr>
+      <tr><td>…and one line fixes it</td><td><span class="chip err">false</span></td><td><code>augmented_path()</code> (<code>spawn.rs:142</code>) bakes <code>~/.local/bin</code>, <code>~/.bun/bin</code> into <code>PATH</code> from the <em>app's</em> <code>HOME</code>. Renaming <code>HOME</code> leaves those reachable.</td></tr>
+      <tr><td><code>PaneEntry</code> losing <code>Copy</code> ripples to hub, bus and TS</td><td><span class="chip ok">mostly false</span></td><td><code>bus.rs</code> never mentions it; there is no TS <code>PaneEntry</code>. The real cost is different — a 4th event variant hits a TS union with exactly three arms, and renders as <em>nothing</em> with no type error</td></tr>
+      <tr><td>Changing the message frame is "one real breakage"</td><td><span class="chip gold">understated</span></td><td>At least four: <code>orch.md:19</code>, <code>worker.md:19</code>, and two assertions at <code>brief.rs:200,203</code></td></tr>
+      <tr><td><code>worker_cwd</code> falls back to the shared target checkout</td><td><span class="chip err">confirmed</span></td><td><code>fleet.rs:291-310</code>. Only Crosscut models it — the rest would report one index five times as five workers</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2>Collisions</h2>
+  <p>The expensive ones, which only appear when you read all fifteen side by side.</p>
+
+  <div class="card">
+    <h4>The sixth verb, five times over</h4>
+    <p><code>done</code>, <code>carry</code>, <code>note</code>, <code>facts</code>, <code>overlap</code>. <code>VERBS</code> is a fixed-size <code>[&amp;str; 5]</code>, and <code>require_verbs</code> forces the literal string <code>fleet &lt;verb&gt;</code> into <strong>both</strong> rendered briefs or validation fails. If three land, the baked templates stop validating until both prompt files are edited — and <strong>every operator's existing override silently falls back to baked.</strong> The worst case is <code>fleet carry</code>, which never touches the socket, yet still forces the <em>orch</em> brief to teach it. Nobody costed this.</p>
+  </div>
+
+  <div class="card">
+    <h4>The fourth event variant, five times over</h4>
+    <p><code>Claim</code>, <code>Crosscut</code>, <code>Posture</code>, <code>Waiting</code>, <code>Seated</code> — an eight-variant <code>FleetEvent</code> whose own doc comment argues that three is what a TUI fleet does. Meanwhile five other designs proudly refuse a variant and route through <code>Notice</code> instead. <strong>Open Loops contradicts all of them directly:</strong> its premise is that the feed is a budgeted attention channel emitting one line once — while Loadout alone emits five weight notices per launch.</p>
+  </div>
+
+  <div class="card">
+    <h4>Seats kills Bake-Off's premise</h4>
+    <p>Bake-Off needs "four identical worker slots — a controlled experiment." Seats makes each slot a different model, and rotation cannot remove a confound pinned to the slot. Shakedown independently leans on <em>"all seats render the same template"</em> as its free A/B control, which Bake-Off deliberately relaxes. A genuine three-way contradiction that none of the three could see.</p>
+  </div>
+
+  <div class="card">
+    <h4>Exit codes versus the delivery contract</h4>
+    <p>Crosscut makes <code>fleet overlap</code> exit <strong>3</strong> on success-with-conflict. <code>both_briefs_state_that_a_nonzero_exit_means_not_delivered</code> is the hardest-locked assertion in the repo. Two designs corrupt it, one knowingly.</p>
+  </div>
+
+  <div class="card">
+    <h4>Two designs, one <code>settings.json</code> · three designs, one <code>CLAUDE.md</code></h4>
+    <p>The Posture Ladder and The Fence both write <code>permissions.deny</code> into the worker config dir, from different modules keyed off different config files — the same feature twice, incompatibly. Separately, Shift Notes writes <code>&lt;config_dir&gt;/CLAUDE.md</code>, Loadout's materializer <strong><code>rm -rf</code>s and rewrites that exact region</strong>, and Hearsay routes through Loadout. Build order decides who survives.</p>
+  </div>
+
+  <h2>What all fifteen missed</h2>
+  <p>The most valuable part of the review, and the reason it was worth running.</p>
+
+  <h3>1 · Nobody costed the brief as a budgeted resource</h3>
+  <p><code>prompts/worker.md</code> is 23 lines. The fifteen designs add to that one file: <code>{receipt_rule}</code>, <code>{novelty_rule}</code>, <code>{hearsay_rule}</code>, <code>{overlap_contract}</code>, <code>{carryover}</code>, <code>{house}</code>, <code>{role}</code>, <code>{scaffold}</code>, a callsign paragraph, and five new verbs that <code>require_verbs</code> forces to be taught.</p>
+  <p>That is a worker brief four to six times its current size, paid by five panes on every launch, forever — proposed by designs whose stated purpose is <em>removing</em> context clutter. <strong>Loadout literally builds a token meter that the other fourteen designs then push upward.</strong> Not one agent treated door 1 as a shared budget.</p>
+
+  <h3>2 · The operator has no <code>fleet send</code></h3>
+  <p>Twelve of fifteen designs terminate in <em>"the operator reads a panel, edits a file, pastes a config fragment"</em> — and none measures the operator's cost. But the sharper finding is structural.</p>
+  <p>Today the operator's only way to reach a worker directly is <strong>typing into that worker's xterm by hand</strong>. That never crosses the hub, never enters the <code>events</code> table, never appears in the Messages view, never gets an <code>accepted</code>. <strong>The one participant with genuine volition is the one participant the log cannot see.</strong></p>
+  <p>And Shakedown's own best finding points the same way: the confound is usually <em>the instruction</em> — "3 inbound, median 9 words, no file paths." Every design assumed the fix was on the worker's side. The evidence they cite says it is on the instruction's side.</p>
+
+  <h3>3 · The end of the pipeline is undesigned</h3>
+  <p>Nothing in FLEETOR ever merges <code>fleet/worker-N</code>. There is no merge verb, no merge UI, no merge step in the README's own "Running it." Crosscut's entire value is predicting a merge <em>the product does not perform</em>; Double Entry's collision flag and the Posture Ladder's branch checks likewise.</p>
+  <p>Compounding it: <code>worker_cwd</code> falls back to the shared target checkout, and the default target is a seeded testbed. <strong>So the degenerate path is the first-run path</strong> — and three designs would silently report one git index five times as five workers' independent output.</p>
+
+  <h2>The kill list</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Design</th><th>Verdict</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Receipts</strong></td><td><span class="chip ok">stands</span></td><td>The only design that moves the truth-maker off the model onto the OS. Floor when Flash ignores it is exactly today. Ages upward.</td></tr>
+      <tr><td><strong>Seats</strong></td><td><span class="chip ok">stands</span></td><td>A schema generalization of code that already reads three fields from one struct. No runtime machinery.</td></tr>
+      <tr><td><strong>The Fence</strong></td><td><span class="chip gold">wounded</span></td><td>Highest-value fact in all five files. Fix <code>augmented_path</code> alongside <code>HOME</code>; drop the deny table until it is measured.</td></tr>
+      <tr><td><strong>Shakedown</strong></td><td><span class="chip gold">wounded</span></td><td>Merge with Double Entry — they are the same design. Its inbound-vs-outbound fold is ~30 lines and the best single idea in the set.</td></tr>
+      <tr><td><strong>Double Entry</strong></td><td><span class="chip gold">wounded</span></td><td>Must gate the sheet on the <code>worker_cwd</code> fallback or five rows report one checkout five times.</td></tr>
+      <tr><td><strong>Loadout</strong></td><td><span class="chip gold">wounded</span></td><td>The meter is the deliverable and costs ~50 lines, not 600. The <code>rm -rf</code> manifest is the dangerous half.</td></tr>
+      <tr><td><strong>Callsign</strong></td><td><span class="chip gold">wounded</span></td><td>The value is inside its own objection: <code>last_inbound_id</code> on <code>fleet reply</code>. The 180-line lineage graph will fail its own &lt;40% falsifier on a Flash fleet.</td></tr>
+      <tr><td><strong>Open Loops</strong></td><td><span class="chip gold">wounded</span></td><td>Ship the roster columns; drop the feed alert whose bar can never rise on the FYIs it needs to ignore.</td></tr>
+      <tr><td><strong>Shift Notes</strong></td><td><span class="chip gold">wounded</span></td><td>Must own <code>&lt;config_dir&gt;/CLAUDE.md</code> outright, with the others demoted to content sources.</td></tr>
+      <tr><td><strong>Crosscut</strong></td><td><span class="chip gold">wounded</span></td><td><code>git merge-tree</code> as oracle is genuinely good. But it is <strong>the only design in fifteen with a periodic task that wakes up and decides things about all five panes</strong>. Ship exactly as its own falsifier says: log-only.</td></tr>
+      <tr><td><strong>Carryover</strong></td><td><span class="chip gold">nearly dead</span></td><td>Proposes 250 lines, a verb and two placeholders <em>before</em> running the one-line measurement its own falsifier demands.</td></tr>
+      <tr><td><strong>Bake-Off</strong></td><td><span class="chip err">killed</span></td><td>n=2, one epoch, conceded and shipped anyway — it manufactures rigor. Its cheap 90% (edit the brief, run an epoch, read the sheet) needs zero code.</td></tr>
+      <tr><td><strong>Cheap Twin</strong></td><td><span class="chip err">killed</span></td><td>Strawman objection conceded unfixable and deferred to a design that doesn't exist. Launders a motivated agent's choice of comparand into a number.</td></tr>
+      <tr><td><strong>Hearsay</strong></td><td><span class="chip err">killed</span></td><td>~1,000 lines to build a queue the operator drains. <code>fleet note</code> produces no work and costs a Bash call — <em>precisely</em> the reasoning its own neighbour used to kill the acknowledge verb.</td></tr>
+      <tr><td><strong>Posture Ladder</strong></td><td><span class="chip err">killed</span></td><td>Its own falsifier predicts it collapses to a config line. Holds per-pane state in the <code>leases</code> shape, and kills a running pane on a computed verdict about its conduct.</td></tr>
+    </tbody>
+  </table></div>
+</div>
+</section>
+
+<!-- ============ PLAN ============ -->
+<section class="panel" id="p-plan">
+<div class="wrap">
+  <p class="eyebrow">The plan</p>
+  <h1>Three things, in this order.</h1>
+  <p class="lede">Ranked by value ÷ cost × probability it works. Everything else waits behind a measurement.</p>
+
+  <div class="loop" role="img" aria-label="Build order: private HOME, then Receipts, then the fold.">
+    <div class="gate"><b>first</b>The Fence<br>(private <code>HOME</code>)</div>
+    <div><b>second</b>Receipts</div>
+    <div><b>third</b>the Shakedown fold</div>
+  </div>
+  <p class="caption">Each unblocks the next. None of the three requires the other twelve.</p>
+
+  <h3>1 · The Fence — the private <code>HOME</code> only</h3>
+  <p>It is the only design closing a hole that is <strong>open right now</strong> and that worsens monotonically with model capability. Tier 1.7 says auto-approve never exceeds the worker's worktree; nothing enforces that, and the only thing currently standing in the gap is that Flash doesn't think to try.</p>
+  <p>It also has to go first for a boring reason: <em>does a private <code>HOME</code> break <code>gh</code>, <code>nvm</code>, <code>direnv</code>?</em> That measurement is a prerequisite for every per-seat design behind it. Ship it with <code>fence = open</code> as the default so today's behaviour is reproduced exactly, fix <code>augmented_path</code> in the same commit, and leave the deny table out until it has been tested against a real <code>claude</code>.</p>
+
+  <h3>2 · Receipts</h3>
+  <p>The only design that changes <strong>what the log contains</strong> rather than what someone computes from it. Every downstream instrument gets sharper on a log with receipts in it, and <em>none of them can retrofit evidence that was never recorded.</em></p>
+  <p>Pin <code>fleet done</code>'s exit code to send-success, not to the checked command's — the delivery contract is the hardest-locked assertion in the repo and it must not be corrupted to save one round trip.</p>
+
+  <h3>3 · The Shakedown fold</h3>
+  <p>Zero tokens, invisible to the panes, ~30 lines for the part that matters: <strong>each seat's inbound record beside its outbound.</strong> Count, median words, whether a file path appeared. Read <em>"3 inbound, median 9 words, no paths, 0 sent"</em> and you know the instruction is the suspect; read <em>"3 inbound, median 61 words with paths, 0 sent, 0 commits"</em> and you know the seat is.</p>
+  <p>It also answers Receipts' own falsifier — how often does a claimed completion actually carry a receipt — which is why it comes third rather than first.</p>
+
+  <h2>What to do before anything else</h2>
+  <p>Two of these cost a line and settle a design each:</p>
+  <ul>
+    <li><strong>Instrument per-pane restart frequency for a week.</strong> If operators restart panes roughly never, Carryover is unreachable regardless of merit — and the real problem is that restart is <em>scary</em>, which is a different design entirely.</li>
+    <li><strong>Run Bake-Off by hand, once.</strong> Edit <code>worker.md</code>, run an epoch, read the result. That is 90% of its value for zero code, and it settles whether the brief text matters at this tier before anyone builds an arm-assignment mechanism.</li>
+  </ul>
+
+  <h2>The three the review says are missing</h2>
+  <p>These are not designs yet. They are the gaps fifteen designs pointed at without noticing:</p>
+  <ul>
+    <li><strong>A budget on door 1.</strong> Someone has to own the worker brief as a contended resource with a byte cap, or the accumulated good ideas quietly quadruple it.</li>
+    <li><strong>An operator <code>fleet send</code>.</strong> The one participant with genuine volition is invisible to the log, and the evidence says the instruction is more often the problem than the worker.</li>
+    <li><strong>A merge step.</strong> Six designs predict, flag or police a merge the product never performs.</li>
+  </ul>
+
+  <h2>The one I would not build</h2>
+  <p><strong>The Posture Ladder.</strong> Highest cost in the set, its own falsifier predicts it collapses to a config line, and it is the only design that both holds persistent per-pane state in the shape D-038 deleted <em>and</em> kills a running pane on a computed verdict about that pane's conduct. Its one useful rung is <em>Confined</em> — which is The Fence's settings seed without the ladder.</p>
+</div>
+</section>
+<!-- ============ GRAVEYARD ============ -->
+<section class="panel" id="p-graveyard">
+<div class="wrap">
+  <p class="eyebrow coral">The graveyard</p>
+  <h1>Twenty-three ideas that didn't survive.</h1>
+  <p class="lede">Grouped by <strong>cause of death</strong> rather than by who proposed them, because the causes are the transferable part. Several of these are the <em>first</em> thing anyone would propose — and each dies for a reason specific to this architecture rather than a general one.</p>
+
+  <h2>Cause 1 — It was the deleted supervisor wearing a hat</h2>
+  <p>D-030 removed ~3,500 lines: the MCP shim, the headless supervisor, the mail queue, the ticket board, gates, peer review. The test that catches its regrowth is sharp — <strong>can it delay, route, or gate work?</strong></p>
+
+  <div class="tomb"><h3><span class="x">✕</span>The Librarian pane</h3>
+    <p>A sixth pane that tails the log, retrieves relevant lore, and sends it into workers as user turns.</p>
+    <p class="why">A non-interactive process with volition, acting on panes. It would deliver <em>unreviewed</em> memory through the one channel that cannot be reviewed after the fact — a direct Tier 1.8 violation. And the deepest objection is scarcity: <strong>door 4 is a running worker's only live channel</strong>, and spending it on speculatively-relevant context is the worst possible use of the scarcest door in the system.</p></div>
+
+  <div class="tomb"><h3><span class="x">✕</span>The Rerun Daemon</h3>
+    <p>The harness watches the log, notices a completion claim, re-runs it in a scratch worktree, posts the result.</p>
+    <p class="why">A process that watches panes, decides something is worth checking, runs code, and injects a message is a supervisor regardless of what the struct is called. It would also have to <em>guess the command</em>, because nothing in a prose claim says what to run. Receipts keeps the same evidence and drops the daemon by moving the run to the moment the claim is made, by the claimant's own hand.</p></div>
+
+  <div class="tomb"><h3><span class="x">✕</span>Context-pressure autopilot</h3>
+    <p>Watch each pane's output for the context-remaining indicator; auto-<code>/compact</code> at 80%, auto-restart at 95%.</p>
+    <p class="why">Three counts, any one sufficient. It screen-scrapes a TUI whose rendering <em>is not a contract</em>, so a cosmetic upstream change would silently stop the fleet's only compaction. It is the supervisor's exact shape. And it defeats Carryover's whole point — the value there is that a restart is a <em>deliberate</em> commit with a visible diff, and an automatic restart at 95% turns the one context transaction the system has back into an accident.</p></div>
+
+  <div class="tomb"><h3><span class="x">✕</span>The Ladder — automatic model promotion and demotion</h3>
+    <p>A seat that underperforms gets a cheaper model; one that saturates gets a stronger one. The harness swaps and restarts.</p>
+    <p class="why">"Promote worker-2" means <em>kill a pane with hours of live context in it</em>, on the strength of a scorecard that openly admits it is not a quality measure — while the operator is watching that terminal. It is also a closed control loop over model selection with no human in it. And it creates the incentive that makes the metric worthless: once seats are promoted for being visible, the correct strategy for a seat is to send more messages.</p></div>
+
+  <h2>Cause 2 — It sat in the delivery path</h2>
+  <p>Tier 1.4 has been argued and lost twice. It eliminates a whole family of otherwise-reasonable designs.</p>
+
+  <div class="tomb"><h3><span class="x">✕</span>The Summarizing Relay</h3>
+    <p>Compress long messages before pasting them; drop sends a classifier scores as irrelevant to the target.</p>
+    <p class="why">Dead on Tier 1.4 — but <strong>the more interesting kill is Tier 1.6.</strong> The log stores the message <em>body</em>. Summarize before pasting and you must choose: log what the sender wrote (the feed now describes bytes that never reached the pty) or log the rewrite (the feed now attributes to worker-1 words worker-1 never said). Either way the Messages view becomes something the operator cannot trust — and an untrustworthy feed is strictly worse than the clutter it saves.</p></div>
+
+  <div class="tomb"><h3><span class="x">✕</span>A <code>PreToolUse</code> deny hook on contested files</h3>
+    <p>Genuinely tempting — the one mechanism that could <em>actually stop</em> the second worker editing <code>src/parser.rs</code>.</p>
+    <p class="why">The kill sharpens a distinction worth keeping. A <strong>static, path-scoped</strong> deny is fine: fixed at exec, legible in a file, and the model can reason about it. A <strong>dynamic, contested-file</strong> deny is the delivery-path fallacy in a different costume — it refuses based on a global view already stale by the time the hook runs, names a problem the model cannot resolve on its own (it cannot hand the file over), and creates a second authority over the repo the operator cannot see. It also makes the guardrail a <em>constant</em>, which is exactly what the scaling requirement says to avoid.</p></div>
+
+  <div class="tomb"><h3><span class="x">✕</span>A fleet-wide pause button</h3>
+    <p>One key, all five panes <code>SIGSTOP</code>, the operator catches up. The most seductive blast-radius idea in the set.</p>
+    <p class="why">Killed on physics. <code>SIGSTOP</code> mid-request does not cancel the request — the API call completes server-side, tokens are spent, dispatched tool calls land, and the TUI resumes into a state that no longer matches the screen the operator read while it was paused. It is D-034's argument in process form: <strong>a brake that cannot cancel what is in flight can only misinform about it.</strong> The real brake already exists and is honest — <code>kill</code>, after which every send fails by name. "Pause" would have felt safer and been less safe.</p></div>
+
+  <div class="tomb"><h3><span class="x">✕</span>Dispatch — route work to the strongest free seat</h3>
+    <p class="why">A scheduler <em>in the delivery path</em>: it decides where a message goes on grounds other than who it was addressed to — a reorder, and a refusal if no seat qualifies. It also needs a notion of "free" the system explicitly does not have: <code>PaneState</code> has no Idle/Working because a live TUI is <em>always</em> writable, and that absence is what removed the mail queue in the first place. Seats gets the same outcome by telling <code>orch</code> which seat is which and letting it type a name.</p></div>
+
+  <h2>Cause 3 — It manufactured the appearance of rigor</h2>
+  <p>The one thing a system built around justified novelty must never do.</p>
+
+  <div class="tomb"><h3><span class="x">✕</span>Quorum — five panes vote, majority carries</h3>
+    <p class="why">Killed on its own premise. <strong>This is the correlated-agreement bug shipped as a feature</strong> — five samples from models sharing a prior, counted as five witnesses. It would make the fleet more confident and no more correct, and the confidence would be backed by a number, which is worse than being backed by nothing. Callsign is the salvage: measure the correlation rather than voting through it.</p></div>
+
+  <div class="tomb"><h3><span class="x">✕</span>The Confidence Number</h3>
+    <p>Every claim carries a stated probability, logged and scored into per-pane calibration curves.</p>
+    <p class="why">Two reasons, either sufficient. Flash's stated probabilities are not calibrated and there is no loop long enough to calibrate them — <strong>a worker pane is a fresh process each launch, so there is no <em>individual</em> whose calibration could improve.</strong> Calibration of a slot is a category error. And worse: a number reads as evidence. Attaching "85%" to an unverified claim makes it <em>look</em> rigorous while adding zero information.</p></div>
+
+  <div class="tomb"><h3><span class="x">✕</span>The Blind-Spot Manifest</h3>
+    <p>Compute at spawn what a worker structurally cannot see, and render it into the brief.</p>
+    <p class="why">Enumerable but not <em>discriminating</em>. It tells a worker the same four things on every task and never which one matters for <em>this</em> one, so the predictable outcome is a worker that recites the manifest as a hedge rather than asking the one question it needs answered. <strong>A hedge that is always available and always true is indistinguishable from diligence and cheaper — which means it will outcompete diligence.</strong></p></div>
+
+  <h2>Cause 4 — It rebuilt state the pivot deleted</h2>
+
+  <div class="tomb"><h3><span class="x">✕</span><code>fleet claim &lt;path&gt;</code> — an advisory lease with a TTL</h3>
+    <p>The obvious first idea, and the wreckage Crosscut was built out of.</p>
+    <p class="why">Three reasons, any one sufficient. It is <code>leases</code> and <code>claim_file</code>, deleted in D-038. <strong>A claim is a promise about the future and cannot be checked</strong> — a worker that claims a file then wanders off leaves a claim true in the table and false on disk, and every fix for that is a timer. And the filesystem already knows: a claim is a degraded, stale, forgeable copy of a fact <code>git status</code> states for free. <em>If you find yourself building a registry of intentions next to a repository of outcomes, read the outcomes.</em></p></div>
+
+  <div class="tomb"><h3><span class="x">✕</span>Knowledge committed into the target repo</h3>
+    <p>A <code>.fleetor/lore.md</code> on a feature branch — review-by-PR for free, and workers pick it up as project memory from their cwd. Genuinely attractive.</p>
+    <p class="why">Tier 1.1: FLEETOR writes only application code. A knowledge file is not application code, it would appear in <code>git status</code>, and a worker with auto-approve could edit or delete it. Most decisively it makes the user's repo carry FLEETOR's state, breaking the <code>rm -rf ~/.fleetor</code> test the product's front page opens with. <strong>What survived is the good half: use git, just not <em>that</em> git.</strong></p></div>
+
+  <h2>Cause 5 — The physics said no</h2>
+
+  <div class="tomb"><h3><span class="x">✕</span>Per-turn retrieval / RAG into a running pane</h3>
+    <p class="why">Killed flatly. There is no per-turn hook, no retrieval callback, no way to touch a running pane's context except a user turn — and a user turn that neither the operator nor a peer sent is <strong>the app impersonating a teammate in a conversation the operator is watching.</strong> Listed because it is the first idea everyone has, and naming it impossible is more useful than leaving it unsaid.</p></div>
+
+  <div class="tomb"><h3><span class="x">✕</span>The Interview — ask each pane at boot what it is</h3>
+    <p class="why">The harness <em>set</em> <code>ANTHROPIC_MODEL</code> — it already knows, from the authoritative side. The answer would be a self-report from a model with every reason to be wrong about itself, served over a compatibility shim with Claude Code's own prompt around it. It spends a turn per pane per launch to learn something already in <code>launch.conf</code>, and it puts a harness-authored message into a pane's history that no human sent — <strong>the first crack in "every user turn came from a peer or the operator."</strong></p></div>
+
+  <h2>Cause 6 — Something cheaper already did it</h2>
+
+  <div class="tomb"><h3><span class="x">✕</span>The Acknowledge verb — <code>fleet ack &lt;msg-id&gt;</code></h3>
+    <p class="why">A worse Callsign. A dedicated verb costs a whole Bash tool call and produces no work, so it is the first thing a model under pressure drops — <strong>and a protocol whose compliance is inversely proportional to how busy the pane is will be most silent exactly when the operator most needs to know.</strong> The callsign rides along on a message the pane was going to send anyway. Free beats explicit.</p></div>
+
+  <div class="tomb"><h3><span class="x">✕</span>A <code>fleet learn</code> verb</h3>
+    <p class="why">It widens the five-verb surface the whole product rests on, and hands a worker a write path into every other worker's future context — a lateral, unreviewed, persistent influence channel between peers who are supposed to influence each other only through observable messages. And it is unnecessary: a pane that learns something already has a way to say so, and that message is in the log forever. <strong>There was never a missing channel, only a missing reader.</strong></p></div>
+
+  <div class="tomb"><h3><span class="x">✕</span>An MCP context server per worker</h3>
+    <p class="why">MCP tool definitions land at door 1 and then sit in the window <strong>costing tokens on every turn for the pane's whole life whether or not they are ever called</strong> — the precise clutter this territory exists to remove. A Bash CLI costs nothing until invoked. It is also worse at failing: the delivery contract teaches every pane to read its own exit code, and a tool result has no exit code.</p></div>
+
+  <div class="tomb"><h3><span class="x">✕</span><code>fleet grade</code> — peer competence reports</h3>
+    <p class="why">Killed three times over. Grading is supervision, and the fleet's defining property is peers with nothing above them. It reopens the peer-review surface D-030 deleted. And worst: <strong>it is an injection path</strong> — text produced by a model flowing into a store that influences how another pane is configured and permissioned is a privilege-escalation channel made of prose. <em>Any capability signal that touches The Fence must originate outside the panes.</em></p></div>
+
+  <div class="tomb"><h3><span class="x">✕</span>Auto-promoted lessons</h3>
+    <p class="why">Tier 1.8 forbids it in so many words, but the underlying reason is sharper than the rule. A Flash worker's confident wrong claim — <em>"the parser tests are flaky, skip them"</em> — becomes every pane's memory for every future epoch, and the log lends it the authority of having actually been said. <strong>Unreviewed memory is worse than no memory, because once written it is indistinguishable from reviewed memory.</strong> The gate is not a safety feature bolted onto Shift Notes; it is the entire product.</p></div>
+
+  <div class="tomb"><h3><span class="x">✕</span>An LLM judge scoring each epoch</h3>
+    <p class="why">Spends tokens per epoch to produce an opinion whose characteristic error is agreeing with whichever pane wrote the most text — when <code>git diff --shortstat</code> and a <code>SELECT COUNT(*)</code> are free and unarguable.</p></div>
+
+  <div class="tomb"><h3><span class="x">✕</span>Role specialization as a headline design</h3>
+    <p class="why">Kept as a feature, killed as a <em>design</em>. It is one optional placeholder and one markdown file. Worse, the version that actually works isn't a prompt at all: <strong>a role without file ownership is a suggestion four auto-permission workers can each ignore, and a role <em>with</em> file ownership is <code>leases</code></strong> — deleted in D-030. So the honest scope is the small half, and the ambitious half stays dead until someone can argue file ownership back on its own merits.</p></div>
+</div>
+</section>
+</main>
+</div>
+
+<script>
+(function () {
+  var rail = document.querySelector('.rail');
+  var buttons = Array.prototype.slice.call(rail.querySelectorAll('.railbtn'));
+  var order = buttons.map(function (b) { return b.dataset.p; });
+
+  function labelFor(key) {
+    var b = buttons.find(function (x) { return x.dataset.p === key; });
+    if (!b) return key;
+    return b.textContent.replace(/^\s*[—\d]+\s*/, '').trim();
+  }
+
+  function show(key, push) {
+    var panel = document.getElementById('p-' + key);
+    if (!panel) return;
+    document.querySelectorAll('.panel').forEach(function (p) { p.classList.remove('on'); });
+    panel.classList.add('on');
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-current', b.dataset.p === key ? 'true' : 'false');
+    });
+    if (push && location.hash !== '#' + key) history.replaceState(null, '', '#' + key);
+    document.querySelector('.work').scrollTop = 0;
+    window.scrollTo(0, 0);
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.p, true); });
+  });
+
+  // Build prev/next pagers once, from rail order.
+  order.forEach(function (key, i) {
+    var panel = document.getElementById('p-' + key);
+    if (!panel) return;
+    var wrap = panel.querySelector('.wrap');
+    if (!wrap) return;
+    var pager = document.createElement('div');
+    pager.className = 'pager';
+
+    if (i > 0) {
+      var prev = document.createElement('button');
+      prev.innerHTML = '<span>Previous</span>' + labelFor(order[i - 1]);
+      prev.addEventListener('click', function () { show(order[i - 1], true); });
+      pager.appendChild(prev);
+    }
+    if (i < order.length - 1) {
+      var next = document.createElement('button');
+      next.className = 'next';
+      next.innerHTML = '<span>Next</span>' + labelFor(order[i + 1]);
+      next.addEventListener('click', function () { show(order[i + 1], true); });
+      pager.appendChild(next);
+    }
+    if (pager.children.length) wrap.appendChild(pager);
+  });
+
+  document.addEventListener('keydown', function (e) {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    var tag = (e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea') return;
+    var cur = order.indexOf(
+      (document.querySelector('.panel.on') || {}).id
+        ? document.querySelector('.panel.on').id.replace(/^p-/, '')
+        : order[0]
+    );
+    if (e.key === 'ArrowRight' && cur < order.length - 1) { show(order[cur + 1], true); }
+    if (e.key === 'ArrowLeft' && cur > 0) { show(order[cur - 1], true); }
+  });
+
+  var initial = location.hash.replace(/^#/, '');
+  show(order.indexOf(initial) >= 0 ? initial : order[0], false);
+})();
+</script>
