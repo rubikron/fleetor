@@ -49,15 +49,15 @@ Two things about that diagram are load-bearing.
 
 ## 2. `fleet` — the agent surface
 
-Seven verbs: `send`, `broadcast`, `reply`, `cmd`, `task`, `roster`, `whoami`. It is a Bash command, not an MCP server, and that is deliberate — a model that can run `ls` can run `fleet send`, and it reads its own exit code and stderr, so a refusal is self-correcting in a way a tool result is not.
+Eight verbs: `send`, `broadcast`, `reply`, `cmd`, `task`, `done`, `roster`, `whoami`. It is a Bash command, not an MCP server, and that is deliberate — a model that can run `ls` can run `fleet send`, and it reads its own exit code and stderr, so a refusal is self-correcting in a way a tool result is not.
 
-Three of them carry a message. **`cmd` reaches a terminal without being one** (§3a), and **`task` never reaches a terminal at all** (§3b).
+Three of them carry a message. **`cmd` reaches a terminal without being one** (§3a), **`task` never reaches a terminal at all** (§3b), and **`done` runs a check locally and then travels as an ordinary send** (§3d).
 
 Identity comes from `FLEETOR_PANE`, set by the spawn path. There is no anonymous connection: `Hello` carries a `PaneId`, not an `Option<PaneId>`, so a message from nobody cannot be constructed. `fleet reply` routes on who last got through, which is only meaningful because of that.
 
 Exit codes are a contract both briefs state verbatim: **non-zero means it did not arrive.** Zero means the bytes reached a live terminal, and explicitly not that anyone read them.
 
-The wire tag *is* the verb — `Op::Send` serializes as `"send"` — so there is no second spelling to keep in sync. A test pins the clap subcommand list to `brief::VERBS`, because a rename landing in only one place teaches every pane a command that exits 2.
+The wire tag *is* the verb — `Op::Send` serializes as `"send"` — so there is no second spelling to keep in sync. A test pins the clap subcommand list to `brief::VERBS`, because a rename landing in only one place teaches every pane a command that exits 2. Two verbs never mint an op of their own, and that is the rule holding rather than an exception to it: `whoami` answers from the environment without dialing the socket, and `done` composes an ordinary `Op::Send` after its local half runs (§3d) — neither adds a wire tag because neither adds a kind of thing the hub can be asked to do.
 
 ---
 
@@ -147,6 +147,19 @@ What the operator is not: spawnable (`spawn_pane` refuses by name), killable, a 
 
 ---
 
+## 3d. `fleet done` — the receipt that is an ordinary message (WP-06, D-048..D-050)
+
+`fleet done <task-id> "<check>"` is how a worker claims a block is finished with evidence attached. The check runs **in the CLI process, in the worker's own worktree** — the hub never executes anything and never sees the command. What crosses the socket is a plain `Op::Send` to `orch` whose body is the receipt: one line saying *what block, which branch @ commit, what the check exited*, then the command itself, then the output tail (last 2 KB, dropped bytes named). No new op, no new event kind — the message path's diff for this package is empty by construction (`crates/fleetor-cli/src/done.rs`).
+
+Two honesty rules carry the design:
+
+- **The CLI's exit code still means delivery, and only delivery.** The check's own exit code travels *in the body*. A failing check is a receipt, never a CLI error — otherwise the brief's "non-zero means not delivered" would make the worker resend a receipt that arrived (D-034's shape, in a new place). Pinned by test.
+- **A dirty worktree is named on the receipt.** Review reads the *commit* the receipt cites, so a hash that does not contain what was checked would send the reviewer to the wrong code.
+
+Review then happens with plain git and zero FLEETOR code: every worktree shares one object database, so a peer reads `git diff HEAD...fleet/worker-N` from its own checkout — no fetch, no shared checkout (`docs/notes/peer-review-notes.md` is the measurement, D-048). After review, orch merges the branch to **`fleet/integration`, never trunk** (D-050): trunk is the operator's, per Tier 1.1.
+
+---
+
 ## 4. The registry — five ptys
 
 One pty per pane, keyed by `PaneId`. Three properties matter.
@@ -177,7 +190,7 @@ The serial drain fixes the first outright and takes the second away from the TUI
 
 Two things, and nothing else.
 
-**At spawn, a briefing** via `--system-prompt` (`fleetor-core::brief`) — never a `CLAUDE.md` in the pane's cwd, which would show up in `git status` and could be deleted by the worker itself. It names the peers, teaches the five verbs, states the exit-code contract verbatim, and shows the framing the pane will actually see. The worker brief additionally carries the L5 clause: *never reply to a broadcast unless it names you.*
+**At spawn, a briefing** via `--system-prompt` (`fleetor-core::brief`) — never a `CLAUDE.md` in the pane's cwd, which would show up in `git status` and could be deleted by the worker itself. It names the peers, teaches every verb, states the exit-code contract verbatim, and shows the framing the pane will actually see. The worker brief additionally carries the L5 clause: *never reply to a broadcast unless it names you.*
 
 **At runtime, framed messages** typed into its input:
 
@@ -220,10 +233,11 @@ Follow it in this order; it is roughly the order the bytes travel.
 2. `crates/fleetor-core/src/message.rs` — the record, the framing, `sanitize`
 3. `crates/fleetor-core/src/command.rs` — the other kind of thing a pane can send, and why it is not a message
 4. `crates/fleetor-core/src/brief.rs` — what each pane is told
-5. `crates/fleetor-cli/src/main.rs` — the six verbs and the exit-code contract
-6. `crates/fleetor-server/src/hub.rs` — routing, and persist-after-ack
-7. `src-tauri/src/deliver.rs` — the serial drain, and the run split that keeps a command alone
-8. `src-tauri/src/pty.rs` — the registry, the channels, the read pump
-9. `src-tauri/src/spawn.rs` — how a pane is launched
+5. `crates/fleetor-cli/src/main.rs` — the verbs and the exit-code contract
+6. `crates/fleetor-cli/src/done.rs` — the verb whose first half runs locally, and the receipt format
+7. `crates/fleetor-server/src/hub.rs` — routing, and persist-after-ack
+8. `src-tauri/src/deliver.rs` — the serial drain, and the run split that keeps a command alone
+9. `src-tauri/src/pty.rs` — the registry, the channels, the read pump
+10. `src-tauri/src/spawn.rs` — how a pane is launched
 
 The two test files worth reading as documentation: `crates/fleetor-server/tests/pane_messaging.rs` (every routing decision, against a fake app) and `src-tauri/tests/panes.rs` (five real ptys, no tokens).
