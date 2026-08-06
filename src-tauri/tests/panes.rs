@@ -545,11 +545,14 @@ fn a_roster_ask_surfaces_a_workers_sampled_context_gauge() {
     let slug: String = resolved.chars().map(|c| if c == '/' || c == '.' { '-' } else { c }).collect();
     let project_dir = config_dir.join("projects").join(slug);
     std::fs::create_dir_all(&project_dir).unwrap();
+    // A fifth of the window constant — derived, so this stays 20% if D-054's
+    // number moves again.
+    let fifth = fleetor_shell::context_gauge::WORKER_WINDOW_TOKENS / 5;
     std::fs::write(
         project_dir.join("session.jsonl"),
         serde_json::json!({
             "type": "assistant",
-            "message": {"usage": {"input_tokens": 25_600, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}}
+            "message": {"usage": {"input_tokens": fifth, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}}
         })
         .to_string(),
     )
@@ -571,8 +574,8 @@ fn a_roster_ask_surfaces_a_workers_sampled_context_gauge() {
 
     let worker_one = panes.iter().find(|e| e.pane == target).expect("worker-1 is on the roster");
     let gauge = worker_one.context.expect("worker-1's seeded transcript must be sampled");
-    assert_eq!(gauge.used_tokens, 25_600);
-    assert_eq!(gauge.pct, 20, "20% of the 128,000-token worker window");
+    assert_eq!(gauge.used_tokens, fifth);
+    assert_eq!(gauge.pct, 20, "a fifth of the worker window is 20%");
 
     let orch = panes.iter().find(|e| e.pane == PaneId::Orch).expect("orch is on the roster");
     assert_eq!(orch.context, None, "orch is never sampled, even when it is live");

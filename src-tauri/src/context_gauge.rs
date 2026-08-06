@@ -36,14 +36,18 @@ use std::sync::Mutex;
 
 use fleetor_core::pane::{ContextGauge, PaneId};
 
-/// Tier 2: the worker model's real context window (`decisions.md`) —
+/// Tier 2: the worker window the fleet operates to (`decisions.md` D-054) —
 /// deliberately **not** the 200k Claude Code silently assumes for a model
-/// name it does not recognize. WP-02 found that assumption
-/// (`docs/system-prompt-notes.md` §4): `deepseek-v4-flash` is unrecognized, so
-/// CC's own auto-compact bookkeeping guesses 200k. This gauge does not read
-/// that guess or repeat it — it is our own stated number, reversible in one
-/// place when a real published window is confirmed.
-pub const WORKER_WINDOW_TOKENS: u32 = 128_000;
+/// name it does not recognize (WP-02 finding, `docs/system-prompt-notes.md`
+/// §4). Operator-set at 500k on 2026-08-06, after that assumption surfaced
+/// live as a premature auto-compact warning.
+///
+/// One number, two consumers: this gauge's denominator, and the
+/// `CLAUDE_CODE_MAX_CONTEXT_TOKENS` env `spawn::worker_command` exports so
+/// CC's own auto-compact bookkeeping works to the same window. They must
+/// never diverge — a gauge reading 100% while CC believes 40% (or the
+/// reverse) is exactly the quiet lie this product exists to avoid.
+pub const WORKER_WINDOW_TOKENS: u32 = 500_000;
 
 /// Where a pane's percent first earns an informational Notice (WP-04
 /// performance criteria: "at most one Notice on first crossing of ~80%").
@@ -356,11 +360,14 @@ mod tests {
     fn a_real_transcript_samples_a_gauge_against_the_worker_window() {
         let cwd = temp_dir("real-cwd");
         let config_dir = temp_dir("real-cfg");
-        seed_transcript(&config_dir, &cwd, &[user_line("hi"), assistant_line(12_800, 0, 0)]);
+        // A tenth of whatever the window constant says — derived, so the pct
+        // assertion below stays meaningful if D-054's number moves again.
+        let tenth = WORKER_WINDOW_TOKENS / 10;
+        seed_transcript(&config_dir, &cwd, &[user_line("hi"), assistant_line(u64::from(tenth), 0, 0)]);
 
         let source = TranscriptSource { config_dir, cwd };
         let gauge = sample_transcript(&source, WORKER_WINDOW_TOKENS).expect("a completed turn exists");
-        assert_eq!(gauge.used_tokens, 12_800);
+        assert_eq!(gauge.used_tokens, tenth);
         assert_eq!(gauge.window_tokens, WORKER_WINDOW_TOKENS);
         assert_eq!(gauge.pct, 10);
     }
@@ -409,7 +416,7 @@ mod tests {
     fn a_recorded_pane_samples_its_own_transcript_and_no_other_panes() {
         let cwd = temp_dir("gs-cwd");
         let config_dir = temp_dir("gs-cfg");
-        seed_transcript(&config_dir, &cwd, &[assistant_line(6_400, 0, 0)]);
+        seed_transcript(&config_dir, &cwd, &[assistant_line(u64::from(WORKER_WINDOW_TOKENS / 20), 0, 0)]);
 
         let sources = GaugeSources::default();
         sources.record(PaneId::Worker(2), TranscriptSource { config_dir, cwd });
@@ -455,7 +462,10 @@ mod tests {
 
     #[test]
     fn notice_text_names_the_pane_and_proposes_without_acting() {
-        let gauge = ContextGauge::new(102_400, WORKER_WINDOW_TOKENS);
+        // Derived, not hardcoded: exactly 80% of whatever the window constant
+        // says today, so this test keeps testing the threshold if D-054's
+        // number moves again.
+        let gauge = ContextGauge::new(WORKER_WINDOW_TOKENS * 8 / 10, WORKER_WINDOW_TOKENS);
         let text = notice_text(PaneId::Worker(4), &gauge);
         assert!(text.contains("worker-4"));
         assert!(text.contains("80%") || text.contains(&gauge.pct.to_string()));

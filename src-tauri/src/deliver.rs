@@ -564,11 +564,14 @@ mod tests {
         let slug: String = resolved.chars().map(|c| if c == '/' || c == '.' { '-' } else { c }).collect();
         let project_dir = config_dir.join("projects").join(slug);
         std::fs::create_dir_all(&project_dir).unwrap();
+        // A twentieth of the window constant — derived, so 5% stays 5% if
+        // D-054's number moves again.
+        let under = crate::context_gauge::WORKER_WINDOW_TOKENS / 20;
         std::fs::write(
             project_dir.join("s.jsonl"),
             serde_json::json!({
                 "type": "assistant",
-                "message": {"usage": {"input_tokens": 6_400, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}}
+                "message": {"usage": {"input_tokens": under, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}}
             })
             .to_string(),
         )
@@ -582,8 +585,8 @@ mod tests {
         let augmented = augment_with_gauge(entry, &sources, &store(), &mut notified);
 
         let context = augmented.context.expect("a completed turn was seeded");
-        assert_eq!(context.used_tokens, 6_400);
-        assert_eq!(context.pct, 5, "5% of the 128,000-token worker window");
+        assert_eq!(context.used_tokens, under);
+        assert_eq!(context.pct, 5, "a twentieth of the worker window is 5%");
         assert!(notified.is_empty(), "well under the notice threshold");
     }
 
@@ -611,12 +614,14 @@ mod tests {
         let slug: String = resolved.chars().map(|c| if c == '/' || c == '.' { '-' } else { c }).collect();
         let project_dir = config_dir.join("projects").join(slug);
         std::fs::create_dir_all(&project_dir).unwrap();
-        // 110,000 / 128,000 ≈ 85% — over the 80% threshold.
+        // 85% of the window constant — derived, over the 80% threshold
+        // whatever D-054's number is today.
+        let hot = crate::context_gauge::WORKER_WINDOW_TOKENS / 100 * 85;
         std::fs::write(
             project_dir.join("s.jsonl"),
             serde_json::json!({
                 "type": "assistant",
-                "message": {"usage": {"input_tokens": 110_000, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}}
+                "message": {"usage": {"input_tokens": hot, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}}
             })
             .to_string(),
         )

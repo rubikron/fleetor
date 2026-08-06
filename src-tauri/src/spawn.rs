@@ -125,6 +125,14 @@ pub fn worker_command(
     cmd.env("ANTHROPIC_BASE_URL", &ctx.launch.worker_base_url);
     cmd.env("ANTHROPIC_AUTH_TOKEN", api_key);
     cmd.env("ANTHROPIC_MODEL", &ctx.launch.worker_model);
+    // CC does not recognize the worker model name and would assume a 200k
+    // window, auto-compacting early (WP-02 finding). Export the fleet's own
+    // stated window instead — the same constant the context gauge divides by,
+    // so CC's bookkeeping and our display can never disagree (D-054).
+    cmd.env(
+        "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+        crate::context_gauge::WORKER_WINDOW_TOKENS.to_string(),
+    );
     // Not "don't set it" — *unset* it. The worker inherits the operator's
     // environment, and an `ANTHROPIC_API_KEY` sitting in their shell profile is
     // enough to park the pane on an api-key approval prompt forever (L2).
@@ -474,6 +482,29 @@ mod tests {
             PaneContext::baked().launch.worker_base_url.as_str(),
         );
         assert_eq!(worker.get_env("CLAUDE_CONFIG_DIR").unwrap(), "/tmp/cfg");
+    }
+
+    /// D-054: a worker is told its real window, and it is the gauge's number —
+    /// spelled once. Orch never gets the override; its model is recognized and
+    /// its window is not ours to state.
+    #[test]
+    fn a_worker_is_told_the_window_the_gauge_divides_by() {
+        let ctx = PaneContext::baked();
+        let worker = worker_command(
+            2,
+            Path::new("/tmp"),
+            Path::new("/tmp/home"),
+            Path::new("/tmp/cfg"),
+            Path::new("/tmp/s.sock"),
+            "sk-test",
+            &ctx,
+        );
+        assert_eq!(
+            worker.get_env("CLAUDE_CODE_MAX_CONTEXT_TOKENS").unwrap(),
+            crate::context_gauge::WORKER_WINDOW_TOKENS.to_string().as_str(),
+        );
+        let orch = orch_command(Path::new("/tmp"), Path::new("/tmp/s.sock"), &ctx);
+        assert!(orch.get_env("CLAUDE_CODE_MAX_CONTEXT_TOKENS").is_none());
     }
 
     /// `--permission-mode auto` is load-bearing: the default is `manual`, which
