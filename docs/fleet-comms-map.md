@@ -49,7 +49,9 @@ Two things about that diagram are load-bearing.
 
 ## 2. `fleet` — the agent surface
 
-Five verbs: `send`, `broadcast`, `reply`, `roster`, `whoami`. It is a Bash command, not an MCP server, and that is deliberate — a model that can run `ls` can run `fleet send`, and it reads its own exit code and stderr, so a refusal is self-correcting in a way a tool result is not.
+Six verbs: `send`, `broadcast`, `reply`, `cmd`, `roster`, `whoami`. It is a Bash command, not an MCP server, and that is deliberate — a model that can run `ls` can run `fleet send`, and it reads its own exit code and stderr, so a refusal is self-correcting in a way a tool result is not.
+
+Five of them carry a message. **`cmd` is the one that does not** — see §3a.
 
 Identity comes from `FLEETOR_PANE`, set by the spawn path. There is no anonymous connection: `Hello` carries a `PaneId`, not an `Option<PaneId>`, so a message from nobody cannot be constructed. `fleet reply` routes on who last got through, which is only meaningful because of that.
 
@@ -66,6 +68,27 @@ It decides where a message goes and writes down what happened. It holds nothing.
 `broadcast` fans out to the **app's** roster, not to a configured slot list: a fan-out should reach the panes that exist, not the panes someone once declared. It reports `accepted` only if *every* leg landed — the brief taught the model that zero means the bytes arrived, so a partial fan-out reading as a full one means the panes that missed it are never followed up.
 
 A broadcast leg deliberately does **not** become the recipient's reply target. It was not addressed to them, the brief tells them not to answer it, and letting it overwrite `last_inbound_from` would silently redirect their next `fleet reply` to a pane that never spoke to them. That is the one failure where a message arrives somewhere it was never meant to go.
+
+---
+
+## 3a. `fleet cmd` — the one arm that is not a message (D-045)
+
+`fleet cmd <pane|self> "/compact keep the parser" --why "…"` runs a slash command in a pane's terminal. It travels the same socket, the same hub, the same per-pane serial writer and the same `write_paste`. **Four things differ, and each of them is something a message must never do:**
+
+| | a message | a command |
+|---|---|---|
+| framing | `[fleet · orch] …` | **none** — the `/` must be the first character in the input box |
+| target | never itself (`hub.rs` self-send guard) | **may be itself** — `fleet cmd self` is the ordinary use |
+| accept-time check | none; the body is whatever was typed | **allowlisted** against `command::ALLOWED_COMMANDS` |
+| batching | concurrent messages join into one paste (D-039) | **always a write of its own** |
+
+The last two rows are the same fact from two directions. `docs/command-channel-notes.md` measured what happens when a command is *not* alone at column 0: the input box concatenates, and `another unfinished thought/clear` is submitted as prose. So the writer splits a drained batch into runs — consecutive messages join exactly as they did before, a command never joins anything.
+
+**The refusal is at accept time only.** `Command::new` checks the allowlist, the leading `/`, the absence of control characters and a non-empty `--why`, and answers with a sentence for the sender's stderr. Nothing is written and nothing is logged — the same shape as the self-send refusal, which is the class D-034 keeps. After acceptance nothing may delay, drop or alter it: there is no queue, no retry and no deadline on this arm either.
+
+**This is deliberately not "the router chops the prefix off for slash commands."** That design — inspecting message bodies for a leading `/` — has been argued and lost twice (Tier 1.4). Commands are not messages, and nothing is chopped: `Message::framed`, `sanitize`, `write_paste` and `Op::Send`/`Broadcast`/`Reply` are byte-identical to what they were before this arm existed.
+
+`accepted` means what it always means, and here it is weaker than usual: the bytes reached a live pty. A command submitted mid-turn is queued by Claude Code and runs when the turn ends; a command that landed after unsubmitted text never runs at all. Neither is observable from this side, so nothing renders `accepted` as "executed".
 
 ---
 
@@ -126,6 +149,8 @@ The two framings differ on purpose. A worker can only obey the do-not-answer-a-b
 | `fleet` not on PATH | panes spawn fine and cannot message; `Notice` on the Activity view at spawn | `spawn::fleet_bin_path` |
 | Pane wedged on onboarding | looks exactly like a working pane; every send reports success | `spawn::seed_config_dir`, called at the spawn site so it is keyed by the cwd actually used |
 | Body contains `ESC[201~` | would end the paste early and turn its tail into live keystrokes | `message::sanitize` |
+| Same, in a `fleet cmd` | exits 1, `refused rather than repaired` | `command::check_command`. **Refused, not stripped** — a mangled message is still the message, a mangled command is a *different command* |
+| **`fleet cmd` lands on a non-empty input box** | **exits 0, `accepted`, and the command runs as prose instead** | **nothing on this side can see it.** Measured in `docs/command-channel-notes.md` §3; the second residual, and the second reason `accepted` never means "executed" |
 | Worktree creation failed | `Warn` on Activity; that worker shares the target checkout | `fleet::worker_cwd` |
 
 ---
@@ -136,11 +161,12 @@ Follow it in this order; it is roughly the order the bytes travel.
 
 1. `crates/fleetor-core/src/pane.rs` — identity, and why `accepts_input()` is not `is_live()`
 2. `crates/fleetor-core/src/message.rs` — the record, the framing, `sanitize`
-3. `crates/fleetor-core/src/brief.rs` — what each pane is told
-4. `crates/fleetor-cli/src/main.rs` — the five verbs and the exit-code contract
-5. `crates/fleetor-server/src/hub.rs` — routing, and persist-after-ack
-6. `src-tauri/src/deliver.rs` — the serial drain
-7. `src-tauri/src/pty.rs` — the registry, the channels, the read pump
-8. `src-tauri/src/spawn.rs` — how a pane is launched
+3. `crates/fleetor-core/src/command.rs` — the other kind of thing a pane can send, and why it is not a message
+4. `crates/fleetor-core/src/brief.rs` — what each pane is told
+5. `crates/fleetor-cli/src/main.rs` — the six verbs and the exit-code contract
+6. `crates/fleetor-server/src/hub.rs` — routing, and persist-after-ack
+7. `src-tauri/src/deliver.rs` — the serial drain, and the run split that keeps a command alone
+8. `src-tauri/src/pty.rs` — the registry, the channels, the read pump
+9. `src-tauri/src/spawn.rs` — how a pane is launched
 
 The two test files worth reading as documentation: `crates/fleetor-server/tests/pane_messaging.rs` (every routing decision, against a fake app) and `src-tauri/tests/panes.rs` (five real ptys, no tokens).

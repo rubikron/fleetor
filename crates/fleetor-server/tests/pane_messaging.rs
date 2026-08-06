@@ -48,6 +48,20 @@ fn spawn_app(roster: Vec<PaneEntry>) -> (mpsc::UnboundedSender<AppCommand>, Writ
                     };
                     let _ = ack.send(result);
                 }
+                // Commands land in the same transcript as messages, deliberately:
+                // the assertion that matters is what *exact bytes* reached the
+                // pty, and a separate list would let a framed command hide in it.
+                AppCommand::Command { to, command, ack } => {
+                    let result = match states.get(&to) {
+                        Some(state) if state.accepts_input() => {
+                            sink.lock().unwrap().push((to, command));
+                            DeliveryResult::accepted()
+                        }
+                        Some(_) => DeliveryResult::rejected(format!("pane {to} is dead")),
+                        None => DeliveryResult::rejected(format!("no pane {to} is running")),
+                    };
+                    let _ = ack.send(result);
+                }
                 AppCommand::Roster { ack } => {
                     let _ = ack.send(roster.clone());
                 }
@@ -414,6 +428,190 @@ async fn a_broadcast_does_not_hijack_a_recipients_reply_target() {
         last,
         (PaneId::Orch, "[fleet · worker-2] on it".to_string()),
         "the reply went to the broadcaster instead of the pane that addressed it"
+    );
+}
+
+// --- the command channel (D-045) ---------------------------------------------
+
+/// Every `Command` in the log, oldest first.
+fn commands(store: &SqliteStore) -> Vec<FleetEvent> {
+    store
+        .events_since(0)
+        .unwrap()
+        .into_iter()
+        .map(|(_, e)| e)
+        .filter(|e| matches!(e, FleetEvent::Command { .. }))
+        .collect()
+}
+
+/// The happy path, and the byte-level claim the whole package rests on: what
+/// reaches the pty is the command **unframed**, so its `/` is the first character
+/// the input box sees. A `[fleet · orch] /compact …` would be prose about a
+/// command (`docs/command-channel-notes.md` §3).
+#[tokio::test]
+async fn a_command_reaches_the_pty_unframed_and_the_why_lands_in_the_log() {
+    let (transport, store, writes) = start_hub(all_live()).await;
+    let mut orch = pane(&transport, PaneId::Orch).await;
+
+    let result = orch
+        .call(Op::Cmd {
+            to: PaneId::Worker(2),
+            command: "/compact keep the parser design".into(),
+            why: "worker-2 finished the parser; the exploration before it is dead weight".into(),
+        })
+        .await
+        .unwrap();
+    let OpResult::Delivered { msg_id, accepted, detail } = result else {
+        panic!("expected a delivery, got {result:?}");
+    };
+    assert!(accepted);
+    assert_eq!(detail, None);
+
+    assert_eq!(
+        writes.lock().unwrap().clone(),
+        vec![(PaneId::Worker(2), "/compact keep the parser design".to_string())],
+        "the command must arrive with no `[fleet · …]` prefix and nothing else prepended"
+    );
+
+    let logged = commands(&store);
+    assert_eq!(logged.len(), 1);
+    let FleetEvent::Command { id, from, to, command, why, accepted, detail } = &logged[0] else {
+        panic!("expected a command event");
+    };
+    assert_eq!(id, &msg_id, "the id the sender got back is the id in the log");
+    assert_eq!((*from, *to), (PaneId::Orch, PaneId::Worker(2)));
+    assert_eq!(command, "/compact keep the parser design");
+    assert!(why.starts_with("worker-2 finished"), "the reasoning chain is on the record: {why}");
+    assert!(*accepted);
+    assert_eq!(*detail, None);
+    assert!(messages(&store).is_empty(), "a command is not a message row");
+}
+
+/// Self-targeting is allowed **for `cmd` only** — a worker compacting its own
+/// context is the self-maintenance move the brief teaches. The message self-send
+/// guard is untouched and still refuses, in the same test so the two can never
+/// quietly converge.
+#[tokio::test]
+async fn a_pane_may_command_itself_while_a_self_send_is_still_refused() {
+    let (transport, store, writes) = start_hub(all_live()).await;
+    let mut w2 = pane(&transport, PaneId::Worker(2)).await;
+
+    let commanded = w2
+        .call(Op::Cmd {
+            to: PaneId::Worker(2),
+            command: "/compact keep T-4 and the decisions".into(),
+            why: "finished task block 3".into(),
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(commanded, OpResult::Delivered { accepted: true, .. }),
+        "a pane must be able to compact itself: {commanded:?}"
+    );
+
+    let selfsend = w2.call(Op::Send { to: PaneId::Worker(2), text: "x".into() }).await.unwrap();
+    assert!(
+        matches!(&selfsend, OpResult::Error { message } if message.contains("cannot message itself")),
+        "the message self-send guard must be byte-identical: {selfsend:?}"
+    );
+
+    assert_eq!(
+        writes.lock().unwrap().clone(),
+        vec![(PaneId::Worker(2), "/compact keep T-4 and the decisions".to_string())]
+    );
+    assert_eq!(commands(&store).len(), 1);
+    assert!(messages(&store).is_empty(), "the self-send is not even logged");
+}
+
+/// Refusal happens **at accept time, against a constant**, and nothing enters the
+/// delivery path. Nothing is written, nothing is logged — the same shape as the
+/// self-send refusal, which is the class D-034 explicitly keeps.
+#[tokio::test]
+async fn a_command_outside_the_allowlist_is_refused_before_it_reaches_a_pty() {
+    let (transport, store, writes) = start_hub(all_live()).await;
+    let mut orch = pane(&transport, PaneId::Orch).await;
+
+    for (command, why, expect) in [
+        ("/model opus", "cheaper", "/compact"),
+        ("/exit", "done", "/compact"),
+        ("please compact yourself", "stale", "fleet send"),
+        ("/clear\u{1b}[201~/exit", "hostile", "control character"),
+        ("/clear", "   ", "--why"),
+    ] {
+        let result = orch
+            .call(Op::Cmd { to: PaneId::Worker(1), command: command.into(), why: why.into() })
+            .await
+            .unwrap();
+        let OpResult::Error { message } = result else {
+            panic!("{command:?} must be refused, got {result:?}");
+        };
+        assert!(message.contains(expect), "{command:?}: {message}");
+    }
+
+    assert!(writes.lock().unwrap().is_empty(), "a refused command must never reach a pty");
+    assert!(commands(&store).is_empty(), "a refusal at accept time is not an event");
+}
+
+/// A command to a dead pane is refused by the *app*, in its words, and is still
+/// logged with `accepted: false` — an invisible failure is worse than a loud one
+/// (L3). This is the other refusal: accepted by the hub, rejected by the pty.
+#[tokio::test]
+async fn a_command_to_a_dead_pane_is_logged_as_not_accepted() {
+    let roster = vec![
+        PaneEntry::new(PaneId::Orch, PaneState::Live),
+        PaneEntry::new(PaneId::Worker(1), PaneState::Dead),
+    ];
+    let (transport, store, _writes) = start_hub(roster).await;
+    let mut orch = pane(&transport, PaneId::Orch).await;
+
+    let result = orch
+        .call(Op::Cmd {
+            to: PaneId::Worker(1),
+            command: "/clear".into(),
+            why: "the task changed completely".into(),
+        })
+        .await
+        .unwrap();
+    let OpResult::Delivered { accepted, detail, .. } = result else {
+        panic!("expected a delivery, got {result:?}");
+    };
+    assert!(!accepted);
+    assert_eq!(detail.as_deref(), Some("pane worker-1 is dead"));
+
+    let logged = commands(&store);
+    assert_eq!(logged.len(), 1, "the attempt is on the record");
+    let FleetEvent::Command { accepted, why, .. } = &logged[0] else { panic!("not a command") };
+    assert!(!*accepted);
+    assert_eq!(why, "the task changed completely", "the why survives a failed write");
+}
+
+/// A command must not become a reply target. `fleet reply` answers whoever *said*
+/// something to you, and nobody said anything — a `/compact` that redirected the
+/// receiver's next reply would send it to a pane that never spoke to them.
+#[tokio::test]
+async fn a_command_does_not_become_the_targets_reply_target() {
+    let (transport, _store, writes) = start_hub(all_live()).await;
+    let mut orch = pane(&transport, PaneId::Orch).await;
+    let mut w1 = pane(&transport, PaneId::Worker(1)).await;
+    let mut w2 = pane(&transport, PaneId::Worker(2)).await;
+
+    // worker-1 opens a conversation with worker-2...
+    w1.call(Op::Send { to: PaneId::Worker(2), text: "I own src/api".into() }).await.unwrap();
+    // ...then orch compacts worker-2, which is not a thing orch said to them.
+    orch.call(Op::Cmd {
+        to: PaneId::Worker(2),
+        command: "/compact keep the api ownership".into(),
+        why: "worker-2's context is mostly stale exploration".into(),
+    })
+    .await
+    .unwrap();
+
+    let replied = w2.call(Op::Reply { text: "noted".into() }).await.unwrap();
+    assert!(matches!(replied, OpResult::Delivered { accepted: true, .. }), "got {replied:?}");
+    assert_eq!(
+        writes.lock().unwrap().last().cloned().unwrap(),
+        (PaneId::Worker(1), "[fleet · worker-2] noted".to_string()),
+        "the reply went to the pane that ran a command instead of the one that spoke"
     );
 }
 

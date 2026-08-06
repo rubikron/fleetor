@@ -959,6 +959,42 @@ body,
   font-size: var(--t-label);
   color: var(--gold); /* awareness — the failure lives in this text, not a card rail */
 }
+.msg__note {
+  font-size: var(--t-label);
+  color: var(--fg-mute);
+}
+
+/* a command (D-045) — the fleet doing something to a pane rather than saying
+   something to it. Gold-edged so it reads as a different kind of row at a
+   glance, and never mistakable for a message the pane sent. */
+.msg--command {
+  border-color: color-mix(in srgb, var(--gold) 38%, var(--border-soft));
+  border-left-width: 2px;
+}
+.msg__command {
+  margin: 0.375rem 0 0;
+  font-size: var(--t-small);
+  color: var(--fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.msg__why {
+  margin: 0.25rem 0 0;
+  font-family: var(--sans);
+  font-size: var(--t-small);
+  line-height: 1.5;
+  color: var(--fg-dim);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.msg__why-label {
+  font-family: var(--mono);
+  font-size: var(--t-label);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--gold);
+  margin-right: 0.3125rem;
+}
 
 /* activity log */
 .events-view {

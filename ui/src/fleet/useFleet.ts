@@ -14,13 +14,21 @@
 
 import { useEffect, useState } from "react";
 import { bootstrap, fetchConfig, onFleetEvent } from "./api";
-import { isMessage, type FleetConfig, type FleetEvent, type MessageEvent } from "./types";
+import {
+  isCommand,
+  isMessage,
+  type CommandEvent,
+  type FleetConfig,
+  type FleetEvent,
+  type MessageEvent,
+} from "./types";
 
 export interface FleetView {
   ready: boolean;
   error: string | null;
   feed: FleetEvent[];
   messages: MessageEvent[];
+  commands: CommandEvent[];
   config: FleetConfig | null;
   refreshConfig: () => void;
 }
@@ -33,6 +41,7 @@ export function useFleet(): FleetView {
   const [error, setError] = useState<string | null>(null);
   const [feed, setFeed] = useState<FleetEvent[]>([]);
   const [messages, setMessages] = useState<MessageEvent[]>([]);
+  const [commands, setCommands] = useState<CommandEvent[]>([]);
   const [config, setConfig] = useState<FleetConfig | null>(null);
   const [configNonce, setConfigNonce] = useState(0);
 
@@ -45,6 +54,10 @@ export function useFleet(): FleetView {
         unlisten = await onFleetEvent((event) => {
           setFeed((f) => [event, ...f].slice(0, MAX_FEED));
           if (isMessage(event)) setMessages((m) => [event, ...m]);
+          // Unbounded for the same reason messages are: a command's `why` is the
+          // reasoning chain the log exists to keep, and dropping the oldest ones
+          // would quietly delete the earliest reasoning first.
+          if (isCommand(event)) setCommands((c) => [event, ...c]);
         });
         if (cancelled) {
           unlisten();
@@ -88,6 +101,7 @@ export function useFleet(): FleetView {
     error,
     feed,
     messages,
+    commands,
     config,
     refreshConfig: () => setConfigNonce((n) => n + 1),
   };

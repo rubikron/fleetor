@@ -29,10 +29,19 @@ Use the `fleet` command through Bash. It writes straight into the target termina
 - `fleet send <pane> "<text>"` — one pane. Example: `fleet send 2 "take the parser, I have the CLI"`
 - `fleet broadcast "<text>"` — every other pane at once. Use it sparingly.
 - `fleet reply "<text>"` — answers whoever messaged you last.
+- `fleet cmd <pane|self> "<slash command>" --why "<reason>"` — see below.
 - `fleet roster` — who exists and whether they are live.
 - `fleet whoami` — your own pane name.
 
 {delivery_contract}
+
+## Managing a pane's context
+
+`fleet cmd` runs one of two slash commands in a pane's terminal — `/clear` (start it fresh, losing everything it knows) or `/compact <what to keep>` (summarize its conversation down, keeping what you name). Anything else is refused. `self` targets your own terminal. Example: `fleet cmd 2 "/compact keep the parser design and the decisions we made" --why "worker-2 finished the parser; the exploration before it is dead weight"`.
+
+`--why` is required, and it is not paperwork: the log of *when and why* the fleet decided to clear or compact is the record a later self-improvement pass reads. Write the reason you would give a colleague, not the command restated.
+
+**If you clear a worker, immediately `fleet send` it its task context back** — the confirmed vision, its job, the constraints, what done looks like. A cleared worker knows nothing, and a fleet whose worker was wiped and never re-briefed will report confident nonsense.
 
 ## What arrives
 

@@ -1,8 +1,13 @@
 # WP-03 — `fleet cmd`: deliver `/clear` and `/compact` with a logged why
 
-status: not-started size: L
+status: **landed** (2026-08-06, D-045) size: L
 depends-on: 01 blocks: — (WP-04 makes it *useful*)
-brief-cost: +~120 tokens across both prompt files (verb teaching, the why rule, the self-maintenance move)
+brief-cost: estimated +~120 tokens across both prompt files; **actually spent +248 orch / +228 worker** — see D-045 and `00-index.md` standing tension 1
+
+**Two things in this doc were overruled by measurement and are left standing so the reasoning is legible:**
+
+1. **"The bytes land raw: no bracketed paste"** (Outcome, and criterion 3 under Design sketch) is **wrong**. A typed slash command opens Claude Code's menu and `Enter` selects the wrong entry; a bracketed paste filters and selects correctly. The command channel is a new *caller* of `write_paste` with an unframed body, and the 30 ms `SUBMIT_GAP` needed no change. `docs/command-channel-notes.md`.
+2. **The spike question "does typing `/compact` + CR execute it"** was answered before this session started, as an incidental finding of WP-02's spike. The six probes here answered what was left: empty box (both run), unsubmitted text in the box (the command becomes prose — a real, undetectable failure), and mid-turn (queued by CC, runs when the turn ends).
 
 ## Outcome
 

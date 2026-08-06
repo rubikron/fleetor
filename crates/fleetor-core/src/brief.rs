@@ -39,7 +39,7 @@ use crate::pane::PaneId;
 
 /// Every `fleet` verb, in the order the briefs introduce them. The Phase-3 CLI
 /// asserts its clap subcommands match this list exactly.
-pub const VERBS: [&str; 5] = ["send", "broadcast", "reply", "roster", "whoami"];
+pub const VERBS: [&str; 6] = ["send", "broadcast", "reply", "cmd", "roster", "whoami"];
 
 /// The baked-in orchestrator template. Used when the operator has not put their
 /// own `orch.md` in `~/.fleetor/prompts/`, and as the fallback when the one they
@@ -209,7 +209,7 @@ mod tests {
     /// Asserted against literals, not `VERBS`, so this test is the tripwire.
     #[test]
     fn both_briefs_teach_every_cli_verb() {
-        let literals = ["send", "broadcast", "reply", "roster", "whoami"];
+        let literals = ["send", "broadcast", "reply", "cmd", "roster", "whoami"];
         assert_eq!(literals.to_vec(), VERBS.to_vec(), "VERBS drifted from the verbs the briefs teach");
         for brief in [orch_brief(&roster(), CWD), worker_brief(PaneId::Worker(1), &roster(), CWD)] {
             for verb in literals {
@@ -436,8 +436,8 @@ mod tests {
     #[test]
     fn a_rewritten_template_keeps_the_clauses_it_cannot_afford_to_lose() {
         let rewritten = "# hi {me} in {cwd}\n\nyour peers: {peers}. use fleet send / fleet broadcast / \
-             fleet reply / fleet roster / fleet whoami.\n\n{delivery_contract}\n\n{broadcast_rule}\n\n\
-             {scaffolding}\n";
+             fleet reply / fleet cmd / fleet roster / fleet whoami.\n\n{delivery_contract}\n\n\
+             {broadcast_rule}\n\n{scaffolding}\n";
         validate_worker(rewritten).expect("a template with every placeholder is usable");
 
         let brief = render_worker(rewritten, PaneId::Worker(2), &roster(), CWD);
@@ -475,9 +475,60 @@ mod tests {
     #[test]
     fn a_template_that_forgets_a_verb_is_refused() {
         let missing_whoami = "# {me} in {cwd}\n\npeers: {peers}. fleet send / fleet broadcast / \
-             fleet reply / fleet roster.\n\n{delivery_contract}\n\n{broadcast_rule}\n\n{scaffolding}\n";
+             fleet reply / fleet cmd / fleet roster.\n\n{delivery_contract}\n\n{broadcast_rule}\n\n\
+             {scaffolding}\n";
         let why = validate_worker(missing_whoami).expect_err("must not be usable");
         assert!(why.contains("fleet whoami"), "the refusal names the missing verb: {why}");
+    }
+
+    // --- the command channel (D-045) ------------------------------------------
+
+    /// The mandatory `--why` is the reason the verb exists at all, so both briefs
+    /// have to teach it as a requirement rather than a nicety. Pinned as literals
+    /// for the same reason the anti-amplification clause is: a rewrite that
+    /// softened it to "you may add a note" would still render and still validate,
+    /// and the log would fill with effects whose reasons were never written down.
+    #[test]
+    fn both_briefs_teach_the_command_verb_with_its_mandatory_why() {
+        for brief in [orch_brief(&roster(), CWD), worker_brief(PaneId::Worker(1), &roster(), CWD)] {
+            assert!(brief.contains("fleet cmd"), "the verb itself");
+            assert!(brief.contains("`--why` is required"), "the why must read as a requirement");
+            assert!(
+                brief.contains("a later self-improvement pass reads"),
+                "the why is a reasoning chain, not paperwork",
+            );
+            // The allowlist is a constant in `command.rs`; a brief that promised
+            // more would teach a command the hub refuses.
+            for allowed in crate::command::ALLOWED_COMMANDS {
+                assert!(brief.contains(allowed), "the brief never names {allowed}");
+            }
+            assert!(brief.contains("Anything else is refused"), "the boundary is stated");
+        }
+    }
+
+    /// The worker's post-task self-maintenance move. Without this sentence the
+    /// verb exists and nobody uses it: a worker has no other prompt to look at
+    /// its own context, and "between tasks, never mid-task" is what keeps it from
+    /// compacting away the thing it is in the middle of.
+    #[test]
+    fn the_worker_brief_teaches_the_post_task_self_maintenance_move() {
+        let brief = worker_brief(PaneId::Worker(2), &roster(), CWD);
+        assert!(brief.contains("When you finish a block of work, look at your own context"));
+        assert!(brief.contains("fleet cmd self"), "the worker points the verb at itself");
+        assert!(brief.contains("never mid-task"), "the timing bound is not optional");
+    }
+
+    /// The after-`/clear` rule, and it is a *prompt* rule on purpose: nothing in
+    /// the delivery path may gate, delay or follow up a command (Tier 1.4), so
+    /// the only place a re-brief can be required is here.
+    #[test]
+    fn the_orch_brief_re_briefs_a_worker_it_clears() {
+        let brief = orch_brief(&roster(), CWD);
+        assert!(brief.contains("If you clear a worker, immediately `fleet send` it its task context back"));
+        assert!(
+            brief.contains("report confident nonsense"),
+            "the rule needs its consequence, or it reads as advice",
+        );
     }
 
     /// What ships must pass the check it imposes on everyone else.

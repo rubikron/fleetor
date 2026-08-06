@@ -17,7 +17,7 @@ The Blackboard vision, split into nine session-sized work packages. The vision i
 |----|-----|------|-----------|------|--------|
 | 01 | `01-land-context-management.md` | Land `feat/context-management` (prompts-as-files) | — | M | **landed** |
 | 02 | `02-vision-culture-briefs.md` | Own the system prompt: vision & culture | 01 | L | **landed** |
-| 03 | `03-command-channel.md` | `fleet cmd` — `/clear` + `/compact` with `--why` | 01 | L | not-started |
+| 03 | `03-command-channel.md` | `fleet cmd` — `/clear` + `/compact` with `--why` | 01 | L | **landed** |
 | 04 | `04-context-visibility.md` | Context visibility (the Loadout counter + gauge) | 01 | M | not-started |
 | 05 | `05-task-blocks.md` | Task blocks — the blackboard record + Tasks view | 01, 02 (soft) | L | not-started |
 | 06 | `06-receipts-review-merge.md` | Receipts, peer review, and the merge step | 01, 05 | L | not-started |
@@ -57,7 +57,7 @@ Deferred, with reasons — do not resurrect without new evidence:
 
 ## Standing tensions (every session should know these)
 
-1. **The system prompt is a shared budget.** Four packages append prompt text; each doc carries a `brief-cost` line and WP-09 audits the sum. With the `--system-prompt` switch landed (WP-02, D-043), the budget is the *whole* prompt, baseline included. **The WP-09 baseline is orch 1,637 tokens / worker 1,115** (DeepSeek Flash tokenizer, `examples/system-prompt-spike/count.py`) — against the 1,485 tokens of CC guidance that stopped being sent, both panes still start a session smaller than they did before WP-02.
+1. **The system prompt is a shared budget, and it is already over.** Four packages append prompt text; each doc carries a `brief-cost` line and WP-09 audits the sum. With the `--system-prompt` switch landed (WP-02, D-043), the budget is the *whole* prompt, baseline included. **After WP-03 it is orch 1,885 tokens / worker 1,343** (DeepSeek Flash tokenizer, `examples/system-prompt-spike/count.py`), up from WP-02's 1,637 / 1,115. WP-03 budgeted ~120 tokens across both files and spent **+248 / +228** — about four times its estimate, recorded in D-045 rather than absorbed quietly. Two lessons for 05, 06 and 07, which have not written their prose yet: a `brief-cost` line written before the prose is a guess, and a verb costs what its *rules* cost, not what its syntax costs. Against the 1,485 tokens of CC guidance that stopped being sent, orch is now roughly at parity and a worker still starts smaller than before WP-02 — but the headroom that made the overrun affordable is spent.
 2. **"Better than human work" vs DeepSeek-Flash workers.** The worker model is a Tier 2 default. If the shakedown (WP-09) shows Flash can't carry peer review or task-criteria judgment, swap the model with a three-line `decisions.md` entry — bring the evidence, not the intuition.
 
 ## Conventions (all packages)

@@ -37,6 +37,34 @@ pub enum FleetEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         detail: Option<String>,
     },
+    /// One `fleet cmd` — an allowed slash command run in a pane's terminal, with
+    /// the sender's reason for it (D-045).
+    ///
+    /// A variant of its own rather than a marked [`FleetEvent::Message`], because
+    /// commands are not messages: nothing about one was framed, attributed or
+    /// delivered the way a message is, and a UI that rendered it in the message
+    /// record would be claiming a pane said something it never said.
+    ///
+    /// `why` is never empty — it is the reasoning chain the log exists to keep,
+    /// so a later pass can study *when and why* the fleet decided to clear or
+    /// compact rather than only that it did.
+    ///
+    /// `accepted` carries the same meaning it does on a message and no more: the
+    /// pane was live and the bytes were queued to its pty. Whether the command
+    /// actually ran is not observable from outside the TUI — it may have been
+    /// queued behind a turn, or landed after unsubmitted text and been swallowed
+    /// as prose (`docs/command-channel-notes.md` §3–4). Nothing may render this
+    /// as "executed".
+    Command {
+        id: String,
+        from: PaneId,
+        to: PaneId,
+        command: String,
+        why: String,
+        accepted: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+    },
     /// A pane moved through its lifecycle (spawning → live → dead).
     PaneState { pane: PaneId, from: PaneState, to: PaneState },
     /// Free-form operational note. The honest-failure channel: a target that
@@ -60,6 +88,7 @@ impl FleetEvent {
     pub fn kind(&self) -> &'static str {
         match self {
             FleetEvent::Message { .. } => "message",
+            FleetEvent::Command { .. } => "command",
             FleetEvent::PaneState { .. } => "pane-state",
             FleetEvent::Notice { .. } => "notice",
         }
@@ -81,6 +110,15 @@ mod tests {
                 to: PaneId::Worker(2),
                 body: "take the parser".into(),
                 group: None,
+                accepted: true,
+                detail: None,
+            },
+            FleetEvent::Command {
+                id: "cmd-1".into(),
+                from: PaneId::Worker(2),
+                to: PaneId::Worker(2),
+                command: "/compact keep the parser".into(),
+                why: "finished the task block".into(),
                 accepted: true,
                 detail: None,
             },
@@ -112,6 +150,26 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""from":"worker-1""#), "{json}");
         assert!(json.contains(r#""to":"worker-3""#), "{json}");
+        assert_eq!(serde_json::from_str::<FleetEvent>(&json).unwrap(), event);
+    }
+
+    /// A command is its own kind on the wire and in the DB, so the UI can render
+    /// it distinctly rather than as a message row — and the `why` survives, since
+    /// an event that dropped it would keep the effect and lose the reasoning.
+    #[test]
+    fn a_command_event_is_its_own_kind_and_keeps_its_why() {
+        let event = FleetEvent::Command {
+            id: "cmd-1".into(),
+            from: PaneId::Orch,
+            to: PaneId::Worker(2),
+            command: "/clear".into(),
+            why: "the task changed completely".into(),
+            accepted: true,
+            detail: None,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""type":"command""#), "{json}");
+        assert!(json.contains(r#""why":"the task changed completely""#), "{json}");
         assert_eq!(serde_json::from_str::<FleetEvent>(&json).unwrap(), event);
     }
 }

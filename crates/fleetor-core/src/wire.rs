@@ -47,7 +47,7 @@ pub struct Request {
     pub op: Op,
 }
 
-/// The whole fleet tool surface: four ops, one per `fleet` verb (`whoami` needs
+/// The whole fleet tool surface: five ops, one per `fleet` verb (`whoami` needs
 /// no round trip — a pane knows its own name from its environment).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -61,6 +61,15 @@ pub enum Op {
     /// `fleet reply "<text>"` — route to whoever last messaged this pane. Errors
     /// if nobody has. → [`OpResult::Delivered`].
     Reply { text: String },
+    /// `fleet cmd <pane> "/compact …" --why "…"` — run an allowed slash command
+    /// in a pane's terminal, including this pane's own (D-045).
+    ///
+    /// Deliberately **not** a flavour of [`Op::Send`]. A command is delivered
+    /// unframed so its `/` lands in column 0, it may target the sender, and it is
+    /// refused at accept time against [`ALLOWED_COMMANDS`](crate::command::ALLOWED_COMMANDS)
+    /// — three properties a message must never have. → [`OpResult::Delivered`],
+    /// or [`OpResult::Error`] when the command or the `why` does not pass.
+    Cmd { to: PaneId, command: String, why: String },
     /// `fleet roster` — every pane and its state. → [`OpResult::Roster`].
     Roster,
 }
@@ -126,6 +135,11 @@ mod tests {
             Op::Send { to: PaneId::Worker(2), text: "take the parser".into() },
             Op::Broadcast { text: "rebasing".into() },
             Op::Reply { text: "on it".into() },
+            Op::Cmd {
+                to: PaneId::Worker(2),
+                command: "/compact keep the parser".into(),
+                why: "finished task block 3".into(),
+            },
             Op::Roster,
         ];
         for op in requests {
@@ -165,6 +179,10 @@ mod tests {
         assert_eq!(tag(Op::Send { to: PaneId::Orch, text: "x".into() }), "send");
         assert_eq!(tag(Op::Broadcast { text: "x".into() }), "broadcast");
         assert_eq!(tag(Op::Reply { text: "x".into() }), "reply");
+        assert_eq!(
+            tag(Op::Cmd { to: PaneId::Orch, command: "/clear".into(), why: "y".into() }),
+            "cmd"
+        );
         assert_eq!(tag(Op::Roster), "roster");
     }
 

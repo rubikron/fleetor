@@ -17,6 +17,7 @@
 //! fire-and-forget.
 
 use anyhow::{Context, Result};
+use fleetor_core::command::Command;
 use fleetor_core::event::FleetEvent;
 use fleetor_core::message::Message;
 use fleetor_core::pane::{PaneEntry, PaneId};
@@ -36,6 +37,14 @@ pub enum AppCommand {
     /// Type `text` into `to`'s terminal. Answer with whether the bytes were
     /// queued to a live pty.
     Deliver { to: PaneId, text: String, ack: oneshot::Sender<DeliveryResult> },
+    /// Type an already-allowlisted slash command into `to`'s terminal (D-045).
+    ///
+    /// A variant of its own rather than a flag on `Deliver`, for two reasons that
+    /// are both correctness rather than taste: `Deliver`'s batch-and-join
+    /// contract (D-039) must stay exactly as it is, and a command that got joined
+    /// into a batch would no longer have its `/` in column 0 — which is the whole
+    /// difference between a command and a sentence about one.
+    Command { to: PaneId, command: String, ack: oneshot::Sender<DeliveryResult> },
     /// Every pane the app currently holds, with its state.
     Roster { ack: oneshot::Sender<Vec<PaneEntry>> },
 }
@@ -138,8 +147,46 @@ impl Hub {
             Op::Send { to, text } => self.send(from, to, text).await,
             Op::Broadcast { text } => self.broadcast(from, text).await,
             Op::Reply { text } => self.reply(from, text).await,
+            Op::Cmd { to, command, why } => self.cmd(from, to, command, why).await,
             Op::Roster => self.roster().await,
         }
+    }
+
+    /// `fleet cmd <pane|self> "<slash command>" --why "<reason>"` (D-045).
+    ///
+    /// The parallel arm to [`Hub::send`], and deliberately not a branch inside
+    /// it. Three things differ, and each is a thing a message must never do:
+    ///
+    ///  - **It may target the sender.** `fleet cmd self "/compact …"` is the
+    ///    ordinary use. The self-send guard in `send` above is untouched — a pane
+    ///    messaging itself is still nonsense, a pane compacting itself is not.
+    ///  - **It is refused at accept time against a constant.** `Command::new`
+    ///    checks the allowlist and the `why` and answers with a sentence for the
+    ///    sender's stderr. That refusal happens *before* anything enters the
+    ///    delivery path, which is the class of refusal D-034 keeps. After it,
+    ///    nothing delays, drops or alters the command.
+    ///  - **It is delivered unframed.** No `[fleet · …]`, because the `/` has to
+    ///    be the first character in the input box.
+    ///
+    /// A refused command is an error to its sender and **not** a log entry, for
+    /// the same reason a refused self-send is not: nothing happened to a pane.
+    /// A command that was accepted and then failed at the pty *is* logged, with
+    /// `accepted: false` — that one is a fact about a terminal.
+    async fn cmd(&self, from: PaneId, to: PaneId, command: String, why: String) -> OpResult {
+        let cmd = match Command::new(from, to, command, why) {
+            Ok(cmd) => cmd,
+            Err(message) => return OpResult::Error { message },
+        };
+
+        let outcome = self.ask_app_command(to, cmd.keystrokes().to_string()).await;
+        let msg_id = cmd.id.clone();
+        let accepted = outcome.accepted;
+        let detail = outcome.detail.clone();
+        // Log after the write, like every other outcome (Tier 1.6). A command is
+        // never a reply target: `fleet reply` answers whoever *said* something,
+        // and nobody said anything here.
+        self.emit(cmd.into_event(accepted, detail.clone()));
+        OpResult::Delivered { msg_id, accepted, detail }
     }
 
     /// `fleet send <pane> "<text>"`.
@@ -258,6 +305,26 @@ impl Hub {
         // failure for a message that still arrives* — the command is already in
         // the channel when a timer would fire, so the timeout cannot cancel it.
         // Duplicate sends and a log that lies are worse than waiting (D-034).
+        match rx.await {
+            Ok(result) => result,
+            Err(_) => DeliveryResult::rejected(APP_DROPPED),
+        }
+    }
+
+    /// [`Hub::ask_app`]'s sibling for commands.
+    ///
+    /// Six duplicated lines rather than a shared helper taking a closure,
+    /// on purpose: the whole argument of D-045 is that the command path is
+    /// *parallel* to the message path rather than a mode of it, and the message
+    /// path's diff for this package has to be empty. A shared helper would put
+    /// the two back in one piece of code that has to reason about which it is
+    /// serving — which is the drift this package exists to avoid.
+    async fn ask_app_command(&self, to: PaneId, command: String) -> DeliveryResult {
+        let (ack, rx) = oneshot::channel();
+        if self.app.send(AppCommand::Command { to, command, ack }).is_err() {
+            return DeliveryResult::rejected(APP_GONE);
+        }
+        // No deadline, for the same reason `ask_app` has none (D-034).
         match rx.await {
             Ok(result) => result,
             Err(_) => DeliveryResult::rejected(APP_DROPPED),

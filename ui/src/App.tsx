@@ -167,7 +167,7 @@ export function App() {
             </div>
 
             <div className={`stage-view ${view === "messages" ? "" : "is-hidden"}`}>
-              <MessageFeed messages={fleet.messages} />
+              <MessageFeed messages={fleet.messages} commands={fleet.commands} />
             </div>
 
             <div className={`stage-view ${view === "activity" ? "" : "is-hidden"}`}>

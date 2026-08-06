@@ -1,6 +1,6 @@
 //! `fleet` — the whole agent-facing surface of a FLEETOR fleet (D-030).
 //!
-//! Five verbs, one unix socket, no MCP server. A pane's `claude` runs this
+//! Six verbs, one unix socket, no MCP server. A pane's `claude` runs this
 //! through its Bash tool; the hub writes the message straight into the target
 //! pane's terminal and answers with what actually happened.
 //!
@@ -31,6 +31,10 @@ use std::process::ExitCode;
 const ENV_PANE: &str = "FLEETOR_PANE";
 /// Set by the spawn path; the hub's unix socket.
 const ENV_SOCKET: &str = "FLEET_SOCKET";
+/// What a pane writes to aim `fleet cmd` at its own terminal. Self-targeting is
+/// the ordinary use of that verb — a worker compacting its own context — and it
+/// exists for `cmd` only: the message self-send guard is untouched.
+const SELF_TARGET: &str = "self";
 
 #[derive(Parser)]
 #[command(name = "fleet", version, about = "Talk to the other terminals in your FLEETOR fleet")]
@@ -60,6 +64,29 @@ enum Command {
     Reply {
         #[arg(trailing_var_arg = true, required = true)]
         text: Vec<String>,
+    },
+    /// Run `/clear` or `/compact` in a pane's terminal, with the reason you did.
+    ///
+    /// `--why` is `required` here rather than merely documented: it is a contract
+    /// on the sender, enforced before anything enters the delivery path, the same
+    /// class of check as `Hello.pane`. The log of *why* the fleet cleared or
+    /// compacted is the reasoning chain the verb exists to keep, and a `--why`
+    /// that could be skipped would be skipped.
+    ///
+    /// The command is `num_args(1..)` and **not** `trailing_var_arg`, unlike
+    /// every message verb above: trailing args would swallow `--why` itself, and
+    /// a model that wrote the flag last would silently send it as part of the
+    /// command. This way both `fleet cmd 2 "/compact keep X" --why "…"` and
+    /// `fleet cmd 2 /compact keep X --why "…"` mean the same thing.
+    Cmd {
+        /// `orch`, a worker as `2` / `w2` / `worker-2`, or `self` for your own.
+        pane: String,
+        /// `/clear`, or `/compact <what to keep>`. Anything else is refused.
+        #[arg(required = true, num_args = 1..)]
+        command: Vec<String>,
+        /// Why you decided to send it — a sentence, not the command restated.
+        #[arg(long, required = true)]
+        why: String,
     },
     /// Who exists and whether they are live.
     Roster,
@@ -96,6 +123,9 @@ fn run() -> Result<ExitCode> {
         },
         Command::Broadcast { text } => Op::Broadcast { text: join(text) },
         Command::Reply { text } => Op::Reply { text: join(text) },
+        Command::Cmd { pane, command, why } => {
+            Op::Cmd { to: target(&pane)?, command: join(command), why }
+        }
         Command::Roster => Op::Roster,
         Command::Whoami => unreachable!("handled above"),
     };
@@ -155,6 +185,17 @@ fn me() -> Result<PaneId> {
     raw.parse::<PaneId>().map_err(|e| anyhow::anyhow!("{ENV_PANE}: {e}"))
 }
 
+/// The pane a `fleet cmd` is aimed at. `self` resolves here, in the one process
+/// that already knows which pane it is, rather than becoming a `PaneId` spelling
+/// — a `PaneId` that meant "whoever is asking" would be a different pane on
+/// every side of the socket, and the hub would have to guess which.
+fn target(pane: &str) -> Result<PaneId> {
+    if pane.trim().eq_ignore_ascii_case(SELF_TARGET) {
+        return me();
+    }
+    pane.parse::<PaneId>().map_err(|e| anyhow::anyhow!("{e}"))
+}
+
 fn socket() -> Result<PathBuf> {
     let raw = std::env::var(ENV_SOCKET).ok().filter(|s| !s.trim().is_empty()).with_context(|| {
         format!("{ENV_SOCKET} is not set — the fleet shell sets it on every pane it spawns")
@@ -211,6 +252,52 @@ mod tests {
         assert!(Cli::try_parse_from(["fleet", "send", "2"]).is_err());
         assert!(Cli::try_parse_from(["fleet", "broadcast"]).is_err());
         assert!(Cli::try_parse_from(["fleet", "reply"]).is_err());
+    }
+
+    // --- the command channel (D-045) ------------------------------------------
+
+    /// `--why` is a contract on the sender, enforced by clap before anything
+    /// reaches the hub — the same class of check as a `Hello` naming its pane.
+    /// A command whose reason was optional would arrive without one.
+    #[test]
+    fn a_command_without_a_why_is_refused_by_the_parser() {
+        assert!(Cli::try_parse_from(["fleet", "cmd", "2", "/clear"]).is_err());
+        assert!(Cli::try_parse_from(["fleet", "cmd", "2", "--why", "stale"]).is_err(), "no command");
+        assert!(Cli::try_parse_from(["fleet", "cmd", "--why", "stale"]).is_err(), "no pane");
+        assert!(Cli::try_parse_from(["fleet", "cmd", "2", "/clear", "--why", "stale"]).is_ok());
+    }
+
+    /// The reason `command` is `num_args(1..)` rather than `trailing_var_arg`
+    /// like every message verb: trailing args swallow the flag, and a model that
+    /// wrote `--why` last would have sent it as part of the command. Both
+    /// spellings a model actually types must mean the same thing.
+    #[test]
+    fn the_why_survives_however_the_model_quotes_the_command() {
+        for argv in [
+            vec!["fleet", "cmd", "2", "/compact keep the parser", "--why", "task block done"],
+            vec!["fleet", "cmd", "2", "/compact", "keep", "the", "parser", "--why", "task block done"],
+            vec!["fleet", "cmd", "--why", "task block done", "2", "/compact", "keep", "the", "parser"],
+        ] {
+            let cli = Cli::try_parse_from(&argv).unwrap_or_else(|e| panic!("{argv:?}: {e}"));
+            let Command::Cmd { pane, command, why } = cli.command else { panic!("expected cmd") };
+            assert_eq!(pane, "2");
+            assert_eq!(join(command), "/compact keep the parser", "{argv:?}");
+            assert_eq!(why, "task block done", "{argv:?}");
+        }
+    }
+
+    /// `self` is resolved here, where the process already knows which pane it is.
+    /// Every other spelling still goes through `PaneId`, which is untouched.
+    #[test]
+    fn the_self_target_resolves_to_the_pane_running_the_command() {
+        std::env::set_var(ENV_PANE, "worker-3");
+        for spelling in ["self", "SELF", " self "] {
+            assert_eq!(target(spelling).unwrap(), PaneId::Worker(3), "{spelling}");
+        }
+        assert_eq!(target("orch").unwrap(), PaneId::Orch);
+        assert_eq!(target("2").unwrap(), PaneId::Worker(2));
+        assert!(target("sidebar").is_err(), "a non-pane is still a non-pane");
+        std::env::remove_var(ENV_PANE);
     }
 
     /// The two exit codes the briefs promise. `accepted` is the *only* zero.

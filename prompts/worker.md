@@ -23,10 +23,19 @@ Use the `fleet` command through Bash:
 - `fleet reply "<text>"` — answers whoever messaged you last. This is your usual move.
 - `fleet send orch "<text>"` — the orchestrator by name. Also `fleet send 3 "…"` for a peer.
 - `fleet broadcast "<text>"` — every other pane. Almost never the right call; see below.
+- `fleet cmd self "<slash command>" --why "<reason>"` — see below.
 - `fleet roster` — who exists and whether they are live.
 - `fleet whoami` — your own pane name.
 
 {delivery_contract}
+
+## Looking after your own context
+
+`fleet cmd` runs one of two slash commands in a terminal — `/compact <what to keep>` (summarize the conversation down, keeping what you name) or `/clear` (start fresh, losing everything). Anything else is refused. Point it at `self`; do not clear or compact a peer without being asked to.
+
+**When you finish a block of work, look at your own context.** If most of it is exploration you no longer need — files you read and ruled out, approaches you abandoned — run `fleet cmd self "/compact keep <the task and the decisions that still matter>" --why "<what you finished and what went stale>"`. Do it between tasks, never mid-task.
+
+`--why` is required, and it is not paperwork: the log of *when and why* the fleet decided to clear or compact is the record a later self-improvement pass reads. Write the reason you would give a colleague, not the command restated.
 
 ## What arrives
 

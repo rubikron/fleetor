@@ -39,10 +39,11 @@ export type PaneStatus = "idle" | "live" | "dead";
 
 /// The append-only event, discriminated on `type`, each carrying its `seq`.
 ///
-/// Three variants, because that is all `fleetor_core::FleetEvent` has after
-/// Phase 5. The ten that described the headless supervisor — worker states,
-/// ticket moves, tool activity, reports, gate results, review verdicts, mail
-/// routing — went with it.
+/// Four variants. Three are what `fleetor_core::FleetEvent` had after Phase 5 —
+/// the ten that described the headless supervisor went with it — and `command`
+/// is D-045's. **The frontend renders an unknown `type` as nothing at all**, so a
+/// backend variant that is not mirrored here is invisible rather than broken,
+/// which is why this file moves in the same commit as `event.rs`.
 export type FleetEvent =
   | {
       seq: number;
@@ -57,13 +58,36 @@ export type FleetEvent =
       accepted: boolean;
       detail?: string | null;
     }
+  | {
+      seq: number;
+      type: "command";
+      id: string;
+      from: PaneId;
+      to: PaneId;
+      /// The slash command as it was typed into the terminal — `/clear`, or
+      /// `/compact <what to keep>`. Always one of `ALLOWED_COMMANDS`.
+      command: string;
+      /// Why the sender decided to send it. Never empty, and never hidden: this
+      /// is the reasoning chain the verb exists to keep.
+      why: string;
+      /// The bytes reached a live pty. **Never** render this as "executed" — the
+      /// command may have been queued behind a turn, or landed after unsubmitted
+      /// text and been swallowed as prose (`docs/command-channel-notes.md`).
+      accepted: boolean;
+      detail?: string | null;
+    }
   | { seq: number; type: "pane-state"; pane: PaneId; from: string; to: string }
   | { seq: number; type: "notice"; level: NoticeLevel; text: string };
 
 export type MessageEvent = Extract<FleetEvent, { type: "message" }>;
+export type CommandEvent = Extract<FleetEvent, { type: "command" }>;
 
 export function isMessage(event: FleetEvent): event is MessageEvent {
   return event.type === "message";
+}
+
+export function isCommand(event: FleetEvent): event is CommandEvent {
+  return event.type === "command";
 }
 
 export interface BootSnapshot {

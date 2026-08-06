@@ -178,6 +178,75 @@ fn a_delivered_message_lands_in_its_target_pane_and_nowhere_else() {
     registry.kill_all();
 }
 
+/// **The command channel against a real pty (D-045).** A `fleet cmd` must reach
+/// the far end as its own submitted line, with the command's `/` as the first
+/// character after the paste marker — no `[fleet · …]`, nothing joined onto it.
+///
+/// Sent as a burst with two messages so the writer has something to batch: the
+/// messages join, the command does not, and the assertion is on the exact bytes
+/// the pane's tty echoed back. A fake pane cannot prove Claude Code *executes*
+/// it — that is `docs/command-channel-notes.md`, measured against the real
+/// binary — but it is exactly the right thing to prove what we typed.
+#[test]
+fn a_command_reaches_a_real_pty_unframed_and_in_a_write_of_its_own() {
+    let (registry, transcript) = fleet();
+    let target = PaneId::Worker(2);
+    transcript.wait_for(&out_channel(target), "ready");
+
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let (tx, rx) = mpsc::unbounded_channel::<AppCommand>();
+    spawn_delivery(&rt, registry.clone(), rx);
+
+    let (first_ack, first) = oneshot::channel();
+    tx.send(AppCommand::Deliver {
+        to: target,
+        text: frame_for_pane(PaneId::Orch, "wrap up the parser"),
+        ack: first_ack,
+    })
+    .unwrap();
+    let (cmd_ack, commanded) = oneshot::channel();
+    tx.send(AppCommand::Command {
+        to: target,
+        command: "/compact keep the parser".into(),
+        ack: cmd_ack,
+    })
+    .unwrap();
+    let (last_ack, last) = oneshot::channel();
+    tx.send(AppCommand::Deliver {
+        to: target,
+        text: frame_for_pane(PaneId::Orch, "now take the CLI"),
+        ack: last_ack,
+    })
+    .unwrap();
+
+    for (label, answer) in [("message", first), ("command", commanded), ("re-brief", last)] {
+        let result = rt.block_on(answer).unwrap_or_else(|_| panic!("{label} went unanswered"));
+        assert!(result.accepted, "{label} was refused: {result:?}");
+    }
+
+    // The stand-in is a plain shell, so it echoes the bracketed-paste markers
+    // back as ordinary characters — which is what makes the boundary visible.
+    let seen = transcript.wait_for(&out_channel(target), "now take the CLI");
+    assert!(
+        seen.contains("echo: \u{1b}[200~/compact keep the parser\u{1b}[201~"),
+        "the command must be its own write, with `/` first after the paste marker: {seen:?}"
+    );
+    assert!(
+        !seen.contains("[fleet · orch] /compact"),
+        "the command was framed like a message: {seen:?}"
+    );
+    // Ordering is the hub's: the re-brief a cleared worker needs cannot overtake
+    // the command it is meant to follow.
+    let at = |needle: &str| seen.find(needle).unwrap_or_else(|| panic!("missing {needle:?}"));
+    assert!(
+        at("wrap up the parser") < at("/compact keep the parser")
+            && at("/compact keep the parser") < at("now take the CLI"),
+        "the pane saw the burst out of the order the hub took it: {seen:?}"
+    );
+
+    registry.kill_all();
+}
+
 /// Operator keystrokes and an injected message share one writer lock, so they
 /// cannot interleave. Both must still get through.
 #[test]

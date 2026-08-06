@@ -6,6 +6,11 @@
 // bind. Every one of those is a case where the shell otherwise looks fine while
 // something the operator cares about is broken, so there has to be somewhere they
 // are said out loud.
+//
+// Commands (D-045) appear here *and* in the message record, because they are the
+// one thing the fleet does to a pane rather than says to it: an operator watching
+// activity needs to see a worker's context being cleared, and an operator reading
+// the record needs it in the timeline next to what was said around it.
 
 import { isMessage, type FleetEvent } from "../fleet/types";
 
@@ -32,6 +37,24 @@ function render(event: FleetEvent): Rendered {
         tone: event.to === "dead" ? "red" : "neutral",
         text: `${event.pane} ${event.from} → ${event.to}`,
         rail: event.to === "dead",
+      };
+    // A command is not a message and must never read like one, so it says what
+    // was run, at whom, and why — and the why is not truncated away, because it
+    // is the reason the verb exists. Gold: noteworthy, not urgent.
+    //
+    // "accepted" is the word on purpose. The bytes reached a live pty; whether
+    // Claude Code ran the command is not observable from here, and a feed saying
+    // "cleared worker-2" would be claiming exactly that.
+    case "command":
+      return {
+        kind: "command",
+        tone: event.accepted ? "gold" : "red",
+        text: event.accepted
+          ? `${event.from} → ${event.to} · ${event.command} · accepted — why: ${event.why}`
+          : `${event.from} → ${event.to} · ${event.command} · not accepted (${
+              event.detail ?? "refused"
+            }) — why: ${event.why}`,
+        rail: !event.accepted,
       };
     // Messages have their own view; `EventFeed` filters them out before it gets
     // here, so this arm exists only to keep the switch exhaustive.
