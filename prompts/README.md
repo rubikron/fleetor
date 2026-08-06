@@ -70,7 +70,7 @@ To go back to the built-in, delete the file.
 
 **Keep each paragraph on one line.** These files are rendered into a system prompt, where a hard wrap becomes a real newline. Prose reads the same either way, but the briefs are checked by tests that read a paragraph as a line — and a peer list split across two lines is harder for a model to parse, not easier. Turn on soft wrap in your editor.
 
-**One sentence is on loan to WP-07.** `worker.md` tells a confused worker to *"ask `orch` to put it to the operator"*, because a worker has no way to address the human directly yet. When that lands, this is the sentence that changes — it is deliberately self-contained and pinned by `a_confused_worker_is_told_exactly_who_to_ask`.
+**The sentence that was on loan to WP-07 has been called in (D-051).** `worker.md` used to tell a confused worker to *"ask `orch` to put it to the operator"*; it now says `fleet send operator "<question>"`, and `a_confused_worker_is_told_exactly_who_to_ask` asserts the relay sentence is **gone** rather than merely that the new one is present — two routes to the same person is how a question ends up asked twice or not at all.
 
 **Say what a failure costs, not just what to do.** These briefs are read by `deepseek-v4-flash`, not by Opus. `decisions.md` D-031 records that they are still unvalidated against a live worker — if a worker misbehaves in a way you can name, this directory is the first place to fix it.
 
