@@ -1,5 +1,13 @@
 # Morning handoff — the overnight Blackboard build (2026-08-06)
 
+> ## ⚠ ARCHIVED — one-off handoff, acted on (2026-08-06)
+>
+> The branch it describes merged to master via PR #9. Several of its numbers were superseded the
+> same day: the prompt budget is now orch 3,366 / cap 3,500 (D-056), the worker window 500,000
+> tokens (D-054), and the live shakedown has begun (`docs/notes/blackboard-shakedown.md`). The
+> decision menu it points at is archived beside it. Kept as the record of what the overnight
+> build handed over. Do not edit below this banner.
+
 All nine work packages executed on branch **`feat/blackboard`** (worktree `.claude/worktrees/blackboard`), 22 commits, nothing pushed, master and your main checkout untouched. Final verification at tip: **186 workspace + 92 shell tests, 0 failures; tsc and vite clean.**
 
 ## What your fleet can do now that it couldn't last night

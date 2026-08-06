@@ -116,7 +116,7 @@ What a fake pane deliberately **cannot** prove is whether a live `claude` reache
 
 ## 6. Where things stand
 
-The build phases are `docs/tui-pivot-plan.md`, Phases 0–6, each with its exit test and its recorded deviations. Phases 0–5 are complete and merged.
+The build phases are `docs/archive/tui-pivot-plan.md`, Phases 0–6, each with its exit test and its recorded deviations. Phases 0–5 are complete and merged.
 
 **Working agreements:**
 

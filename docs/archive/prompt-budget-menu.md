@@ -1,5 +1,14 @@
 # Prompt budget — the operator's morning read
 
+> ## ⚠ ARCHIVED — overtaken by events (2026-08-06)
+>
+> Every headline number here is stale: the budget moved to orch 3,366 / cap 3,500 (D-056) and the
+> window to 500,000 tokens (D-054). Cut candidate #1 was not declined but **inverted** — D-056
+> removed the distillation and put the operator's full tenets essay into the orch brief. The
+> measurement method (`examples/system-prompt-spike/count.py`, write-measure-revert) is still the
+> way to cost a prompt change. Kept as the menu the operator was handed. Do not edit below this
+> banner.
+
 Written by WP-09 (budget half), overnight. This is the decision the ledger in
 `decisions.md` D-053 kept deferring: **is 2,645 / 2,099 a problem, and if so,
 what gets cut?** Every number below is a real measurement from

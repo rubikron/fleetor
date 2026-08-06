@@ -93,7 +93,7 @@ State lives in `~/.fleetor/`: `config.json` (your target), `testbed/` (the fallb
 
 ## Status
 
-**The pivot is complete and merged.** FLEETOR previously ran one TUI orchestrator plus four *headless* `claude -p` workers under a sync supervisor, reached through an MCP shim, wrapped in a ticket board with gates and peer review. All of it is gone — see `docs/tui-pivot-plan.md` for why, and D-030 through D-039 in `decisions.md` for each decision.
+**The pivot is complete and merged.** FLEETOR previously ran one TUI orchestrator plus four *headless* `claude -p` workers under a sync supervisor, reached through an MCP shim, wrapped in a ticket board with gates and peer review. All of it is gone — see `docs/archive/tui-pivot-plan.md` for why, and D-030 through D-039 in `decisions.md` for each decision.
 
 Verified: 55 workspace tests and 34 shell tests, seven of them driving five **real ptys**; `tsc --noEmit && vite build` clean. And the thing no test can prove — five live `claude` TUIs messaging each other through the socket — has been run by hand.
 
@@ -111,7 +111,7 @@ Known gaps, in rough priority order:
 2. **`docs/tui-spawn-notes.md`** — what was measured against real Claude Code 2.1.220 about spawning an interactive pane. Several of these findings are load-bearing and non-obvious.
 3. **`building.md`** — decision tiers, the seams, the risk register.
 4. **`decisions.md`** — the running log of where defaults lost, and why.
-5. **`docs/tui-pivot-plan.md`** — the plan this branch executed, with each phase's deviations recorded.
+5. **`docs/archive/tui-pivot-plan.md`** — the plan the pivot executed, with each phase's deviations recorded.
 
 Documents under `docs/` marked **superseded** describe the pre-pivot system. They are kept as the record behind decisions that are still in force, not as a description of the code.
 

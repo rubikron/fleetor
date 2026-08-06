@@ -63,6 +63,6 @@ exit checklist.
 
 - [x] Cap recorded; prompts measured and within it; validation green. (D-053: orch 2,645 ≤ 2,800, worker 2,099 ≤ 2,200; `cargo test --workspace`, `src-tauri` tests, `tsc --noEmit`, `vite build` all green.)
 - [ ] Live-run log exported and cited (shakedown half — not this session; operator presence required per §9.5).
-- [x] Findings filed as new NN docs where warranted. (`prompt-budget-menu.md` — the budget half's finding, six costed cut candidates, no code/prompt change applied beyond the conservative prune.)
+- [x] Findings filed as new NN docs where warranted. (`docs/archive/prompt-budget-menu.md` — the budget half's finding, six costed cut candidates, no code/prompt change applied beyond the conservative prune.)
 - [x] `decisions.md` entries appended. (D-053.)
 - [x] `00-index.md` statuses updated across the board. (WP-09 row and standing tension 1.)
