@@ -52,6 +52,7 @@ Internal module structure, crate names, error-handling style, frontend state man
 
 ```
 fleetor/
+  CLAUDE.md                 ← session orientation + the documentation system
   building.md               ← this file
   decisions.md              ← append-only
   docs/                     ← indexed by docs/README.md; fleet-comms-map.md is the companion map
