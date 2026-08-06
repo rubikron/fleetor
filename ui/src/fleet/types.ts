@@ -105,3 +105,31 @@ export interface FleetConfig {
   lead_model: string;
   gate: string;
 }
+
+/// A read-only estimate of how much of a pane's context window is in use,
+/// mirroring `fleetor_core::pane::ContextGauge` (WP-04). Present only when
+/// something has actually sampled the pane's transcript — see `PaneEntry`.
+export interface ContextGauge {
+  used_tokens: number;
+  window_tokens: number;
+  /// Pre-divided on the Rust side so this UI and the `fleet` CLI never round
+  /// a percent differently.
+  pct: number;
+}
+
+/// The backend's own lifecycle state for a pane, exactly as
+/// `fleetor_core::pane::PaneState` serializes it — **not** the same set as
+/// `PaneStatus` above, which the shell derives from its own pty channels and
+/// which has an `"idle"` this one does not. `fleet roster`'s payload only, so
+/// far; the band still gets liveness from the pty stream, not this.
+export type RosterPaneState = "spawning" | "live" | "dead";
+
+/// One `fleet roster` row, mirroring `fleetor_core::pane::PaneEntry`.
+/// `context` is `undefined` whenever the backend's JSON omitted the key —
+/// **never render a missing field as zero.** An unsampled pane (every pane at
+/// spawn; the orchestrator, always) means *unknown*, not "definitely empty."
+export interface PaneEntry {
+  pane: PaneId;
+  state: RosterPaneState;
+  context?: ContextGauge;
+}

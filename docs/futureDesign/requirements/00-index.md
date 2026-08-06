@@ -18,7 +18,7 @@ The Blackboard vision, split into nine session-sized work packages. The vision i
 | 01 | `01-land-context-management.md` | Land `feat/context-management` (prompts-as-files) | — | M | **landed** |
 | 02 | `02-vision-culture-briefs.md` | Own the system prompt: vision & culture | 01 | L | **landed** |
 | 03 | `03-command-channel.md` | `fleet cmd` — `/clear` + `/compact` with `--why` | 01 | L | **landed** |
-| 04 | `04-context-visibility.md` | Context visibility (the Loadout counter + gauge) | 01 | M | not-started |
+| 04 | `04-context-visibility.md` | Context visibility (the Loadout counter + gauge) | 01 | M | **landed** |
 | 05 | `05-task-blocks.md` | Task blocks — the blackboard record + Tasks view | 01, 02 (soft) | L | not-started |
 | 06 | `06-receipts-review-merge.md` | Receipts, peer review, and the merge step | 01, 05 | L | not-started |
 | 07 | `07-operator-participant.md` | Operator as participant | 01 | M | not-started |

@@ -36,15 +36,26 @@
 //! What this still cannot fix: a pane thirty seconds into a turn. Messages
 //! arriving across that window land in CC's own queue and are at its mercy. That
 //! is why `accepted` has never meant "delivered" (L3).
+//!
+//! ## The context gauge rides `AppCommand::Roster`, not the message path (WP-04)
+//!
+//! `fleet roster` gained an optional per-pane context column, and the sampling
+//! that fills it — a filesystem read of a worker's own transcript — happens
+//! entirely inside the `Roster` arm below. Observer-only: the `Deliver` and
+//! `Command` arms, and everything above this section, are untouched — the
+//! WP-04 performance criteria's "the delivery diff is empty" is that literally.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use fleetor_core::pane::PaneId;
+use fleetor_core::event::{FleetEvent, NoticeLevel};
+use fleetor_core::pane::{PaneEntry, PaneId};
+use fleetor_core::Store;
 use fleetor_server::{AppCommand, DeliveryResult};
 use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, oneshot};
 
+use crate::context_gauge::{self, GaugeSources};
 use crate::pty::PaneRegistry;
 
 /// Between two messages in one paste. A blank line, because bodies may be
@@ -95,20 +106,45 @@ struct Run {
 }
 
 /// Serve the hub's pane commands from `registry` until the app shuts down.
+///
+/// `store` and `gauges` exist for exactly one arm, [`AppCommand::Roster`]
+/// (WP-04): this is the single place a `fleet roster` — whether it arrived
+/// over the socket from the CLI, or from the UI's `fleet_roster` poll sending
+/// the identical `AppCommand` into this same channel — gets its optional
+/// context column, and the one place the ~80%-crossing Notice can be
+/// guaranteed to fire at most once per pane per session regardless of which
+/// caller asked. Nothing in the `Deliver`/`Command` arms below reads either —
+/// the message path stays exactly what it was (WP-04 performance criteria:
+/// "the delivery diff is empty").
 pub fn spawn_delivery(
     rt: &Runtime,
     registry: Arc<PaneRegistry>,
     mut commands: mpsc::UnboundedReceiver<AppCommand>,
+    store: Arc<dyn Store>,
+    gauges: Arc<GaugeSources>,
 ) {
     rt.spawn(async move {
         let mut outboxes: HashMap<PaneId, mpsc::UnboundedSender<Pending>> = HashMap::new();
+        // Which panes have already had their one ~80% Notice this session.
+        // Lives here rather than in `GaugeSources` because this loop is the
+        // one place both roster-asking paths converge — see the fn doc.
+        let mut notified_80: HashSet<PaneId> = HashSet::new();
 
         while let Some(command) = commands.recv().await {
             match command {
-                // Cheap and lock-only: answering inline costs nothing and keeps
-                // `fleet roster` honest about the instant it was asked.
+                // Cheap and lock-only for a pane with nothing to sample; the
+                // context augmentation is a filesystem read per worker pane,
+                // which is why this stays on-demand (answering `fleet roster`
+                // or the UI's slow poll) rather than a background loop over
+                // every pane's transcript (requirements doc: "no hot loops
+                // over five JSONL files").
                 AppCommand::Roster { ack } => {
-                    let _ = ack.send(registry.roster());
+                    let base = registry.roster();
+                    let augmented: Vec<PaneEntry> = base
+                        .into_iter()
+                        .map(|entry| augment_with_gauge(entry, &gauges, &store, &mut notified_80))
+                        .collect();
+                    let _ = ack.send(augmented);
                 }
                 AppCommand::Deliver { to, text, ack } => {
                     let outbox = outboxes
@@ -133,6 +169,35 @@ pub fn spawn_delivery(
             }
         }
     });
+}
+
+/// One roster row, with its context gauge attached if one could be sampled
+/// (WP-04). An unsampled pane — the orchestrator, always; a worker with no
+/// completed turn yet — comes back unchanged, `context: None`.
+///
+/// The one place a live sample can turn into a persisted event: on a pane's
+/// first crossing of [`context_gauge::NOTICE_THRESHOLD_PCT`] this session,
+/// once — never the samples themselves, which the requirements doc is
+/// explicit stay off the event log entirely.
+fn augment_with_gauge(
+    entry: PaneEntry,
+    gauges: &GaugeSources,
+    store: &Arc<dyn Store>,
+    notified_80: &mut HashSet<PaneId>,
+) -> PaneEntry {
+    let Some(gauge) = gauges.sample(entry.pane) else { return entry };
+
+    if context_gauge::crosses_notice_threshold(gauge.pct) && notified_80.insert(entry.pane) {
+        let event = FleetEvent::Notice {
+            level: NoticeLevel::Info,
+            text: context_gauge::notice_text(entry.pane, &gauge),
+        };
+        if let Err(e) = store.append_event(&event) {
+            eprintln!("deliver: could not append context notice for {}: {e}", entry.pane);
+        }
+    }
+
+    entry.with_context(gauge)
 }
 
 /// The single writer for one pane: take what arrived, drain whatever else is
@@ -225,7 +290,9 @@ fn outcome_of(write: Result<(), String>) -> DeliveryResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context_gauge::TranscriptSource;
     use fleetor_core::message::frame_for_pane;
+    use fleetor_db::SqliteStore;
 
     fn registry() -> Arc<PaneRegistry> {
         let path = std::env::temp_dir().join(format!(
@@ -234,6 +301,18 @@ mod tests {
             std::thread::current().id()
         ));
         Arc::new(PaneRegistry::new(Arc::new(|_, _| {}), path))
+    }
+
+    /// A fresh in-memory store — every test that doesn't care about the
+    /// context notice still needs one to satisfy `spawn_delivery`'s signature.
+    fn store() -> Arc<dyn Store> {
+        Arc::new(SqliteStore::open_in_memory().unwrap())
+    }
+
+    /// No sources recorded — every pane samples as absent, which is what
+    /// every test except the WP-04 ones below wants.
+    fn gauges() -> Arc<GaugeSources> {
+        Arc::new(GaugeSources::default())
     }
 
     fn runtime() -> Runtime {
@@ -282,7 +361,7 @@ mod tests {
     fn a_message_to_a_pane_that_is_not_running_is_refused_rather_than_dropped() {
         let rt = runtime();
         let (tx, rx) = mpsc::unbounded_channel();
-        spawn_delivery(&rt, registry(), rx);
+        spawn_delivery(&rt, registry(), rx, store(), gauges());
 
         let (ack, answer) = oneshot::channel();
         tx.send(AppCommand::Deliver { to: PaneId::Worker(2), text: "take T-4".into(), ack }).unwrap();
@@ -303,7 +382,7 @@ mod tests {
     fn every_message_in_a_burst_is_answered_even_when_they_share_a_write() {
         let rt = runtime();
         let (tx, rx) = mpsc::unbounded_channel();
-        spawn_delivery(&rt, registry(), rx);
+        spawn_delivery(&rt, registry(), rx, store(), gauges());
 
         let answers: Vec<_> = (1..=4)
             .map(|i| {
@@ -395,7 +474,7 @@ mod tests {
     fn a_command_to_a_pane_that_is_not_running_is_refused_rather_than_dropped() {
         let rt = runtime();
         let (tx, rx) = mpsc::unbounded_channel();
-        spawn_delivery(&rt, registry(), rx);
+        spawn_delivery(&rt, registry(), rx, store(), gauges());
 
         let (ack, answer) = oneshot::channel();
         tx.send(AppCommand::Command { to: PaneId::Worker(2), command: "/clear".into(), ack })
@@ -435,10 +514,134 @@ mod tests {
     fn the_roster_answers_even_when_no_pane_has_been_spawned() {
         let rt = runtime();
         let (tx, rx) = mpsc::unbounded_channel();
-        spawn_delivery(&rt, registry(), rx);
+        spawn_delivery(&rt, registry(), rx, store(), gauges());
 
         let (ack, answer) = oneshot::channel();
         tx.send(AppCommand::Roster { ack }).unwrap();
         assert!(rt.block_on(answer).expect("the ack must arrive").is_empty());
+    }
+
+    // --- the context gauge on the roster (WP-04) --------------------------------
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "fleetor-deliver-gauge-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A worker with no recorded transcript source — the ordinary state for
+    /// every pane before `crate::fleet::spawn_pane` records one — must keep
+    /// `context: None`. This is `augment_with_gauge` in isolation, without a
+    /// pty: `src-tauri/tests/panes.rs` covers the real-registry, real-pty path.
+    #[test]
+    fn a_pane_with_no_recorded_source_keeps_context_absent() {
+        let entry = PaneEntry::new(PaneId::Worker(1), fleetor_core::pane::PaneState::Live);
+        let mut notified = HashSet::new();
+        let augmented = augment_with_gauge(entry, &gauges(), &store(), &mut notified);
+        assert_eq!(augmented.context, None);
+        assert!(notified.is_empty());
+    }
+
+    /// A pane whose recorded source has a real, completed-turn transcript gets
+    /// its gauge attached — the sampling this test proves is exactly
+    /// `context_gauge::GaugeSources::sample`, exercised through the same
+    /// function `AppCommand::Roster` calls.
+    #[test]
+    fn a_pane_with_a_sampled_transcript_carries_its_gauge_on_the_roster() {
+        let cwd = temp_dir("cwd");
+        let config_dir = temp_dir("cfg");
+        let source = TranscriptSource { config_dir: config_dir.clone(), cwd: cwd.clone() };
+
+        // Seed a transcript with usage well under the notice threshold —
+        // `crate::spawn::project_key` canonicalizes the same way
+        // `context_gauge::project_dir` does, so this mirrors a real spawn.
+        let resolved = crate::spawn::project_key(&cwd);
+        let slug: String = resolved.chars().map(|c| if c == '/' || c == '.' { '-' } else { c }).collect();
+        let project_dir = config_dir.join("projects").join(slug);
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::write(
+            project_dir.join("s.jsonl"),
+            serde_json::json!({
+                "type": "assistant",
+                "message": {"usage": {"input_tokens": 6_400, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}}
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let sources = gauges();
+        sources.record(PaneId::Worker(2), source);
+
+        let entry = PaneEntry::new(PaneId::Worker(2), fleetor_core::pane::PaneState::Live);
+        let mut notified = HashSet::new();
+        let augmented = augment_with_gauge(entry, &sources, &store(), &mut notified);
+
+        let context = augmented.context.expect("a completed turn was seeded");
+        assert_eq!(context.used_tokens, 6_400);
+        assert_eq!(context.pct, 5, "5% of the 128,000-token worker window");
+        assert!(notified.is_empty(), "well under the notice threshold");
+    }
+
+    /// The orchestrator is never recorded in `GaugeSources` at all (its
+    /// transcript is the operator's own — out of scope), so it must never
+    /// carry a context gauge no matter how the roster is asked.
+    #[test]
+    fn orch_never_carries_a_context_gauge() {
+        let entry = PaneEntry::new(PaneId::Orch, fleetor_core::pane::PaneState::Live);
+        let mut notified = HashSet::new();
+        let augmented = augment_with_gauge(entry, &gauges(), &store(), &mut notified);
+        assert_eq!(augmented.context, None);
+    }
+
+    /// The invariant guardrail with teeth: **at most one** Notice per pane per
+    /// session, even when the same over-threshold pane is asked about
+    /// repeatedly (the UI polls every ~10s; the orchestrator may call `fleet
+    /// roster` often too). The second and third asks must sample again — the
+    /// live figure still updates — but must not append a second Notice.
+    #[test]
+    fn crossing_the_notice_threshold_appends_exactly_one_notice_across_repeated_asks() {
+        let cwd = temp_dir("hot-cwd");
+        let config_dir = temp_dir("hot-cfg");
+        let resolved = crate::spawn::project_key(&cwd);
+        let slug: String = resolved.chars().map(|c| if c == '/' || c == '.' { '-' } else { c }).collect();
+        let project_dir = config_dir.join("projects").join(slug);
+        std::fs::create_dir_all(&project_dir).unwrap();
+        // 110,000 / 128,000 ≈ 85% — over the 80% threshold.
+        std::fs::write(
+            project_dir.join("s.jsonl"),
+            serde_json::json!({
+                "type": "assistant",
+                "message": {"usage": {"input_tokens": 110_000, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}}
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let sources = gauges();
+        sources.record(PaneId::Worker(3), TranscriptSource { config_dir, cwd });
+        let shared_store = store();
+        let mut notified = HashSet::new();
+
+        for _ in 0..3 {
+            let entry = PaneEntry::new(PaneId::Worker(3), fleetor_core::pane::PaneState::Live);
+            let augmented = augment_with_gauge(entry, &sources, &shared_store, &mut notified);
+            assert!(augmented.context.unwrap().pct >= 80, "still over threshold on every ask");
+        }
+
+        let notices: Vec<_> = shared_store
+            .events_since(0)
+            .unwrap()
+            .into_iter()
+            .filter(|(_, e)| matches!(e, FleetEvent::Notice { .. }))
+            .collect();
+        assert_eq!(notices.len(), 1, "three over-threshold asks must produce exactly one Notice: {notices:?}");
+        let (_, FleetEvent::Notice { text, .. }) = &notices[0] else { unreachable!() };
+        assert!(text.contains("worker-3"));
+        assert!(text.contains("consider"), "informs, does not act: {text}");
     }
 }

@@ -22,6 +22,7 @@ import { SettingsPanel } from "./components/SettingsPanel";
 import { TerminalGrid } from "./components/TerminalGrid";
 import { StartGate } from "./components/StartGate";
 import { useFleet } from "./fleet/useFleet";
+import { useContextGauge } from "./fleet/useContextGauge";
 import { useZoom } from "./ui/useZoom";
 import { useSidebarCollapse } from "./ui/useSidebarCollapse";
 import { usePersistedNav } from "./ui/usePersistedNav";
@@ -46,6 +47,10 @@ export function App() {
   // for the focused-pane frame in TerminalPane.tsx — see item 1 there).
   const [unreadWorkers, setUnreadWorkers] = useState<Set<number>>(() => new Set());
   const fleet = useFleet();
+  // The WP-04 live gauge: polls only once the fleet is actually running —
+  // before `started`, no pane exists to sample and every tick would just be
+  // an empty roster.
+  const gauges = useContextGauge(fleet.ready && started);
   const zoom = useZoom();
   const sidebar = useSidebarCollapse();
   const themeControls = useTheme();
@@ -163,6 +168,7 @@ export function App() {
                 theme={themeControls.theme}
                 onStatus={onStatus}
                 onRestart={restart}
+                gauges={gauges}
               />
             </div>
 

@@ -26,6 +26,6 @@ pub use brief::{orch_brief, worker_brief, VERBS};
 pub use command::{Command, ALLOWED_COMMANDS};
 pub use event::{FleetEvent, NoticeLevel};
 pub use message::{frame_broadcast_for_pane, frame_for_pane, Message};
-pub use pane::{PaneEntry, PaneId, PaneState, ParsePaneIdError, WORKER_SLOTS};
+pub use pane::{ContextGauge, PaneEntry, PaneId, PaneState, ParsePaneIdError, WORKER_SLOTS};
 pub use store::Store;
 pub use wire::{Hello, Op, OpResult, Request, Response, WIRE_VERSION};

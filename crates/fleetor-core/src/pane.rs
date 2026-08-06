@@ -140,16 +140,67 @@ impl PaneState {
     }
 }
 
+/// A read-only estimate of how much of a pane's context window is in use,
+/// sampled from that pane's own Claude Code transcript (WP-04,
+/// `docs/context-gauge-notes.md`).
+///
+/// Never fabricated. A pane nobody has sampled yet — or the orchestrator,
+/// which is deliberately never sampled at all (its transcript is the
+/// operator's own, private) — simply has no `ContextGauge`, never a zero or a
+/// guess dressed as a measurement (`decisions.md` L155: "band metrics we
+/// don't yet track are omitted, not faked").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextGauge {
+    /// The transcript's own usage fields, summed — see the notes doc for why
+    /// this must be `input + cache_creation_input + cache_read_input` and not
+    /// `input_tokens` alone (prompt caching makes that one drop the instant it
+    /// stops being the honest number).
+    pub used_tokens: u32,
+    /// The model's real context window — a Tier 2 constant per pane class
+    /// (`decisions.md`), **not** whatever Claude Code silently assumes for a
+    /// model name it does not recognize.
+    pub window_tokens: u32,
+    /// `used_tokens / window_tokens` as a whole percent, pre-divided so every
+    /// renderer (the `fleet` CLI, the UI band) agrees rather than rounding
+    /// differently in Rust and TypeScript.
+    pub pct: u8,
+}
+
+impl ContextGauge {
+    pub fn new(used_tokens: u32, window_tokens: u32) -> Self {
+        let pct = if window_tokens == 0 {
+            0
+        } else {
+            ((used_tokens as u64 * 100) / window_tokens as u64).min(100) as u8
+        };
+        Self { used_tokens, window_tokens, pct }
+    }
+}
+
 /// One row of the roster: a pane and what it is doing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneEntry {
     pub pane: PaneId,
     pub state: PaneState,
+    /// Absent unless something has actually sampled this pane's transcript —
+    /// see [`ContextGauge`]. `skip_serializing_if` so an unmeasured pane's
+    /// JSON simply omits the key rather than sending `"context":null`; the
+    /// frontend already renders a missing field as nothing (`building.md` §4.3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<ContextGauge>,
 }
 
 impl PaneEntry {
     pub fn new(pane: PaneId, state: PaneState) -> Self {
-        Self { pane, state }
+        Self { pane, state, context: None }
+    }
+
+    /// Attach a sampled gauge. A separate builder rather than a `new` arg,
+    /// so every existing call site — none of which have a gauge to hand —
+    /// stays untouched.
+    pub fn with_context(mut self, context: ContextGauge) -> Self {
+        self.context = Some(context);
+        self
     }
 }
 
@@ -217,5 +268,53 @@ mod tests {
         assert!(PaneState::Live.accepts_input());
         assert!(PaneState::Spawning.accepts_input());
         assert!(!PaneState::Dead.accepts_input());
+    }
+
+    // --- the context gauge (WP-04) ---------------------------------------------
+
+    #[test]
+    fn context_gauge_computes_a_whole_percent_of_its_window() {
+        assert_eq!(ContextGauge::new(64_000, 128_000).pct, 50);
+        assert_eq!(ContextGauge::new(0, 128_000).pct, 0);
+        assert_eq!(ContextGauge::new(128_000, 128_000).pct, 100);
+    }
+
+    /// A pane that has somehow used more than its assumed window (a wrong
+    /// constant, a model that turned out bigger) must not render a percent
+    /// over 100 — that reads as a bug in the gauge, not information.
+    #[test]
+    fn context_gauge_never_reports_over_a_hundred_percent() {
+        assert_eq!(ContextGauge::new(500_000, 128_000).pct, 100);
+    }
+
+    /// A window of zero is a misconfiguration, not a divide-by-zero panic —
+    /// this is read straight into a UI, which must never crash on a bad
+    /// constant.
+    #[test]
+    fn context_gauge_survives_a_zero_window_without_panicking() {
+        assert_eq!(ContextGauge::new(100, 0).pct, 0);
+    }
+
+    /// A pane nobody has sampled — every pane, at spawn, and the orchestrator
+    /// forever — must serialize with the key entirely absent, not `null`,
+    /// so the frontend's "missing means nothing" convention applies without
+    /// a special case for this field.
+    #[test]
+    fn an_unsampled_pane_entry_omits_the_context_key_entirely() {
+        let entry = PaneEntry::new(PaneId::Worker(2), PaneState::Live);
+        let json = serde_json::to_value(&entry).unwrap();
+        assert!(!json.as_object().unwrap().contains_key("context"), "{json}");
+        assert_eq!(serde_json::from_str::<PaneEntry>(&json.to_string()).unwrap(), entry);
+    }
+
+    /// A sampled pane round-trips its gauge, nested under `context`.
+    #[test]
+    fn a_sampled_pane_entry_carries_its_gauge_through_json() {
+        let entry = PaneEntry::new(PaneId::Worker(3), PaneState::Live)
+            .with_context(ContextGauge::new(9_000, 128_000));
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["context"]["used_tokens"], serde_json::json!(9_000));
+        assert_eq!(json["context"]["pct"], serde_json::json!(7));
+        assert_eq!(serde_json::from_str::<PaneEntry>(&json.to_string()).unwrap(), entry);
     }
 }

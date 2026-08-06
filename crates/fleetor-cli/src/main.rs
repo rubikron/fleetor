@@ -20,7 +20,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use fleetor_core::pane::PaneId;
+use fleetor_core::pane::{PaneEntry, PaneId};
 use fleetor_core::wire::{Hello, Op, OpResult};
 use fleetor_ipc::{Client, UnixTransport};
 use std::path::PathBuf;
@@ -162,9 +162,8 @@ fn report(result: OpResult) -> bool {
             false
         }
         OpResult::Roster { panes } => {
-            for entry in panes {
-                let state = format!("{:?}", entry.state).to_lowercase();
-                println!("{:<10} {state}", entry.pane.to_string());
+            for line in roster_lines(&panes) {
+                println!("{line}");
             }
             true
         }
@@ -173,6 +172,27 @@ fn report(result: OpResult) -> bool {
             false
         }
     }
+}
+
+/// One line per pane: its name, its state, and its context column (WP-04) —
+/// `≈NN% (used/window tok)` when a gauge could be sampled, `—` otherwise. `—`
+/// means *unknown*, never zero: a worker that has not completed a turn yet and
+/// the orchestrator (never sampled — its transcript is the operator's own)
+/// both render this way, and the brief tells orch not to read either as an
+/// empty context. Pure and separate from `report` so the format is testable
+/// without capturing stdout.
+fn roster_lines(panes: &[PaneEntry]) -> Vec<String> {
+    panes
+        .iter()
+        .map(|entry| {
+            let state = format!("{:?}", entry.state).to_lowercase();
+            let context = match entry.context {
+                Some(c) => format!("≈{}% ({}/{} tok, from transcript)", c.pct, c.used_tokens, c.window_tokens),
+                None => "—".to_string(),
+            };
+            format!("{:<10} {state:<10} {context}", entry.pane.to_string())
+        })
+        .collect()
 }
 
 /// Which pane is running this command. Refusing beats guessing: an unattributed
@@ -312,5 +332,49 @@ mod tests {
         };
         assert!(!report(refused), "a refused send must not exit zero");
         assert!(!report(OpResult::Error { message: "no such pane".into() }));
+    }
+
+    // --- the roster's context column (WP-04) ------------------------------------
+
+    use fleetor_core::pane::{ContextGauge, PaneState};
+
+    /// An unsampled pane — orch always, a worker before its first turn —
+    /// renders `—`, never `0%`: a blank column must read as *unknown*, not
+    /// "definitely empty."
+    #[test]
+    fn an_unsampled_pane_renders_an_em_dash_not_a_zero() {
+        let lines = roster_lines(&[PaneEntry::new(PaneId::Orch, PaneState::Live)]);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains('—'), "{}", lines[0]);
+        assert!(!lines[0].contains('%'), "no percent may appear for an unsampled pane: {}", lines[0]);
+    }
+
+    /// A sampled worker's line carries its pane name, state, and the honest
+    /// `≈` figure — never a bare number that could be mistaken for a promise.
+    #[test]
+    fn a_sampled_worker_renders_its_gauge_with_the_approx_label() {
+        let entry = PaneEntry::new(PaneId::Worker(2), PaneState::Live)
+            .with_context(ContextGauge::new(64_000, 128_000));
+        let lines = roster_lines(&[entry]);
+        assert!(lines[0].contains("worker-2"), "{}", lines[0]);
+        assert!(lines[0].contains("live"), "{}", lines[0]);
+        assert!(lines[0].contains('≈'), "every figure carries its honesty label: {}", lines[0]);
+        assert!(lines[0].contains("50%"), "{}", lines[0]);
+    }
+
+    /// One line per pane, in the order the roster arrived — the CLI must not
+    /// silently reorder or drop a pane the caller has to account for.
+    #[test]
+    fn roster_lines_covers_every_pane_in_order() {
+        let panes = vec![
+            PaneEntry::new(PaneId::Orch, PaneState::Live),
+            PaneEntry::new(PaneId::Worker(1), PaneState::Dead),
+            PaneEntry::new(PaneId::Worker(2), PaneState::Spawning),
+        ];
+        let lines = roster_lines(&panes);
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].starts_with("orch"));
+        assert!(lines[1].starts_with("worker-1") && lines[1].contains("dead"));
+        assert!(lines[2].starts_with("worker-2") && lines[2].contains("spawning"));
     }
 }

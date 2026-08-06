@@ -30,7 +30,7 @@ Use the `fleet` command through Bash. It writes straight into the target termina
 - `fleet broadcast "<text>"` — every other pane at once. Use it sparingly.
 - `fleet reply "<text>"` — answers whoever messaged you last.
 - `fleet cmd <pane|self> "<slash command>" --why "<reason>"` — see below.
-- `fleet roster` — who exists and whether they are live.
+- `fleet roster` — who exists, whether they are live, and each worker's ≈context-window usage. A blank or stale figure means *unknown*, not zero — decide accordingly.
 - `fleet whoami` — your own pane name.
 
 {delivery_contract}

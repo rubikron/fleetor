@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use fleetor_core::event::{FleetEvent, NoticeLevel};
-use fleetor_core::pane::PaneId;
+use fleetor_core::pane::{PaneEntry, PaneId, WORKER_SLOTS};
 use fleetor_core::Store;
 use fleetor_db::SqliteStore;
 use fleetor_ipc::UnixTransport;
@@ -30,8 +30,9 @@ use fleetor_server::{AppCommand, BroadcastStore, Hub};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 use tokio::runtime::Runtime;
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{mpsc, oneshot, Notify};
 
+use crate::context_gauge::{self, GaugeSources, TranscriptSource};
 use crate::prompts::PaneContext;
 use crate::pty::PaneRegistry;
 use crate::{deliver, prompts, spawn, testbed};
@@ -93,6 +94,15 @@ struct Fleet {
     /// reason the target is: a fleet whose panes were briefed from two revisions
     /// of a file being edited is not a fleet anyone can reason about.
     context: PaneContext,
+    /// Where each worker's own transcript lives, recorded at spawn — the WP-04
+    /// live gauge's source of truth. Empty until a worker has actually spawned.
+    gauges: Arc<GaugeSources>,
+    /// A clone of the sender [`Hub`] was built with. `fleet_roster` sends
+    /// [`AppCommand::Roster`] into it directly — the identical op the CLI's
+    /// `fleet roster` reaches over the socket — so the UI's poll and the CLI
+    /// converge on the one place ([`deliver::spawn_delivery`]'s `Roster` arm)
+    /// that samples gauges and guards the once-per-session Notice.
+    app: mpsc::UnboundedSender<AppCommand>,
 }
 
 /// Managed Tauri state: at most one embedded fleet.
@@ -224,11 +234,15 @@ pub fn fleet_bootstrap(
     // The hub↔app seam: the hub routes, the app owns the terminals. Unbounded on
     // purpose — a bounded channel would make a busy fleet block a send (D-034).
     let (app_tx, app_rx) = mpsc::unbounded_channel();
-    deliver::spawn_delivery(&rt, registry.inner().clone(), app_rx);
-    let shutdown = spawn_hub(&rt, store.clone(), app_tx, socket_path());
+    let gauges = Arc::new(GaugeSources::default());
+    deliver::spawn_delivery(&rt, registry.inner().clone(), app_rx, store.clone(), gauges.clone());
+    // The hub takes its own clone; `fleet_roster` sends into the original so
+    // the UI's poll reaches the identical `AppCommand::Roster` arm the CLI's
+    // `fleet roster` does over the socket (see the `Fleet::app` doc).
+    let shutdown = spawn_hub(&rt, store.clone(), app_tx.clone(), socket_path());
 
     let snap = snapshot(&store)?;
-    *guard = Some(Fleet { _rt: rt, store, shutdown, config, target, context });
+    *guard = Some(Fleet { _rt: rt, store, shutdown, config, target, context, gauges, app: app_tx });
     Ok(snap)
 }
 
@@ -250,10 +264,10 @@ pub(crate) fn spawn_pane(
     rows: u16,
     cols: u16,
 ) -> Result<(), String> {
-    let (target, store, context) = {
+    let (target, store, context, gauges) = {
         let guard = fleet.0.lock().map_err(|e| e.to_string())?;
         let f = guard.as_ref().ok_or("fleet not bootstrapped")?;
-        (f.target.clone(), f.store.clone(), f.context.clone())
+        (f.target.clone(), f.store.clone(), f.context.clone(), f.gauges.clone())
     };
 
     // A pane with no `fleet` on its PATH is a pane that looks alive and cannot
@@ -274,6 +288,7 @@ pub(crate) fn spawn_pane(
         // target itself. Nothing to seed — seeding would touch *their* config dir.
         PaneId::Orch => {
             std::fs::create_dir_all(&target).map_err(|e| format!("create orchestrator cwd: {e}"))?;
+            note_spawn_estimate(&store, &context, pane, &target, None);
             spawn::orch_command(&target, &socket, &context)
         }
         PaneId::Worker(slot) => {
@@ -281,11 +296,39 @@ pub(crate) fn spawn_pane(
             let cwd = worker_cwd(&store, &target, slot);
             let config_dir = worker_config_dir(slot);
             spawn::seed_config_dir(&config_dir, &cwd)?;
+            note_spawn_estimate(&store, &context, pane, &cwd, Some(context_gauge::WORKER_WINDOW_TOKENS));
+            // The WP-04 live gauge's source of truth: where to find this
+            // worker's own transcript once it has one. Recorded before the
+            // process exists — a `fleet roster` that lands before the pane's
+            // first turn samples the (not-yet-there) file as absent, never a
+            // stale or wrong pane's numbers.
+            gauges.record(pane, TranscriptSource { config_dir: config_dir.clone(), cwd: cwd.clone() });
             spawn::worker_command(slot, &cwd, &config_dir, &socket, &key, &context)
         }
     };
 
     registry.spawn(pane, command, rows, cols)
+}
+
+/// One Activity line per pane launch (WP-04's spawn-time "Loadout" counter):
+/// the size of the brief this pane was just handed, estimated from text
+/// already in memory — never a file read, never a tokenizer call.
+fn note_spawn_estimate(
+    store: &Arc<dyn Store>,
+    context: &PaneContext,
+    pane: PaneId,
+    cwd: &Path,
+    window_tokens: Option<u32>,
+) {
+    let roster = PaneId::roster(&WORKER_SLOTS);
+    let cwd_str = cwd.display().to_string();
+    let rendered = match pane {
+        PaneId::Orch => fleetor_core::brief::render_orch(&context.orch_template, &roster, &cwd_str),
+        PaneId::Worker(_) => {
+            fleetor_core::brief::render_worker(&context.worker_template, pane, &roster, &cwd_str)
+        }
+    };
+    note(store, NoticeLevel::Info, &context_gauge::spawn_estimate_notice_text(pane, &rendered, window_tokens));
 }
 
 /// A worker's checkout: its own git worktree, so four workers editing at once do
@@ -447,6 +490,31 @@ pub fn fleet_target(state: State<'_, FleetState>) -> Result<String, String> {
     let guard = state.0.lock().map_err(|e| e.to_string())?;
     let fleet = guard.as_ref().ok_or("fleet not bootstrapped")?;
     Ok(fleet.target.to_string_lossy().into_owned())
+}
+
+/// Every pane and its state, with each worker's context gauge if one could be
+/// sampled (WP-04). The UI's slow band poll and the `fleet` CLI's `fleet
+/// roster` are two callers of the *same* op: this sends `AppCommand::Roster`
+/// into the identical channel [`spawn_hub`] gave the [`Hub`], so both paths
+/// converge on `deliver::spawn_delivery`'s one roster-answering arm — the one
+/// place gauges are sampled and the once-per-session Notice is guarded.
+///
+/// A plain sync command, like [`fleet_pick_target`]'s blocking dialog call:
+/// `oneshot::Receiver::blocking_recv` parks this call's own thread (Tauri
+/// runs sync commands off its own pool), not the tokio runtime the hub and
+/// the delivery loop run on, so there is nothing to deadlock.
+#[tauri::command]
+pub fn fleet_roster(state: State<'_, FleetState>) -> Result<Vec<PaneEntry>, String> {
+    let app = {
+        let guard = state.0.lock().map_err(|e| e.to_string())?;
+        let fleet = guard.as_ref().ok_or("fleet not bootstrapped")?;
+        fleet.app.clone()
+    };
+    let (ack, rx) = oneshot::channel();
+    app.send(AppCommand::Roster { ack })
+        .map_err(|_| "the fleet app is not accepting commands — its window may have closed".to_string())?;
+    rx.blocking_recv()
+        .map_err(|_| "the fleet app took the roster request but never answered".to_string())
 }
 
 /// Ask the operator for a repo and record it in `~/.fleetor/config.json`.
@@ -702,7 +770,7 @@ mod tests {
 
         let (app_tx, app_rx) = mpsc::unbounded_channel();
         let registry = Arc::new(PaneRegistry::new(Arc::new(|_, _| {}), dir.join("panes.pids")));
-        deliver::spawn_delivery(&rt, registry, app_rx);
+        deliver::spawn_delivery(&rt, registry, app_rx, store.clone(), Arc::new(GaugeSources::default()));
         let shutdown = spawn_hub(&rt, store.clone(), app_tx, sock.clone());
 
         let result = rt.block_on(async {

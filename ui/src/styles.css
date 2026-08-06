@@ -638,6 +638,13 @@ body,
 .pane__title { color: var(--fg-dim); }
 .pane__meta { color: var(--fg-mute); }
 .pane__status { font-size: var(--t-label); color: var(--fg-mute); }
+/* The WP-04 live gauge, in the pane head next to the model. Muted by
+   default — this is awareness, not an alarm — and gold only once a pane
+   nears/crosses the same ~80% line the backend's one-time Notice fires at
+   (`lib/contextGaugeTone.ts`). Never coral: that hue is reserved app-wide for
+   "needs you," and an approximate, honestly-labeled figure is not that. */
+.pane__gauge--muted { color: var(--fg-mute); }
+.pane__gauge--gold { color: var(--gold); }
 .pane__ctl {
   font-family: var(--mono);
   font-size: var(--t-label);
@@ -889,6 +896,13 @@ body,
   border-color: var(--border);
 }
 .tab__status { font-size: var(--t-label); color: var(--fg-mute); }
+/* The WP-04 live gauge's second home — the same figure the pane head shows,
+   so a worker's usage is visible from the tab strip without switching to it.
+   Same muted/gold split as `.pane__gauge`, single-sourced in
+   `lib/contextGaugeTone.ts` so the two places can never disagree. */
+.tab__gauge { font-size: var(--t-label); }
+.tab__gauge--muted { color: var(--fg-mute); }
+.tab__gauge--gold { color: var(--gold); }
 /* unread-output marker: presence only, no count. Gold (awareness/unread),
    never the accent — coral is reserved for the focused-pane frame in this
    pass (see .terminal-pane--focused). */
