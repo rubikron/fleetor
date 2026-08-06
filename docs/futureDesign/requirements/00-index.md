@@ -15,7 +15,7 @@ The Blackboard vision, split into nine session-sized work packages. The vision i
 
 | WP | Doc | Name | Depends on | Size | Status |
 |----|-----|------|-----------|------|--------|
-| 01 | `01-land-context-management.md` | Land `feat/context-management` (prompts-as-files) | — | M | not-started |
+| 01 | `01-land-context-management.md` | Land `feat/context-management` (prompts-as-files) | — | M | **landed** |
 | 02 | `02-vision-culture-briefs.md` | Own the system prompt: vision & culture | 01 | L | not-started |
 | 03 | `03-command-channel.md` | `fleet cmd` — `/clear` + `/compact` with `--why` | 01 | L | not-started |
 | 04 | `04-context-visibility.md` | Context visibility (the Loadout counter + gauge) | 01 | M | not-started |
@@ -46,7 +46,7 @@ WP-01 ─┬─→ WP-02 ─→ WP-05 ─→ WP-06 ─┐
 
 ## Reconciliation with the autonomy-designs build order
 
-The "FLEETOR — Autonomy Designs" doc (landed by WP-01) ordered: Fence → Receipts → Shakedown. No conflict: **Fence** is WP-08 intact; **Receipts** is folded into WP-06 (receipts are the evidence the review phase examines — they were never separable); **Shakedown-as-code** moves *after* WP-09, whose manual live pass produces the data that justifies or kills building it.
+The "FLEETOR — Autonomy Designs" doc (landed by WP-01, at [`../plans/`](../plans/)) ordered: Fence → Receipts → Shakedown. No conflict: **Fence** is WP-08 intact; **Receipts** is folded into WP-06 (receipts are the evidence the review phase examines — they were never separable); **Shakedown-as-code** moves *after* WP-09, whose manual live pass produces the data that justifies or kills building it.
 
 Deferred, with reasons — do not resurrect without new evidence:
 

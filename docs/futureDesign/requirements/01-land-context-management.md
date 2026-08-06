@@ -1,6 +1,6 @@
 # WP-01 — Land `feat/context-management` (prompts-as-files)
 
-status: not-started size: M
+status: landed size: M
 depends-on: — blocks: 02, 03, 04, 05, 06, 07, 08, 09
 brief-cost: 0 (mechanical landing — no prompt content changes)
 
@@ -69,9 +69,18 @@ entry and updating docs/futureDesign/requirements/00-index.md status.
 
 ## Session exit checklist
 
-- [ ] Full test matrix green (workspace + src-tauri + tsc/vite).
-- [ ] `decisions.md` entry appended (prompts-as-files extraction).
-- [ ] `building.md` §4.5 reconciled.
-- [ ] `prompts/README.md` accurate.
-- [ ] PR opened from `feat/context-management`; no push to master.
-- [ ] `00-index.md` status: WP-01 → landed (after merge).
+- [x] Full test matrix green (workspace 63; src-tauri 44 lib + 9 real-pty; `tsc --noEmit` and `vite build` clean).
+- [x] `decisions.md` entry appended — **D-042**, not D-041. The branch guessed its own number before master landed the orphan sweep; four doc comments citing D-041 were renumbered.
+- [x] `building.md` §4.5 reconciled.
+- [x] `prompts/README.md` accurate.
+- [ ] PR — **not applicable.** Superseded: see "How it landed".
+- [x] `00-index.md` status: WP-01 → landed.
+
+## How it landed (2026-08-06)
+
+Four things went differently from the plan above. WP-02..09 should read this before assuming the doc's "current state" section still holds.
+
+- **`feat/blackboard`, not master.** All nine packages land on one integration branch off master (`a05ab83`). Nothing was pushed and master was not touched.
+- **Merged, not rebased.** `feat/context-management` is checked out in its own worktree, so rewriting its history was off the table. Its uncommitted work became two commits there (`304e8d7` prompts mechanism, `718e0db` docs), then `git merge` into `feat/blackboard`. **One conflict**, in `src-tauri/src/lib.rs`: both sides added a module declaration on the same line. Kept both. D-041's orphan sweep in `setup()` and its `RunEvent::Exit` teardown are untouched — neither is near what this branch changed. `spawn.rs` and `panes.rs` auto-merged clean.
+- **`prompts/worker.md` was reworded back to master's text.** The branch had quietly changed one sentence while extracting it ("separate Claude Code *instance*", dropping "The human is watching `orch`, not you"). This package is a mechanism change: all five rendered briefs were captured from the pre-merge binary and diffed byte-for-byte against the post-merge ones, and are **identical**. `--append-system-prompt` and `--permission-mode auto` are unchanged, and `launch.conf` carries the old `DEEPSEEK_BASE_URL` / `MODEL_FLASH` constants verbatim. WP-02 owns both the flag switch and the content.
+- **Tier 1.1 was verified by reading, not by running.** `rm -rf ~/.fleetor` on an unattended machine is not a test worth running against the operator's real directory. The relevant property is checked at the source: the only new filesystem access is `PaneContext::resolve`, which **reads** `~/.fleetor/prompts/` and writes nothing anywhere. No new write path was added, into the target repo or otherwise.
