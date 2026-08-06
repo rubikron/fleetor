@@ -14,3 +14,9 @@
 /examples/**/*.ndjson
 /examples/**/*.log
 /ui/dist
+
+# macOS. Finder writes these into any directory it has been asked to display,
+# so they turn up under docs/ and future-design directories rather than only at
+# the root — and a `git add -A` from a session that did not look first will
+# happily commit one.
+.DS_Store
