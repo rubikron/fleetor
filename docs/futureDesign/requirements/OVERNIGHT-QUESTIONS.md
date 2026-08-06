@@ -62,3 +62,46 @@ overruns in a row make it a **prune** — and the decision of *what* to cut acro
 four packages' prose is an operator's call about what the fleet is for, not a
 builder's. WP-06 and WP-07 have not written their prose yet and should be told
 the headroom is already gone.
+
+---
+
+## Q-3 (WP-06, D-050) — the prompt budget overran a third time, after Q-2 said the headroom was gone
+
+**What happened.** WP-06 budgeted ~150 tokens across both files and spent
+**+314 orch / +376 worker**. Rendered totals are now **orch 2,542 / worker
+1,967**. Q-2 was written specifically to warn 06 and 07 that there was no
+headroom left; 06 read it, tightened first, and spent the tokens anyway.
+
+**Why it was spent.** The tightening pass ran *before* the number was recorded
+and recovered **21 orch / 25 worker** — about 6% of the addition. That is the
+finding: there is no fat to cut. Unlike a verb with a syntax, `fleet done` has a
+*protocol* — commit, run the check, read the receipt, ask the named reviewer,
+review from your own worktree with the right diff form, merge to integration and
+never trunk. Each step is a separate failure if unstated, and several are pinned
+as literals because a shortened version becomes advice: the three-dot diff
+(two-dot renders a peer's work as your own deletion — reproduced live), "never
+in the exit code" (or a failing check reads as a failed delivery and the worker
+resends), "**never into trunk**" (Tier 1.1), and "evidence, not a verdict".
+
+**What a reviewer may want to do.** This is the third consecutive overrun and the
+first one that was *pre-warned*, which makes it a data point about the estimates
+rather than about the packages: a `brief-cost` line written before the prose has
+now been wrong by 3–5× four times running. Two calls are the operator's, not a
+builder's:
+
+1. **Is 2,542 / 1,967 actually a problem?** Nobody has measured a cost or a
+   behaviour change from it — only a number going up. Against the 1,485 tokens of
+   Claude Code guidance `--system-prompt` stopped sending (D-043), orch is now
+   ~1,050 past parity. WP-09's live shakedown is the first evidence either way,
+   and it may well be that the answer is "fine, delete the budget."
+2. **If it is a problem, what gets cut is a question about what the fleet is
+   for.** Every candidate is one package's core protocol. Cutting review prose
+   buys ~150 worker tokens and gives up peer review; cutting the task-block flag
+   names makes the board unreachable. A builder choosing between those is
+   choosing product scope.
+
+**What reverses it.** Nothing needs reversing to ship — this is a number, not a
+change. If the operator wants WP-06 smaller, the cheapest ~120 worker tokens are
+the *reasons* attached to the review rules (keep the commands, drop the
+explanations), at the known cost that D-048 names: the rule without the reason is
+what the next rewrite deletes first.
