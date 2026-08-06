@@ -105,3 +105,38 @@ change. If the operator wants WP-06 smaller, the cheapest ~120 worker tokens are
 the *reasons* attached to the review rules (keep the commands, drop the
 explanations), at the known cost that D-048 names: the rule without the reason is
 what the next rewrite deletes first.
+
+---
+
+## Q-4 (WP-07, D-051) — the budget overran a fourth time, but the multiple halved. That is the first evidence about *why*
+
+**What happened.** WP-07 budgeted +~60 worker tokens and spent **+126 orch /
++135 worker**. Rendered totals are now **orch 2,668 / worker 2,102**.
+
+**Why this one is worth reading rather than filing.** It is the first package in
+four whose overrun was ~2× rather than 3–5×, and the difference is structural,
+not discipline: **WP-07 added no verb.** `fleet send` already existed, so the
+prose had to teach one name (`operator`), one word (`recorded`), and one
+authority clause — not a syntax, a flag set and a protocol. Q-2 and Q-3 both
+concluded "a verb costs what its *rules* cost". This is the control case, and it
+agrees: no verb, roughly a third of the cost.
+
+One thing was deliberately reused rather than written twice. The `recorded`
+sentence went into `prompts/delivery-contract.md`, the fragment already composed
+into **both** briefs, so it is authored once and arrives in each. That is the
+only structural saving available to a package like this, and it is already
+spent.
+
+**What a reviewer may want to do.** Nothing here needs reversing — but WP-09's
+prune now has a data point it did not have: the four `brief-cost` estimates were
+wrong by 3–5× whenever a verb was involved and ~2× when one was not. If the
+budget is kept at all, that is the shape the next estimate should be written in.
+The two operator-level calls from Q-3 are unchanged and still open: whether
+2,668 / 2,102 is a problem at all (nobody has measured a cost or a behaviour
+change from it — only a number), and, if it is, that *what to cut* is a question
+about what the fleet is for.
+
+**What reverses it.** Nothing needs reversing to ship. The cheapest ~60 worker
+tokens in this package's own text are the "say back what you are changing" line
+and the reason attached to the authority clause — at the known cost D-048 names:
+the rule without the reason is what the next rewrite deletes first.

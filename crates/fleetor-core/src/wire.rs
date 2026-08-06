@@ -55,6 +55,10 @@ pub struct Request {
 pub enum Op {
     /// `fleet send <pane> "<text>"` — write into one live pane's terminal.
     /// → [`OpResult::Delivered`], with `accepted: false` if the pane is not live.
+    ///
+    /// `fleet send operator "…"` is the same op with the one addressee that has
+    /// no terminal (WP-07), and it is the only thing that changes the answer:
+    /// → [`OpResult::Recorded`], because nothing was typed anywhere.
     Send { to: PaneId, text: String },
     /// `fleet broadcast "<text>"` — fan out to every pane except the sender. All
     /// legs share one `group` id. → [`OpResult::Delivered`] carrying that group id.
@@ -144,15 +148,28 @@ pub enum OpResult {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         detail: Option<String>,
     },
-    /// A task claim reached the log (`task post`, `task update`).
+    /// **Something entered the log, and no pty was written to.** One variant,
+    /// one word, two callers: a task claim (`task post`, `task update`, WP-05)
+    /// and a message addressed to the operator (WP-07).
     ///
     /// Deliberately not [`OpResult::Delivered`]: nothing was delivered to a pane
     /// and `accepted` would be a claim about a pty that was never written to.
     /// What happened is exactly that a record was appended, and the word says so.
     ///
-    /// `task_id` rather than `id`, for the reason `Delivered` uses `msg_id`:
-    /// [`Response`] flattens this enum next to its own `id`.
-    Recorded { task_id: String },
+    /// It is equally deliberately **not two variants**. `recorded` is the
+    /// requirement's outcome word for "entered the log, no pty exists", and a
+    /// second variant meaning the same thing under a different name would be
+    /// two spellings of one fact — the drift `PaneId`'s bare-string serde and
+    /// the wire-tag-is-the-verb rule exist to prevent. The two callers differ in
+    /// what the id names, not in what happened, so the field is `record_id` and
+    /// its doc says which. (`record_id` rather than `id`, for the reason
+    /// `Delivered` uses `msg_id`: [`Response`] flattens this enum next to its
+    /// own `id`.)
+    Recorded {
+        /// The task block's id for a `fleet task`, the message's id for a
+        /// message to the operator.
+        record_id: String,
+    },
     /// The board, replayed from the event log (`task list`).
     Board { tasks: Vec<TaskEntry> },
     /// Every pane and its state (`Roster`).
@@ -260,9 +277,13 @@ mod tests {
                     PaneEntry::new(PaneId::Worker(1), PaneState::Dead),
                 ],
             },
-            OpResult::Recorded { task_id: "task-1-0".into() },
+            OpResult::Recorded { record_id: "task-1-0".into() },
+            OpResult::Recorded { record_id: "msg-1".into() },
             OpResult::Board { tasks: vec![sample_entry()] },
             OpResult::Board { tasks: vec![] },
+            OpResult::Roster {
+                panes: vec![PaneEntry::new(PaneId::Operator, PaneState::Present)],
+            },
         ];
         for result in results {
             let resp = Response::new("req-1", result);
@@ -295,6 +316,27 @@ mod tests {
             "task"
         );
         assert_eq!(tag(Op::Roster), "roster");
+    }
+
+    /// The two callers of `recorded` are one variant, so the tag they both
+    /// serialize under is the one word the requirement names — and a second
+    /// variant added later under the same word would fail to deserialize
+    /// rather than quietly shadow this one.
+    #[test]
+    fn both_things_that_only_reach_the_log_answer_with_the_same_word() {
+        let tag = |result: OpResult| {
+            serde_json::to_value(Response::new("req-1", result)).unwrap()["result"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(tag(OpResult::Recorded { record_id: "task-1-0".into() }), "recorded");
+        assert_eq!(tag(OpResult::Recorded { record_id: "msg-9".into() }), "recorded");
+        assert_eq!(
+            tag(OpResult::Delivered { msg_id: "msg-1".into(), accepted: true, detail: None }),
+            "delivered",
+            "the word a pty write answers with is still its own",
+        );
     }
 
     #[test]

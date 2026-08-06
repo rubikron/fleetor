@@ -17,22 +17,30 @@ use std::str::FromStr;
 /// The worker slots a default fleet runs. The orchestrator is not a slot.
 pub const WORKER_SLOTS: [u8; 4] = [1, 2, 3, 4];
 
-/// One terminal in the fleet. `Orch` is the operator's own orchestrator TUI;
-/// `Worker(n)` is worker pane `n`.
+/// One participant in the fleet. `Orch` is the operator's own orchestrator TUI;
+/// `Worker(n)` is worker pane `n`; `Operator` is the human, who has no terminal
+/// of their own (WP-07).
 ///
-/// Ordering is declaration order — orch sorts before every worker — which is the
-/// order the roster and the UI band want.
+/// Ordering is declaration order — the operator first, then orch, then every
+/// worker — which is the order the roster wants.
+///
+/// **`Operator` is the one variant with no pty behind it**, and every asymmetry
+/// in this package falls out of that single fact rather than out of a flag:
+/// nothing spawns it, nothing kills it, and a message addressed to it is
+/// `recorded` rather than `accepted`. See [`PaneId::has_pty`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum PaneId {
+    /// The human at the keyboard. A name in the record, never a terminal.
+    Operator,
     Orch,
     Worker(u8),
 }
 
 impl PaneId {
-    /// The worker slot number, or `None` for the orchestrator.
+    /// The worker slot number, or `None` for the orchestrator and the operator.
     pub fn slot(self) -> Option<u8> {
         match self {
-            PaneId::Orch => None,
+            PaneId::Operator | PaneId::Orch => None,
             PaneId::Worker(n) => Some(n),
         }
     }
@@ -41,8 +49,32 @@ impl PaneId {
         matches!(self, PaneId::Orch)
     }
 
-    /// The full roster for a fleet with these worker slots: orch first, then the
-    /// workers in the order given.
+    pub fn is_operator(self) -> bool {
+        matches!(self, PaneId::Operator)
+    }
+
+    /// Whether there is a terminal behind this name.
+    ///
+    /// False for exactly one identity, and that is the whole of WP-07's
+    /// asymmetry. The operator is a participant in the record, not a pane:
+    /// there is nothing to type into, so a message addressed to them is
+    /// **`recorded`** — it entered the log — and never `accepted`, which means
+    /// bytes reached a live pty and nothing else (Tier 1.5, L3). A pty that
+    /// does not exist cannot have received any.
+    ///
+    /// It is also why the operator is never spawnable or killable: the spawn
+    /// path has no command to run for a name with no process.
+    pub fn has_pty(self) -> bool {
+        !matches!(self, PaneId::Operator)
+    }
+
+    /// The full roster of **panes** for a fleet with these worker slots: orch
+    /// first, then the workers in the order given.
+    ///
+    /// The operator is deliberately not in it. This list is what spawns, what a
+    /// broadcast fans out to, and whose names a brief's peer list is built from
+    /// — three things the human is not. The one place the operator joins a
+    /// roster is the `fleet roster` *listing*, which the hub assembles.
     pub fn roster(workers: &[u8]) -> Vec<PaneId> {
         std::iter::once(PaneId::Orch).chain(workers.iter().copied().map(PaneId::Worker)).collect()
     }
@@ -51,6 +83,7 @@ impl PaneId {
 impl fmt::Display for PaneId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            PaneId::Operator => f.write_str("operator"),
             PaneId::Orch => f.write_str("orch"),
             PaneId::Worker(n) => write!(f, "worker-{n}"),
         }
@@ -64,7 +97,12 @@ pub struct ParsePaneIdError(pub String);
 
 impl fmt::Display for ParsePaneIdError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?} is not a pane — expected \"orch\" or a worker like \"2\" / \"worker-2\"", self.0)
+        write!(
+            f,
+            "{:?} is not a fleet name — expected \"orch\", \"operator\", \
+             or a worker like \"2\" / \"worker-2\"",
+            self.0
+        )
     }
 }
 
@@ -77,10 +115,19 @@ impl FromStr for PaneId {
     /// `2`, `w2`, `worker2` and `worker-2` all parse. Whether the slot actually
     /// exists is the hub's business, not the parser's — it is the hub that holds
     /// the roster.
+    ///
+    /// **`operator` is an exact match with no aliases (WP-07)**, and `o` keeps
+    /// meaning `orch`. The generosity above exists because a model types a
+    /// *pane* name constantly; the operator is addressed rarely and by one
+    /// name that both briefs spell out, so a short alias would only buy a way
+    /// to reach the human by accident.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let t = s.trim().to_ascii_lowercase();
         if matches!(t.as_str(), "orch" | "orchestrator" | "lead" | "o") {
             return Ok(PaneId::Orch);
+        }
+        if t == "operator" {
+            return Ok(PaneId::Operator);
         }
         let digits = t
             .strip_prefix("worker-")
@@ -116,6 +163,16 @@ pub enum PaneState {
     Live,
     /// Process gone.
     Dead,
+    /// **The operator's state, and only ever the operator's** (WP-07). There is
+    /// no process, so none of the three words above can be true of them: they
+    /// are not spawning, they are not at a prompt, and they have not exited.
+    ///
+    /// A separate word rather than a borrowed `Live` on purpose. `Live` is a
+    /// claim about a terminal — the roster's dot, the delivery predicate and
+    /// the operator's own reading of "is that pane up" all rest on it — and a
+    /// participant with no terminal wearing it would be the same class of lie
+    /// as rendering `accepted` for a message no pty received.
+    Present,
 }
 
 impl PaneState {
@@ -135,8 +192,14 @@ impl PaneState {
     /// and it doesn't. A write to a still-booting pty is buffered by the kernel
     /// and read when the TUI starts reading, which is the failure we can live
     /// with; refusing a live pane is not.
+    ///
+    /// [`PaneState::Present`] is false here for a different reason than `Dead`
+    /// is: not "the process has gone" but "there was never a process." Nothing
+    /// asks — the operator's messages never enter the delivery path at all —
+    /// but a `true` here would be a standing invitation for something to try
+    /// writing to a pty that does not exist.
     pub fn accepts_input(self) -> bool {
-        !matches!(self, PaneState::Dead)
+        matches!(self, PaneState::Spawning | PaneState::Live)
     }
 }
 
@@ -212,6 +275,7 @@ mod tests {
     fn displays_as_the_bare_string_the_cli_and_ui_share() {
         assert_eq!(PaneId::Orch.to_string(), "orch");
         assert_eq!(PaneId::Worker(2).to_string(), "worker-2");
+        assert_eq!(PaneId::Operator.to_string(), "operator");
     }
 
     #[test]
@@ -222,6 +286,44 @@ mod tests {
         for s in ["2", "w2", "W2", "worker2", "worker-2", " worker-2 "] {
             assert_eq!(s.parse::<PaneId>().unwrap(), PaneId::Worker(2), "{s}");
         }
+        // WP-07. Exact, case- and space-insensitive like every other name —
+        // and *only* exact: the human gets no short alias.
+        for s in ["operator", "Operator", " OPERATOR "] {
+            assert_eq!(s.parse::<PaneId>().unwrap(), PaneId::Operator, "{s}");
+        }
+    }
+
+    /// The alias that was already taken. `o` meant the orchestrator before the
+    /// operator existed and must go on meaning it — a model that typed `fleet
+    /// send o "…"` expecting orch and reached the human instead would have
+    /// escalated to a person by typo.
+    #[test]
+    fn the_short_o_still_means_orch_and_not_the_operator() {
+        assert_eq!("o".parse::<PaneId>().unwrap(), PaneId::Orch);
+        assert_eq!("O".parse::<PaneId>().unwrap(), PaneId::Orch);
+        for near_miss in ["op", "oper", "human", "operator-1", "operators"] {
+            assert!(near_miss.parse::<PaneId>().is_err(), "{near_miss} must not parse");
+        }
+    }
+
+    /// The one asymmetry the whole package rests on, stated as a predicate so
+    /// nothing has to re-derive it from a variant name.
+    #[test]
+    fn every_name_but_the_operator_has_a_terminal_behind_it() {
+        assert!(PaneId::Orch.has_pty());
+        assert!(PaneId::Worker(3).has_pty());
+        assert!(!PaneId::Operator.has_pty(), "the human is a name in the record, not a pane");
+        assert!(PaneId::Operator.is_operator());
+        assert!(!PaneId::Operator.is_orch());
+        assert_eq!(PaneId::Operator.slot(), None);
+    }
+
+    /// The operator is not on the spawn/broadcast roster. Adding it there would
+    /// fan every `fleet broadcast` at a pty that does not exist and try to
+    /// launch a `claude` for a human.
+    #[test]
+    fn the_pane_roster_never_contains_the_operator() {
+        assert!(!PaneId::roster(&WORKER_SLOTS).contains(&PaneId::Operator));
     }
 
     #[test]
@@ -233,7 +335,7 @@ mod tests {
 
     #[test]
     fn round_trips_through_json_as_a_bare_string() {
-        for pane in [PaneId::Orch, PaneId::Worker(4)] {
+        for pane in [PaneId::Orch, PaneId::Worker(4), PaneId::Operator] {
             let json = serde_json::to_string(&pane).unwrap();
             assert_eq!(json, format!("\"{pane}\""), "serialized form is the display form");
             assert_eq!(serde_json::from_str::<PaneId>(&json).unwrap(), pane);
@@ -259,6 +361,7 @@ mod tests {
         assert!(PaneState::Live.is_live());
         assert!(!PaneState::Spawning.is_live());
         assert!(!PaneState::Dead.is_live());
+        assert!(!PaneState::Present.is_live(), "the operator must never render as a live pane");
     }
 
     /// Only a dead pane refuses input. A still-spawning one must not, or a
@@ -268,6 +371,19 @@ mod tests {
         assert!(PaneState::Live.accepts_input());
         assert!(PaneState::Spawning.accepts_input());
         assert!(!PaneState::Dead.accepts_input());
+        assert!(!PaneState::Present.accepts_input(), "there is no pty to write to");
+    }
+
+    /// `present` is the operator's word on the roster, and it must be its own
+    /// word on the wire too — the frontend renders the state as a label, and a
+    /// state that serialized as `live` would put the lie in the JSON itself.
+    #[test]
+    fn the_operators_state_is_its_own_word_end_to_end() {
+        let entry = PaneEntry::new(PaneId::Operator, PaneState::Present);
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["pane"], serde_json::json!("operator"));
+        assert_eq!(json["state"], serde_json::json!("present"));
+        assert_eq!(serde_json::from_str::<PaneEntry>(&json.to_string()).unwrap(), entry);
     }
 
     // --- the context gauge (WP-04) ---------------------------------------------

@@ -23,6 +23,7 @@ use std::sync::{Arc, Mutex};
 
 use fleetor_core::event::{FleetEvent, NoticeLevel};
 use fleetor_core::pane::{PaneEntry, PaneId, WORKER_SLOTS};
+use fleetor_core::wire::{Op, OpResult};
 use fleetor_core::Store;
 use fleetor_db::SqliteStore;
 use fleetor_ipc::UnixTransport;
@@ -80,7 +81,7 @@ pub struct FleetConfig {
 /// The live backend, created once by [`fleet_bootstrap`] and kept for the app's
 /// lifetime. Owns the tokio runtime the follower, hub, and delivery loop run on.
 struct Fleet {
-    _rt: Runtime,
+    rt: Runtime,
     store: Arc<dyn Store>,
     /// Fired on window close so the hub stops serving and unlinks its socket.
     shutdown: Arc<Notify>,
@@ -103,6 +104,15 @@ struct Fleet {
     /// converge on the one place ([`deliver::spawn_delivery`]'s `Roster` arm)
     /// that samples gauges and guards the once-per-session Notice.
     app: mpsc::UnboundedSender<AppCommand>,
+    /// The routing hub, held so the operator's composer can call it (WP-07).
+    ///
+    /// The human has no pane and therefore no socket to dial, but their
+    /// messages must take the same route a pane's do or "operator → pane rides
+    /// the existing path unmodified" is a claim rather than a fact.
+    /// [`fleet_send`] calls `Hub::handle` with `from: PaneId::Operator` — the
+    /// identical function `Hub::serve_conn` calls after reading a `Hello`, with
+    /// the socket the only thing missing.
+    hub: Arc<Hub>,
 }
 
 /// Managed Tauri state: at most one embedded fleet.
@@ -239,10 +249,11 @@ pub fn fleet_bootstrap(
     // The hub takes its own clone; `fleet_roster` sends into the original so
     // the UI's poll reaches the identical `AppCommand::Roster` arm the CLI's
     // `fleet roster` does over the socket (see the `Fleet::app` doc).
-    let shutdown = spawn_hub(&rt, store.clone(), app_tx.clone(), socket_path());
+    let (hub, shutdown) = spawn_hub(&rt, store.clone(), app_tx.clone(), socket_path());
 
     let snap = snapshot(&store)?;
-    *guard = Some(Fleet { _rt: rt, store, shutdown, config, target, context, gauges, app: app_tx });
+    *guard =
+        Some(Fleet { rt, store, shutdown, config, target, context, gauges, app: app_tx, hub });
     Ok(snap)
 }
 
@@ -284,6 +295,16 @@ pub(crate) fn spawn_pane(
 
     let socket = socket_path();
     let command = match pane {
+        // Never spawnable, and refused here rather than left to fail somewhere
+        // deeper: there is no command to run for a human, no cwd that is
+        // theirs, and no config dir to seed. WP-07's "the operator is never
+        // spawnable or killable" is this arm plus the fact that nothing in the
+        // UI offers the button (`pty_kill` on a name with no pty already
+        // answers "operator is not running").
+        PaneId::Operator => {
+            return Err("the operator is a participant, not a pane — there is nothing to spawn"
+                .to_string())
+        }
         // The operator's own `claude`: already onboarded, already trusted, in the
         // target itself. Nothing to seed — seeding would touch *their* config dir.
         PaneId::Orch => {
@@ -323,6 +344,10 @@ fn note_spawn_estimate(
     let roster = PaneId::roster(&WORKER_SLOTS);
     let cwd_str = cwd.display().to_string();
     let rendered = match pane {
+        // Unreachable — `spawn_pane` refuses the operator before it gets here —
+        // but a brief for somebody with no terminal is nothing, not an empty
+        // string dressed as one.
+        PaneId::Operator => return,
         PaneId::Orch => fleetor_core::brief::render_orch(&context.orch_template, &roster, &cwd_str),
         PaneId::Worker(_) => {
             fleetor_core::brief::render_worker(&context.worker_template, pane, &roster, &cwd_str)
@@ -465,20 +490,25 @@ fn spawn_follower(rt: &Runtime, bcast: Arc<BroadcastStore>, app: AppHandle) {
 /// A bind failure is the one error that takes messaging down completely, so it is
 /// reported on the feed rather than only to stderr — a shell that looks fine while
 /// every `fleet send` fails is the worst version of this failure.
+/// Returns the hub itself alongside the gate, because the operator's composer
+/// calls it in-process (WP-07) — it is built here rather than inside the served
+/// task so there is exactly one, shared by the socket and the UI.
 fn spawn_hub(
     rt: &Runtime,
     store: Arc<dyn Store>,
     app: mpsc::UnboundedSender<AppCommand>,
     sock: PathBuf,
-) -> Arc<Notify> {
+) -> (Arc<Hub>, Arc<Notify>) {
     let _ = std::fs::remove_file(&sock); // clear a stale socket from a prior run
     let transport = Arc::new(UnixTransport::new(&sock));
 
     let shutdown = Arc::new(Notify::new());
     let gate = shutdown.clone();
     let for_note = store.clone();
+    let hub = Hub::new(store, app);
+    let serving = hub.clone();
     rt.spawn(async move {
-        let hub = Hub::new(store, app);
+        let hub = serving;
         tokio::select! {
             result = hub.run(transport) => {
                 if let Err(e) = result {
@@ -490,7 +520,7 @@ fn spawn_hub(
         }
         let _ = std::fs::remove_file(&sock);
     });
-    shutdown
+    (hub, shutdown)
 }
 
 // --- commands -----------------------------------------------------------------
@@ -534,6 +564,103 @@ pub fn fleet_roster(state: State<'_, FleetState>) -> Result<Vec<PaneEntry>, Stri
         .map_err(|_| "the fleet app is not accepting commands — its window may have closed".to_string())?;
     rx.blocking_recv()
         .map_err(|_| "the fleet app took the roster request but never answered".to_string())
+}
+
+// --- the operator's own messages (WP-07) --------------------------------------
+
+/// What the composer's target select can be set to, beyond a pane's own name.
+/// `all` and `reply` are spellings of a *verb*, not of a participant, which is
+/// why they are resolved here into `Op::Broadcast`/`Op::Reply` rather than being
+/// added to `PaneId` — a `PaneId` that meant "everyone" or "whoever spoke last"
+/// would be a different participant on each side of the socket.
+const TARGET_ALL: &str = "all";
+const TARGET_REPLY: &str = "reply";
+
+/// The outcome of one message the operator sent, in the fleet's own three
+/// words. There is no fourth, and none of them is `delivered` (Tier 1.5).
+#[derive(Serialize, Debug)]
+pub struct OperatorSend {
+    /// `accepted` — the bytes reached a live pty, which is not a claim the
+    /// agent read them (L3). `undelivered` — they did not, and `detail` says
+    /// why. `recorded` — it entered the log and no pty exists; unreachable from
+    /// this composer today, since the only pty-less name is the sender.
+    outcome: &'static str,
+    /// The message id, or a broadcast's shared group id.
+    id: String,
+    /// The reason, when there is one — the pane that refused, or the legs of a
+    /// fan-out that missed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+}
+
+/// Send one message **as the operator**, through the hub the panes use.
+///
+/// The composer is the operator's `fleet send` / `fleet broadcast` / `fleet
+/// reply`, and it is those verbs rather than a fourth thing: what crosses into
+/// [`Hub::handle`] is an ordinary [`Op`] with `from: PaneId::Operator`. Nothing
+/// about the delivery path knows the difference, which is the requirement —
+/// "operator → pane rides the existing path unmodified" — held as a property of
+/// the code rather than as a promise about it.
+///
+/// Sync rather than `async` for [`fleet_roster`]'s reason: Tauri runs sync
+/// commands on its own pool, off the tokio runtime, so blocking this call's own
+/// thread on the hub parks nothing the hub needs to finish.
+#[tauri::command]
+pub fn fleet_send(
+    state: State<'_, FleetState>,
+    target: String,
+    text: String,
+) -> Result<OperatorSend, String> {
+    let op = operator_op(&target, &text)?;
+    let (hub, handle) = {
+        let guard = state.0.lock().map_err(|e| e.to_string())?;
+        let fleet = guard.as_ref().ok_or("fleet not bootstrapped")?;
+        (fleet.hub.clone(), fleet.rt.handle().clone())
+    };
+    Ok(operator_result(handle.block_on(hub.handle(PaneId::Operator, op)))?)
+}
+
+/// The composer's target and text as a wire op. Pure, so the mapping is tested
+/// without a fleet — and refused here, before the hub, for the same reason the
+/// CLI parses a pane name locally: a mistake should cost a sentence, not a
+/// round trip.
+fn operator_op(target: &str, text: &str) -> Result<Op, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        // An empty body would be typed into a live terminal as a bare newline —
+        // a submitted empty turn. Clap refuses this for a pane; the composer is
+        // the same boundary and owes the same refusal.
+        return Err("write something first".to_string());
+    }
+    let text = text.to_string();
+    match target.trim() {
+        TARGET_ALL => Ok(Op::Broadcast { text }),
+        TARGET_REPLY => Ok(Op::Reply { text }),
+        name => Ok(Op::Send { to: name.parse::<PaneId>().map_err(|e| e.to_string())?, text }),
+    }
+}
+
+/// The hub's answer in the operator's words. Pure, and separate from
+/// [`fleet_send`], so the vocabulary is pinned by a test rather than by reading
+/// the UI.
+fn operator_result(result: OpResult) -> Result<OperatorSend, String> {
+    match result {
+        OpResult::Delivered { msg_id, accepted: true, .. } => {
+            Ok(OperatorSend { outcome: "accepted", id: msg_id, detail: None })
+        }
+        // "undelivered", never "failed to send" — the send happened; it is the
+        // arrival that did not. The same word the message feed uses.
+        OpResult::Delivered { msg_id, accepted: false, detail } => {
+            Ok(OperatorSend { outcome: "undelivered", id: msg_id, detail })
+        }
+        OpResult::Recorded { record_id } => {
+            Ok(OperatorSend { outcome: "recorded", id: record_id, detail: None })
+        }
+        OpResult::Error { message } => Err(message),
+        // The composer sends messages; a board or a roster coming back would be
+        // a wiring mistake, and saying so beats rendering a blank success.
+        other => Err(format!("the hub answered a message with something else: {other:?}")),
+    }
 }
 
 /// Ask the operator for a repo and record it in `~/.fleetor/config.json`.
@@ -790,7 +917,7 @@ mod tests {
         let (app_tx, app_rx) = mpsc::unbounded_channel();
         let registry = Arc::new(PaneRegistry::new(Arc::new(|_, _| {}), dir.join("panes.pids")));
         deliver::spawn_delivery(&rt, registry, app_rx, store.clone(), Arc::new(GaugeSources::default()));
-        let shutdown = spawn_hub(&rt, store.clone(), app_tx, sock.clone());
+        let (_hub, shutdown) = spawn_hub(&rt, store.clone(), app_tx, sock.clone());
 
         let result = rt.block_on(async {
             let transport = UnixTransport::new(&sock);
@@ -906,6 +1033,64 @@ mod tests {
     fn a_malformed_config_is_reported_rather_than_ignored() {
         assert!(parse_target("not json at all").is_err());
         assert!(parse_target(r#"{"target": 7}"#).is_err(), "a non-string target is a mistake, not an absence");
+    }
+
+    // --- the operator's composer (WP-07) ---------------------------------------
+
+    /// The composer's three targets are the fleet's three message verbs. A pane
+    /// name is a `send`, `all` is the ordinary broadcast, `reply` is the
+    /// ordinary reply — nothing here is a fourth kind of message.
+    #[test]
+    fn the_composers_target_picks_the_verb_and_never_invents_one() {
+        assert_eq!(
+            operator_op("worker-2", "ship it").unwrap(),
+            Op::Send { to: PaneId::Worker(2), text: "ship it".into() },
+        );
+        assert_eq!(
+            operator_op("2", "ship it").unwrap(),
+            Op::Send { to: PaneId::Worker(2), text: "ship it".into() },
+            "every spelling the CLI takes, the composer takes",
+        );
+        assert_eq!(operator_op("orch", "hi").unwrap(), Op::Send { to: PaneId::Orch, text: "hi".into() });
+        assert_eq!(operator_op("all", "stop").unwrap(), Op::Broadcast { text: "stop".into() });
+        assert_eq!(operator_op("reply", "yes").unwrap(), Op::Reply { text: "yes".into() });
+    }
+
+    /// An empty body would be typed into a live terminal as a bare newline — a
+    /// submitted empty turn in somebody's `claude`. Refused at the boundary,
+    /// exactly as clap refuses it for a pane.
+    #[test]
+    fn the_composer_refuses_an_empty_message_and_an_unknown_target() {
+        assert!(operator_op("worker-2", "   ").is_err());
+        assert!(operator_op("all", "").is_err());
+        let why = operator_op("sidebar", "hi").expect_err("not a participant");
+        assert!(why.contains("sidebar"), "the refusal names what it was handed: {why}");
+    }
+
+    /// The vocabulary, at the seam where the UI reads it. Three words, and the
+    /// one that does not exist is `delivered`.
+    #[test]
+    fn the_composer_reports_the_fleets_three_words_and_no_others() {
+        let accepted =
+            operator_result(OpResult::Delivered { msg_id: "msg-1".into(), accepted: true, detail: None })
+                .unwrap();
+        assert_eq!(accepted.outcome, "accepted");
+        assert_eq!(accepted.detail, None);
+
+        let refused = operator_result(OpResult::Delivered {
+            msg_id: "grp-1".into(),
+            accepted: false,
+            detail: Some("worker-3: pane worker-3 is dead".into()),
+        })
+        .unwrap();
+        assert_eq!(refused.outcome, "undelivered", "the send happened; the arrival did not");
+        assert!(refused.detail.unwrap().contains("worker-3"));
+
+        assert_eq!(operator_result(OpResult::Recorded { record_id: "msg-2".into() }).unwrap().outcome, "recorded");
+
+        let error = operator_result(OpResult::Error { message: "nobody has messaged operator yet".into() })
+            .expect_err("an error is an error");
+        assert!(error.contains("nobody has messaged operator"), "{error}");
     }
 
     /// The `.env` parse tolerates quotes/comments and ignores an empty value, so a

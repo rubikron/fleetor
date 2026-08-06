@@ -11,13 +11,34 @@ export type NoticeLevel = "info" | "warn" | "error";
 export type PaneId = string;
 
 export const ORCH: PaneId = "orch";
+
+/// The human (WP-07). A participant in the record with **no terminal** — which
+/// is the one fact everything else about them follows from: nothing spawns it,
+/// nothing kills it, and a message addressed to it is `recorded` rather than
+/// `accepted`. See `hasPty`.
+export const OPERATOR: PaneId = "operator";
+
 export const WORKER_SLOTS = [1, 2, 3, 4] as const;
 
 export function workerPane(slot: number): PaneId {
   return `worker-${slot}`;
 }
 
+/// Every pane — what spawns, what a broadcast reaches, what has a tab. The
+/// operator is deliberately not here: it is addressable, not runnable.
 export const ROSTER: PaneId[] = [ORCH, ...WORKER_SLOTS.map(workerPane)];
+
+/// Whether there is a terminal behind this name, mirroring
+/// `fleetor_core::pane::PaneId::has_pty`.
+///
+/// **This is the derivation that decides `recorded` vs `accepted`.** It is not
+/// stored on the event, because it cannot disagree with itself: a message whose
+/// addressee has no pty was never written to one, so `accepted: false` on such
+/// a row is the literal truth of that field and not a failure. Rendering it as
+/// "undelivered" would report a delivery that was never attempted.
+export function hasPty(pane: PaneId): boolean {
+  return pane !== OPERATOR;
+}
 
 /// The suffix in a pane's event channel names (`pty://output/orch`,
 /// `pty://output/2`). Single-sourced here because listening on the wrong name
@@ -83,6 +104,11 @@ export type FleetEvent =
       group?: string | null;
       /// The bytes reached a live pty. **Never** render this as "delivered" —
       /// nothing on this side knows whether the agent read them (L3).
+      ///
+      /// It is `false` for two entirely different situations, and a renderer
+      /// must tell them apart with `hasPty(to)`: a pane that refused (which is
+      /// *undelivered*, and carries a `detail`), and the operator, who has no
+      /// pty to accept anything (which is *recorded*, and carries none).
       accepted: boolean;
       detail?: string | null;
     }
@@ -169,7 +195,12 @@ export interface ContextGauge {
 /// `PaneStatus` above, which the shell derives from its own pty channels and
 /// which has an `"idle"` this one does not. `fleet roster`'s payload only, so
 /// far; the band still gets liveness from the pty stream, not this.
-export type RosterPaneState = "spawning" | "live" | "dead";
+///
+/// `"present"` is the operator's, and only ever the operator's (WP-07): there
+/// is no process, so none of the other three can be true of them. A borrowed
+/// `"live"` would be the roster's version of rendering `accepted` for a message
+/// no pty received.
+export type RosterPaneState = "spawning" | "live" | "dead" | "present";
 
 /// One `fleet roster` row, mirroring `fleetor_core::pane::PaneEntry`.
 /// `context` is `undefined` whenever the backend's JSON omitted the key —

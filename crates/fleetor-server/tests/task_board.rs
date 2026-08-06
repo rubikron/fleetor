@@ -109,7 +109,7 @@ fn post(outcome: &str, worker: u8) -> Op {
 
 fn task_id(result: OpResult) -> String {
     match result {
-        OpResult::Recorded { task_id } => task_id,
+        OpResult::Recorded { record_id } => record_id,
         other => panic!("expected a recorded claim, got {other:?}"),
     }
 }

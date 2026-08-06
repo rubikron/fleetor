@@ -1,8 +1,8 @@
 # WP-07 — Operator as participant
 
-status: not-started size: M
+status: **landed** (D-051) size: M
 depends-on: 01 blocks: —
-brief-cost: +~60 tokens (worker prompt names the operator as reachable)
+brief-cost: budgeted +~60 tokens; **spent +126 orch / +135 worker** (measured, D-051 / Q-4 — the smallest overrun of the four, and the control case for "a verb costs what its rules cost": this package added no verb)
 
 ## Outcome
 
@@ -47,9 +47,9 @@ Notifications/attention management; multiple humans/auth; logging terminal keyst
 
 ## Design sketch & open questions
 
-1. **Where `recorded` lives.** Recommended: `OpResult::Delivered { accepted, detail }` stays untouched for panes; pane→operator returns a distinct result (or `detail: "recorded"` with `accepted: true` is **not** acceptable — prefer a new `OpResult::Recorded { msg_id }`). The wire is Tier 2; log the change.
-2. **Composer affordance.** Recommended: single-line input + target select at the bottom of the Messages view, matching the warm-theme idiom; ⌘Enter sends.
-3. **Does orch get told?** Recommended: yes — one prompt line telling orch the operator can now speak in-band and workers may address them directly.
+1. **Where `recorded` lives.** Recommended: `OpResult::Delivered { accepted, detail }` stays untouched for panes; pane→operator returns a distinct result (or `detail: "recorded"` with `accepted: true` is **not** acceptable — prefer a new `OpResult::Recorded { msg_id }`). The wire is Tier 2; log the change. — **Settled differently (D-051):** WP-05 had already landed `OpResult::Recorded { task_id }`, and two variants under one serde tag cannot coexist. There is **one** variant, `Recorded { record_id }`, meaning *entered the log, no pty written to* — a task claim and a message to the human are the same event class. `FleetEvent::Message` gained no field: the row carries `accepted: false, detail: None` (literally true when there is no pty) and every renderer derives the word from `PaneId::has_pty(to)`.
+2. **Composer affordance.** Recommended: single-line input + target select at the bottom of the Messages view, matching the warm-theme idiom; ⌘Enter sends. — **Taken as recommended**, with the target select resolving to the fleet's three existing verbs (a pane name → `send`, `all` → `broadcast`, `reply` → `reply`) and defaulting to the last pane that wrote, until the operator picks one themselves.
+3. **Does orch get told?** Recommended: yes — one prompt line telling orch the operator can now speak in-band and workers may address them directly. — **Taken**, and it needed the second half explicitly ("that is sanctioned, not a worker going around you"), or an orchestrator seeing a worker↔operator exchange in its own input has every reason to police it.
 
 ## Session prompt
 
@@ -68,7 +68,7 @@ Finish with the session exit checklist.
 
 ## Session exit checklist
 
-- [ ] Full test matrix green; vocabulary tests pin `recorded` vs `accepted`.
-- [ ] `decisions.md` entry (new identity, wire result variant).
-- [ ] Prompt amendment landed with validation green (no new verb).
-- [ ] `00-index.md` status updated.
+- [x] Full test matrix green; vocabulary tests pin `recorded` vs `accepted`.
+- [x] `decisions.md` entry (new identity, wire result variant) — D-051.
+- [x] Prompt amendment landed with validation green (no new verb).
+- [x] `00-index.md` status updated.

@@ -354,6 +354,11 @@ async fn a_rejected_delivery_does_not_become_a_reply_target() {
 
 /// The roster is the app's answer, not the config's: the hub knows which panes
 /// *should* exist, only the pty registry knows which are alive.
+///
+/// The operator is the one row the app does not supply and the hub adds (WP-07)
+/// — it is the *listing* of who a pane may address, and the human is
+/// addressable without being a terminal. Every pane row is still exactly what
+/// the app said, in the app's order.
 #[tokio::test]
 async fn roster_reports_live_state_from_the_app() {
     let roster = vec![
@@ -366,7 +371,28 @@ async fn roster_reports_live_state_from_the_app() {
     let mut w1 = pane(&transport, PaneId::Worker(1)).await;
 
     let result = w1.call(Op::Roster).await.unwrap();
-    assert_eq!(result, OpResult::Roster { panes: roster });
+    let expected: Vec<PaneEntry> =
+        std::iter::once(PaneEntry::new(PaneId::Operator, PaneState::Present))
+            .chain(roster)
+            .collect();
+    assert_eq!(result, OpResult::Roster { panes: expected });
+}
+
+/// The human is on the roster with a word that is not a pane state, and it is
+/// never `live`. A faked liveness would be the roster's own version of
+/// rendering `accepted` for a message no pty received.
+#[tokio::test]
+async fn the_roster_lists_the_operator_as_present_and_never_as_live() {
+    let (transport, _store, _writes) = start_hub(all_live()).await;
+    let mut w1 = pane(&transport, PaneId::Worker(1)).await;
+
+    let OpResult::Roster { panes } = w1.call(Op::Roster).await.unwrap() else {
+        panic!("expected a roster");
+    };
+    let operator = panes.iter().find(|e| e.pane == PaneId::Operator).expect("the human is listed");
+    assert_eq!(operator.state, PaneState::Present);
+    assert!(!operator.state.is_live());
+    assert_eq!(operator.context, None, "a human has no transcript to sample");
 }
 
 /// The fleet app going away — the window closed, its receiver dropped — must
@@ -628,5 +654,196 @@ async fn a_broadcast_alone_gives_its_recipients_nobody_to_reply_to() {
     assert!(
         matches!(&result, OpResult::Error { message } if message.contains("nobody has messaged worker-3")),
         "got {result:?}"
+    );
+}
+
+// --- the operator as a participant (WP-07) -----------------------------------
+//
+// The human joins the record. Everything below is the *whole* routing diff: one
+// branch in `Hub::deliver` for the one addressee with no pty, and one extra row
+// on the roster listing. The pane↔pane assertions above are unchanged and are
+// the proof of the other half — this section adds one more that says so out loud.
+
+/// The new arm. A message to the human never touches the app, comes back
+/// `recorded`, and lands in the log with its body — which is the whole of what
+/// the inbox reads back.
+#[tokio::test]
+async fn a_message_to_the_operator_is_recorded_and_no_pty_is_written_to() {
+    let (transport, store, writes) = start_hub(all_live()).await;
+    let mut w2 = pane(&transport, PaneId::Worker(2)).await;
+
+    let result = w2
+        .call(Op::Send {
+            to: PaneId::Operator,
+            text: "the block says \"one grammar\" — did you mean the tokenizer too?".into(),
+        })
+        .await
+        .unwrap();
+
+    let OpResult::Recorded { record_id } = result else {
+        panic!("a message to the human is recorded, never delivered: {result:?}");
+    };
+    assert!(record_id.starts_with("msg-"), "the id names the message: {record_id}");
+    assert!(writes.lock().unwrap().is_empty(), "there is no terminal to type into");
+
+    let logged = messages(&store);
+    assert_eq!(logged.len(), 1);
+    let (from, to, body, group, accepted, detail) = as_message(&logged[0]);
+    assert_eq!((from, to), (PaneId::Worker(2), PaneId::Operator));
+    assert!(body.contains("one grammar"), "the question is in the record: {body}");
+    assert_eq!(group, None);
+    assert!(!accepted, "`accepted` means bytes reached a live pty, and none did");
+    assert_eq!(detail, None, "nothing failed, so nothing invents a reason");
+}
+
+/// The other direction rides the path that already existed, byte for byte: the
+/// human's name comes out of `Display`, the framing out of `frame_for_pane`,
+/// and the answer is the ordinary `accepted` about a real terminal.
+#[tokio::test]
+async fn the_operator_writes_into_a_pane_through_the_unchanged_delivery_path() {
+    let (transport, store, writes) = start_hub(all_live()).await;
+    let mut operator = pane(&transport, PaneId::Operator).await;
+
+    let result = operator
+        .call(Op::Send { to: PaneId::Worker(2), text: "ship the parser, skip the CLI".into() })
+        .await
+        .unwrap();
+    assert!(matches!(result, OpResult::Delivered { accepted: true, .. }), "got {result:?}");
+    assert_eq!(
+        writes.lock().unwrap().clone(),
+        vec![(PaneId::Worker(2), "[fleet · operator] ship the parser, skip the CLI".to_string())],
+    );
+
+    let (from, to, _, _, accepted, _) = as_message(&messages(&store)[0]);
+    assert_eq!((from, to), (PaneId::Operator, PaneId::Worker(2)));
+    assert!(accepted, "a live pty took the bytes — the same word it always meant");
+}
+
+/// An operator broadcast is a broadcast. It wears the `→ all` framing every
+/// worker's anti-amplification clause keys on, so "never reply to a broadcast
+/// unless it names you" binds to the human's fan-out exactly as it binds to a
+/// pane's — a human shouting at five terminals is the worst case that rule
+/// exists for.
+#[tokio::test]
+async fn an_operator_broadcast_wears_the_all_framing_the_reply_rule_binds_to() {
+    let (transport, store, writes) = start_hub(all_live()).await;
+    let mut operator = pane(&transport, PaneId::Operator).await;
+
+    let result = operator.call(Op::Broadcast { text: "stop and read the vision doc".into() }).await.unwrap();
+    let OpResult::Delivered { msg_id: group, accepted, .. } = result else {
+        panic!("expected a delivery, got {result:?}");
+    };
+    assert!(accepted, "every leg landed");
+
+    let sent = writes.lock().unwrap().clone();
+    assert_eq!(sent.len(), 4, "orch and three workers — the sender is never a target");
+    for (_, text) in &sent {
+        assert!(
+            text.starts_with("[fleet · operator → all] "),
+            "a leg must be visibly a broadcast: {text}",
+        );
+    }
+
+    let logged = messages(&store);
+    assert_eq!(logged.len(), 4);
+    for event in &logged {
+        assert_eq!(as_message(event).3, Some(group.as_str()), "one gesture, one group");
+    }
+}
+
+/// `fleet reply` in both directions across the human. A worker's question makes
+/// the operator's reply resolve back to that worker; the reply then makes the
+/// operator the worker's own reply target. Nothing about `last_inbound_from`
+/// is special-cased — it is keyed by name, and the human has one.
+#[tokio::test]
+async fn reply_resolves_in_both_directions_across_the_operator() {
+    let (transport, _store, writes) = start_hub(all_live()).await;
+    let mut w3 = pane(&transport, PaneId::Worker(3)).await;
+    let mut operator = pane(&transport, PaneId::Operator).await;
+
+    w3.call(Op::Send { to: PaneId::Operator, text: "which schema?".into() }).await.unwrap();
+
+    let answered = operator.call(Op::Reply { text: "the v2 one".into() }).await.unwrap();
+    assert!(matches!(answered, OpResult::Delivered { accepted: true, .. }), "got {answered:?}");
+    assert_eq!(
+        writes.lock().unwrap().clone(),
+        vec![(PaneId::Worker(3), "[fleet · operator] the v2 one".to_string())],
+        "the answer went back to the worker that asked, with no target typed",
+    );
+
+    // ...and now the worker can answer the human without naming them either.
+    let back = w3.call(Op::Reply { text: "v2 it is".into() }).await.unwrap();
+    assert!(
+        matches!(back, OpResult::Recorded { .. }),
+        "a reply to the human is recorded like any other message to them: {back:?}",
+    );
+    assert_eq!(writes.lock().unwrap().len(), 1, "the reply to a human reaches no terminal");
+}
+
+/// The self-send guard needed no operator case and must not have grown one: a
+/// participant messaging itself is nonsense whoever they are.
+#[tokio::test]
+async fn the_operator_cannot_message_itself_either() {
+    let (transport, store, _writes) = start_hub(all_live()).await;
+    let mut operator = pane(&transport, PaneId::Operator).await;
+
+    let result = operator.call(Op::Send { to: PaneId::Operator, text: "note to self".into() }).await.unwrap();
+    assert!(
+        matches!(&result, OpResult::Error { message } if message.contains("cannot message itself")),
+        "got {result:?}",
+    );
+    assert!(messages(&store).is_empty(), "a refused self-send is not a log entry");
+}
+
+/// **The message path for pane↔pane traffic is untouched.** A fan-out still
+/// reaches exactly the terminals the app is running: adding the operator to the
+/// broadcast target list would have asked for a pty that does not exist, come
+/// back refused, and made every `fleet broadcast` in the fleet report a partial
+/// failure. The human is addressed by name.
+#[tokio::test]
+async fn a_pane_broadcast_still_reaches_only_the_terminals_the_app_runs() {
+    let (transport, store, writes) = start_hub(all_live()).await;
+    let mut w1 = pane(&transport, PaneId::Worker(1)).await;
+
+    let result = w1.call(Op::Broadcast { text: "rebasing".into() }).await.unwrap();
+    assert!(
+        matches!(result, OpResult::Delivered { accepted: true, .. }),
+        "a fan-out must not be dragged to `accepted: false` by an addressee with no pty: {result:?}",
+    );
+
+    let targets: Vec<PaneId> = writes.lock().unwrap().iter().map(|(pane, _)| *pane).collect();
+    assert_eq!(targets, vec![PaneId::Orch, PaneId::Worker(2), PaneId::Worker(3)]);
+    assert!(
+        !messages(&store).iter().any(|e| as_message(e).1 == PaneId::Operator),
+        "no leg was addressed to the human",
+    );
+}
+
+/// `fleet cmd` is about a terminal, so it is refused at accept time for the one
+/// name that has none — before anything enters the delivery path, the same
+/// class of refusal as the allowlist. Letting it through to be rejected by the
+/// registry would describe the human as a crashed pane.
+#[tokio::test]
+async fn a_slash_command_aimed_at_the_operator_is_refused_rather_than_attempted() {
+    let (transport, store, writes) = start_hub(all_live()).await;
+    let mut orch = pane(&transport, PaneId::Orch).await;
+
+    let result = orch
+        .call(Op::Cmd {
+            to: PaneId::Operator,
+            command: "/clear".into(),
+            why: "trying to reset the human".into(),
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(&result, OpResult::Error { message }
+            if message.contains("operator") && message.contains("no terminal")),
+        "got {result:?}",
+    );
+    assert!(writes.lock().unwrap().is_empty());
+    assert!(
+        store.events_since(0).unwrap().is_empty(),
+        "a refusal before the delivery path is not a log entry",
     );
 }

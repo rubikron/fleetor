@@ -16,17 +16,20 @@
 //! ordering is the whole reason the app seam is request/response rather than
 //! fire-and-forget.
 //!
-//! **One arm does not follow that pattern, and it is the interesting one.**
+//! **Two arms do not follow that pattern, and they are the interesting ones.**
 //! [`Hub::task`] (WP-05) never asks the app anything: `fleet task` only appends
 //! to and replays the log. A board that reached a terminal would be a dispatcher,
 //! and a delivery that read the board would be the `Assign` op D-030 deleted.
-//! Neither happens, in either direction.
+//! Neither happens, in either direction. [`Hub::record`] (WP-07) is the other:
+//! a message to the human, who has no pty to ask about. Both answer
+//! `OpResult::Recorded` — *entered the log, nothing was typed anywhere* — which
+//! is the one word `accepted` must never be stretched to cover (Tier 1.5).
 
 use anyhow::{Context, Result};
 use fleetor_core::command::Command;
 use fleetor_core::event::FleetEvent;
 use fleetor_core::message::Message;
-use fleetor_core::pane::{PaneEntry, PaneId};
+use fleetor_core::pane::{PaneEntry, PaneId, PaneState};
 use fleetor_core::task::{self, TaskBlock, TaskUpdate};
 use fleetor_core::wire::{Hello, Op, OpResult, Request, Response, TaskAction};
 use fleetor_core::{ids, Store};
@@ -149,7 +152,14 @@ impl Hub {
         Ok(())
     }
 
-    async fn handle(&self, from: PaneId, op: Op) -> OpResult {
+    /// Serve one op as if it had arrived over the socket.
+    ///
+    /// Public because the operator has no socket to dial (WP-07): the UI's
+    /// composer calls this directly with `from: PaneId::Operator`, which is how
+    /// "operator → pane rides the existing path unmodified" is true by
+    /// construction rather than by a second implementation that resembles it.
+    /// The CLI reaches the identical function through [`Hub::serve_conn`].
+    pub async fn handle(&self, from: PaneId, op: Op) -> OpResult {
         match op {
             Op::Send { to, text } => self.send(from, to, text).await,
             Op::Broadcast { text } => self.broadcast(from, text).await,
@@ -207,7 +217,7 @@ impl Hub {
                 };
                 let task_id = ids::new_id("task");
                 match self.store.append_event(&block.into_event(&task_id, from)) {
-                    Ok(_) => OpResult::Recorded { task_id },
+                    Ok(_) => OpResult::Recorded { record_id: task_id },
                     Err(e) => OpResult::Error {
                         message: format!("the board could not be written to, so nothing was posted: {e}"),
                     },
@@ -232,7 +242,7 @@ impl Hub {
                 }
                 let task_id = update.task.clone();
                 match self.store.append_event(&update.into_event(from)) {
-                    Ok(_) => OpResult::Recorded { task_id },
+                    Ok(_) => OpResult::Recorded { record_id: task_id },
                     Err(e) => OpResult::Error {
                         message: format!("the board could not be written to, so nothing changed: {e}"),
                     },
@@ -276,6 +286,16 @@ impl Hub {
     /// A command that was accepted and then failed at the pty *is* logged, with
     /// `accepted: false` — that one is a fact about a terminal.
     async fn cmd(&self, from: PaneId, to: PaneId, command: String, why: String) -> OpResult {
+        // Refused at accept time, next to the allowlist check and for the same
+        // reason: nothing enters the delivery path. There is no terminal to put
+        // a `/` in column 0 of, and the alternative — letting it through to be
+        // refused by the registry as "operator is not running" — would describe
+        // the human as a crashed pane.
+        if !to.has_pty() {
+            return OpResult::Error {
+                message: format!("{to} has no terminal — there is nothing to run a command in"),
+            };
+        }
         let cmd = match Command::new(from, to, command, why) {
             Ok(cmd) => cmd,
             Err(message) => return OpResult::Error { message },
@@ -349,10 +369,24 @@ impl Hub {
     }
 
     /// `fleet roster` — asks the app, because only the pty registry knows which
-    /// panes are actually running right now.
+    /// panes are actually running right now, then puts the human at the top of
+    /// the answer (WP-07).
+    ///
+    /// **The operator joins here and nowhere else.** This is the *listing* — who
+    /// a pane can address — and it is a strictly different question from
+    /// [`Hub::app_roster`]'s, which is *which terminals exist*. Only the second
+    /// one may reach [`Hub::broadcast`]: a fan-out leg for the operator would
+    /// be asked of a pty that does not exist, come back refused, and make every
+    /// `fleet broadcast` in the fleet report a partial failure. The human is
+    /// addressed by name, not swept up in a fan-out — which is also the only
+    /// reading consistent with "the inbox is a surface, not a system."
     async fn roster(&self) -> OpResult {
         match self.app_roster().await {
-            Ok(panes) => OpResult::Roster { panes },
+            Ok(panes) => OpResult::Roster {
+                panes: std::iter::once(PaneEntry::new(PaneId::Operator, PaneState::Present))
+                    .chain(panes)
+                    .collect(),
+            },
             Err(e) => e,
         }
     }
@@ -374,13 +408,65 @@ impl Hub {
 
     /// Ask the app to type one message into its target, then log what actually
     /// happened.
+    ///
+    /// **One addressee never gets that far, and it is the whole of WP-07's
+    /// diff to the message path.** The operator has no terminal, so there is
+    /// nothing to ask the app and no `accepted` to report; the message is
+    /// recorded and that is the outcome. Everything below this branch — the
+    /// framing, the ack, the ordering, the reply target, the log entry — is
+    /// byte-for-byte what it was for pane↔pane traffic, and
+    /// `crates/fleetor-server/tests/pane_messaging.rs` pins that a pane→pane
+    /// send is unchanged in the presence of the new name.
     async fn deliver(&self, msg: Message) -> OpResult {
+        if !msg.to.has_pty() {
+            return self.record(msg);
+        }
         let outcome = self.ask_app(msg.to, msg.framed()).await;
         let msg_id = msg.id.clone();
         let accepted = outcome.accepted;
         let detail = outcome.detail.clone();
         self.log_message(msg, &outcome);
         OpResult::Delivered { msg_id, accepted, detail }
+    }
+
+    /// A message to the human: append it, and answer `recorded` (WP-07).
+    ///
+    /// Not `async`, and it never touches `self.app` — the same signature-level
+    /// tell [`Hub::task`] carries, for the same reason. Nothing here reaches a
+    /// terminal.
+    ///
+    /// Two things it deliberately does keep from the pane path:
+    ///
+    ///  - **It sets the reply target.** `last_inbound_from[operator]` is what
+    ///    the composer's *Reply* option resolves to, so a worker's question
+    ///    makes the human's next message go back to that worker without them
+    ///    having to notice which one asked.
+    ///  - **It refuses a self-send identically.** That guard is in
+    ///    [`Hub::send`] and needs no operator case: `from == to` is `from ==
+    ///    to` whoever they are.
+    ///
+    /// And one it does not: **a failed append fails the op.** For a pane
+    /// message the store records something that already happened at a pty, so
+    /// a logging failure is printed and the send still succeeds. Here the log
+    /// *is* the delivery — the inbox is a view of it — so an append that
+    /// failed means the human will never see the message, and telling the
+    /// sender it landed would be the lie L3 is about. Same asymmetry, same
+    /// reason, as a task post.
+    fn record(&self, msg: Message) -> OpResult {
+        let record_id = msg.id.clone();
+        let (from, to) = (msg.from, msg.to);
+        match self.store.append_event(&msg.into_recorded_event()) {
+            Ok(_) => {
+                self.last_inbound().insert(to, from);
+                OpResult::Recorded { record_id }
+            }
+            Err(e) => OpResult::Error {
+                message: format!(
+                    "the log could not be written to, and the log is the only place \
+                     a message to {to} exists — nothing was recorded: {e}"
+                ),
+            },
+        }
     }
 
     fn log_message(&self, msg: Message, outcome: &DeliveryResult) {

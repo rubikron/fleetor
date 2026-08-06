@@ -85,6 +85,7 @@ pub fn run() {
             fleet::fleet_pick_target,
             fleet::fleet_set_target,
             fleet::fleet_roster,
+            fleet::fleet_send,
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { .. } = event {

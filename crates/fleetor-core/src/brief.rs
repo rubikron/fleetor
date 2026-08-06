@@ -390,16 +390,72 @@ mod tests {
         assert!(brief.contains("Improve yourself and the team around you"), "the ME→WE line");
     }
 
-    /// Until WP-07 gives workers a way to address the operator directly, a
-    /// question for the human routes through `orch`. This test is the reminder
-    /// that the sentence exists and is meant to be replaced, not deleted.
+    /// The third attitude's escape route, now that WP-07 has given it one: a
+    /// peer for what a peer knows, `orch` for the plan, and the human for what
+    /// only the human can settle — **addressed directly**, not relayed. The
+    /// relay sentence this replaces ("ask `orch` to put it to the operator")
+    /// must not survive alongside it: two routes to the same person is how a
+    /// question ends up asked twice or not at all.
     #[test]
     fn a_confused_worker_is_told_exactly_who_to_ask() {
         let brief = worker_brief(PaneId::Worker(3), &roster(), CWD);
         assert!(brief.contains("Ask a peer by name"));
+        assert!(brief.contains(r#"`fleet send operator "<question>"`"#), "the direct address");
         assert!(
-            brief.contains("ask `orch` to put it to the operator"),
-            "WP-07 replaces this sentence with direct addressing; until then it must be here",
+            !brief.contains("ask `orch` to put it to the operator"),
+            "the relay was replaced, not kept beside its replacement",
+        );
+        assert!(
+            brief.contains("nothing waits"),
+            "asking must not read as blocking — nothing in the code blocks, and a \
+             worker that stops working while it waits has cost the fleet a pane",
+        );
+    }
+
+    // --- the operator as a participant (WP-07) ----------------------------------
+
+    /// The authority clause, pinned as a literal for the reason WP-02's is: a
+    /// rewrite that softened "final" into "important input" would still render
+    /// and still validate, and a worker would then weigh the human's answer
+    /// against its block's criteria instead of above them.
+    #[test]
+    fn the_worker_brief_gives_the_operators_word_final_authority() {
+        let brief = worker_brief(PaneId::Worker(2), &roster(), CWD);
+        assert!(brief.contains("[fleet · operator]"), "the framing they will actually see");
+        assert!(brief.contains("**their word is final**"));
+        assert!(
+            brief.contains("outranks `orch`, your block's criteria"),
+            "the rule needs what it outranks, or it is a compliment rather than an order",
+        );
+    }
+
+    /// The vocabulary reaches both panes through the one fragment that already
+    /// carries the delivery contract — so a model cannot read `recorded` as a
+    /// failed `accepted` and resend a question the human already has.
+    #[test]
+    fn both_briefs_distinguish_recorded_from_accepted() {
+        for brief in [orch_brief(&roster(), CWD), worker_brief(PaneId::Worker(1), &roster(), CWD)] {
+            assert!(brief.contains("**recorded**"), "the third word is taught");
+            assert!(
+                brief.contains("the human has no terminal"),
+                "and why it is a different word — otherwise it reads as a failure",
+            );
+            assert!(brief.contains("fleet send operator"), "the pane can actually address them");
+        }
+    }
+
+    /// What orch is told: the human is in-band now, and a worker asking them
+    /// something is sanctioned. Without this an orchestrator reading a
+    /// worker↔operator exchange in its own input has every reason to treat it
+    /// as a worker going around it — and to say so to the worker.
+    #[test]
+    fn the_orch_brief_says_the_operator_speaks_in_band_and_workers_may_ask_them() {
+        let brief = orch_brief(&roster(), CWD);
+        assert!(brief.contains("[fleet · operator]"));
+        assert!(brief.contains("They reach any pane directly"));
+        assert!(
+            brief.contains("that is sanctioned, not a worker going around you"),
+            "the permission has to be explicit or the orchestrator will police it",
         );
     }
 

@@ -10,7 +10,7 @@ For *when* each piece arrives and where it lands inside the pane's context windo
 |---|---|---|
 | `orch.md` | The orchestrator's brief | `{cwd}` `{workers}` `{delivery_contract}` `{scaffolding}` `{vision_tenets}` |
 | `worker.md` | The brief every worker slot renders | `{me}` `{cwd}` `{peers}` `{delivery_contract}` `{broadcast_rule}` `{scaffolding}` |
-| `delivery-contract.md` | Fragment: what a `fleet` exit code means | — |
+| `delivery-contract.md` | Fragment: what a `fleet` exit code means, and the three outcome words | — |
 | `broadcast-rule.md` | Fragment: never answer a broadcast unless it names you | — |
 | `scaffolding.md` | Fragment: the working posture CC's own prompt used to supply | — |
 | `vision-tenets.md` | Fragment: how the orchestrator thinks about vision | — |

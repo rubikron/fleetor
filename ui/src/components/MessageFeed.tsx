@@ -20,6 +20,9 @@
 // and the word "accepted" rather than any claim that it ran.
 
 import { useMemo } from "react";
+import { OperatorComposer } from "./OperatorComposer";
+import { OperatorInbox } from "./OperatorInbox";
+import { inbox, isFromOperator, outcomeOf, replyTarget } from "../fleet/inbox";
 import type { CommandEvent, MessageEvent, PaneId } from "../fleet/types";
 
 /// One rendered row: either a direct message, or a whole broadcast.
@@ -31,8 +34,21 @@ interface Row {
   to: PaneId[];
   body: string;
   broadcast: boolean;
-  /// Every leg that did not land, with the reason it gave.
+  /// The human said it. A mark on the row, never a reordering of it.
+  fromOperator: boolean;
+  /// It entered the log and no pty exists — the addressee is the operator
+  /// (WP-07). Not a failure, and never counted as one.
+  recorded: boolean;
+  /// Every leg that a real terminal did not take, with the reason it gave.
   failures: { to: PaneId; detail: string }[];
+}
+
+/// The legs of one message that did not reach a pty **and should have** — so a
+/// message to the operator, which never had one to reach, is not in here.
+function failuresOf(m: MessageEvent): { to: PaneId; detail: string }[] {
+  return outcomeOf(m.to, m.accepted) === "undelivered"
+    ? [{ to: m.to, detail: m.detail ?? "refused" }]
+    : [];
 }
 
 function collapse(messages: MessageEvent[]): Row[] {
@@ -50,14 +66,16 @@ function collapse(messages: MessageEvent[]): Row[] {
         to: [m.to],
         body: m.body,
         broadcast: false,
-        failures: m.accepted ? [] : [{ to: m.to, detail: m.detail ?? "refused" }],
+        fromOperator: isFromOperator(m),
+        recorded: outcomeOf(m.to, m.accepted) === "recorded",
+        failures: failuresOf(m),
       });
       continue;
     }
     const existing = groups.get(m.group);
     if (existing) {
       existing.to.push(m.to);
-      if (!m.accepted) existing.failures.push({ to: m.to, detail: m.detail ?? "refused" });
+      existing.failures.push(...failuresOf(m));
       continue;
     }
     const row: Row = {
@@ -67,7 +85,11 @@ function collapse(messages: MessageEvent[]): Row[] {
       to: [m.to],
       body: m.body,
       broadcast: true,
-      failures: m.accepted ? [] : [{ to: m.to, detail: m.detail ?? "refused" }],
+      fromOperator: isFromOperator(m),
+      // A fan-out never has the operator among its legs — nothing broadcasts to
+      // a participant with no pty — so a broadcast row is never recorded.
+      recorded: false,
+      failures: failuresOf(m),
     };
     groups.set(m.group, row);
     rows.push(row);
@@ -78,7 +100,7 @@ function collapse(messages: MessageEvent[]): Row[] {
 function MessageRow({ row }: { row: Row }) {
   const failed = row.failures.length > 0;
   return (
-    <article className="msg">
+    <article className={`msg ${row.fromOperator ? "msg--operator" : ""}`}>
       <header className="msg__head">
         <span className="mono msg__from">{row.from}</span>
         <span className="msg__arrow">→</span>
@@ -90,6 +112,14 @@ function MessageRow({ row }: { row: Row }) {
         <span className="mono text-mute">{row.seq}</span>
       </header>
       <p className="msg__body">{row.body}</p>
+      {/* "recorded", never "accepted": the human has no terminal, so no pty
+          took these bytes. Stated rather than left blank — an unmarked row
+          would read as a delivery that quietly worked. */}
+      {row.recorded && (
+        <footer className="msg__failures">
+          <span className="msg__note">recorded — it is in the log and the operator's inbox</span>
+        </footer>
+      )}
       {failed && (
         <footer className="msg__failures">
           {row.failures.map((f) => (
@@ -162,6 +192,8 @@ export function MessageFeed({
   commands: CommandEvent[];
 }) {
   const rows = useMemo(() => timeline(messages, commands), [messages, commands]);
+  const mine = useMemo(() => inbox(messages), [messages]);
+  const replyTo = useMemo(() => replyTarget(messages), [messages]);
 
   return (
     <div className="events-view">
@@ -189,6 +221,13 @@ export function MessageFeed({
           )}
         </div>
       )}
+      {/* The operator's own end of the record (WP-07). Below the feed rather
+          than beside it: the record is the product, and the human's two
+          surfaces are a footer to it, not a second column competing with it.
+          Both stay mounted — an inbox that appeared only when it had something
+          would be attention machinery wearing a layout's clothes. */}
+      <OperatorInbox messages={mine} />
+      <OperatorComposer replyTo={replyTo} />
     </div>
   );
 }

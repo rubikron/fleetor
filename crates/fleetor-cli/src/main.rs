@@ -53,8 +53,13 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Write into one pane's terminal: `fleet send 2 "take the parser"`.
+    ///
+    /// `fleet send operator "…"` addresses the human instead. They have no
+    /// terminal, so that one answers `recorded` rather than `accepted` — it is
+    /// in the log and in their inbox, which is the whole of what can be
+    /// promised about a person.
     Send {
-        /// `orch`, or a worker as `2` / `w2` / `worker-2`.
+        /// `orch`, `operator`, or a worker as `2` / `w2` / `worker-2`.
         pane: String,
         #[arg(trailing_var_arg = true, required = true)]
         text: Vec<String>,
@@ -296,11 +301,15 @@ fn report(result: OpResult, full: bool) -> bool {
             }
             true
         }
-        // "recorded", not "assigned": what happened is that a claim reached the
-        // board. Nobody was told to do anything — that is the `fleet send` the
-        // brief tells the orchestrator to write next.
-        OpResult::Recorded { task_id } => {
-            println!("recorded {task_id}");
+        // "recorded", not "assigned" and not "accepted": what happened is that
+        // something reached the log and no terminal was written to. For a task
+        // claim that means nobody was told to do anything — that is the `fleet
+        // send` the brief tells the orchestrator to write next. For a message
+        // to the operator it means the human has it in their inbox whenever
+        // they look, which is the most any of this could honestly promise
+        // about a person.
+        OpResult::Recorded { record_id } => {
+            println!("recorded {record_id}");
             true
         }
         OpResult::Board { tasks } => {
@@ -821,7 +830,7 @@ mod tests {
     /// delivery, so nothing about a pty is claimed either way.
     #[test]
     fn a_recorded_claim_and_a_board_read_both_exit_zero() {
-        assert!(report(OpResult::Recorded { task_id: "task-1-0".into() }, false));
+        assert!(report(OpResult::Recorded { record_id: "task-1-0".into() }, false));
         assert!(report(OpResult::Board { tasks: vec![entry("task-1-0", None, 2)] }, true));
         assert!(report(OpResult::Board { tasks: vec![] }, false), "an empty board is not a failure");
     }
@@ -898,5 +907,46 @@ mod tests {
         assert!(lines[0].starts_with("orch"));
         assert!(lines[1].starts_with("worker-1") && lines[1].contains("dead"));
         assert!(lines[2].starts_with("worker-2") && lines[2].contains("spawning"));
+    }
+
+    // --- the operator as a participant (WP-07) ----------------------------------
+
+    /// The human's name has to survive the CLI boundary like any other, or the
+    /// sentence the worker brief teaches — `fleet send operator "…"` — exits 2.
+    #[test]
+    fn the_pane_argument_accepts_the_operator_by_name() {
+        let cli = Cli::try_parse_from(["fleet", "send", "operator", "which", "schema?"]).unwrap();
+        let Command::Send { pane, text } = cli.command else { panic!("expected send") };
+        assert_eq!(pane.parse::<PaneId>().unwrap(), PaneId::Operator);
+        assert_eq!(join(text), "which schema?");
+    }
+
+    /// The vocabulary, at the one place a model reads it. `recorded` exits zero
+    /// and never prints the word `accepted`: the promise `accepted` makes is
+    /// about a live pty, and there is none — a receipt that blurred them would
+    /// teach the fleet that reaching a human and reaching a terminal are the
+    /// same event.
+    #[test]
+    fn a_message_to_the_operator_reports_recorded_and_never_accepted() {
+        assert!(report(OpResult::Recorded { record_id: "msg-9".into() }, false));
+        // Both callers of the word share one variant, so there is one renderer
+        // and it cannot drift between them.
+        assert!(report(OpResult::Recorded { record_id: "task-1-0".into() }, false));
+    }
+
+    /// The operator sits on the roster with a word that is not a pane state.
+    /// `—` in the context column for the same reason orch has one: nothing
+    /// sampled a transcript, and a human does not have one to sample.
+    #[test]
+    fn the_roster_lists_the_operator_as_present_rather_than_live() {
+        let lines = roster_lines(&[
+            PaneEntry::new(PaneId::Operator, PaneState::Present),
+            PaneEntry::new(PaneId::Orch, PaneState::Live),
+        ]);
+        assert!(lines[0].starts_with("operator"), "{}", lines[0]);
+        assert!(lines[0].contains("present"), "{}", lines[0]);
+        assert!(!lines[0].contains("live"), "never a faked liveness: {}", lines[0]);
+        assert!(lines[0].contains('—'), "no gauge for a human: {}", lines[0]);
+        assert!(lines[1].contains("live"), "a real pane still says live: {}", lines[1]);
     }
 }
