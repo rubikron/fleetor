@@ -1,6 +1,6 @@
 # WP-08 — The Fence: private worker HOME
 
-status: not-started size: S/M
+status: **landed** (2026-08-06, D-052) size: S/M
 depends-on: 01 blocks: — (sequencing note with 06 below)
 brief-cost: 0
 
@@ -67,3 +67,7 @@ Finish with the session exit checklist.
 - [ ] `decisions.md` entry.
 - [ ] If WP-06 already landed: worker commit flow re-validated.
 - [ ] `00-index.md` status updated.
+
+## How it landed (2026-08-06)
+
+Commit `17034af`, decision D-052, falsification and breakage catalogue in `docs/notes/fence-notes.md` (`~/.ssh` no longer resolves by name; exactly one file seeded, the worker `.gitconfig`, because WP-06 had made worker commits load-bearing). Private HOME per worker at `~/.fleetor/_shell/home/worker-N`; `launch.conf`'s `[fence] posture = open` documents why the key exists with only one value. The checkboxes above were not ticked by the landing session; the D-entry and the notes file are the record.

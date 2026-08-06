@@ -1,6 +1,6 @@
 # WP-04 — Context visibility: the Loadout counter + live gauge
 
-status: not-started size: M
+status: **landed** (2026-08-06, D-046) size: M
 depends-on: 01 blocks: — (makes WP-03 decisions informed)
 brief-cost: +~30 tokens (one orch line about the roster's context column)
 
@@ -75,3 +75,7 @@ session. Finish with the session exit checklist.
 - [ ] `decisions.md` entry (gauge source, window-size constants).
 - [ ] Orch prompt line added; validation green (no verb changes).
 - [ ] `00-index.md` status updated.
+
+## How it landed (2026-08-06)
+
+Commit `bc4ed58`, decision D-046, spike in `docs/notes/context-gauge-notes.md` (transcript path + usage schema measured against CC 2.1.223). The gauge reads each worker's own transcript JSONL under its isolated `CLAUDE_CONFIG_DIR`; observer-only, `≈` on every number, absent never faked. The under-budget control case of the whole series (~0.8× its brief-cost guess). D-054 later moved `WORKER_WINDOW_TOKENS` from 128,000 to 500,000 (set via `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, single-sourced from `context_gauge`). The checkboxes above were not ticked by the landing session; the record of what was verified is the D-entry and the notes file.

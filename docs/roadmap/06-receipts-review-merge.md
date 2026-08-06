@@ -1,6 +1,6 @@
 # WP-06 — Receipts, peer review, and the merge step
 
-status: not-started size: L
+status: **landed** (2026-08-06, D-048..D-050) size: L
 depends-on: 01, 05 blocks: —
 brief-cost: +~150 tokens across both prompt files (done/receipt protocol, reviewer duty, merge rule)
 
@@ -78,3 +78,7 @@ with the session exit checklist.
 - [ ] `decisions.md`: worktrees-stay entry + the verb entry.
 - [ ] Both prompt files + `VERBS` + clap + pinned tests in one commit.
 - [ ] `00-index.md` status updated; if WP-08 already landed, worker commits re-validated.
+
+## How it landed (2026-08-06)
+
+Commits `959face` / `6f75066`, decisions D-048 (worktrees-stay, review via the shared object DB), D-049 (`fleet done` runs the check locally in the worker's worktree and sends the receipt as an ordinary message — CLI exit code still reflects delivery, not the check), D-050 (orch merges reviewed branches to `fleet/integration`, never trunk; the auto reply-tag stretch item not taken). Measurement in `docs/notes/peer-review-notes.md`; the verb's local half lives in `crates/fleetor-cli/src/done.rs`. As-built map: `docs/fleet-comms-map.md` §3d. The checkboxes above were not ticked by the landing session; the D-entries are the record.
