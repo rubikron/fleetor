@@ -49,9 +49,9 @@ Two things about that diagram are load-bearing.
 
 ## 2. `fleet` — the agent surface
 
-Six verbs: `send`, `broadcast`, `reply`, `cmd`, `roster`, `whoami`. It is a Bash command, not an MCP server, and that is deliberate — a model that can run `ls` can run `fleet send`, and it reads its own exit code and stderr, so a refusal is self-correcting in a way a tool result is not.
+Seven verbs: `send`, `broadcast`, `reply`, `cmd`, `task`, `roster`, `whoami`. It is a Bash command, not an MCP server, and that is deliberate — a model that can run `ls` can run `fleet send`, and it reads its own exit code and stderr, so a refusal is self-correcting in a way a tool result is not.
 
-Five of them carry a message. **`cmd` is the one that does not** — see §3a.
+Three of them carry a message. **`cmd` reaches a terminal without being one** (§3a), and **`task` never reaches a terminal at all** (§3b).
 
 Identity comes from `FLEETOR_PANE`, set by the spawn path. There is no anonymous connection: `Hello` carries a `PaneId`, not an `Option<PaneId>`, so a message from nobody cannot be constructed. `fleet reply` routes on who last got through, which is only meaningful because of that.
 
@@ -89,6 +89,31 @@ The last two rows are the same fact from two directions. `docs/command-channel-n
 **This is deliberately not "the router chops the prefix off for slash commands."** That design — inspecting message bodies for a leading `/` — has been argued and lost twice (Tier 1.4). Commands are not messages, and nothing is chopped: `Message::framed`, `sanitize`, `write_paste` and `Op::Send`/`Broadcast`/`Reply` are byte-identical to what they were before this arm existed.
 
 `accepted` means what it always means, and here it is weaker than usual: the bytes reached a live pty. A command submitted mid-turn is queued by Claude Code and runs when the turn ends; a command that landed after unsubmitted text never runs at all. Neither is observable from this side, so nothing renders `accepted` as "executed".
+
+---
+
+## 3b. `fleet task` — the arm that never leaves the log (WP-05, D-047)
+
+`fleet task post|update|list` maintains the shared board: the decomposition the fleet agreed on, one block at a time, each with an outcome, technical criteria, a semantic link back to the vision, an owner and optional tree links.
+
+**It is the only op that does not reach the app.** `Hub::task` is not even `async`: it appends to the store, or folds the store back into a board, and stops. Everything else on this map ends at a pty; this ends at the log.
+
+```
+fleet task ──▶ hub ──▶ Store::append_event ──▶ (bus) ──▶ Tasks view
+                 └──▶ Store::events_since(0) ──▶ task::board ──▶ stdout
+```
+
+That absence is the whole design. **The board is a diary, not a dispatcher:**
+
+- posting a block assigns nobody — assignment is an ordinary `fleet send`, and the brief says so in those words;
+- nothing schedules, routes, orders or refuses anything by task state;
+- `done` is a claim its author made, not a verdict — WP-06's review is what verifies one;
+- any status may follow any other, and anyone may update any block (the event's `from` is the accountability);
+- cycles and dangling links in the tree are tolerated and rendered as written, never validated into a graph.
+
+The old system's `Assign` op returned `Ack` while nothing ever ran, and `wire.rs` still carries the warning that `Assign` and `FleetStatus` "are the seed of the ticket system growing back". So the claim is checked rather than asserted: `crates/fleetor-server/tests/task_board.rs` pins that ten posted blocks send the app **zero** commands, and that a `fleet send` to a worker is byte-identical at the pty and in the log whether the board is empty or holds ten blocks including that worker's own, marked `done`.
+
+There is no `tasks` table. The board is `task::board(events_since(0))` — the same replay the message feed does — so a restarted hub computes the same board and the UI's Tasks view mirrors the fold in `ui/src/fleet/board.ts`.
 
 ---
 

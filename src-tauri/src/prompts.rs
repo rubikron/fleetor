@@ -257,8 +257,8 @@ mod tests {
     fn a_valid_override_is_used_and_announced() {
         let dir = temp_dir("valid");
         let mine = "# {me} in {cwd}\n\nyou work with {peers}. verbs: fleet send, fleet broadcast, \
-             fleet reply, fleet cmd, fleet roster, fleet whoami.\n\n{delivery_contract}\n\n\
-             {broadcast_rule}\n\n{scaffolding}\n";
+             fleet reply, fleet cmd, fleet task, fleet roster, fleet whoami.\n\n\
+             {delivery_contract}\n\n{broadcast_rule}\n\n{scaffolding}\n";
         std::fs::write(dir.join("worker.md"), mine).unwrap();
 
         let ctx = PaneContext::resolve(&dir);

@@ -36,7 +36,7 @@
 
 import type { ReactNode } from "react";
 
-export type View = "fleet" | "messages" | "activity" | "settings";
+export type View = "fleet" | "messages" | "tasks" | "activity" | "settings";
 
 interface SidebarProps {
   view: View;
@@ -74,6 +74,16 @@ const ICONS: Record<View, ReactNode> = {
       <polyline points="2.2,4.6 8,8.8 13.8,4.6" />
     </svg>
   ),
+  // a checklist: the task board. Boxes with rules beside them, not ticks —
+  // this shell never renders a claimed `done` as a checkmark (see TaskBoard).
+  tasks: (
+    <svg {...ICON_PROPS}>
+      <rect x="1.8" y="2.6" width="5" height="5" rx="1.2" />
+      <rect x="1.8" y="9.4" width="5" height="5" rx="1.2" />
+      <line x1="9.2" y1="5.1" x2="14.2" y2="5.1" />
+      <line x1="9.2" y1="11.9" x2="14.2" y2="11.9" />
+    </svg>
+  ),
   // a pulse trace: the activity log
   activity: (
     <svg {...ICON_PROPS}>
@@ -100,6 +110,9 @@ const ICONS: Record<View, ReactNode> = {
 const WORKSPACE: { view: View; label: string }[] = [
   { view: "fleet", label: "Terminals" },
   { view: "messages", label: "Messages" },
+  // Next to Messages on purpose: the board is what the fleet agreed on and the
+  // record is what it then said about it, and they get read together.
+  { view: "tasks", label: "Tasks" },
   { view: "activity", label: "Activity" },
 ];
 

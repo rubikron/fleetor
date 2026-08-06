@@ -37,13 +37,41 @@ export function paneSlot(pane: PaneId): number | null {
 /// no name for because an unspawned pane simply is not in its registry.
 export type PaneStatus = "idle" | "live" | "dead";
 
+/// What someone *claims* a task block's state is, mirroring
+/// `fleetor_core::task::TaskStatus`. Descriptive only — nothing in this UI or
+/// behind it enforces a transition, and `done` is an unverified claim until
+/// WP-06's review, so nothing here may render it as a verified fact.
+export type TaskStatus = "planned" | "claimed" | "done" | "dropped";
+
+/// One task block, in the vision's own shape
+/// (`fleetor_core::task::TaskBlock`). The id is not here: it lives on the event
+/// that posted the block, so a post and its updates join on one field.
+export interface TaskBlock {
+  outcome: string;
+  technical: string[];
+  semantic: string[];
+  worker: PaneId;
+  instructions?: string | null;
+  /// The block this one was cut out of, by id.
+  parent?: string | null;
+  /// The block this stream of work comes back together in, by id.
+  converges_on?: string | null;
+}
+
+/// What one task event says: the block went up, or something was claimed about
+/// it. Internally tagged on `change`, exactly as the Rust enum serializes.
+export type TaskChange =
+  | { change: "posted"; block: TaskBlock }
+  | { change: "updated"; status?: TaskStatus | null; note?: string | null };
+
 /// The append-only event, discriminated on `type`, each carrying its `seq`.
 ///
-/// Four variants. Three are what `fleetor_core::FleetEvent` had after Phase 5 —
-/// the ten that described the headless supervisor went with it — and `command`
-/// is D-045's. **The frontend renders an unknown `type` as nothing at all**, so a
-/// backend variant that is not mirrored here is invisible rather than broken,
-/// which is why this file moves in the same commit as `event.rs`.
+/// Five variants. Three are what `fleetor_core::FleetEvent` had after Phase 5 —
+/// the ten that described the headless supervisor went with it — `command` is
+/// D-045's and `task` is WP-05's. **The frontend renders an unknown `type` as
+/// nothing at all**, so a backend variant that is not mirrored here is invisible
+/// rather than broken, which is why this file moves in the same commit as
+/// `event.rs`.
 export type FleetEvent =
   | {
       seq: number;
@@ -76,11 +104,26 @@ export type FleetEvent =
       accepted: boolean;
       detail?: string | null;
     }
+  | {
+      seq: number;
+      type: "task";
+      /// The **block's** id, shared by its post and every later update — the key
+      /// the board replay folds on.
+      task: string;
+      /// Who made this claim. The board has no permission system; this field is
+      /// the whole of the accountability, so it is never hidden.
+      from: PaneId;
+      /// When, in epoch ms. On the payload rather than only the DB row, because
+      /// this UI replays the board from the event stream and never sees the row.
+      at: number;
+      change: TaskChange;
+    }
   | { seq: number; type: "pane-state"; pane: PaneId; from: string; to: string }
   | { seq: number; type: "notice"; level: NoticeLevel; text: string };
 
 export type MessageEvent = Extract<FleetEvent, { type: "message" }>;
 export type CommandEvent = Extract<FleetEvent, { type: "command" }>;
+export type TaskEvent = Extract<FleetEvent, { type: "task" }>;
 
 export function isMessage(event: FleetEvent): event is MessageEvent {
   return event.type === "message";
@@ -88,6 +131,10 @@ export function isMessage(event: FleetEvent): event is MessageEvent {
 
 export function isCommand(event: FleetEvent): event is CommandEvent {
   return event.type === "command";
+}
+
+export function isTask(event: FleetEvent): event is TaskEvent {
+  return event.type === "task";
 }
 
 export interface BootSnapshot {

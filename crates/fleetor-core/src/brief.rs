@@ -39,7 +39,7 @@ use crate::pane::PaneId;
 
 /// Every `fleet` verb, in the order the briefs introduce them. The Phase-3 CLI
 /// asserts its clap subcommands match this list exactly.
-pub const VERBS: [&str; 6] = ["send", "broadcast", "reply", "cmd", "roster", "whoami"];
+pub const VERBS: [&str; 7] = ["send", "broadcast", "reply", "cmd", "task", "roster", "whoami"];
 
 /// The baked-in orchestrator template. Used when the operator has not put their
 /// own `orch.md` in `~/.fleetor/prompts/`, and as the fallback when the one they
@@ -209,7 +209,7 @@ mod tests {
     /// Asserted against literals, not `VERBS`, so this test is the tripwire.
     #[test]
     fn both_briefs_teach_every_cli_verb() {
-        let literals = ["send", "broadcast", "reply", "cmd", "roster", "whoami"];
+        let literals = ["send", "broadcast", "reply", "cmd", "task", "roster", "whoami"];
         assert_eq!(literals.to_vec(), VERBS.to_vec(), "VERBS drifted from the verbs the briefs teach");
         for brief in [orch_brief(&roster(), CWD), worker_brief(PaneId::Worker(1), &roster(), CWD)] {
             for verb in literals {
@@ -436,8 +436,8 @@ mod tests {
     #[test]
     fn a_rewritten_template_keeps_the_clauses_it_cannot_afford_to_lose() {
         let rewritten = "# hi {me} in {cwd}\n\nyour peers: {peers}. use fleet send / fleet broadcast / \
-             fleet reply / fleet cmd / fleet roster / fleet whoami.\n\n{delivery_contract}\n\n\
-             {broadcast_rule}\n\n{scaffolding}\n";
+             fleet reply / fleet cmd / fleet task / fleet roster / fleet whoami.\n\n\
+             {delivery_contract}\n\n{broadcast_rule}\n\n{scaffolding}\n";
         validate_worker(rewritten).expect("a template with every placeholder is usable");
 
         let brief = render_worker(rewritten, PaneId::Worker(2), &roster(), CWD);
@@ -475,8 +475,8 @@ mod tests {
     #[test]
     fn a_template_that_forgets_a_verb_is_refused() {
         let missing_whoami = "# {me} in {cwd}\n\npeers: {peers}. fleet send / fleet broadcast / \
-             fleet reply / fleet cmd / fleet roster.\n\n{delivery_contract}\n\n{broadcast_rule}\n\n\
-             {scaffolding}\n";
+             fleet reply / fleet cmd / fleet task / fleet roster.\n\n{delivery_contract}\n\n\
+             {broadcast_rule}\n\n{scaffolding}\n";
         let why = validate_worker(missing_whoami).expect_err("must not be usable");
         assert!(why.contains("fleet whoami"), "the refusal names the missing verb: {why}");
     }
@@ -529,6 +529,62 @@ mod tests {
             brief.contains("report confident nonsense"),
             "the rule needs its consequence, or it reads as advice",
         );
+    }
+
+    // --- the task board (WP-05) -------------------------------------------------
+
+    /// The sentence the whole package rests on. The board is a record; the
+    /// **send** is the assignment. Pinned as a literal because a rewrite that
+    /// softened it — "post the block and the worker picks it up" — would still
+    /// render, still validate, and would teach the fleet to wait on a board that
+    /// nothing dispatches from. That is the ticket system growing back in prose
+    /// instead of code.
+    #[test]
+    fn the_orch_brief_says_the_send_is_the_assignment_and_the_board_is_the_record() {
+        let brief = orch_brief(&roster(), CWD);
+        assert!(brief.contains("Posting a block assigns nobody"));
+        assert!(brief.contains("nothing reads it, nothing runs from it"));
+        assert!(brief.contains("The send is the assignment"));
+        assert!(
+            brief.contains("a claim its author made rather than a verified fact"),
+            "`done` is unverified until WP-06's review; the brief must not promise otherwise",
+        );
+    }
+
+    /// Decomposition happens *after* the vision is confirmed (WP-02's clause),
+    /// and the criteria have to be falsifiable or the block cannot be argued with.
+    #[test]
+    fn the_orch_brief_decomposes_only_after_the_vision_and_demands_real_criteria() {
+        let brief = orch_brief(&roster(), CWD);
+        assert!(brief.contains("Once the vision is confirmed, cut the work into blocks"));
+        assert!(brief.contains("Write criteria that could fail"));
+        assert!(brief.contains("\"Works well\" cannot"), "the counter-example is the teaching");
+    }
+
+    /// The worker's half: the criteria *are* done, checking comes before claiming,
+    /// and the claim is a claim. Without these three sentences the verb exists and
+    /// the board fills up with unchecked `done`s.
+    #[test]
+    fn the_worker_brief_treats_the_criteria_as_the_definition_of_done() {
+        let brief = worker_brief(PaneId::Worker(2), &roster(), CWD);
+        assert!(brief.contains("the definition of done, not a summary of it"));
+        assert!(brief.contains("Before you claim done, actually run the technical checks"));
+        assert!(
+            brief.contains("a claim you are making with your name on it"),
+            "the claim must not read as a system-verified fact",
+        );
+        assert!(brief.contains("fleet task update"), "the worker knows how to say it");
+    }
+
+    /// Both briefs name the four statuses, because a model that invents
+    /// `in-progress` gets a refusal instead of an update.
+    #[test]
+    fn both_briefs_name_every_status_the_board_accepts() {
+        for brief in [orch_brief(&roster(), CWD), worker_brief(PaneId::Worker(1), &roster(), CWD)] {
+            for status in crate::task::TASK_STATUSES {
+                assert!(brief.contains(status), "the brief never names `{status}`");
+            }
+        }
     }
 
     /// What ships must pass the check it imposes on everyone else.

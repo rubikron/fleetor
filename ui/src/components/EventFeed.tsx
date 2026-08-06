@@ -56,6 +56,22 @@ function render(event: FleetEvent): Rendered {
             }) — why: ${event.why}`,
         rail: !event.accepted,
       };
+    // A task claim (WP-05). It belongs here as well as on the board, because the
+    // board shows the *state* and this shows the moment somebody changed it —
+    // and who. Never a rail: a block being posted or claimed is the fleet
+    // working, not something wrong.
+    case "task":
+      return {
+        kind: "task",
+        tone: "gold",
+        text:
+          event.change.change === "posted"
+            ? `${event.from} posted ${event.task} · ${event.change.block.worker} · ${event.change.block.outcome}`
+            : `${event.from} → ${event.task}${
+                event.change.status ? ` · ${event.change.status}` : ""
+              }${event.change.note ? ` — ${event.change.note}` : ""}`,
+        rail: false,
+      };
     // Messages have their own view; `EventFeed` filters them out before it gets
     // here, so this arm exists only to keep the switch exhaustive.
     case "message":

@@ -12,7 +12,7 @@ import { WORKER_SLOTS } from "../fleet/types";
 const VIEW_STORAGE_KEY = "fleetor:view";
 const WORKER_STORAGE_KEY = "fleetor:selected-worker";
 
-const VIEWS: readonly View[] = ["fleet", "messages", "activity", "settings"];
+const VIEWS: readonly View[] = ["fleet", "messages", "tasks", "activity", "settings"];
 const DEFAULT_VIEW: View = "fleet";
 const DEFAULT_WORKER: number = WORKER_SLOTS[0];
 

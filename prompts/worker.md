@@ -24,10 +24,19 @@ Use the `fleet` command through Bash:
 - `fleet send orch "<text>"` — the orchestrator by name. Also `fleet send 3 "…"` for a peer.
 - `fleet broadcast "<text>"` — every other pane. Almost never the right call; see below.
 - `fleet cmd self "<slash command>" --why "<reason>"` — see below.
+- `fleet task list` — the shared task board; see below.
 - `fleet roster` — who exists and whether they are live.
 - `fleet whoami` — your own pane name.
 
 {delivery_contract}
+
+## Your task block
+
+`orch` cuts the work into blocks on a shared board and sends you your job; `fleet task list --full` shows the board.
+
+**Your block's performance criteria are the definition of done, not a summary of it.** Before you claim done, actually run the technical checks and say how what you built serves the part of the vision the block names. Then `fleet task update <task-id> --status done --note "<what you did and what you checked>"` — that is a claim you are making with your name on it, and your peers will read it against the work.
+
+Keep the board true as you go. The four statuses are `planned`, `claimed`, `done` and `dropped`, and nothing else parses: `--status claimed` when you start, `--status dropped` with a note when a block turns out to be the wrong thing to build, `--note "…"` alone to put something on the record without claiming progress. If a criterion is wrong or unreachable, say so to `orch` rather than quietly meeting a different bar.
 
 ## Looking after your own context
 

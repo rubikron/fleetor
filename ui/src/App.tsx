@@ -1,5 +1,5 @@
 // The shell: top bar, navigation spine, and a workspace that swaps between the
-// terminals, the message record and the activity log. Every view
+// terminals, the message record, the task board and the activity log. Every view
 // stays mounted and is toggled with CSS — the terminals' xterm buffers must
 // never be torn down (L7).
 //
@@ -17,6 +17,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { TopBar } from "./components/TopBar";
 import { Sidebar } from "./components/Sidebar";
 import { MessageFeed } from "./components/MessageFeed";
+import { TaskBoard } from "./components/TaskBoard";
 import { EventFeed } from "./components/EventFeed";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { TerminalGrid } from "./components/TerminalGrid";
@@ -174,6 +175,13 @@ export function App() {
 
             <div className={`stage-view ${view === "messages" ? "" : "is-hidden"}`}>
               <MessageFeed messages={fleet.messages} commands={fleet.commands} />
+            </div>
+
+            {/* The board (WP-05). Mounted like every other view — `.is-hidden`,
+                never conditional rendering (§7.5). Nothing here writes to it:
+                the fleet maintains it through `fleet task`. */}
+            <div className={`stage-view ${view === "tasks" ? "" : "is-hidden"}`}>
+              <TaskBoard tasks={fleet.tasks} />
             </div>
 
             <div className={`stage-view ${view === "activity" ? "" : "is-hidden"}`}>

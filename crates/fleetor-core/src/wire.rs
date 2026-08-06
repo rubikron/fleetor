@@ -16,6 +16,7 @@
 //! are the seed of the ticket system growing back.
 
 use crate::pane::{PaneEntry, PaneId};
+use crate::task::{TaskEntry, TaskStatus};
 use serde::{Deserialize, Serialize};
 
 pub const WIRE_VERSION: u32 = 1;
@@ -70,8 +71,50 @@ pub enum Op {
     /// — three properties a message must never have. → [`OpResult::Delivered`],
     /// or [`OpResult::Error`] when the command or the `why` does not pass.
     Cmd { to: PaneId, command: String, why: String },
+    /// `fleet task post|update|list` — the blackboard (WP-05). One op for the
+    /// whole verb family, so the wire tag is still the CLI verb.
+    ///
+    /// **This op reaches the store and never the app.** It is the only one here
+    /// that does not, which is the point: the board is a record the fleet keeps,
+    /// not a thing that makes anything happen. → [`OpResult::Recorded`] for a
+    /// post or an update, [`OpResult::Board`] for a list.
+    Task { action: TaskAction },
     /// `fleet roster` — every pane and its state. → [`OpResult::Roster`].
     Roster,
+}
+
+/// Which of the three things `fleet task` does. Nested under [`Op::Task`] rather
+/// than promoted to three ops, because the requirements spend the verb budget
+/// **once**: `task` is one word the briefs teach and one clap subcommand tree.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum TaskAction {
+    /// Put a block on the board. The fields are the vision's shape — see
+    /// [`TaskBlock`](crate::task::TaskBlock); they arrive flat because a weak
+    /// model emits flat flags far more reliably than JSON.
+    Post {
+        outcome: String,
+        technical: Vec<String>,
+        semantic: Vec<String>,
+        worker: PaneId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        instructions: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        converges_on: Option<String>,
+    },
+    /// Append a claim to a block already on the board. Anyone may; the `from` on
+    /// the resulting event is the accountability.
+    Update {
+        task: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<TaskStatus>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
+    /// Read the board back, replayed from the log.
+    List,
 }
 
 /// The server→client reply to one [`Request`]. `id` echoes the request's id.
@@ -101,6 +144,17 @@ pub enum OpResult {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         detail: Option<String>,
     },
+    /// A task claim reached the log (`task post`, `task update`).
+    ///
+    /// Deliberately not [`OpResult::Delivered`]: nothing was delivered to a pane
+    /// and `accepted` would be a claim about a pty that was never written to.
+    /// What happened is exactly that a record was appended, and the word says so.
+    ///
+    /// `task_id` rather than `id`, for the reason `Delivered` uses `msg_id`:
+    /// [`Response`] flattens this enum next to its own `id`.
+    Recorded { task_id: String },
+    /// The board, replayed from the event log (`task list`).
+    Board { tasks: Vec<TaskEntry> },
     /// Every pane and its state (`Roster`).
     Roster { panes: Vec<PaneEntry> },
     /// The op could not be served (unknown pane, nothing to reply to, no app).
@@ -123,6 +177,32 @@ impl Response {
 mod tests {
     use super::*;
     use crate::pane::{PaneEntry, PaneId, PaneState};
+    use crate::task::{TaskBlock, TaskEntry, TaskNote};
+
+    fn sample_entry() -> TaskEntry {
+        TaskEntry {
+            id: "task-1-0".into(),
+            block: TaskBlock::new(
+                "the parser accepts nested groups",
+                &["cargo test -p parser".to_string()],
+                &["one grammar".to_string()],
+                PaneId::Worker(2),
+                Some("start from the tokenizer"),
+                None,
+                Some("task-1-9"),
+            )
+            .unwrap(),
+            posted_by: PaneId::Orch,
+            posted_at: 1_730_413_200_123,
+            status: TaskStatus::Claimed,
+            updates: vec![TaskNote {
+                from: PaneId::Worker(2),
+                at: 1_730_413_300_000,
+                status: Some(TaskStatus::Claimed),
+                note: Some("on it".into()),
+            }],
+        }
+    }
 
     /// Both `Request` and `Response` `#[serde(flatten)]` their payload enum into
     /// the same JSON object as their own `id`, so any variant field also called
@@ -140,6 +220,25 @@ mod tests {
                 command: "/compact keep the parser".into(),
                 why: "finished task block 3".into(),
             },
+            Op::Task {
+                action: TaskAction::Post {
+                    outcome: "the parser accepts nested groups".into(),
+                    technical: vec!["cargo test -p parser".into()],
+                    semantic: vec!["one grammar".into()],
+                    worker: PaneId::Worker(2),
+                    instructions: Some("start from the tokenizer".into()),
+                    parent: Some("task-1-0".into()),
+                    converges_on: None,
+                },
+            },
+            Op::Task {
+                action: TaskAction::Update {
+                    task: "task-1-0".into(),
+                    status: Some(TaskStatus::Done),
+                    note: Some("cargo test passes".into()),
+                },
+            },
+            Op::Task { action: TaskAction::List },
             Op::Roster,
         ];
         for op in requests {
@@ -161,6 +260,9 @@ mod tests {
                     PaneEntry::new(PaneId::Worker(1), PaneState::Dead),
                 ],
             },
+            OpResult::Recorded { task_id: "task-1-0".into() },
+            OpResult::Board { tasks: vec![sample_entry()] },
+            OpResult::Board { tasks: vec![] },
         ];
         for result in results {
             let resp = Response::new("req-1", result);
@@ -182,6 +284,15 @@ mod tests {
         assert_eq!(
             tag(Op::Cmd { to: PaneId::Orch, command: "/clear".into(), why: "y".into() }),
             "cmd"
+        );
+        // One op for `post`, `update` and `list` — the verb budget is spent once,
+        // so the tag is the verb the briefs teach and the action rides inside it.
+        assert_eq!(tag(Op::Task { action: TaskAction::List }), "task");
+        assert_eq!(
+            tag(Op::Task {
+                action: TaskAction::Update { task: "t".into(), status: None, note: Some("n".into()) }
+            }),
+            "task"
         );
         assert_eq!(tag(Op::Roster), "roster");
     }

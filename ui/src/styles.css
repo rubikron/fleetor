@@ -1010,6 +1010,115 @@ body,
   margin-right: 0.3125rem;
 }
 
+/* the task board (WP-05) — the third sibling of the message record and the
+   activity log, and the one that shows a *state* rather than a timeline.
+   Deliberately quiet: no progress bars, no ticks, no colour-only status. A
+   status pill always carries its word, because what it reports is a claim
+   somebody made and not a verdict this app can check. */
+.feed--tasks {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.625rem 0.75rem;
+}
+.task {
+  background: var(--bg-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  padding: 0.5rem 0.6875rem;
+}
+/* one level of indent for a block cut from the one above it — enough to read a
+   decomposition without this view having to walk (and validate) a graph. */
+.task--nested { margin-left: 1.25rem; border-left-width: 2px; }
+.task__head {
+  display: flex;
+  align-items: center;
+  gap: 0.4375rem;
+  font-size: var(--t-small);
+  flex-wrap: wrap;
+}
+.task__id { color: var(--fg-dim); }
+.task__worker { color: var(--fg); }
+.task__posted { font-size: var(--t-label); color: var(--fg-mute); }
+.task__status {
+  font-size: var(--t-label);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-radius: var(--radius-sm);
+  padding: 0 0.3125rem;
+  border: 1px solid currentColor;
+}
+.task__status--planned { color: var(--fg-mute); }
+.task__status--claimed { color: var(--gold); }
+/* green for a `done` *claim*, never a tick and never a bar — the word is the
+   whole of what is being reported, and WP-06's review is what verifies it. */
+.task__status--done { color: var(--green); }
+.task__status--dropped { color: var(--fg-mute); text-decoration: line-through; }
+/* agent-authored prose, like .msg__body — the same deliberate exception to the
+   all-mono shell. */
+.task__outcome {
+  margin: 0.4375rem 0 0;
+  font-family: var(--sans);
+  font-size: var(--t-small);
+  line-height: 1.55;
+  color: var(--fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.task__crits { margin-top: 0.4375rem; display: flex; gap: 0.5rem; align-items: baseline; }
+.task__crits-label {
+  font-family: var(--mono);
+  font-size: var(--t-label);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--gold);
+  flex: 0 0 3.5rem;
+}
+.task__crit-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 0.125rem; }
+/* mono: a technical criterion is usually a command, and a command has to be
+   readable as one. */
+.task__crit {
+  font-family: var(--mono);
+  font-size: var(--t-small);
+  line-height: 1.5;
+  color: var(--fg-dim);
+  word-break: break-word;
+}
+.task__instructions {
+  margin: 0.4375rem 0 0;
+  font-family: var(--sans);
+  font-size: var(--t-small);
+  line-height: 1.5;
+  color: var(--fg-mute);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.task__links { margin-top: 0.4375rem; display: flex; flex-wrap: wrap; gap: 0.375rem; }
+.task__link {
+  font-size: var(--t-label);
+  color: var(--fg-mute);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  padding: 0 0.3125rem;
+}
+.task__trail {
+  margin-top: 0.4375rem;
+  padding-top: 0.375rem;
+  border-top: 1px solid var(--border-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.task__claim { display: flex; align-items: baseline; gap: 0.375rem; flex-wrap: wrap; }
+.task__claim-from { font-size: var(--t-label); color: var(--fg-dim); }
+.task__claim-note {
+  font-family: var(--sans);
+  font-size: var(--t-label);
+  line-height: 1.5;
+  color: var(--fg-mute);
+  word-break: break-word;
+}
+
 /* activity log */
 .events-view {
   flex: 1 1 auto;

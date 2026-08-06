@@ -1,8 +1,17 @@
 # WP-05 — Task blocks: the blackboard record + Tasks view
 
-status: not-started size: L
+status: **landed** (D-047) size: L
 depends-on: 01, 02 (soft — the vision language the criteria reference) blocks: 06
-brief-cost: +~150 tokens across both prompt files (the task-block protocol)
+brief-cost: budgeted +~150 tokens across both prompt files; **spent +318 orch / +248 worker** (measured, D-047)
+
+**As landed.** `fleet task post|update|list` — one verb, one `Op::Task`, one new
+`FleetEvent::Task`, no migration. `Hub::task` is the only arm that is not `async`
+and never touches the app: the board is a fold over the event log
+(`fleetor_core::task::board`), with no `tasks` table and no cached state. The
+tripwire list held — nothing on it was built. The delivery-independence pin is
+`crates/fleetor-server/tests/task_board.rs::a_send_is_byte_identical_whether_the_board_is_empty_or_full`,
+and the message path's `git diff` is literally empty (`message.rs`, `command.rs`,
+`deliver.rs`, `pty.rs`, `pane_messaging.rs`, `panes.rs` — zero changes).
 
 ## Outcome
 

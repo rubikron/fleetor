@@ -15,13 +15,20 @@
 //! second, so the feed records the real outcome and never an intention. That
 //! ordering is the whole reason the app seam is request/response rather than
 //! fire-and-forget.
+//!
+//! **One arm does not follow that pattern, and it is the interesting one.**
+//! [`Hub::task`] (WP-05) never asks the app anything: `fleet task` only appends
+//! to and replays the log. A board that reached a terminal would be a dispatcher,
+//! and a delivery that read the board would be the `Assign` op D-030 deleted.
+//! Neither happens, in either direction.
 
 use anyhow::{Context, Result};
 use fleetor_core::command::Command;
 use fleetor_core::event::FleetEvent;
 use fleetor_core::message::Message;
 use fleetor_core::pane::{PaneEntry, PaneId};
-use fleetor_core::wire::{Hello, Op, OpResult, Request, Response};
+use fleetor_core::task::{self, TaskBlock, TaskUpdate};
+use fleetor_core::wire::{Hello, Op, OpResult, Request, Response, TaskAction};
 use fleetor_core::{ids, Store};
 use fleetor_ipc::{Conn, Transport};
 use std::collections::HashMap;
@@ -148,7 +155,103 @@ impl Hub {
             Op::Broadcast { text } => self.broadcast(from, text).await,
             Op::Reply { text } => self.reply(from, text).await,
             Op::Cmd { to, command, why } => self.cmd(from, to, command, why).await,
+            Op::Task { action } => self.task(from, action),
             Op::Roster => self.roster().await,
+        }
+    }
+
+    /// `fleet task post|update|list` — the blackboard (WP-05).
+    ///
+    /// **Read the signature first: this arm is not `async` and never touches
+    /// `self.app`.** Every other op here asks the app to do something to a
+    /// terminal. This one only writes to, and reads from, the log. That is the
+    /// whole of what makes the board a diary rather than a dispatcher, and it is
+    /// checkable rather than asserted — `crates/fleetor-server/tests/task_board.rs`
+    /// pins that ten posted blocks send the app exactly zero commands and leave a
+    /// `fleet send` byte-identical.
+    ///
+    /// Two asymmetries with the message path, both deliberate:
+    ///
+    ///  - **A failed append fails the op.** For a message the store is a record
+    ///    of something that already happened, so a logging failure is reported to
+    ///    stderr and the send still succeeds. For a task the store *is* the
+    ///    deliverable: if the append fails, nothing happened at all, and telling
+    ///    the poster otherwise would put a block on a board that does not have it.
+    ///  - **An update names a block that must already be there.** Referential
+    ///    validation, the same class as "no pane worker-9 is running" — not a
+    ///    gate. It constrains nothing about *which* status may follow which (any
+    ///    may follow any, `task.rs`), only that a claim has something to be a
+    ///    claim about. A typo'd id would otherwise vanish into the log unread.
+    fn task(&self, from: PaneId, action: TaskAction) -> OpResult {
+        match action {
+            TaskAction::Post {
+                outcome,
+                technical,
+                semantic,
+                worker,
+                instructions,
+                parent,
+                converges_on,
+            } => {
+                let block = match TaskBlock::new(
+                    &outcome,
+                    &technical,
+                    &semantic,
+                    worker,
+                    instructions.as_deref(),
+                    parent.as_deref(),
+                    converges_on.as_deref(),
+                ) {
+                    Ok(block) => block,
+                    Err(message) => return OpResult::Error { message },
+                };
+                let task_id = ids::new_id("task");
+                match self.store.append_event(&block.into_event(&task_id, from)) {
+                    Ok(_) => OpResult::Recorded { task_id },
+                    Err(e) => OpResult::Error {
+                        message: format!("the board could not be written to, so nothing was posted: {e}"),
+                    },
+                }
+            }
+            TaskAction::Update { task, status, note } => {
+                let update = match TaskUpdate::new(&task, status, note.as_deref()) {
+                    Ok(update) => update,
+                    Err(message) => return OpResult::Error { message },
+                };
+                let tasks = match self.board() {
+                    Ok(tasks) => tasks,
+                    Err(e) => return e,
+                };
+                if !tasks.iter().any(|entry| entry.id == update.task) {
+                    return OpResult::Error {
+                        message: format!(
+                            "no task {:?} is on the board — `fleet task list` shows the ids",
+                            update.task
+                        ),
+                    };
+                }
+                let task_id = update.task.clone();
+                match self.store.append_event(&update.into_event(from)) {
+                    Ok(_) => OpResult::Recorded { task_id },
+                    Err(e) => OpResult::Error {
+                        message: format!("the board could not be written to, so nothing changed: {e}"),
+                    },
+                }
+            }
+            TaskAction::List => match self.board() {
+                Ok(tasks) => OpResult::Board { tasks },
+                Err(e) => e,
+            },
+        }
+    }
+
+    /// The board, folded out of the log. There is no cached copy and no second
+    /// table: two hubs over one store compute the same board, and a restart
+    /// forgets nothing.
+    fn board(&self) -> Result<Vec<fleetor_core::task::TaskEntry>, OpResult> {
+        match self.store.events_since(0) {
+            Ok(log) => Ok(task::board(log.iter().map(|(_, event)| event))),
+            Err(e) => Err(OpResult::Error { message: format!("the board could not be read: {e}") }),
         }
     }
 
