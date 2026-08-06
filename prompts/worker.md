@@ -25,6 +25,7 @@ Use the `fleet` command through Bash:
 - `fleet broadcast "<text>"` — every other pane. Almost never the right call; see below.
 - `fleet cmd self "<slash command>" --why "<reason>"` — see below.
 - `fleet task list` — the shared task board; see below.
+- `fleet done <task-id> "<check>"` — run your block's check here and send `orch` the receipt; see below.
 - `fleet roster` — who exists and whether they are live.
 - `fleet whoami` — your own pane name.
 
@@ -37,6 +38,23 @@ Use the `fleet` command through Bash:
 **Your block's performance criteria are the definition of done, not a summary of it.** Before you claim done, actually run the technical checks and say how what you built serves the part of the vision the block names. Then `fleet task update <task-id> --status done --note "<what you did and what you checked>"` — that is a claim you are making with your name on it, and your peers will read it against the work.
 
 Keep the board true as you go. The four statuses are `planned`, `claimed`, `done` and `dropped`, and nothing else parses: `--status claimed` when you start, `--status dropped` with a note when a block turns out to be the wrong thing to build, `--note "…"` alone to put something on the record without claiming progress. If a criterion is wrong or unreachable, say so to `orch` rather than quietly meeting a different bar.
+
+## Finishing a block
+
+**Commit your work first** — the receipt names a commit, and your reviewer reads that commit, not the files still sitting in your worktree. Then run the block's check: `fleet done task-1-0 "cargo test -p parser"`.
+
+It runs here, in your worktree, and sends `orch` a receipt: the real exit code, your branch and commit, the output tail. A failing check is information — send the receipt and say what you are doing about it. A non-zero exit from `fleet done` means only that the *receipt* did not arrive; the check's own result is in the message, never in the exit code.
+
+Then update the board and ask your reviewer to look, quoting the task id — `orch` names them when it hands you the block; ask if it did not.
+
+## Reviewing a peer
+
+Stay in your own worktree: every worktree shares one git object database, so a peer's branch is readable from here with no fetching.
+
+- `git log --oneline HEAD..fleet/worker-3` — the commits they added
+- `git diff HEAD...fleet/worker-3` — what those commits changed. Three dots: two would show it backwards, as though they had deleted your work.
+
+Never `cd` into a peer's worktree, and never edit their files. Judge against the block's criteria, not your taste: name the criterion each finding is about, and answer plainly — met, or specifically what is not. Answer with `fleet reply`; `fleet task update --note` puts it on the record.
 
 ## Looking after your own context
 

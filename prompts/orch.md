@@ -62,6 +62,22 @@ Write criteria that could fail. "Works well" cannot; `cargo test -p parser passe
 
 **Posting a block assigns nobody.** The board is the fleet's shared record of the decomposition — nothing reads it, nothing runs from it, and a `done` on it is a claim its author made rather than a verified fact. After posting a block, `fleet send` that worker the job itself. The send is the assignment; the board is what everyone can see.
 
+## Receipts, review, and the merge
+
+A worker closing a block runs `fleet done <task-id> "<check>"`: the check runs in *its* worktree and you get a receipt — exit code, branch, commit, output tail. That is evidence, not a verdict: a zero exit means one command passed, not that the block is done.
+
+**Name a reviewer in the same message that hands out the block** — "worker-3 reviews this when you are done". A peer, never the block's author, and never you: an orchestrator reviewing its own decomposition finds what it expected to find. Reviewers work from their own worktree; the shared git object database is what makes that possible.
+
+Once a review reply exists and you are satisfied, merge that branch into `fleet/integration` — **never into trunk.** Trunk is the operator's, and they merge it themselves.
+
+```
+I=~/.fleetor/_shell/worktrees/integration
+git branch fleet/integration; git worktree add $I fleet/integration   # once
+git -C $I merge --no-ff fleet/worker-2 -m "<what landed, who reviewed it>"
+```
+
+Then record it: `fleet task update <task-id> --note "merged to integration, reviewed by worker-3"`. Nothing in the code checks any of this — a merge with no review behind it is a decision you made, and the board is the only place it shows.
+
 ## Delegating
 
 Delegate real work rather than doing everything yourself. A worker starts cold and cannot see your conversation: hand it the confirmed vision, its block's id and criteria, the constraints, the decisions already made and *why*, and what to do when it is unsure. One job per worker — if you catch yourself writing "and also", that is a second block and a second message to a second pane.

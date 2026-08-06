@@ -39,7 +39,8 @@ use crate::pane::PaneId;
 
 /// Every `fleet` verb, in the order the briefs introduce them. The Phase-3 CLI
 /// asserts its clap subcommands match this list exactly.
-pub const VERBS: [&str; 7] = ["send", "broadcast", "reply", "cmd", "task", "roster", "whoami"];
+pub const VERBS: [&str; 8] =
+    ["send", "broadcast", "reply", "cmd", "task", "done", "roster", "whoami"];
 
 /// The baked-in orchestrator template. Used when the operator has not put their
 /// own `orch.md` in `~/.fleetor/prompts/`, and as the fallback when the one they
@@ -209,7 +210,7 @@ mod tests {
     /// Asserted against literals, not `VERBS`, so this test is the tripwire.
     #[test]
     fn both_briefs_teach_every_cli_verb() {
-        let literals = ["send", "broadcast", "reply", "cmd", "task", "roster", "whoami"];
+        let literals = ["send", "broadcast", "reply", "cmd", "task", "done", "roster", "whoami"];
         assert_eq!(literals.to_vec(), VERBS.to_vec(), "VERBS drifted from the verbs the briefs teach");
         for brief in [orch_brief(&roster(), CWD), worker_brief(PaneId::Worker(1), &roster(), CWD)] {
             for verb in literals {
@@ -436,7 +437,7 @@ mod tests {
     #[test]
     fn a_rewritten_template_keeps_the_clauses_it_cannot_afford_to_lose() {
         let rewritten = "# hi {me} in {cwd}\n\nyour peers: {peers}. use fleet send / fleet broadcast / \
-             fleet reply / fleet cmd / fleet task / fleet roster / fleet whoami.\n\n\
+             fleet reply / fleet cmd / fleet task / fleet done / fleet roster / fleet whoami.\n\n\
              {delivery_contract}\n\n{broadcast_rule}\n\n{scaffolding}\n";
         validate_worker(rewritten).expect("a template with every placeholder is usable");
 
@@ -475,8 +476,8 @@ mod tests {
     #[test]
     fn a_template_that_forgets_a_verb_is_refused() {
         let missing_whoami = "# {me} in {cwd}\n\npeers: {peers}. fleet send / fleet broadcast / \
-             fleet reply / fleet cmd / fleet task / fleet roster.\n\n{delivery_contract}\n\n\
-             {broadcast_rule}\n\n{scaffolding}\n";
+             fleet reply / fleet cmd / fleet task / fleet done / fleet roster.\n\n\
+             {delivery_contract}\n\n{broadcast_rule}\n\n{scaffolding}\n";
         let why = validate_worker(missing_whoami).expect_err("must not be usable");
         assert!(why.contains("fleet whoami"), "the refusal names the missing verb: {why}");
     }
@@ -585,6 +586,110 @@ mod tests {
                 assert!(brief.contains(status), "the brief never names `{status}`");
             }
         }
+    }
+
+    // --- receipts, review and the merge (WP-06) ---------------------------------
+
+    /// The delivery contract, restated where a new verb could quietly break it.
+    /// `fleet done` is the only verb that runs something, so it is the only place
+    /// a model could reasonably assume the exit code describes the *check*. If it
+    /// did, a failing check would read as "not delivered" and the worker would
+    /// resend a receipt that already arrived. Pinned as a literal, because a
+    /// rewrite that dropped the sentence would still render and still validate.
+    #[test]
+    fn the_worker_brief_separates_the_receipt_from_the_checks_own_result() {
+        let brief = worker_brief(PaneId::Worker(2), &roster(), CWD);
+        assert!(brief.contains("fleet done"), "the verb itself");
+        assert!(brief.contains("means only that the *receipt* did not arrive"));
+        assert!(brief.contains("never in the exit code"), "the consequence, not just the rule");
+        assert!(
+            brief.contains("A failing check is information"),
+            "a worker that hides a red check is the failure this verb exists to prevent",
+        );
+    }
+
+    /// The receipt names a commit and the reviewer reads that commit. A worker who
+    /// reports before committing sends its reviewer to look at code that does not
+    /// contain the work — an honest review of the wrong thing.
+    #[test]
+    fn the_worker_brief_says_to_commit_before_reporting() {
+        let brief = worker_brief(PaneId::Worker(2), &roster(), CWD);
+        assert!(brief.contains("Commit your work first"));
+        assert!(brief.contains("not the files still sitting in your worktree"));
+    }
+
+    /// Review happens from the reviewer's **own** worktree, over the shared object
+    /// database (D-048). Two things are pinned as literals here and both are
+    /// load-bearing: the three-dot diff, because the two-dot form a model would
+    /// reach for first renders a peer's additions as deletions; and the Tier-1.7
+    /// boundary, because `cd`-ing into a peer's checkout is the security
+    /// escalation this arrangement exists to make unnecessary.
+    #[test]
+    fn the_worker_brief_reviews_from_its_own_worktree_with_the_right_diff() {
+        let brief = worker_brief(PaneId::Worker(2), &roster(), CWD);
+        assert!(brief.contains("Stay in your own worktree"));
+        assert!(brief.contains("shares one git object database"), "why it works with no fetch");
+        assert!(brief.contains("git diff HEAD...fleet/worker-3"), "the three-dot form");
+        assert!(brief.contains("git log --oneline HEAD..fleet/worker-3"));
+        assert!(
+            brief.contains("two would show it backwards"),
+            "the trap has to be named, or a reviewer reads a peer's work as a deletion",
+        );
+        assert!(brief.contains("Never `cd` into a peer's worktree"), "Tier 1.7");
+    }
+
+    /// A review answers the block's criteria. Without this the verb produces
+    /// taste, and taste from a peer is the thing the criteria were written to
+    /// replace.
+    #[test]
+    fn the_worker_brief_reviews_against_the_criteria_rather_than_taste() {
+        let brief = worker_brief(PaneId::Worker(3), &roster(), CWD);
+        assert!(brief.contains("not your taste"));
+        assert!(brief.contains("name the criterion each finding is about"));
+    }
+
+    /// Tier 1.1, in the one place the fleet now has a reason to reach for trunk.
+    /// Pinned as a literal for the same reason the vision clause is: "merge the
+    /// reviewed branch" softened by one word becomes a fleet that merges to main.
+    #[test]
+    fn the_orch_brief_merges_to_integration_and_never_to_trunk() {
+        let brief = orch_brief(&roster(), CWD);
+        assert!(brief.contains("fleet/integration"));
+        assert!(brief.contains("**never into trunk.**"));
+        assert!(
+            brief.contains("Trunk is the operator's, and they merge it themselves"),
+            "the rule needs whose it is, or it reads as a temporary restriction",
+        );
+        assert!(brief.contains("git worktree add"), "orch must not switch the operator's checkout");
+    }
+
+    /// The reviewer is named at assignment time, by orch, in the message that is
+    /// already the assignment — **not** by a field on the task block (D-049). The
+    /// brief is therefore the only place the duty is created, so this is the test
+    /// that says it exists at all.
+    #[test]
+    fn the_orch_brief_names_a_reviewer_who_is_neither_the_author_nor_itself() {
+        let brief = orch_brief(&roster(), CWD);
+        assert!(brief.contains("Name a reviewer in the same message that hands out the block"));
+        assert!(brief.contains("never the block's author, and never you"));
+        assert!(
+            brief.contains("finds what it expected to find"),
+            "the reason has to travel with the rule",
+        );
+    }
+
+    /// A receipt is evidence, and orch must not read a zero exit as a finished
+    /// block — that would put the verification back in the machine, which is
+    /// exactly what "no hub-side verification" rules out.
+    #[test]
+    fn the_orch_brief_treats_a_receipt_as_evidence_rather_than_a_verdict() {
+        let brief = orch_brief(&roster(), CWD);
+        assert!(brief.contains("evidence, not a verdict"));
+        assert!(brief.contains("not that the block is done"));
+        assert!(
+            brief.contains("Nothing in the code checks any of this"),
+            "the merge rule is a prompt rule, and has to say so",
+        );
     }
 
     /// What ships must pass the check it imposes on everyone else.

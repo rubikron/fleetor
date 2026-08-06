@@ -28,6 +28,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+mod done;
+
 /// Set by the spawn path on every pane. Without it the hub cannot attribute a
 /// message, so every verb but `whoami` refuses rather than guessing.
 const ENV_PANE: &str = "FLEETOR_PANE";
@@ -98,6 +100,26 @@ enum Command {
     Task {
         #[command(subcommand)]
         action: TaskCmd,
+    },
+    /// Close a block: run its check here, then send `orch` the receipt (WP-06).
+    ///
+    /// The only verb that runs something. It runs it **in this process**, in the
+    /// pane's own worktree — the hub never executes anything and never sees the
+    /// command. What crosses the socket is an ordinary [`Op::Send`] to `orch`.
+    ///
+    /// **This verb's exit code still means delivery.** The check's own exit code
+    /// travels in the message body, which is where a reader can act on it. See
+    /// `done.rs` for why conflating the two would break the one promise both
+    /// briefs make verbatim.
+    Done {
+        /// The block this is a receipt for — `fleet task list` shows the ids.
+        #[arg(value_name = "TASK-ID")]
+        task: String,
+        /// The check to run here: whatever the block's technical criteria say.
+        /// `trailing_var_arg` for the reason the message verbs use it — a model
+        /// that forgets the quotes must not lose half its command.
+        #[arg(trailing_var_arg = true, required = true, value_name = "CHECK")]
+        check: Vec<String>,
     },
     /// Who exists and whether they are live.
     Roster,
@@ -201,6 +223,10 @@ fn run() -> Result<ExitCode> {
             Op::Cmd { to: target(&pane)?, command: join(command), why }
         }
         Command::Task { action } => Op::Task { action: task_action(action)? },
+        // The check runs *before* the connection is opened — a receipt describes
+        // something that already happened, and a socket held open for the length
+        // of a test suite is a connection doing nothing but waiting.
+        Command::Done { task, check } => done::op(me()?, &task, &join(check))?,
         Command::Roster => Op::Roster,
         Command::Whoami => unreachable!("handled above"),
     };
@@ -798,6 +824,64 @@ mod tests {
         assert!(report(OpResult::Recorded { task_id: "task-1-0".into() }, false));
         assert!(report(OpResult::Board { tasks: vec![entry("task-1-0", None, 2)] }, true));
         assert!(report(OpResult::Board { tasks: vec![] }, false), "an empty board is not a failure");
+    }
+
+    // --- the receipt (WP-06) ----------------------------------------------------
+
+    /// A receipt is about a block and reports a command. Neither half is optional:
+    /// a receipt with no check ran nothing, and one with no block is evidence
+    /// about nothing.
+    #[test]
+    fn a_receipt_without_a_block_or_a_check_is_refused_by_the_parser() {
+        assert!(Cli::try_parse_from(["fleet", "done", "task-1-0", "cargo", "test"]).is_ok());
+        assert!(Cli::try_parse_from(["fleet", "done", "task-1-0"]).is_err(), "no check");
+        assert!(Cli::try_parse_from(["fleet", "done"]).is_err(), "no block");
+    }
+
+    /// The same rejoin contract the message verbs have: a model that writes the
+    /// check unquoted must not have it truncated at the first space. The flags
+    /// inside a real criterion (`-p parser`, `--noEmit`) have to survive too, which
+    /// is what `trailing_var_arg` buys over `num_args(1..)`.
+    #[test]
+    fn the_check_command_survives_however_the_model_quotes_it() {
+        for argv in [
+            vec!["fleet", "done", "task-1-0", "cargo test -p parser --quiet"],
+            vec!["fleet", "done", "task-1-0", "cargo", "test", "-p", "parser", "--quiet"],
+        ] {
+            let cli = Cli::try_parse_from(&argv).unwrap_or_else(|e| panic!("{argv:?}: {e}"));
+            let Command::Done { task, check } = cli.command else { panic!("expected done") };
+            assert_eq!(task, "task-1-0");
+            assert_eq!(join(check), "cargo test -p parser --quiet", "{argv:?}");
+        }
+    }
+
+    /// **The delivery contract, unmoved.** `fleet done` runs a check that may fail,
+    /// and the CLI's exit code must still describe only whether the receipt
+    /// reached a live terminal. `report` is the single place that decides, and
+    /// `done` reaches it through the ordinary `Op::Send` path — so a failing check
+    /// with a delivered receipt is exit 0, and a passing check whose receipt was
+    /// refused is exit 1.
+    #[test]
+    fn a_receipts_exit_code_describes_delivery_and_never_the_check() {
+        let failing = done::op(PaneId::Worker(2), "task-1-0", "exit 9").expect("a receipt");
+        let Op::Send { text, .. } = failing else { panic!("expected a send") };
+        assert!(text.contains("· exit 9"), "the check's failure is in the body: {text}");
+
+        assert!(
+            report(OpResult::Delivered { msg_id: "msg-9".into(), accepted: true, detail: None }, false),
+            "a delivered receipt exits zero however the check went",
+        );
+        assert!(
+            !report(
+                OpResult::Delivered {
+                    msg_id: "msg-9".into(),
+                    accepted: false,
+                    detail: Some("orch is dead".into())
+                },
+                false
+            ),
+            "an undelivered receipt exits non-zero however the check went",
+        );
     }
 
     /// One line per pane, in the order the roster arrived — the CLI must not

@@ -338,18 +338,37 @@ fn note_spawn_estimate(
 /// a repo at all, and a fleet that refuses to start because of a worktree is worse
 /// than one sharing a checkout. The fallback is announced, because "who else is
 /// editing this file" is a very different question in the two arrangements.
+///
+/// **WP-06 raised what the fallback costs, so it raised the notice with it.** The
+/// worktrees are not only an editing convenience: peer review is `git diff
+/// fleet/worker-N` from a reviewer's *own* worktree, over the object database all
+/// of them share (D-048). In the shared checkout there are no per-worker branches
+/// and there is one working tree, so a reviewer asked to look at a peer's branch
+/// is looking at the same files it is editing itself — one checkout reported five
+/// times. The receipts still work; the review step does not, and the operator has
+/// to know that before they trust a `done`.
 fn worker_cwd(store: &Arc<dyn Store>, target: &Path, slot: u8) -> PathBuf {
     match ensure_worktree(target, slot) {
         Ok(dir) => dir,
         Err(e) => {
-            note(
-                store,
-                NoticeLevel::Warn,
-                &format!("worker-{slot}: {e} — sharing the target checkout instead"),
-            );
+            note(store, NoticeLevel::Warn, &shared_checkout_warning(slot, &e, target));
             target.to_path_buf()
         }
     }
+}
+
+/// What the operator is told when a worker ends up in the shared checkout. Kept
+/// separate from [`worker_cwd`] so the wording is pinned by a test — this is the
+/// one notice whose absence would let a fleet look like it is reviewing itself.
+fn shared_checkout_warning(slot: u8, why: &str, target: &Path) -> String {
+    format!(
+        "worker-{slot}: {why} — it will share the checkout at {}. \
+         Peer review is degraded there: the workers have no branches of their own, \
+         so `git diff fleet/worker-N` has nothing to compare and a reviewer sees the \
+         same working tree it is editing. Receipts still report honestly; treat a \
+         reviewed `done` as unreviewed until the target is a git repository.",
+        target.display()
+    )
 }
 
 fn ensure_worktree(target: &Path, slot: u8) -> Result<PathBuf, String> {
@@ -801,6 +820,25 @@ mod tests {
 
         shutdown.notify_one();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The shared-checkout fallback is the one arrangement where a `done` can be
+    /// reviewed by somebody looking at their own edits (WP-06). The notice has to
+    /// say that in words, not only that a worktree failed — an operator reading
+    /// "sharing the target checkout instead" has no way to know the review step
+    /// stopped meaning anything.
+    #[test]
+    fn the_shared_checkout_warning_says_review_is_what_breaks() {
+        let text = shared_checkout_warning(2, "git worktree add failed: not a repository", Path::new("/tmp/target"));
+        assert!(text.contains("worker-2"), "{text}");
+        assert!(text.contains("not a repository"), "the cause survives: {text}");
+        assert!(text.contains("/tmp/target"), "and where it landed: {text}");
+        assert!(text.contains("Peer review is degraded"), "{text}");
+        assert!(text.contains("git diff fleet/worker-N"), "names the move that stops working: {text}");
+        assert!(
+            text.contains("treat a reviewed `done` as unreviewed"),
+            "the operator needs what to do about it, not only what happened: {text}",
+        );
     }
 
     /// A picked target must land in the config without costing the operator
