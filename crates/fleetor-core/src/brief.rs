@@ -459,23 +459,38 @@ mod tests {
         );
     }
 
-    /// The tenets are distilled, not pasted. The source essay's quotations and
-    /// framing are exactly what a brief cannot afford — this asserts the operative
-    /// lines arrived and the essay did not come with them.
+    /// The tenets are the operator's essay, carried as they wrote it (operator
+    /// decision 2026-08-06, D-056 — it reversed WP-02's distillation on the
+    /// grounds that the condensed version undermined it). Only the source
+    /// newsletter's plugs were dropped: sentences pointing orch at a PDF,
+    /// podcast or video it cannot reach.
     #[test]
-    fn the_orch_brief_distills_the_tenets_rather_than_quoting_them() {
+    fn the_orch_brief_carries_the_tenets_essay_as_the_operator_wrote_it() {
         let brief = orch_brief(&roster(), CWD);
-        for operative in [
-            "Write the vision down",
-            "A vision is as much what it is not",
-            "The vision is the filter",
+        for kept in [
+            "nobody drifts to a desired destination",
+            "prune toward vision",
+            "Write the vision and make it plain",
             "More than one vision is division",
-            "ME → WE",
+            "If your vision ends with you, it was never big enough",
+            "Make the workers want to be better",
         ] {
-            assert!(brief.contains(operative), "the tenets lost `{operative}`");
+            assert!(brief.contains(kept), "the essay lost `{kept}`");
         }
-        for essay in ["Habakkuk", "Wright Brothers", "Steve Jobs", "Michael Hyatt", "podcast"] {
-            assert!(!brief.contains(essay), "the essay's framing leaked into the brief: {essay}");
+        for plug in ["podcast", "YouTube", "Vision Roadmap PDF"] {
+            assert!(!brief.contains(plug), "a source plug survived: {plug}");
+        }
+    }
+
+    /// The three attitudes bind the whole fleet — the original spec said "amongst
+    /// the Orchestrator and Worker", and until D-056 orch never got them.
+    #[test]
+    fn the_orch_brief_carries_the_three_attitudes() {
+        let brief = orch_brief(&roster(), CWD);
+        for attitude in
+            ["How can I be better?", "meaningful impact", "If I'm confused, I ask for help"]
+        {
+            assert!(brief.contains(attitude), "orch lost the attitude `{attitude}`");
         }
     }
 
