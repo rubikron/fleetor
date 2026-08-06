@@ -29,6 +29,11 @@ exemption from it — your first question is about purpose, never
 implementation."* Cost +46 tokens (orch 2,645 → 2,691, cap 2,800 — fits).
 Pinned-literal tests and validation green. D-055.
 
-**Re-test.** Restart the fleet (the prompt is compiled in via `include_str!`,
-so the dev rebuild must run), paste the same probe, expect a purpose
-question.
+**Re-test: held.** Same probe after the rebuild. Orch investigated first
+(read the repo, found no version string exists), then asked the purpose
+question — "What is the --version flag for — standalone, or the first step
+toward actually releasing logstat?" — with the fork's readings laid out, as
+clause 1 asks. Unprompted bonus: it stated plainly that the task does not
+need the fleet ("splitting it across four workers would cost more in
+coordination than doing it would") — tenet-2 pruning and the integrity
+clause firing without a probe aimed at them. Finding closed.
