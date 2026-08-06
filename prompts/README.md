@@ -39,7 +39,7 @@ Anything else in braces is left alone — these are markdown files, not format s
 
 `delivery-contract.md`, `broadcast-rule.md`, `scaffolding.md` and `vision-tenets.md` are composed *into* the briefs at a placeholder rather than written out in them, and a template that drops its placeholder is **refused** rather than rendered.
 
-All three are load-bearing:
+All four are load-bearing:
 
 - The **delivery contract** is the only reason a model can tell a failed send from a good one. It reads its own Bash exit code and self-corrects. A pane without it silently believes every message arrived.
 - The **broadcast rule** is the only mitigation left for broadcast amplification. The hub-side rate limiter was deliberately removed (`decisions.md` D-031) on the grounds that nothing in the delivery path may be able to refuse a message — which is only safe while this clause holds. Five peers that all answer every broadcast is a token fire that looks like a working fleet.

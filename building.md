@@ -54,7 +54,8 @@ Internal module structure, crate names, error-handling style, frontend state man
 fleetor/
   building.md               ← this file
   decisions.md              ← append-only
-  docs/fleet-comms-map.md   ← how a message travels
+  docs/                     ← indexed by docs/README.md; fleet-comms-map.md is the companion map
+  prompts/                  ← every word a pane is told (D-042); prompts/README.md is the account
   src-tauri/                ← THIN. Window, ptys, delivery, wiring.
   crates/
     fleetor-core/           ← contracts: PaneId, Message, FleetEvent, wire, briefs. No I/O.
@@ -116,7 +117,7 @@ What a fake pane deliberately **cannot** prove is whether a live `claude` reache
 
 ## 6. Where things stand
 
-The build phases are `docs/archive/tui-pivot-plan.md`, Phases 0–6, each with its exit test and its recorded deviations. Phases 0–5 are complete and merged.
+**The live roadmap is `docs/roadmap/00-index.md`** — the Blackboard work packages (WP-01..09, all landed except the shakedown's live half) and whatever gets filed after them from `docs/roadmap/TEMPLATE.md`. The pivot that preceded them is a closed chapter: its plan is `docs/archive/tui-pivot-plan.md`, Phases 0–6 with each phase's exit test and recorded deviations. `docs/README.md` indexes everything else.
 
 **Working agreements:**
 

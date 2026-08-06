@@ -1,10 +1,10 @@
 # DECISIONS.md
 
-Append-only. One entry per changed Tier-2 default (see BUILDING.md §1). Three lines each: what changed, why the default lost, what would reverse it. Tier-1 changes don't belong here — those go through max.
+Append-only. One entry per changed Tier-2 default (see building.md §1). Three lines each: what changed, why the default lost, what would reverse it. Tier-1 changes don't belong here — those go through max.
 
 ## Standing defaults (Tier 2, as of project start)
 
-Worker count 4 · rusqlite/WAL · report schema per handoff §4 · gate retry cap 3 · 60% context checkpoint · fluid roles with home areas · React + Vite UI · MCP tool names per handoff §4 · `~/.fleetor/<repo-key>/` layout · macOS-first · warm two-accent theme (coral attention / gold awareness, no blue).
+*[historical — pre-pivot. Most of these died with D-030; the living Tier 2 list is building.md §1.]* Worker count 4 · rusqlite/WAL · report schema per handoff §4 · gate retry cap 3 · 60% context checkpoint · fluid roles with home areas · React + Vite UI · MCP tool names per handoff §4 · `~/.fleetor/<repo-key>/` layout · macOS-first · warm two-accent theme (coral attention / gold awareness, no blue).
 
 ---
 
