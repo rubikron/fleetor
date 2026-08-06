@@ -8,11 +8,12 @@ For *when* each piece arrives and where it lands inside the pane's context windo
 
 | File | What it is | Placeholders it must keep |
 |---|---|---|
-| `orch.md` | The orchestrator's brief | `{cwd}` `{workers}` `{delivery_contract}` `{scaffolding}` |
+| `orch.md` | The orchestrator's brief | `{cwd}` `{workers}` `{delivery_contract}` `{scaffolding}` `{vision_tenets}` |
 | `worker.md` | The brief every worker slot renders | `{me}` `{cwd}` `{peers}` `{delivery_contract}` `{broadcast_rule}` `{scaffolding}` |
 | `delivery-contract.md` | Fragment: what a `fleet` exit code means | — |
 | `broadcast-rule.md` | Fragment: never answer a broadcast unless it names you | — |
 | `scaffolding.md` | Fragment: the working posture CC's own prompt used to supply | — |
+| `vision-tenets.md` | Fragment: how the orchestrator thinks about vision | — |
 | `launch.conf` | Model, endpoint and flags a worker starts with | — |
 
 All four workers render the same `worker.md`. They differ only in `{me}`, `{peers}` and `{cwd}`.
@@ -30,17 +31,19 @@ All four workers render the same `worker.md`. They differ only in `{me}`, `{peer
 | `{delivery_contract}` | the whole of `delivery-contract.md` |
 | `{broadcast_rule}` | the whole of `broadcast-rule.md` |
 | `{scaffolding}` | the whole of `scaffolding.md` |
+| `{vision_tenets}` | the whole of `vision-tenets.md` — orchestrator only |
 
 Anything else in braces is left alone — these are markdown files, not format strings, so `Vec<{}>` in prose survives.
 
-## Why three of them are fragments
+## Why four of them are fragments
 
-`delivery-contract.md`, `broadcast-rule.md` and `scaffolding.md` are composed *into* the briefs at a placeholder rather than written out in them, and a template that drops its placeholder is **refused** rather than rendered.
+`delivery-contract.md`, `broadcast-rule.md`, `scaffolding.md` and `vision-tenets.md` are composed *into* the briefs at a placeholder rather than written out in them, and a template that drops its placeholder is **refused** rather than rendered.
 
 All three are load-bearing:
 
 - The **delivery contract** is the only reason a model can tell a failed send from a good one. It reads its own Bash exit code and self-corrects. A pane without it silently believes every message arrived.
 - The **broadcast rule** is the only mitigation left for broadcast amplification. The hub-side rate limiter was deliberately removed (`decisions.md` D-031) on the grounds that nothing in the delivery path may be able to refuse a message — which is only safe while this clause holds. Five peers that all answer every broadcast is a token fire that looks like a working fleet.
+- The **vision tenets** are `docs/futureDesign/vision_tenets.md` distilled to what an orchestrator can act on (D-044). Split out so you can change how the fleet *talks* about vision without editing what it *does* — the rules that bind (confirm in writing before decomposing, propose bigger once, announce deviations) live in `orch.md` and are pinned by tests.
 - The **scaffolding** is everything a pane used to inherit from Claude Code's system prompt and no longer does (D-043): tool discipline, what a denied call means, that a long conversation is summarized rather than ended, faithful reporting of outcomes, and the refusal and pronoun defaults. Rewrite it freely — but a brief that drops it is a pane with a job description and no working posture.
 
 So you can rewrite every word around them and they still arrive. You edit the prose; the fleet keeps its contracts.
@@ -66,6 +69,8 @@ To go back to the built-in, delete the file.
 ## Editing notes
 
 **Keep each paragraph on one line.** These files are rendered into a system prompt, where a hard wrap becomes a real newline. Prose reads the same either way, but the briefs are checked by tests that read a paragraph as a line — and a peer list split across two lines is harder for a model to parse, not easier. Turn on soft wrap in your editor.
+
+**One sentence is on loan to WP-07.** `worker.md` tells a confused worker to *"ask `orch` to put it to the operator"*, because a worker has no way to address the human directly yet. When that lands, this is the sentence that changes — it is deliberately self-contained and pinned by `a_confused_worker_is_told_exactly_who_to_ask`.
 
 **Say what a failure costs, not just what to do.** These briefs are read by `deepseek-v4-flash`, not by Opus. `decisions.md` D-031 records that they are still unvalidated against a live worker — if a worker misbehaves in a way you can name, this directory is the first place to fix it.
 

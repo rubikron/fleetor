@@ -60,7 +60,7 @@ graph TB
     subgraph win["the pane's context window, in assembly order"]
         direction TB
         S1["<b>1 · what CC still supplies</b><br/>“You are Claude Code…” + git status<br/><i>its 6.5 KB of guidance is gone (D-043)</i>"]
-        S2["<b>2 · our brief</b> ← --system-prompt<br/>orch.md / worker.md, rendered<br/>+ delivery-contract.md<br/>+ broadcast-rule.md<br/>+ scaffolding.md"]
+        S2["<b>2 · our brief</b> ← --system-prompt<br/>orch.md / worker.md, rendered<br/>+ delivery-contract.md<br/>+ broadcast-rule.md<br/>+ scaffolding.md<br/>+ vision-tenets.md (orch)"]
         S3["<b>3 · tool definitions</b><br/>Bash · Read · Edit · …<br/><i>`fleet` is a Bash command, not a tool</i>"]
         S4["<b>4 · CC's environment block</b><br/>cwd · platform · shell · model<br/><i>gone under --system-prompt —<br/>cwd is restated in our brief</i>"]
         S5["<b>5 · memory files</b><br/>project CLAUDE.md — from the cwd<br/>user CLAUDE.md, skills, agents, MCP —<br/>from CLAUDE_CONFIG_DIR"]
@@ -92,6 +92,7 @@ Three consequences worth designing around:
 | Exit-code contract | `prompts/delivery-contract.md` | inside both briefs | T2, once | ✅ — but the placeholder is required |
 | Anti-amplification clause | `prompts/broadcast-rule.md` | inside the worker brief | T2, once | ✅ — but the placeholder is required |
 | Working posture CC no longer supplies | `prompts/scaffolding.md` | inside both briefs | T2, once | ✅ — but the placeholder is required |
+| The vision tenets | `prompts/vision-tenets.md` | inside the orchestrator brief | T2, once | ✅ — but the placeholder is required |
 | The pane's working directory | the cwd `spawn.rs` sets | `{cwd}` in both briefs | T2, once | ❌ — CC's `# Environment` section used to carry it |
 | Peer roster | computed — `PaneId::roster` | `{peers}` / `{workers}` | T2, once | ❌ `WORKER_SLOTS` |
 | Worker model | `prompts/launch.conf` | `ANTHROPIC_MODEL` | T2, once | ✅ |

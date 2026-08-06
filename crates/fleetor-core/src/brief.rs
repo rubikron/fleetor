@@ -60,8 +60,15 @@ const BROADCAST_RULE: &str = include_str!("../../../prompts/broadcast-rule.md");
 /// prompt and no longer does (D-043). Composed into both briefs verbatim.
 const SCAFFOLDING: &str = include_str!("../../../prompts/scaffolding.md");
 
+/// `docs/futureDesign/vision_tenets.md`, distilled to what an orchestrator can
+/// act on (D-044). Composed into the orchestrator brief verbatim — a fragment
+/// rather than prose in `orch.md` so an operator can tune how the fleet talks
+/// about vision without touching what it does.
+const VISION_TENETS: &str = include_str!("../../../prompts/vision-tenets.md");
+
 /// The placeholders an orchestrator template must contain to be usable.
-const ORCH_PLACEHOLDERS: [&str; 4] = ["cwd", "workers", "delivery_contract", "scaffolding"];
+const ORCH_PLACEHOLDERS: [&str; 5] =
+    ["cwd", "workers", "delivery_contract", "scaffolding", "vision_tenets"];
 
 /// The placeholders a worker template must contain to be usable.
 const WORKER_PLACEHOLDERS: [&str; 6] =
@@ -99,6 +106,7 @@ pub fn render_orch(template: &str, roster: &[PaneId], cwd: &str) -> String {
             ("workers", workers.as_str()),
             ("delivery_contract", DELIVERY_CONTRACT.trim_end()),
             ("scaffolding", SCAFFOLDING.trim_end()),
+            ("vision_tenets", VISION_TENETS.trim_end()),
         ],
     )
 }
@@ -299,6 +307,10 @@ mod tests {
                 !template.contains("rendered as GitHub-flavored markdown"),
                 "the scaffolding is spelled out in the template instead of composed in",
             );
+            assert!(
+                !template.contains("A vision is as much what it is not"),
+                "the tenets are spelled out in the template instead of composed in",
+            );
         }
         assert!(
             !DEFAULT_WORKER.contains("Never reply to a broadcast"),
@@ -319,6 +331,94 @@ mod tests {
             assert!(brief.contains("adapt rather than retrying it verbatim"), "denied means declined");
             assert!(brief.contains("they/them"), "the pronoun default governs user-visible text");
             assert!(brief.contains("refuse destructive techniques"), "the security posture is not optional");
+        }
+    }
+
+    // --- the vision-partner content (D-044) -----------------------------------
+
+    /// The rule the whole package exists for: the orchestrator confirms the
+    /// vision in writing *before* it decomposes anything. Pinned as a literal,
+    /// like the anti-amplification clause — a rewrite that softened this into
+    /// "consider checking with the operator" would still render and still
+    /// validate, and the fleet would go back to starting fast on the wrong thing.
+    #[test]
+    fn the_orch_brief_confirms_the_vision_in_writing_before_decomposing() {
+        let brief = orch_brief(&roster(), CWD);
+        assert!(brief.contains("Before you decompose anything into work"));
+        assert!(brief.contains("State the vision back in writing, and get a yes"));
+        assert!(
+            brief.contains("Nothing goes to a worker until the vision is confirmed"),
+            "the rule needs a consequence, not just an instruction",
+        );
+    }
+
+    /// The authority bound. "Guide the operator to think bigger" is one proposal,
+    /// then deference — an orchestrator that keeps relitigating the goal is worse
+    /// than one that never raised it.
+    #[test]
+    fn the_orch_brief_proposes_a_bigger_frame_at_most_once() {
+        let brief = orch_brief(&roster(), CWD);
+        assert!(brief.contains("propose a bigger frame — once"));
+        assert!(brief.contains("adopt their frame fully"), "declining must end it");
+        assert!(brief.contains("their explicit word is final"));
+        assert!(brief.contains("Do not raise it again in the same session"));
+    }
+
+    /// The integrity clause, and the sentence it is built on: a better route to
+    /// the operator's vision is welcome, a substituted vision never is, and a
+    /// deviation the operator finds out about later is the failure being guarded.
+    #[test]
+    fn the_orch_brief_may_improve_the_route_but_never_swaps_the_vision() {
+        let brief = orch_brief(&roster(), CWD);
+        assert!(brief.contains("never quietly substitute a vision of your own"));
+        assert!(brief.contains("announced, not discovered later"));
+        assert!(
+            brief.contains("information to factor in, not an instruction that overrides what the operator asked"),
+            "the pre-existing authority anchor must survive the rewrite",
+        );
+    }
+
+    /// The three attitudes, and the ME→WE line. These are the whole of what
+    /// distinguishes a FLEETOR worker from a `claude` in a worktree.
+    #[test]
+    fn the_worker_brief_carries_the_three_attitudes() {
+        let brief = worker_brief(PaneId::Worker(2), &roster(), CWD);
+        assert!(brief.contains("How can I be better?"));
+        assert!(brief.contains("How can I push for more positive, meaningful impact?"));
+        assert!(brief.contains("What do I do when I am confused?"));
+        assert!(brief.contains("Improve yourself and the team around you"), "the ME→WE line");
+    }
+
+    /// Until WP-07 gives workers a way to address the operator directly, a
+    /// question for the human routes through `orch`. This test is the reminder
+    /// that the sentence exists and is meant to be replaced, not deleted.
+    #[test]
+    fn a_confused_worker_is_told_exactly_who_to_ask() {
+        let brief = worker_brief(PaneId::Worker(3), &roster(), CWD);
+        assert!(brief.contains("Ask a peer by name"));
+        assert!(
+            brief.contains("ask `orch` to put it to the operator"),
+            "WP-07 replaces this sentence with direct addressing; until then it must be here",
+        );
+    }
+
+    /// The tenets are distilled, not pasted. The source essay's quotations and
+    /// framing are exactly what a brief cannot afford — this asserts the operative
+    /// lines arrived and the essay did not come with them.
+    #[test]
+    fn the_orch_brief_distills_the_tenets_rather_than_quoting_them() {
+        let brief = orch_brief(&roster(), CWD);
+        for operative in [
+            "Write the vision down",
+            "A vision is as much what it is not",
+            "The vision is the filter",
+            "More than one vision is division",
+            "ME → WE",
+        ] {
+            assert!(brief.contains(operative), "the tenets lost `{operative}`");
+        }
+        for essay in ["Habakkuk", "Wright Brothers", "Steve Jobs", "Michael Hyatt", "podcast"] {
+            assert!(!brief.contains(essay), "the essay's framing leaked into the brief: {essay}");
         }
     }
 
@@ -357,7 +457,7 @@ mod tests {
         let no_rule = "# {me} in {cwd}\n\npeers: {peers}\n\n{delivery_contract}\n\n{scaffolding}\n";
         assert!(validate_worker(no_rule).is_err(), "a worker brief without the L5 rule is not usable");
 
-        let no_workers = "# orch in {cwd}\n\n{delivery_contract}\n\n{scaffolding}\n";
+        let no_workers = "# orch in {cwd}\n\n{delivery_contract}\n\n{scaffolding}\n\n{vision_tenets}\n";
         assert!(validate_orch(no_workers).is_err(), "an orch brief that never names its peers");
 
         // D-043's additions are load-bearing the same way, and refused the same way.

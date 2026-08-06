@@ -1,6 +1,6 @@
 # WP-02 — Own the system prompt: vision & culture
 
-status: not-started size: L
+status: **landed** (2026-08-06) size: L
 depends-on: 01 blocks: 05 (soft)
 brief-cost: new baseline — the fleet owns the *entire* prompt after this; record both rendered token counts as the WP-09 baseline
 
@@ -14,12 +14,12 @@ Two changes that belong together, landed as two commits:
 ## Performance criteria
 
 ### Technical
-- [ ] Commit 1 — **parity switch**: `spawn.rs` passes `--system-prompt` for all five panes with a replacement prompt that preserves current behavior (existing brief content + whatever CC-default scaffolding the spike shows a pane still needs). No content rewrite in this commit.
-- [ ] Spike first (`building.md` §4): `examples/` throwaway + `docs/system-prompt-notes.md`, version-stamped **CC 2.1.223**. Must answer: does an interactive pane under `--system-prompt` reach its prompt and run Bash/Read normally? does `--permission-mode auto` still hold? do `/clear` and `/compact` still work? which default sections vanish (cwd/env/git-status are dynamic sections — the `--exclude-dynamic-system-prompt-sections` help text confirms they're skipped under `--system-prompt`) and which does a worker actually need restated? does the target repo's CLAUDE.md / skills still load for orch? **Where the spike and this doc disagree, the spike wins.**
-- [ ] Commit 2 — **content**: rewritten `prompts/orch.md` / `prompts/worker.md`; both still validate (every `VERBS` entry taught, all placeholders present); the anti-amplification clause ("Never reply to a broadcast unless it names you") and the delivery contract survive verbatim — their pinned tests stay green.
-- [ ] New pinned-literal tests for the new load-bearing clauses (mirror `the_worker_brief_carries_the_anti_amplification_clause`): the confirm-vision-before-decomposing rule, the propose-bigger-once bound, the three attitudes.
-- [ ] The spawn-site test updated: master `spawn.rs:385-394` pins `--append-system-prompt`; it must pin the new flag.
-- [ ] Rendered token counts for both prompts measured and recorded in the doc + `decisions.md`.
+- [x] Commit 1 — **parity switch**: `spawn.rs` passes `--system-prompt` for all five panes with a replacement prompt that preserves current behavior (existing brief content + whatever CC-default scaffolding the spike shows a pane still needs). No content rewrite in this commit.
+- [x] Spike first (`building.md` §4): `examples/` throwaway + `docs/system-prompt-notes.md`, version-stamped **CC 2.1.223**. Must answer: does an interactive pane under `--system-prompt` reach its prompt and run Bash/Read normally? does `--permission-mode auto` still hold? do `/clear` and `/compact` still work? which default sections vanish (cwd/env/git-status are dynamic sections — the `--exclude-dynamic-system-prompt-sections` help text confirms they're skipped under `--system-prompt`) and which does a worker actually need restated? does the target repo's CLAUDE.md / skills still load for orch? **Where the spike and this doc disagree, the spike wins.**
+- [x] Commit 2 — **content**: rewritten `prompts/orch.md` / `prompts/worker.md`; both still validate (every `VERBS` entry taught, all placeholders present); the anti-amplification clause ("Never reply to a broadcast unless it names you") and the delivery contract survive verbatim — their pinned tests stay green.
+- [x] New pinned-literal tests for the new load-bearing clauses (mirror `the_worker_brief_carries_the_anti_amplification_clause`): the confirm-vision-before-decomposing rule, the propose-bigger-once bound, the three attitudes.
+- [x] The spawn-site test updated: master `spawn.rs:385-394` pins `--append-system-prompt`; it must pin the new flag.
+- [x] Rendered token counts for both prompts measured and recorded in the doc + `decisions.md`. **orch 1,637 / worker 1,115** (DeepSeek Flash tokenizer). Progression: 487/506 before WP-02 → 878/868 after the parity switch → 1,637/1,115 after the content rewrite, against 1,485 tokens of CC guidance no longer sent.
 
 ### Semantic
 - Orch brief instructs, in substance: *before decomposing, state the vision back to the operator in writing and get a yes; if the vision is unclear or small, say so and propose a bigger frame — once; the operator's explicit word is final.* The integrity clause: the fleet may pursue a better route to the stated vision than the operator imagined, but never silently discards what the operator asked for — deviations are announced.
@@ -74,11 +74,32 @@ and delivery contract verbatim and all validation green. Honor the
 invariant guardrails. Finish with the session exit checklist.
 ```
 
+## How it actually went (2026-08-06)
+
+Three commits: the spike, the parity switch (D-043), the content rewrite (D-044). Green: 71 workspace tests, 53 shell tests, `tsc --noEmit` and `vite build` clean.
+
+**The spike deleted two planned items and found one the plan missed.** `docs/system-prompt-notes.md` has it in full; the short version is that `--system-prompt` drops CC's guidance and nothing else — tools, memory files, skills, agents and the whole first-user-message context block are byte-identical under either flag.
+
+- **Deleted:** restating the worker's branch. The git-status section *survives* `--system-prompt`; the `--exclude-dynamic-system-prompt-sections` help text describes that flag being ignored, not the section being skipped. Design sketch #2 was wrong about this.
+- **Deleted:** the open question about orch losing its `CLAUDE.md` and skills (#5), and with it the whole per-pane-class fallback ladder. Memory files never travelled in the system prompt, so nothing was at risk. Nothing degraded on any axis tested, so all five panes replace.
+- **Found:** `cwd` is the one real loss. CC's `# Environment` section carried it; nothing else in the request names the working directory. `{cwd}` is now a required placeholder in both templates.
+
+**Deviations from the sketch.**
+
+- **A fifth file, `prompts/scaffolding.md`**, not anticipated by the doc: the working posture a pane no longer inherits (tool discipline, denied-means-refused, summarization-not-ending, faithful reporting, refusal and pronoun defaults). Made a required fragment for the same reason `{delivery_contract}` is — an operator rewriting prose should not be able to silently delete a pane's working posture. Five clauses pinned as literals.
+- **CC's `# Memory` protocol is deliberately not restated.** Reasoning in D-043 §5 of the notes: a worker's memory dir is inside its isolated config dir, so nothing written there is visible to anyone, and Tier 1.8 says shared knowledge merges only after review.
+- **`{role}` was not plumbed.** The doc allowed it "only if trivial"; with `{cwd}` already added it would have been a second unused placeholder every operator override has to carry.
+- **Sketch #1, #3 and #4 taken as recommended** — the string arg, a `vision-tenets.md` fragment, and "propose a bigger frame at most once per session".
+
+**One thing for WP-07 to change, not to rediscover.** `worker.md` says a question for the human goes *"ask `orch` to put it to the operator"*. That sentence is self-contained and pinned by `a_confused_worker_is_told_exactly_who_to_ask`; WP-07 replaces it with direct addressing.
+
+**One thing for WP-03.** The spike found that slash commands must be **pasted**, not typed: typing `/compact` a character at a time opened CC's command menu, the characters after `/` never reached its filter, and `Enter` selected the menu's first entry (`/add-dir`) instead. A command channel that types rather than pastes will fire the wrong command.
+
 ## Session exit checklist
 
-- [ ] Spike notes committed (`docs/system-prompt-notes.md`, version-stamped).
-- [ ] Full test matrix green; new pinned-literal tests added; spawn-site flag test updated.
-- [ ] `decisions.md`: one entry for the flag switch, one for the content rewrite (Tier 2).
-- [ ] Rendered token counts recorded (WP-09 baseline).
-- [ ] `prompts/README.md` updated.
-- [ ] `00-index.md` status: WP-02 → landed.
+- [x] Spike notes committed (`docs/system-prompt-notes.md`, version-stamped).
+- [x] Full test matrix green; new pinned-literal tests added; spawn-site flag test updated.
+- [x] `decisions.md`: one entry for the flag switch, one for the content rewrite (Tier 2).
+- [x] Rendered token counts recorded (WP-09 baseline).
+- [x] `prompts/README.md` updated.
+- [x] `00-index.md` status: WP-02 → landed.

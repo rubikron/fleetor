@@ -16,7 +16,7 @@ The Blackboard vision, split into nine session-sized work packages. The vision i
 | WP | Doc | Name | Depends on | Size | Status |
 |----|-----|------|-----------|------|--------|
 | 01 | `01-land-context-management.md` | Land `feat/context-management` (prompts-as-files) | — | M | **landed** |
-| 02 | `02-vision-culture-briefs.md` | Own the system prompt: vision & culture | 01 | L | not-started |
+| 02 | `02-vision-culture-briefs.md` | Own the system prompt: vision & culture | 01 | L | **landed** |
 | 03 | `03-command-channel.md` | `fleet cmd` — `/clear` + `/compact` with `--why` | 01 | L | not-started |
 | 04 | `04-context-visibility.md` | Context visibility (the Loadout counter + gauge) | 01 | M | not-started |
 | 05 | `05-task-blocks.md` | Task blocks — the blackboard record + Tasks view | 01, 02 (soft) | L | not-started |
@@ -57,7 +57,7 @@ Deferred, with reasons — do not resurrect without new evidence:
 
 ## Standing tensions (every session should know these)
 
-1. **The system prompt is a shared budget.** Four packages append prompt text; each doc carries a `brief-cost` line and WP-09 audits the sum. With the `--system-prompt` switch, the budget is the *whole* prompt, baseline included.
+1. **The system prompt is a shared budget.** Four packages append prompt text; each doc carries a `brief-cost` line and WP-09 audits the sum. With the `--system-prompt` switch landed (WP-02, D-043), the budget is the *whole* prompt, baseline included. **The WP-09 baseline is orch 1,637 tokens / worker 1,115** (DeepSeek Flash tokenizer, `examples/system-prompt-spike/count.py`) — against the 1,485 tokens of CC guidance that stopped being sent, both panes still start a session smaller than they did before WP-02.
 2. **"Better than human work" vs DeepSeek-Flash workers.** The worker model is a Tier 2 default. If the shakedown (WP-09) shows Flash can't carry peer review or task-criteria judgment, swap the model with a three-line `decisions.md` entry — bring the evidence, not the intuition.
 
 ## Conventions (all packages)

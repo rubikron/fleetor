@@ -11,6 +11,7 @@
 
 # Throwaway spike run outputs (transcripts + isolated cc-config; never committed)
 /examples/**/work/
+/examples/**/__pycache__/
 /examples/**/*.ndjson
 /examples/**/*.log
 /ui/dist
