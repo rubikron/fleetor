@@ -6,7 +6,7 @@
 //!
 //! **This is a replacement, not an append (D-043).** Since 2.1.223 the flag is
 //! `--system-prompt`, so what is rendered here is the pane's whole prompt rather
-//! than a postscript to Claude Code's own. `docs/system-prompt-notes.md` measured
+//! than a postscript to Claude Code's own. `docs/notes/system-prompt-notes.md` measured
 //! what that costs: CC's ~6.5 KB of guidance leaves, while its tools, the memory
 //! files, the skills listing and the git-status section all stay. The part worth
 //! restating is `scaffolding.md`, and the one thing genuinely lost is the working
@@ -61,7 +61,7 @@ const BROADCAST_RULE: &str = include_str!("../../../prompts/broadcast-rule.md");
 /// prompt and no longer does (D-043). Composed into both briefs verbatim.
 const SCAFFOLDING: &str = include_str!("../../../prompts/scaffolding.md");
 
-/// `docs/futureDesign/vision_tenets.md`, distilled to what an orchestrator can
+/// `docs/roadmap/source/vision_tenets.md`, distilled to what an orchestrator can
 /// act on (D-044). Composed into the orchestrator brief verbatim — a fragment
 /// rather than prose in `orch.md` so an operator can tune how the fleet talks
 /// about vision without touching what it does.

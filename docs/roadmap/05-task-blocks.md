@@ -74,7 +74,7 @@ Everything in the tripwire list; task-driven notifications; editing enforcement 
 
 ```
 You are working in /Users/bubblyducks/harness/fleetor. Read
-docs/futureDesign/requirements/05-task-blocks.md in full, then building.md
+docs/roadmap/05-task-blocks.md in full, then building.md
 §1 and §9, and the module docs at crates/fleetor-core/src/event.rs and
 wire.rs (the ticket-system-regrowth warnings). Execute WP-05: the fleet
 task post|update|list verb, a FleetEvent::Task appended through the normal

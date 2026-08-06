@@ -1,4 +1,4 @@
-//! Pane identity and lifecycle (D-030, `docs/tui-pivot-plan.md`).
+//! Pane identity and lifecycle (D-030, `docs/archive/tui-pivot-plan.md`).
 //!
 //! In the TUI fleet every agent is a live `claude` terminal, so identity is
 //! **which pane you are**, not which role you play — it replaced a `Party` enum
@@ -205,7 +205,7 @@ impl PaneState {
 
 /// A read-only estimate of how much of a pane's context window is in use,
 /// sampled from that pane's own Claude Code transcript (WP-04,
-/// `docs/context-gauge-notes.md`).
+/// `docs/notes/context-gauge-notes.md`).
 ///
 /// Never fabricated. A pane nobody has sampled yet — or the orchestrator,
 /// which is deliberately never sampled at all (its transcript is the

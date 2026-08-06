@@ -52,9 +52,11 @@ Internal module structure, crate names, error-handling style, frontend state man
 
 ```
 fleetor/
+  CLAUDE.md                 ← session orientation + the documentation system
   building.md               ← this file
   decisions.md              ← append-only
-  docs/fleet-comms-map.md   ← how a message travels
+  docs/                     ← indexed by docs/README.md; fleet-comms-map.md is the companion map
+  prompts/                  ← every word a pane is told (D-042); prompts/README.md is the account
   src-tauri/                ← THIN. Window, ptys, delivery, wiring.
   crates/
     fleetor-core/           ← contracts: PaneId, Message, FleetEvent, wire, briefs. No I/O.
@@ -89,10 +91,10 @@ The seam that replaced them is not a trait but a channel: `AppCommand`, request/
 The first four are defined in `fleetor-core` and frozen behind serde. The fifth is a contract of a different kind — prose, frozen by tests rather than by a wire format:
 
 1. **`PaneId`** — serializes as a bare string (`"orch"`, `"worker-2"`), so the CLI argument, the DB payload, the event field and the TypeScript type are all the same thing with no second spelling to keep in sync. **`"operator"` is the one name with no pty behind it** (WP-07, D-051): the human is addressable, never spawnable, and `PaneId::has_pty()` is where every consequence of that is derived rather than flagged.
-2. **`Message`** — the record, **body included**, plus the exact framing typed into the receiving TUI. Single-sourced, so the one delivery path can never invent a second spelling. Its `sanitize` is a security boundary: a body containing `\x1b[201~` would otherwise end the bracketed paste that carries it and turn its own tail into live keystrokes at a `claude` prompt. **`Command` is its deliberate sibling, not a variant of it** (D-045): a `fleet cmd` is delivered *unframed* so its `/` reaches column 0, may target the sender, and is refused at accept time against an allowlist — three things a message must never do. Keeping them apart is what stops the "chop the prefix off inside the router" design Tier 1.4 has rejected twice; `docs/command-channel-notes.md` is the measurement behind it.
+2. **`Message`** — the record, **body included**, plus the exact framing typed into the receiving TUI. Single-sourced, so the one delivery path can never invent a second spelling. Its `sanitize` is a security boundary: a body containing `\x1b[201~` would otherwise end the bracketed paste that carries it and turn its own tail into live keystrokes at a `claude` prompt. **`Command` is its deliberate sibling, not a variant of it** (D-045): a `fleet cmd` is delivered *unframed* so its `/` reaches column 0, may target the sender, and is refused at accept time against an allowlist — three things a message must never do. Keeping them apart is what stops the "chop the prefix off inside the router" design Tier 1.4 has rejected twice; `docs/notes/command-channel-notes.md` is the measurement behind it.
 3. **`FleetEvent`** — five variants. What the backend appends and the UI replays. The frontend renders an unknown `type` as *nothing*, so `ui/src/fleet/types.ts` moves in the same commit as a new variant or the event is invisible rather than broken. **`Task` (WP-05) is the one to read before adding a sixth**: it is the nearest neighbour of the `TicketMoved` Phase 5 deleted, and the only reason it is not that is that nothing reads it back to permit, order or refuse anything. `crates/fleetor-core/src/task.rs` carries the tripwire list; `crates/fleetor-server/tests/task_board.rs` checks the claim instead of asserting it.
 4. **The wire** (`Op` / `OpResult` / `Hello`) — six ops, and the wire tag *is* the CLI verb. `Task` is the only *op* that never reaches the app: a board that reached a terminal would be a dispatcher. On the result side there are **three outcome words and they never blur** (Tier 1.5): `accepted` (bytes reached a live pty), `recorded` (entered the log; no pty exists — a task claim, or a message to `operator`), and `delivered`, which nothing ever renders. `OpResult::Recorded` is deliberately *one* variant for both callers, because they are one event class differing only in what the id names (D-051).
-5. **The briefs** — what each pane is told about the fleet at spawn, via `--system-prompt`. Never a `CLAUDE.md` in the pane's cwd: that would show up in `git status` and the worker could delete it. The flag *replaces* Claude Code's own system prompt rather than appending to it (D-043), so `prompts/` is the whole of what a pane is told; `docs/system-prompt-notes.md` is the measurement that made that safe.
+5. **The briefs** — what each pane is told about the fleet at spawn, via `--system-prompt`. Never a `CLAUDE.md` in the pane's cwd: that would show up in `git status` and the worker could delete it. The flag *replaces* Claude Code's own system prompt rather than appending to it (D-043), so `prompts/` is the whole of what a pane is told; `docs/notes/system-prompt-notes.md` is the measurement that made that safe.
 
 **The brief prose is `prompts/*.md`, not a Rust literal (D-042).** `fleetor-core::brief` bakes those files in with `include_str!` — so the binary always has a working brief and the tests still pin it — and renders `{me}` `{peers}` `{workers}` into them. The operator's own copies in `~/.fleetor/prompts/` are read once at bootstrap and override the built-ins, announced on the Activity feed: Info when one loads, Warn naming the fix when one is refused, silence when there is none. `prompts/launch.conf` does the same for a worker's model, endpoint and permission mode.
 
@@ -100,7 +102,7 @@ Two fragments — `delivery-contract.md` and `broadcast-rule.md` — are *compos
 
 The `fleet` CLI surface is the *stable* contract — internals may churn freely behind it. A test pins its clap subcommands to `brief::VERBS`, because a rename that lands in only one place teaches every pane in the fleet a command that exits 2.
 
-**Measure before coding.** Anything touching an unknown gets a throwaway in `examples/` first, and the measurement goes in `docs/`. `docs/tui-spawn-notes.md` is the model: it bisected exactly which config keys an interactive `claude` needs before it will reach a prompt, and three of its findings were load-bearing surprises. Where a spike and a plan disagree, the spike wins.
+**Measure before coding.** Anything touching an unknown gets a throwaway in `examples/` first, and the measurement goes in `docs/`. `docs/notes/tui-spawn-notes.md` is the model: it bisected exactly which config keys an interactive `claude` needs before it will reach a prompt, and three of its findings were load-bearing surprises. Where a spike and a plan disagree, the spike wins.
 
 ---
 
@@ -116,7 +118,7 @@ What a fake pane deliberately **cannot** prove is whether a live `claude` reache
 
 ## 6. Where things stand
 
-The build phases are `docs/tui-pivot-plan.md`, Phases 0–6, each with its exit test and its recorded deviations. Phases 0–5 are complete and merged.
+**The live roadmap is `docs/roadmap/00-index.md`** — the Blackboard work packages (WP-01..09, all landed except the shakedown's live half) and whatever gets filed after them from `docs/roadmap/TEMPLATE.md`. The pivot that preceded them is a closed chapter: its plan is `docs/archive/tui-pivot-plan.md`, Phases 0–6 with each phase's exit test and recorded deviations. `docs/README.md` indexes everything else.
 
 **Working agreements:**
 
@@ -184,7 +186,7 @@ Rules, in priority order:
 | Injected bytes become menu navigation at a `/` prompt | A pane doing something nobody asked for | Bracketed paste; `sanitize` strips every escape from the body; workers spawn `--permission-mode auto` so prompts don't appear | Per-tab restart |
 | The `fleet` binary is not where the app looks | Panes spawn fine and cannot message | Explicit resolution ladder with an existence check at every rung, and a loud `Notice` when empty | `FLEETOR_FLEET_BIN` |
 | Tauri event firehose from five repainting TUIs | Visible stutter; a chunks/sec instrument would settle it | Per-pane channels + ~16 ms / 64 KB coalescing | `addon-canvas` on the two visible panes only. **Not** `addon-webgl` — context limits and context-loss-on-hide in WKWebView are worse than what they fix |
-| CC's flags or config keys drift across versions | A pane that no longer reaches its prompt | `docs/tui-spawn-notes.md` is version-stamped; re-measure on a CC update | Adapter in `spawn.rs` absorbs it |
+| CC's flags or config keys drift across versions | A pane that no longer reaches its prompt | `docs/notes/tui-spawn-notes.md` is version-stamped; re-measure on a CC update | Adapter in `spawn.rs` absorbs it |
 | Leaked `claude` processes after window close | `ps` after quitting | `kill_all` SIGTERMs each pane's **process group**, then SIGKILLs; `RunEvent::Exit` backstop for Cmd+Q (D-041) | Startup sweep in `orphans.rs` — reaps leftover pids on next launch (D-041) |
 | SQLite write contention | Busy errors under load | One connection behind a mutex; WAL | — |
 | Token burn in tests | CI cost | `fake-pane` for everything; the one live gate is operator-triggered | — |

@@ -9,13 +9,13 @@ brief-cost: new baseline — the fleet owns the *entire* prompt after this; reco
 Two changes that belong together, landed as two commits:
 
 1. **Mechanism (operator decision 2026-08-06):** panes stop appending to Claude Code's default system prompt and *replace* it — `--append-system-prompt` → `--system-prompt`. The prompt files become the whole identity of each pane, not an appendix.
-2. **Content:** the orchestrator opens every session as a **vision partner** — it asks for the bigger picture, confirms the vision in writing before decomposing, proposes a bigger frame when the operator's vision is small, and filters all delegation through that written vision. Workers carry the three attitudes: *How can I be better? How can I push for more positive, meaningful impact? If I'm confused, I ask for help — peers, orch, or the human prompter.* The seven tenets of `docs/futureDesign/vision_tenets.md` are distilled into operational prompt language, not pasted.
+2. **Content:** the orchestrator opens every session as a **vision partner** — it asks for the bigger picture, confirms the vision in writing before decomposing, proposes a bigger frame when the operator's vision is small, and filters all delegation through that written vision. Workers carry the three attitudes: *How can I be better? How can I push for more positive, meaningful impact? If I'm confused, I ask for help — peers, orch, or the human prompter.* The seven tenets of `docs/roadmap/source/vision_tenets.md` are distilled into operational prompt language, not pasted.
 
 ## Performance criteria
 
 ### Technical
 - [x] Commit 1 — **parity switch**: `spawn.rs` passes `--system-prompt` for all five panes with a replacement prompt that preserves current behavior (existing brief content + whatever CC-default scaffolding the spike shows a pane still needs). No content rewrite in this commit.
-- [x] Spike first (`building.md` §4): `examples/` throwaway + `docs/system-prompt-notes.md`, version-stamped **CC 2.1.223**. Must answer: does an interactive pane under `--system-prompt` reach its prompt and run Bash/Read normally? does `--permission-mode auto` still hold? do `/clear` and `/compact` still work? which default sections vanish (cwd/env/git-status are dynamic sections — the `--exclude-dynamic-system-prompt-sections` help text confirms they're skipped under `--system-prompt`) and which does a worker actually need restated? does the target repo's CLAUDE.md / skills still load for orch? **Where the spike and this doc disagree, the spike wins.**
+- [x] Spike first (`building.md` §4): `examples/` throwaway + `docs/notes/system-prompt-notes.md`, version-stamped **CC 2.1.223**. Must answer: does an interactive pane under `--system-prompt` reach its prompt and run Bash/Read normally? does `--permission-mode auto` still hold? do `/clear` and `/compact` still work? which default sections vanish (cwd/env/git-status are dynamic sections — the `--exclude-dynamic-system-prompt-sections` help text confirms they're skipped under `--system-prompt`) and which does a worker actually need restated? does the target repo's CLAUDE.md / skills still load for orch? **Where the spike and this doc disagree, the spike wins.**
 - [x] Commit 2 — **content**: rewritten `prompts/orch.md` / `prompts/worker.md`; both still validate (every `VERBS` entry taught, all placeholders present); the anti-amplification clause ("Never reply to a broadcast unless it names you") and the delivery contract survive verbatim — their pinned tests stay green.
 - [x] New pinned-literal tests for the new load-bearing clauses (mirror `the_worker_brief_carries_the_anti_amplification_clause`): the confirm-vision-before-decomposing rule, the propose-bigger-once bound, the three attitudes.
 - [x] The spawn-site test updated: master `spawn.rs:385-394` pins `--append-system-prompt`; it must pin the new flag.
@@ -39,7 +39,7 @@ Two changes that belong together, landed as two commits:
 - Spawn flags today: `--append-system-prompt` at master `src-tauri/src/spawn.rs:61` (orch) and `:88` (worker); the context-mgmt branch is also append-based (`spawn.rs:65,93`) — WP-01 lands append semantics, this package switches.
 - Post-WP-01 prompt infrastructure: `prompts/orch.md`, `prompts/worker.md`, fragments `delivery-contract.md` / `broadcast-rule.md`, rendered by `brief.rs` (`render_orch`/`render_worker`/`render`, `validate_orch`/`validate_worker`) with `{me}` `{peers}` `{workers}` `{delivery_contract}` `{broadcast_rule}` slots; `~/.fleetor/prompts/` overrides via `src-tauri/src/prompts.rs`.
 - Clauses that must survive: anti-amplification (master `brief.rs:91`, post-WP-01 in `broadcast-rule.md`), `DELIVERY_CONTRACT` (master `brief.rs:105`), the `VERBS` tripwire test (master `brief.rs:131-135`).
-- Source material: `docs/futureDesign/vision_tenets.md` (7 tenets; the operator's own annotations are the last line of tenet 7 and the final question — treat those two fragments as the point).
+- Source material: `docs/roadmap/source/vision_tenets.md` (7 tenets; the operator's own annotations are the last line of tenet 7 and the final question — treat those two fragments as the point).
 
 ## Scope
 
@@ -61,15 +61,15 @@ Any new `fleet` verb (WP-03/05/06 own theirs); the operator-addressing upgrade (
 
 ```
 You are working in /Users/bubblyducks/harness/fleetor. Read
-docs/futureDesign/requirements/02-vision-culture-briefs.md in full, then
+docs/roadmap/02-vision-culture-briefs.md in full, then
 building.md §1, §4 (measure before coding), and §9. Execute WP-02 in two
 commits: (1) switch all five panes from --append-system-prompt to
 --system-prompt with a behavior-parity replacement prompt, spike-first
 against the real claude 2.1.223 (examples/ throwaway +
-docs/system-prompt-notes.md, version-stamped — the spike's findings win);
+docs/notes/system-prompt-notes.md, version-stamped — the spike's findings win);
 (2) rewrite prompts/orch.md and prompts/worker.md for the vision-partner
 orchestrator, the three worker attitudes, and the distilled tenets from
-docs/futureDesign/vision_tenets.md, keeping the anti-amplification clause
+docs/roadmap/source/vision_tenets.md, keeping the anti-amplification clause
 and delivery contract verbatim and all validation green. Honor the
 invariant guardrails. Finish with the session exit checklist.
 ```
@@ -78,7 +78,7 @@ invariant guardrails. Finish with the session exit checklist.
 
 Three commits: the spike, the parity switch (D-043), the content rewrite (D-044). Green: 71 workspace tests, 53 shell tests, `tsc --noEmit` and `vite build` clean.
 
-**The spike deleted two planned items and found one the plan missed.** `docs/system-prompt-notes.md` has it in full; the short version is that `--system-prompt` drops CC's guidance and nothing else — tools, memory files, skills, agents and the whole first-user-message context block are byte-identical under either flag.
+**The spike deleted two planned items and found one the plan missed.** `docs/notes/system-prompt-notes.md` has it in full; the short version is that `--system-prompt` drops CC's guidance and nothing else — tools, memory files, skills, agents and the whole first-user-message context block are byte-identical under either flag.
 
 - **Deleted:** restating the worker's branch. The git-status section *survives* `--system-prompt`; the `--exclude-dynamic-system-prompt-sections` help text describes that flag being ignored, not the section being skipped. Design sketch #2 was wrong about this.
 - **Deleted:** the open question about orch losing its `CLAUDE.md` and skills (#5), and with it the whole per-pane-class fallback ladder. Memory files never travelled in the system prompt, so nothing was at risk. Nothing degraded on any axis tested, so all five panes replace.
@@ -97,7 +97,7 @@ Three commits: the spike, the parity switch (D-043), the content rewrite (D-044)
 
 ## Session exit checklist
 
-- [x] Spike notes committed (`docs/system-prompt-notes.md`, version-stamped).
+- [x] Spike notes committed (`docs/notes/system-prompt-notes.md`, version-stamped).
 - [x] Full test matrix green; new pinned-literal tests added; spawn-site flag test updated.
 - [x] `decisions.md`: one entry for the flag switch, one for the content rewrite (Tier 2).
 - [x] Rendered token counts recorded (WP-09 baseline).

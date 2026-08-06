@@ -1,6 +1,6 @@
 # WP-04 — Context visibility: the Loadout counter + live gauge
 
-status: not-started size: M
+status: **landed** (2026-08-06, D-046) size: M
 depends-on: 01 blocks: — (makes WP-03 decisions informed)
 brief-cost: +~30 tokens (one orch line about the roster's context column)
 
@@ -17,7 +17,7 @@ The operator and the orchestrator can *see* how much context each worker is oper
 - [ ] Observer-only: nothing in the message path reads context data; the delivery diff is empty.
 - [ ] `PaneState` stays exactly `Spawning|Live|Dead` — no `Idle`/`Working` inference (`pane.rs:107-119` documents why).
 - [ ] Unmeasured = **absent, never faked** (decisions.md L155: "band metrics we don't yet track are omitted, not faked"). A stale or unreadable transcript renders as absence, not zero.
-- [ ] Spike first: `docs/context-gauge-notes.md`, **version-stamped** (the transcript path/schema is CC-version-dependent — same risk class as `tui-spawn-notes.md`, same treatment). Locate the per-session JSONL under `~/.fleetor/_shell/pane-config/worker-N`, identify the token-usage fields, confirm they update mid-session.
+- [ ] Spike first: `docs/notes/context-gauge-notes.md`, **version-stamped** (the transcript path/schema is CC-version-dependent — same risk class as `tui-spawn-notes.md`, same treatment). Locate the per-session JSONL under `~/.fleetor/_shell/pane-config/worker-N`, identify the token-usage fields, confirm they update mid-session.
 - [ ] `fleet roster` gains an optional context field on `PaneEntry` (`crates/fleetor-core/src/pane.rs:145`) threaded through `AppCommand::Roster` (`src-tauri/src/pty.rs:226` roster) — optional so absence serializes as absence; the frontend renders unknown/missing fields as nothing, so `ui/src/fleet/types.ts` and the band component are extended in the same session.
 - [ ] Samples are **not** persisted to the event log (keeps the three-kind log clean). Live Tauri channel only, plus at most one `Notice` on first crossing of ~80% per pane per session.
 - [ ] Stretch (only if trivial): a restart counter — how often panes get restarted — the pre-measurement the Carryover design asked for.
@@ -57,9 +57,9 @@ Orch-pane tracking; budgets or refusals of any kind; auto-compaction; persisting
 
 ```
 You are working in /Users/bubblyducks/harness/fleetor. Read
-docs/futureDesign/requirements/04-context-visibility.md in full, then
+docs/roadmap/04-context-visibility.md in full, then
 building.md §1, §4, §9. Execute WP-04: spike the worker transcript format
-first (docs/context-gauge-notes.md, version-stamped against the installed
+first (docs/notes/context-gauge-notes.md, version-stamped against the installed
 claude), then build the spawn-time starting-context estimate (one Activity
 line per launch) and the live read-only gauge — UI band display plus an
 optional context column on fleet roster's PaneEntry. Observer-only:
@@ -75,3 +75,7 @@ session. Finish with the session exit checklist.
 - [ ] `decisions.md` entry (gauge source, window-size constants).
 - [ ] Orch prompt line added; validation green (no verb changes).
 - [ ] `00-index.md` status updated.
+
+## How it landed (2026-08-06)
+
+Commit `bc4ed58`, decision D-046, spike in `docs/notes/context-gauge-notes.md` (transcript path + usage schema measured against CC 2.1.223). The gauge reads each worker's own transcript JSONL under its isolated `CLAUDE_CONFIG_DIR`; observer-only, `≈` on every number, absent never faked. The under-budget control case of the whole series (~0.8× its brief-cost guess). D-054 later moved `WORKER_WINDOW_TOKENS` from 128,000 to 500,000 (set via `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, single-sourced from `context_gauge`). The checkboxes above were not ticked by the landing session; the record of what was verified is the D-entry and the notes file.

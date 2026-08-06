@@ -1,5 +1,11 @@
 # FLEETOR — the 5-TUI messaging pivot
 
+> ## ⚠ ARCHIVED — executed plan, closed (2026-08-06)
+>
+> This plan was carried out; its deviations are recorded inline and in `decisions.md` (D-030..D-041).
+> Everything after it — the Blackboard packages — lives in `docs/roadmap/00-index.md`. Kept because
+> it answers "why the pivot" better than any summary could.
+
 > **Status:** Phases 0–5 complete and **merged to `master`**. Phase 6 partially done.
 > The manual demo has been run: five live `claude` TUIs, `fleet send` crossing between them, and
 > the concurrency bug it surfaced fixed (D-039). The docs have been rewritten against the new

@@ -74,7 +74,7 @@ const WRITER_GONE: &str = "the pane's writer has stopped — the app may be clos
 /// (D-039); a command is a write of its own, because a slash command is only a
 /// command when `/` is the first character in the input box, and a command joined
 /// onto the tail of a message would arrive as prose about a command
-/// (`docs/command-channel-notes.md` §3). They still share one queue and one
+/// (`docs/notes/command-channel-notes.md` §3). They still share one queue and one
 /// writer task, so a command can never interleave with an in-flight paste.
 enum Pending {
     Message { text: String, ack: oneshot::Sender<DeliveryResult> },
@@ -430,7 +430,7 @@ mod tests {
     /// The rule the whole package turns on: a command is never joined onto
     /// anything. Joined, its `/` would sit after a blank line and a message body,
     /// and the receiving TUI reads that as prose about a command rather than as
-    /// one (`docs/command-channel-notes.md` §3).
+    /// one (`docs/notes/command-channel-notes.md` §3).
     #[test]
     fn a_command_is_written_alone_and_never_joined_to_a_message() {
         let batch = vec![message("[fleet · orch] a").0, command("/compact keep the parser").0];

@@ -9,7 +9,7 @@ brief-cost: negative — this package prunes
 Two halves:
 
 1. **Budget (no live spend):** someone finally owns the prompt token budget the autonomy review said nobody owns. Measure both rendered prompts after 02/03/05/06/07 all added text (with the `--system-prompt` switch, the budget is the *whole* prompt). Set a cap as a Tier 2 constant, recorded in `decisions.md`. Prune to fit — the vision's own tenet: what no longer fits gets cut.
-2. **Shakedown (operator present — real Opus + DeepSeek spend, named and approved first per `building.md` §9.5):** run the full loop live **once** — vision conversation → task blocks posted → assignment → execution with at least one `fleet cmd` `/compact` (why logged) → receipt → peer review → merge to `fleet/integration` — and write `docs/blackboard-shakedown.md`. This is the manual pass that produces the data to justify (or kill) Shakedown-as-code.
+2. **Shakedown (operator present — real Opus + DeepSeek spend, named and approved first per `building.md` §9.5):** run the full loop live **once** — vision conversation → task blocks posted → assignment → execution with at least one `fleet cmd` `/compact` (why logged) → receipt → peer review → merge to `fleet/integration` — and write `docs/notes/blackboard-shakedown.md`. This is the manual pass that produces the data to justify (or kill) Shakedown-as-code.
 
 ## Performance criteria
 
@@ -37,7 +37,7 @@ Two halves:
 ## Scope
 
 ### In
-Measurement + cap + pruning + decisions entry; the one live run; `docs/blackboard-shakedown.md`; follow-up requirement docs as findings demand.
+Measurement + cap + pruning + decisions entry; the one live run; `docs/notes/blackboard-shakedown.md`; follow-up requirement docs as findings demand.
 
 ### Out
 Shakedown-as-code, Double Entry, any observer automation — those wait for this package's data.
@@ -46,7 +46,7 @@ Shakedown-as-code, Double Entry, any observer automation — those wait for this
 
 ```
 You are working in /Users/bubblyducks/harness/fleetor. Read
-docs/futureDesign/requirements/09-brief-budget-shakedown.md in full, then
+docs/roadmap/09-brief-budget-shakedown.md in full, then
 building.md §1, §9 (especially §9.5). Execute WP-09 in two halves. Budget
 half: measure both rendered system prompts, reconcile against the
 roadmap's brief-cost ledger, set the Tier 2 cap in decisions.md, prune to
@@ -54,7 +54,7 @@ fit without touching the pinned clauses. Shakedown half ONLY with the
 operator present and spend approved: run the full Blackboard loop once
 (vision → task blocks → execution with a logged /compact → receipt →
 review → merge to fleet/integration) and write
-docs/blackboard-shakedown.md with findings as outcomes, each closed as
+docs/notes/blackboard-shakedown.md with findings as outcomes, each closed as
 fine / new requirement doc / prompt amendment. Finish with the session
 exit checklist.
 ```
@@ -63,6 +63,6 @@ exit checklist.
 
 - [x] Cap recorded; prompts measured and within it; validation green. (D-053: orch 2,645 ≤ 2,800, worker 2,099 ≤ 2,200; `cargo test --workspace`, `src-tauri` tests, `tsc --noEmit`, `vite build` all green.)
 - [ ] Live-run log exported and cited (shakedown half — not this session; operator presence required per §9.5).
-- [x] Findings filed as new NN docs where warranted. (`prompt-budget-menu.md` — the budget half's finding, six costed cut candidates, no code/prompt change applied beyond the conservative prune.)
+- [x] Findings filed as new NN docs where warranted. (`docs/archive/prompt-budget-menu.md` — the budget half's finding, six costed cut candidates, no code/prompt change applied beyond the conservative prune.)
 - [x] `decisions.md` entries appended. (D-053.)
 - [x] `00-index.md` statuses updated across the board. (WP-09 row and standing tension 1.)

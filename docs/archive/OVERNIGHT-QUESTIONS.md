@@ -1,5 +1,12 @@
 # Overnight questions — decisions taken unattended that a human may want to overrule
 
+> ## ⚠ ARCHIVED — self-closed escalation record (2026-08-06)
+>
+> All four questions were closed by measurement (see the resolution note at the bottom). The
+> numbers quoted inside are since superseded: the worker window is 500,000 tokens (D-054), and
+> the prompt budget is orch 3,366 / cap 3,500 (D-056). Kept as the record of how the unattended
+> sessions escalated. Do not edit below this banner.
+
 Written by the overnight sessions. Nothing here blocked a package: each item was
 decided, recorded in `decisions.md`, and shipped. They are collected because each
 is either the closest a package came to a tripwire, or a number that moved

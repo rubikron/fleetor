@@ -1,5 +1,5 @@
 //! The live context gauge: a read-only sampler over a worker's own transcript
-//! (WP-04, `docs/context-gauge-notes.md`).
+//! (WP-04, `docs/notes/context-gauge-notes.md`).
 //!
 //! **Observer-only, by construction.** This module reads files; it writes
 //! nothing, sends nothing, and nothing in [`crate::deliver`]'s message path
@@ -21,7 +21,7 @@
 //!    real `usage` object from the pane's own transcript or reports nothing —
 //!    no chars/4 fallback here, even though the requirements doc's design
 //!    sketch floats one, because a transcript with no completed turn yet has
-//!    nothing honest to approximate (`docs/context-gauge-notes.md` §4).
+//!    nothing honest to approximate (`docs/notes/context-gauge-notes.md` §4).
 //!
 //! The orchestrator is never sampled. [`GaugeSources`] is only ever `record`ed
 //! for a worker (`crate::fleet::spawn_pane`); an orch entry simply has no
@@ -38,7 +38,7 @@ use fleetor_core::pane::{ContextGauge, PaneId};
 
 /// Tier 2: the worker window the fleet operates to (`decisions.md` D-054) —
 /// deliberately **not** the 200k Claude Code silently assumes for a model
-/// name it does not recognize (WP-02 finding, `docs/system-prompt-notes.md`
+/// name it does not recognize (WP-02 finding, `docs/notes/system-prompt-notes.md`
 /// §4). Operator-set at 500k on 2026-08-06, after that assumption surfaced
 /// live as a premature auto-compact warning.
 ///
@@ -63,7 +63,7 @@ const CHARS_PER_TOKEN_ESTIMATE: usize = 4;
 
 /// Where to look for one worker's own transcript: its isolated config dir and
 /// the cwd it was launched in. Transcripts are keyed by the resolved absolute
-/// cwd (`docs/context-gauge-notes.md` §1), so both are needed — the config
+/// cwd (`docs/notes/context-gauge-notes.md` §1), so both are needed — the config
 /// dir alone does not say which of its `projects/*` subdirectories is this
 /// pane's.
 #[derive(Debug, Clone)]
@@ -102,7 +102,7 @@ impl GaugeSources {
 
 /// `<config_dir>/projects/<slug>/`, where `<slug>` is the cwd's canonical
 /// absolute path with every `/` and `.` replaced by `-` — empirically
-/// verified character-for-character in `docs/context-gauge-notes.md` §1. The
+/// verified character-for-character in `docs/notes/context-gauge-notes.md` §1. The
 /// canonicalization is `crate::spawn::project_key`'s, reused rather than
 /// re-derived: it is the same resolved path Claude Code itself sees as its
 /// cwd (macOS resolves `/tmp`/`/var` symlinks on `getcwd`), and it is already
@@ -118,7 +118,7 @@ fn project_dir(source: &TranscriptSource) -> PathBuf {
 /// its project directory.
 ///
 /// Read fresh on every call, never cached from spawn. A `/clear` resets a
-/// pane's session (`docs/command-channel-notes.md`); whether Claude Code
+/// pane's session (`docs/notes/command-channel-notes.md`); whether Claude Code
 /// opens a new `<uuid>.jsonl` for that or keeps writing the same one was not
 /// worth a fifth spike run to settle — picking "most recently modified" is
 /// correct under either answer, at the cost of one directory read per sample.
@@ -146,7 +146,7 @@ fn sample_transcript(source: &TranscriptSource, window_tokens: u32) -> Option<Co
 /// out of `input_tokens` and into `cache_read_input_tokens` the moment the
 /// endpoint recognizes repeated context — reading `input_tokens` alone would
 /// report a pane's usage *dropping* the instant caching kicked in, which is
-/// the opposite of what happened (`docs/context-gauge-notes.md` §3, measured
+/// the opposite of what happened (`docs/notes/context-gauge-notes.md` §3, measured
 /// live: 27,723 → 96 on `input_tokens` alone across two turns of the same
 /// growing conversation; 27,723 → 27,744 on the sum).
 ///
@@ -239,7 +239,7 @@ mod tests {
     }
 
     /// The exact shape a real `assistant` line has, per
-    /// `docs/context-gauge-notes.md` §2 — trimmed to the fields the sampler
+    /// `docs/notes/context-gauge-notes.md` §2 — trimmed to the fields the sampler
     /// actually reads, plus a couple of neighbors that must be ignored.
     fn assistant_line(input: u64, cache_creation: u64, cache_read: u64) -> String {
         serde_json::json!({
@@ -270,7 +270,7 @@ mod tests {
 
     // --- project_dir / the slug rule -------------------------------------------
 
-    /// Character-for-character, the rule `docs/context-gauge-notes.md` §1
+    /// Character-for-character, the rule `docs/notes/context-gauge-notes.md` §1
     /// verified against a real Claude Code run: every `/` and every `.` in
     /// the resolved cwd becomes `-`, nothing else changes.
     #[test]

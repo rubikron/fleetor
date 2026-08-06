@@ -9,7 +9,7 @@
 //!
 //! What it deliberately does **not** cover: whether a live `claude` reaches its
 //! prompt. That is L1/L2, and it was settled by measurement in Phase 0
-//! (`docs/tui-spawn-notes.md`), not by a test — a fake pane would answer the
+//! (`docs/notes/tui-spawn-notes.md`), not by a test — a fake pane would answer the
 //! question wrong in the reassuring direction.
 
 use std::collections::HashMap;
@@ -202,7 +202,7 @@ fn a_delivered_message_lands_in_its_target_pane_and_nowhere_else() {
 /// Sent as a burst with two messages so the writer has something to batch: the
 /// messages join, the command does not, and the assertion is on the exact bytes
 /// the pane's tty echoed back. A fake pane cannot prove Claude Code *executes*
-/// it — that is `docs/command-channel-notes.md`, measured against the real
+/// it — that is `docs/notes/command-channel-notes.md`, measured against the real
 /// binary — but it is exactly the right thing to prove what we typed.
 #[test]
 fn a_command_reaches_a_real_pty_unframed_and_in_a_write_of_its_own() {
