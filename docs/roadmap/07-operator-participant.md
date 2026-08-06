@@ -55,7 +55,7 @@ Notifications/attention management; multiple humans/auth; logging terminal keyst
 
 ```
 You are working in /Users/bubblyducks/harness/fleetor. Read
-docs/futureDesign/requirements/07-operator-participant.md in full, then
+docs/roadmap/07-operator-participant.md in full, then
 building.md §1 and §9. Execute WP-07: add PaneId::Operator ("operator" —
 verified free in FromStr), the UI composer that sends logged framed
 messages through the unchanged deliver path, the operator inbox in the

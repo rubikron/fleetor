@@ -59,7 +59,7 @@ Hub-side execution or verification; review gates in code; auto-merge; touching t
 
 ```
 You are working in /Users/bubblyducks/harness/fleetor. Read
-docs/futureDesign/requirements/06-receipts-review-merge.md in full, then
+docs/roadmap/06-receipts-review-merge.md in full, then
 building.md §1 and §9. Execute WP-06: the fleet done verb (check runs
 locally in the CLI, receipt travels as an ordinary message, CLI exit code
 still means delivery), the review/merge protocol in both prompt files

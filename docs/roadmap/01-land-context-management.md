@@ -19,7 +19,7 @@ Every word a pane is told becomes an operator-editable file on master: `prompts/
 
 ### Semantic
 - `prompts/README.md` remains a complete, current account of what a pane is told and how overrides work.
-- `docs/context-architecture.md` and `docs/context-injection-flow.md` land under `docs/`; `future designs/` lands under `docs/futureDesign/plans/`.
+- `docs/context-architecture.md` and `docs/context-injection-flow.md` land under `docs/`; `future designs/` lands under `docs/roadmap/source/`.
 - `building.md` §4.5 ("The briefs … defined in fleetor-core") is reconciled with the file-based reality.
 - A `decisions.md` entry (next D-number) records the extraction: what changed, why the in-Rust default lost, what would reverse it.
 
@@ -40,7 +40,7 @@ Every word a pane is told becomes an operator-editable file on master: `prompts/
 ## Scope
 
 ### In
-Commit the worktree's work; rebase across the 40 commits; re-validate everything; relocate `future designs/` → `docs/futureDesign/plans/`; reconcile `building.md`; decisions entry; PR in repo style.
+Commit the worktree's work; rebase across the 40 commits; re-validate everything; relocate `future designs/` → `docs/roadmap/source/`; reconcile `building.md`; decisions entry; PR in repo style.
 
 ### Out
 Any prompt content change; any new placeholder slot; the `--system-prompt` flag switch (WP-02); deleting the worktree (operator's call after merge).
@@ -48,14 +48,14 @@ Any prompt content change; any new placeholder slot; the `--system-prompt` flag 
 ## Design sketch & open questions
 
 1. **Rebase vs merge.** Recommended: commit first (checkpoint), then `git rebase master` — conflicts are localized to `lib.rs`/`spawn.rs`/`panes.rs` and the branch's history is one logical change. Fall back to a merge if the rebase fights.
-2. **Where `future designs/` lands.** Recommended: `docs/futureDesign/plans/fleetor-autonomy{,-plain}.html` — beside this requirements directory, since it is the roadmap's source material.
+2. **Where `future designs/` lands.** Recommended: `docs/roadmap/source/fleetor-autonomy{,-plain}.html` — beside this requirements directory, since it is the roadmap's source material.
 3. **Override test.** Recommended: yes, add one test against a temp override dir (load / refuse / absent) — the three notices are load-bearing operator UX.
 
 ## Session prompt
 
 ```
 You are working in /Users/bubblyducks/harness/fleetor. Read
-docs/futureDesign/requirements/01-land-context-management.md in full, then
+docs/roadmap/01-land-context-management.md in full, then
 building.md §1 and §9. Execute WP-01: land the feat/context-management
 worktree (.claude/worktrees/context-mgmt) onto master — commit its
 uncommitted work, rebase across the ~40 commits of divergence, keep the
@@ -64,7 +64,7 @@ no flag changes), relocate the design docs as scoped, and re-validate with
 the full test matrix (cargo test --workspace; cargo test in src-tauri/;
 npx tsc --noEmit && npx vite build). Honor the invariant guardrails
 section. Finish with the session exit checklist, including the decisions.md
-entry and updating docs/futureDesign/requirements/00-index.md status.
+entry and updating docs/roadmap/00-index.md status.
 ```
 
 ## Session exit checklist

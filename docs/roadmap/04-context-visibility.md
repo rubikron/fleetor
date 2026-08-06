@@ -57,7 +57,7 @@ Orch-pane tracking; budgets or refusals of any kind; auto-compaction; persisting
 
 ```
 You are working in /Users/bubblyducks/harness/fleetor. Read
-docs/futureDesign/requirements/04-context-visibility.md in full, then
+docs/roadmap/04-context-visibility.md in full, then
 building.md §1, §4, §9. Execute WP-04: spike the worker transcript format
 first (docs/notes/context-gauge-notes.md, version-stamped against the installed
 claude), then build the spawn-time starting-context estimate (one Activity

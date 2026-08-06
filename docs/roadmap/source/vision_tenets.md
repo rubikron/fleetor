@@ -1,3 +1,7 @@
+> Raw source material — the essay as the operator pasted it, promo lines and all. The copy the
+> orchestrator actually receives is `prompts/vision-tenets.md`, a deliberate near-duplicate (D-056:
+> verbatim except the source's PDF/podcast/YouTube plugs, with the trailing question made a directive).
+
 1. Vision is Clarity—and Clarity is Kindness
 Vision is the what. Strategy is the how.
 Michael Hyatt puts it plainly: “If you don’t design a vision, you’ll drift into the future. And nobody drifts to a desired destination.”

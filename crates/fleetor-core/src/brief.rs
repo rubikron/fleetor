@@ -61,7 +61,7 @@ const BROADCAST_RULE: &str = include_str!("../../../prompts/broadcast-rule.md");
 /// prompt and no longer does (D-043). Composed into both briefs verbatim.
 const SCAFFOLDING: &str = include_str!("../../../prompts/scaffolding.md");
 
-/// `docs/futureDesign/vision_tenets.md`, distilled to what an orchestrator can
+/// `docs/roadmap/source/vision_tenets.md`, distilled to what an orchestrator can
 /// act on (D-044). Composed into the orchestrator brief verbatim — a fragment
 /// rather than prose in `orch.md` so an operator can tune how the fleet talks
 /// about vision without touching what it does.

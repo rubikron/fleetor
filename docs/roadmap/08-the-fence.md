@@ -51,7 +51,7 @@ Deny rules / network policy; sandbox-exec or containers; orch fencing; model cha
 
 ```
 You are working in /Users/bubblyducks/harness/fleetor. Read
-docs/futureDesign/requirements/08-the-fence.md in full, then building.md
+docs/roadmap/08-the-fence.md in full, then building.md
 §1 and §9. Execute WP-08: private HOME per worker under
 ~/.fleetor/_shell/home/worker-N, the augmented_path() operator-HOME fix in
 the same commit, a seeded minimal gitconfig, the ~/.ssh falsification

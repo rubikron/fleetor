@@ -9,7 +9,7 @@ brief-cost: new baseline — the fleet owns the *entire* prompt after this; reco
 Two changes that belong together, landed as two commits:
 
 1. **Mechanism (operator decision 2026-08-06):** panes stop appending to Claude Code's default system prompt and *replace* it — `--append-system-prompt` → `--system-prompt`. The prompt files become the whole identity of each pane, not an appendix.
-2. **Content:** the orchestrator opens every session as a **vision partner** — it asks for the bigger picture, confirms the vision in writing before decomposing, proposes a bigger frame when the operator's vision is small, and filters all delegation through that written vision. Workers carry the three attitudes: *How can I be better? How can I push for more positive, meaningful impact? If I'm confused, I ask for help — peers, orch, or the human prompter.* The seven tenets of `docs/futureDesign/vision_tenets.md` are distilled into operational prompt language, not pasted.
+2. **Content:** the orchestrator opens every session as a **vision partner** — it asks for the bigger picture, confirms the vision in writing before decomposing, proposes a bigger frame when the operator's vision is small, and filters all delegation through that written vision. Workers carry the three attitudes: *How can I be better? How can I push for more positive, meaningful impact? If I'm confused, I ask for help — peers, orch, or the human prompter.* The seven tenets of `docs/roadmap/source/vision_tenets.md` are distilled into operational prompt language, not pasted.
 
 ## Performance criteria
 
@@ -39,7 +39,7 @@ Two changes that belong together, landed as two commits:
 - Spawn flags today: `--append-system-prompt` at master `src-tauri/src/spawn.rs:61` (orch) and `:88` (worker); the context-mgmt branch is also append-based (`spawn.rs:65,93`) — WP-01 lands append semantics, this package switches.
 - Post-WP-01 prompt infrastructure: `prompts/orch.md`, `prompts/worker.md`, fragments `delivery-contract.md` / `broadcast-rule.md`, rendered by `brief.rs` (`render_orch`/`render_worker`/`render`, `validate_orch`/`validate_worker`) with `{me}` `{peers}` `{workers}` `{delivery_contract}` `{broadcast_rule}` slots; `~/.fleetor/prompts/` overrides via `src-tauri/src/prompts.rs`.
 - Clauses that must survive: anti-amplification (master `brief.rs:91`, post-WP-01 in `broadcast-rule.md`), `DELIVERY_CONTRACT` (master `brief.rs:105`), the `VERBS` tripwire test (master `brief.rs:131-135`).
-- Source material: `docs/futureDesign/vision_tenets.md` (7 tenets; the operator's own annotations are the last line of tenet 7 and the final question — treat those two fragments as the point).
+- Source material: `docs/roadmap/source/vision_tenets.md` (7 tenets; the operator's own annotations are the last line of tenet 7 and the final question — treat those two fragments as the point).
 
 ## Scope
 
@@ -61,7 +61,7 @@ Any new `fleet` verb (WP-03/05/06 own theirs); the operator-addressing upgrade (
 
 ```
 You are working in /Users/bubblyducks/harness/fleetor. Read
-docs/futureDesign/requirements/02-vision-culture-briefs.md in full, then
+docs/roadmap/02-vision-culture-briefs.md in full, then
 building.md §1, §4 (measure before coding), and §9. Execute WP-02 in two
 commits: (1) switch all five panes from --append-system-prompt to
 --system-prompt with a behavior-parity replacement prompt, spike-first
@@ -69,7 +69,7 @@ against the real claude 2.1.223 (examples/ throwaway +
 docs/notes/system-prompt-notes.md, version-stamped — the spike's findings win);
 (2) rewrite prompts/orch.md and prompts/worker.md for the vision-partner
 orchestrator, the three worker attitudes, and the distilled tenets from
-docs/futureDesign/vision_tenets.md, keeping the anti-amplification clause
+docs/roadmap/source/vision_tenets.md, keeping the anti-amplification clause
 and delivery contract verbatim and all validation green. Honor the
 invariant guardrails. Finish with the session exit checklist.
 ```

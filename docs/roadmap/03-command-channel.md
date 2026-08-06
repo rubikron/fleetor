@@ -67,7 +67,7 @@ Any other slash command (the allowlist is the boundary — `/model`, `/exit` ref
 
 ```
 You are working in /Users/bubblyducks/harness/fleetor. Read
-docs/futureDesign/requirements/03-command-channel.md in full, then
+docs/roadmap/03-command-channel.md in full, then
 building.md §1, §4, §9 — especially Tier 1.4 and the guardrails section of
 the doc: commands are a new parallel path, NOT a transform on messages; the
 message path's diff must be empty. Spike first against a real claude TUI

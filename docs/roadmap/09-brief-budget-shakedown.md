@@ -46,7 +46,7 @@ Shakedown-as-code, Double Entry, any observer automation — those wait for this
 
 ```
 You are working in /Users/bubblyducks/harness/fleetor. Read
-docs/futureDesign/requirements/09-brief-budget-shakedown.md in full, then
+docs/roadmap/09-brief-budget-shakedown.md in full, then
 building.md §1, §9 (especially §9.5). Execute WP-09 in two halves. Budget
 half: measure both rendered system prompts, reconcile against the
 roadmap's brief-cost ledger, set the Tier 2 cap in decisions.md, prune to
