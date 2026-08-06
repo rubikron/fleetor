@@ -13,6 +13,7 @@
 pub mod deliver;
 pub mod fleet;
 mod orphans;
+pub mod prompts;
 pub mod pty;
 pub mod spawn;
 pub mod testbed;

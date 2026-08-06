@@ -32,8 +32,9 @@ use tauri::{AppHandle, Emitter, State};
 use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, Notify};
 
+use crate::prompts::PaneContext;
 use crate::pty::PaneRegistry;
-use crate::{deliver, spawn, testbed};
+use crate::{deliver, prompts, spawn, testbed};
 
 /// Emitted for every appended event, in `seq` order, the moment it persists.
 const EVENT_FLEET: &str = "fleet://event";
@@ -87,6 +88,11 @@ struct Fleet {
     /// config.json — a target that changed mid-session would otherwise put half
     /// the fleet in one repo and half in another.
     target: PathBuf,
+    /// The briefs and launch settings every pane spawns with, from `prompts/`
+    /// and the operator's `~/.fleetor/prompts/`. Resolved once for the same
+    /// reason the target is: a fleet whose panes were briefed from two revisions
+    /// of a file being edited is not a fleet anyone can reason about.
+    context: PaneContext,
 }
 
 /// Managed Tauri state: at most one embedded fleet.
@@ -96,7 +102,7 @@ pub struct FleetState(Mutex<Option<Fleet>>);
 // --- locations ----------------------------------------------------------------
 
 /// The operator-facing root: holds `config.json` and the seeded testbed.
-fn fleetor_dir() -> PathBuf {
+pub(crate) fn fleetor_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     PathBuf::from(home).join(".fleetor")
 }
@@ -207,6 +213,14 @@ pub fn fleet_bootstrap(
     let target = resolve_target(&store)?;
     let config = fleet_config_for(&target);
 
+    // Prompts and launch settings, before any pane exists. Every notice the
+    // resolver produced goes on the feed here — an override that silently did
+    // nothing is the one failure the whole override path is built to avoid.
+    let context = PaneContext::resolve(&prompts::override_dir(&fleetor_dir()));
+    for (level, text) in &context.notices {
+        note(&store, *level, text);
+    }
+
     // The hub↔app seam: the hub routes, the app owns the terminals. Unbounded on
     // purpose — a bounded channel would make a busy fleet block a send (D-034).
     let (app_tx, app_rx) = mpsc::unbounded_channel();
@@ -214,7 +228,7 @@ pub fn fleet_bootstrap(
     let shutdown = spawn_hub(&rt, store.clone(), app_tx, socket_path());
 
     let snap = snapshot(&store)?;
-    *guard = Some(Fleet { _rt: rt, store, shutdown, config, target });
+    *guard = Some(Fleet { _rt: rt, store, shutdown, config, target, context });
     Ok(snap)
 }
 
@@ -236,10 +250,10 @@ pub(crate) fn spawn_pane(
     rows: u16,
     cols: u16,
 ) -> Result<(), String> {
-    let (target, store) = {
+    let (target, store, context) = {
         let guard = fleet.0.lock().map_err(|e| e.to_string())?;
         let f = guard.as_ref().ok_or("fleet not bootstrapped")?;
-        (f.target.clone(), f.store.clone())
+        (f.target.clone(), f.store.clone(), f.context.clone())
     };
 
     // A pane with no `fleet` on its PATH is a pane that looks alive and cannot
@@ -260,14 +274,14 @@ pub(crate) fn spawn_pane(
         // target itself. Nothing to seed — seeding would touch *their* config dir.
         PaneId::Orch => {
             std::fs::create_dir_all(&target).map_err(|e| format!("create orchestrator cwd: {e}"))?;
-            spawn::orch_command(&target, &socket)
+            spawn::orch_command(&target, &socket, &context)
         }
         PaneId::Worker(slot) => {
             let key = load_api_key()?;
             let cwd = worker_cwd(&store, &target, slot);
             let config_dir = worker_config_dir(slot);
             spawn::seed_config_dir(&config_dir, &cwd)?;
-            spawn::worker_command(slot, &cwd, &config_dir, &socket, &key)
+            spawn::worker_command(slot, &cwd, &config_dir, &socket, &key, &context)
         }
     };
 

@@ -1,0 +1,1 @@
+A `fleet` command that exits non-zero did **not** deliver — the pane may be dead or you may be sending too fast. Read stderr and act on it; do not assume a message arrived just because you sent it. A zero exit means the bytes reached a live terminal, which is still not a promise that the agent there has read them.

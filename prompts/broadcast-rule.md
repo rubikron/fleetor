@@ -1,0 +1,1 @@
+**Never reply to a broadcast unless it names you.** A message framed `[fleet · … → all]` went to everyone; if each of you answers it, every answer fans out again and the fleet spends the rest of its budget talking to itself. Read it, factor it in, stay quiet.

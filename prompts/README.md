@@ -1,0 +1,68 @@
+# `prompts/` — everything a pane is told
+
+Every word injected into a pane's `claude`, and every flag it is launched with, is a file in this directory. Nothing is spelled out in Rust: `fleetor-core::brief` bakes these in with `include_str!` and fills their placeholders, and `src-tauri::prompts` lets you override them without a rebuild.
+
+For *when* each piece arrives and where it lands inside the pane's context window, see [`docs/context-injection-flow.md`](../docs/context-injection-flow.md).
+
+## The files
+
+| File | What it is | Placeholders it must keep |
+|---|---|---|
+| `orch.md` | The orchestrator's brief | `{workers}` `{delivery_contract}` |
+| `worker.md` | The brief every worker slot renders | `{me}` `{peers}` `{delivery_contract}` `{broadcast_rule}` |
+| `delivery-contract.md` | Fragment: what a `fleet` exit code means | — |
+| `broadcast-rule.md` | Fragment: never answer a broadcast unless it names you | — |
+| `launch.conf` | Model, endpoint and flags a worker starts with | — |
+
+All four workers render the same `worker.md`. They differ only in `{me}` and `{peers}`.
+
+## Placeholders
+
+| Placeholder | Fills with |
+|---|---|
+| `{me}` | this pane's name — `worker-2` |
+| `{peers}` | the roster minus this pane, in prose — `orch, worker-1, worker-3 and worker-4` |
+| `{workers}` | the roster minus `orch` — `worker-1, worker-2, worker-3 and worker-4` |
+| `{delivery_contract}` | the whole of `delivery-contract.md` |
+| `{broadcast_rule}` | the whole of `broadcast-rule.md` |
+
+Anything else in braces is left alone — these are markdown files, not format strings, so `Vec<{}>` in prose survives.
+
+## Why two of them are fragments
+
+`delivery-contract.md` and `broadcast-rule.md` are composed *into* the briefs at a placeholder rather than written out in them, and a template that drops its placeholder is **refused** rather than rendered.
+
+Both are load-bearing:
+
+- The **delivery contract** is the only reason a model can tell a failed send from a good one. It reads its own Bash exit code and self-corrects. A pane without it silently believes every message arrived.
+- The **broadcast rule** is the only mitigation left for broadcast amplification. The hub-side rate limiter was deliberately removed (`decisions.md` D-031) on the grounds that nothing in the delivery path may be able to refuse a message — which is only safe while this clause holds. Five peers that all answer every broadcast is a token fire that looks like a working fleet.
+
+So you can rewrite every word around them and they still arrive. You edit the prose; the fleet keeps its contracts.
+
+## Overriding without a rebuild
+
+Copy any of these files to `~/.fleetor/prompts/` and edit it there. The app reads that directory **once at bootstrap** and announces what it found on the Activity feed:
+
+- **Loaded** → an `Info` notice naming the file. You always get told an override took effect, because a prompt change that quietly did nothing is indistinguishable from one that did not work.
+- **Broken** → a `Warn` notice saying exactly what to fix, and the built-in is used. Never a half-applied brief.
+- **Absent** → nothing. That is the ordinary case.
+
+Changes take effect **the next time the fleet starts**, not on a running one — a system prompt cannot be changed after the process is exec'd, and it is the same rule the target picker follows.
+
+```console
+$ mkdir -p ~/.fleetor/prompts
+$ cp prompts/worker.md ~/.fleetor/prompts/
+$ $EDITOR ~/.fleetor/prompts/worker.md
+```
+
+To go back to the built-in, delete the file.
+
+## Editing notes
+
+**Keep each paragraph on one line.** These files are rendered into a system prompt, where a hard wrap becomes a real newline. Prose reads the same either way, but the briefs are checked by tests that read a paragraph as a line — and a peer list split across two lines is harder for a model to parse, not easier. Turn on soft wrap in your editor.
+
+**Say what a failure costs, not just what to do.** These briefs are read by `deepseek-v4-flash`, not by Opus. `decisions.md` D-031 records that they are still unvalidated against a live worker — if a worker misbehaves in a way you can name, this directory is the first place to fix it.
+
+## What is *not* here
+
+The three environment settings that each silently wedge a pane forever — the removal of `ANTHROPIC_API_KEY`, the config-dir seed, and the removal of `CLAUDE_CODE_CHILD_SESSION` — are fixed in `src-tauri/src/spawn.rs`. They are listed at the bottom of `launch.conf` with the reason attached, so this directory is still a complete account of what a pane gets. They are documented, not editable: each one fails by looking exactly like a healthy pane while every `fleet send` reports success into a dialog.
