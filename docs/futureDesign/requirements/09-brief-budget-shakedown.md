@@ -1,6 +1,6 @@
 # WP-09 — Prompt budget + live shakedown
 
-status: not-started size: S/M + real spend (live half requires the operator)
+status: budget half landed (overnight, D-053) — shakedown half not-started, pending operator size: S/M + real spend (live half requires the operator)
 depends-on: all (02, 03, 05, 06, 07 for the budget; everything for the live run)
 brief-cost: negative — this package prunes
 
@@ -14,9 +14,9 @@ Two halves:
 ## Performance criteria
 
 ### Technical
-- [ ] Rendered orch + worker prompts measured (token estimate is fine; method stated); cap set; both prompts ≤ cap after pruning; every verb still validated.
-- [ ] The sum of the roadmap's `brief-cost` lines reconciled against the measurement — the audit catches drift.
-- [ ] The live run's message/task/command log exported (the events DB is the evidence) and cited in the findings doc.
+- [x] Rendered orch + worker prompts measured (token estimate is fine; method stated); cap set; both prompts ≤ cap after pruning; every verb still validated. (`count.py`, DeepSeek Flash tokenizer; D-053; `the_baked_in_templates_validate` and every pinned-literal test in `brief.rs` green.)
+- [x] The sum of the roadmap's `brief-cost` lines reconciled against the measurement — the audit catches drift. (D-053: 510 budgeted vs. 2,018 actual across WP-03–07, ~4.0× overall.)
+- [ ] The live run's message/task/command log exported (the events DB is the evidence) and cited in the findings doc. (Shakedown half — not this session.)
 
 ### Semantic
 - Findings are **outcomes, not intentions**: "worker-2 self-compacted once, unprompted; the why-string was junk" — not "self-compaction works."
@@ -61,8 +61,8 @@ exit checklist.
 
 ## Session exit checklist
 
-- [ ] Cap recorded; prompts measured and within it; validation green.
-- [ ] Live-run log exported and cited (shakedown half).
-- [ ] Findings filed as new NN docs where warranted.
-- [ ] `decisions.md` entries appended.
-- [ ] `00-index.md` statuses updated across the board.
+- [x] Cap recorded; prompts measured and within it; validation green. (D-053: orch 2,645 ≤ 2,800, worker 2,099 ≤ 2,200; `cargo test --workspace`, `src-tauri` tests, `tsc --noEmit`, `vite build` all green.)
+- [ ] Live-run log exported and cited (shakedown half — not this session; operator presence required per §9.5).
+- [x] Findings filed as new NN docs where warranted. (`prompt-budget-menu.md` — the budget half's finding, six costed cut candidates, no code/prompt change applied beyond the conservative prune.)
+- [x] `decisions.md` entries appended. (D-053.)
+- [x] `00-index.md` statuses updated across the board. (WP-09 row and standing tension 1.)

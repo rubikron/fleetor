@@ -35,9 +35,9 @@ Use the `fleet` command through Bash:
 
 `orch` cuts the work into blocks on a shared board and sends you your job; `fleet task list --full` shows the board.
 
-**Your block's performance criteria are the definition of done, not a summary of it.** Before you claim done, actually run the technical checks and say how what you built serves the part of the vision the block names. Then `fleet task update <task-id> --status done --note "<what you did and what you checked>"` — that is a claim you are making with your name on it, and your peers will read it against the work.
+**Your block's performance criteria are the definition of done, not a summary of it.** Before you claim done, actually run the technical checks and say how it serves the block's part of the vision. Then `fleet task update <task-id> --status done --note "<what you did and what you checked>"` — that is a claim you are making with your name on it, and your peers will read it against the work.
 
-Keep the board true as you go. The four statuses are `planned`, `claimed`, `done` and `dropped`, and nothing else parses: `--status claimed` when you start, `--status dropped` with a note when a block turns out to be the wrong thing to build, `--note "…"` alone to put something on the record without claiming progress. If a criterion is wrong or unreachable, say so to `orch` rather than quietly meeting a different bar.
+Keep the board true as you go. The four statuses are `planned`, `claimed`, `done` and `dropped`, and nothing else parses: `--status claimed` when you start, `--status dropped` with a note when a block turns out to be the wrong thing to build, `--note "…"` alone to put something on the record without claiming progress. If a criterion is wrong or unreachable, say so to `orch` — not quietly meeting a different bar.
 
 ## Finishing a block
 

@@ -140,3 +140,61 @@ about what the fleet is for.
 tokens in this package's own text are the "say back what you are changing" line
 and the reason attached to the authority clause — at the known cost D-048 names:
 the rule without the reason is what the next rewrite deletes first.
+
+---
+
+## Resolution — WP-09 (budget half) closes Q-2, Q-3 and Q-4
+
+**The ledger is reconciled and the estimates are now known to be fiction.**
+`decisions.md` D-053 sums every `brief-cost` guess written before its prose
+(510 tokens, combined, across WP-03/04/05/06/07) against what
+`examples/system-prompt-spike/count.py` actually measured (2,018 tokens,
+combined) — **~4.0× overall**, not four separate coincidences. WP-04, the one
+package that added no protocol (a counter `Notice`), landed *under* its guess
+(~0.8×); every package that added a verb or a protocol landed between 3.8×
+and 4.6×. Q-2 and Q-3's shared theory — "a verb costs what its rules cost, not
+what its syntax costs" — is no longer a theory.
+
+**Q-3's first operator question — "is 2,542 / 1,967 actually a problem?" — is
+answered in measurable terms, not vibes.** Post-prune (below), the current
+numbers are orch 2,645 / worker 2,099. Against `WORKER_WINDOW_TOKENS =
+128,000` (D-046), the worker's *entire* system prompt is 1.64% of its context
+window before a single message arrives; orch, held to the same yardstick for
+scale, is 2.07%. No behavioral cost has been observed at either figure — no
+worker has been seen mishandling, truncating, or ignoring brief content
+because of its size. The "past CC parity" framing (both prior questions used
+1,485 tokens as the reference) is a comparison point, not a demonstrated
+regression: a fleet member's brief has a verb list, a task board and a review
+protocol to teach that a generic coding agent's guidance never had to. **The
+honest answer: not a problem today, on the numbers; worth capping so it
+cannot become one silently — and the live shakedown, still operator-gated
+and still pending, is the first place a real cost would show up.**
+
+**The cap.** `decisions.md` D-053 sets a Tier 2 cap of orch **2,800** / worker
+**2,200** — thin headroom (≈6% / ≈5%) above today's measured, post-prune
+reality, on the theory a cap that size catches accidental growth without
+inviting an aspirational target the next edit immediately breaks.
+
+**Q-2/Q-3's second operator question — "if it's a problem, what gets cut is a
+question about what the fleet is for" — is now a menu, not an open
+question.** A conservative wording-only prune ran first (D-053): −23 orch /
+−3 worker, ~0.5% of the whole prompt, confirming yet again there is
+essentially no fat left that isn't protocol. Six concrete, *measured* (not
+guessed) protocol-level cut candidates, each costed with what it actually
+removes and who owns the piece being cut, are now in
+[`prompt-budget-menu.md`](./prompt-budget-menu.md) — from a 225-token orch cut
+(distill the vision tenets to their bolded lines, losing every stated *why*)
+down to a 10-token worker cut (drop one acknowledgment sentence from the
+operator-authority clause). The menu states a recommendation labeled as one
+(take the two syntax-only cuts, leave everything with a reason attached) and
+leaves the rest to the operator, per Q-3's original call: *what to cut is a
+question about what the fleet is for, not a builder's.*
+
+**Q-4's control-case finding stands, restated with the full ledger behind
+it.** WP-07 added no verb and cost roughly half the multiple of the packages
+that did (~2.25× against its own worker-only budget, vs. 3.8–4.6× for
+verb-adding packages) — the clearest single data point that a `brief-cost`
+estimate should be written in the shape "no verb ≈ 2×, one verb ≈ 4–5×," not
+as a flat guess.
+
+Nothing here is reversed; all three questions are closed by measurement.
