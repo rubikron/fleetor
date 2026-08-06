@@ -155,6 +155,16 @@ fn worker_config_dir(slot: u8) -> PathBuf {
     shell_dir().join("pane-config").join(format!("worker-{slot}"))
 }
 
+/// A worker's private `HOME` (WP-08, the Fence): `~/.ssh`, the operator's real
+/// Claude config and shell profiles stop being reachable *by name* once this is
+/// what `HOME` resolves to instead. A natural sibling of `pane-config` and
+/// `worktrees` — same `_shell` root, same per-slot layout — and, like both of
+/// those, still under `~/.fleetor`, so `rm -rf ~/.fleetor` still removes
+/// everything FLEETOR made (Tier 1.1).
+fn worker_home_dir(slot: u8) -> PathBuf {
+    shell_dir().join("home").join(format!("worker-{slot}"))
+}
+
 /// A worker's own checkout of the target.
 fn worktree_dir(slot: u8) -> PathBuf {
     shell_dir().join("worktrees").join(format!("worker-{slot}"))
@@ -317,6 +327,11 @@ pub(crate) fn spawn_pane(
             let cwd = worker_cwd(&store, &target, slot);
             let config_dir = worker_config_dir(slot);
             spawn::seed_config_dir(&config_dir, &cwd)?;
+            // The Fence (WP-08): a private HOME, created and seeded before the
+            // process exists — same reason the config dir is seeded here rather
+            // than at the target picker (see this function's doc comment).
+            let home = worker_home_dir(slot);
+            spawn::seed_worker_home(&home, slot)?;
             note_spawn_estimate(&store, &context, pane, &cwd, Some(context_gauge::WORKER_WINDOW_TOKENS));
             // The WP-04 live gauge's source of truth: where to find this
             // worker's own transcript once it has one. Recorded before the
@@ -324,7 +339,7 @@ pub(crate) fn spawn_pane(
             // first turn samples the (not-yet-there) file as absent, never a
             // stale or wrong pane's numbers.
             gauges.record(pane, TranscriptSource { config_dir: config_dir.clone(), cwd: cwd.clone() });
-            spawn::worker_command(slot, &cwd, &config_dir, &socket, &key, &context)
+            spawn::worker_command(slot, &cwd, &home, &config_dir, &socket, &key, &context)
         }
     };
 

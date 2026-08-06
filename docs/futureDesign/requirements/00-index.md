@@ -22,7 +22,7 @@ The Blackboard vision, split into nine session-sized work packages. The vision i
 | 05 | `05-task-blocks.md` | Task blocks — the blackboard record + Tasks view | 01, 02 (soft) | L | **landed** |
 | 06 | `06-receipts-review-merge.md` | Receipts, peer review, and the merge step | 01, 05 | L | **landed** |
 | 07 | `07-operator-participant.md` | Operator as participant | 01 | M | **landed** |
-| 08 | `08-the-fence.md` | The Fence — private worker HOME | 01 | S/M | not-started |
+| 08 | `08-the-fence.md` | The Fence — private worker HOME | 01 | S/M | **landed** |
 | 09 | `09-brief-budget-shakedown.md` | Prompt budget + live shakedown | all | S/M + live spend | not-started |
 
 ## Dependency graph
@@ -42,7 +42,7 @@ WP-01 ─┬─→ WP-02 ─→ WP-05 ─→ WP-06 ─┐
 ## Contention warning — read before running packages in parallel
 
 - WP-03, WP-05, WP-06, WP-07 all edit `prompts/orch.md` + `prompts/worker.md`, `VERBS`, and the clap enum. The validation WP-01 lands **refuses** a prompt that fails to teach every verb, so a verb and its prompt text must move in one commit. Run **at most one verb-adding package (03, 05, 06) at a time**. *WP-07 landed and added no verb — `VERBS` and the clap enum are untouched; it edited both prompt files and `prompts/delivery-contract.md`.*
-- **WP-06 landed first, so this one is now WP-08's to discharge.** A private HOME drops the global `user.name`/`user.email`, and WP-06 made worker commits load-bearing rather than incidental: the receipt names a commit and the reviewer reads it, so a worker that cannot commit produces a receipt pointing at nothing. WP-08 seeds a gitconfig for exactly this and must re-validate a real worker commit + a peer's `git diff HEAD...fleet/worker-N` before it calls itself done.
+- **WP-06 landed first, so WP-08 discharged the debt (D-052).** A private HOME drops the global `user.name`/`user.email`, and WP-06 made worker commits load-bearing rather than incidental: the receipt names a commit and the reviewer reads it, so a worker that cannot commit produces a receipt pointing at nothing. WP-08 seeds a gitconfig for exactly this, and re-validated both a real worker commit and a peer's `git diff HEAD...fleet/worker-N` live, under the fenced env — `docs/fence-notes.md` is the transcript; the worktree mechanism `peer-review-notes.md` measured turned out not to route through `HOME` at all, so peer review is unaffected.
 
 ## Reconciliation with the autonomy-designs build order
 

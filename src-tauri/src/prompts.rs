@@ -40,6 +40,11 @@ pub struct LaunchConfig {
     pub worker_model: String,
     pub worker_base_url: String,
     pub worker_permission_mode: String,
+    /// WP-08, the Fence: `open` is the only posture that exists — see
+    /// `prompts/launch.conf`'s `[fence]` section for why the key exists anyway.
+    /// Nothing in this codebase branches on it yet; it is a recorded default,
+    /// not a gate.
+    pub fence_posture: String,
 }
 
 /// The baked-in `prompts/launch.conf`, parsed at startup. Shipping the file *and*
@@ -56,6 +61,7 @@ impl Default for LaunchConfig {
             worker_model: "deepseek-v4-flash".to_string(),
             worker_base_url: "https://api.deepseek.com/anthropic".to_string(),
             worker_permission_mode: "auto".to_string(),
+            fence_posture: "open".to_string(),
         }
     }
 }
@@ -203,6 +209,15 @@ fn apply_conf(base: &LaunchConfig, text: &str) -> (LaunchConfig, Vec<String>) {
             ("worker", "model") => config.worker_model = value,
             ("worker", "base_url") => config.worker_base_url = value,
             ("worker", "permission_mode") => config.worker_permission_mode = value,
+            // Only `open` is implemented (WP-08) — a Posture Ladder with other
+            // values was proposed and rejected upstream. A value this parser
+            // doesn't recognise falls back to `open` rather than being stored:
+            // a posture that silently did nothing would read as hardening that
+            // never happened.
+            ("fence", "posture") if value == "open" => config.fence_posture = value,
+            ("fence", "posture") => complaints.push(format!(
+                "line {at}: `fence.posture = {value}` is not a supported posture — only `open` exists; using `open`"
+            )),
             ("", _) => complaints.push(format!("line {at}: `{key}` is before any [section] header")),
             _ => complaints.push(format!("line {at}: `[{section}] {key}` is not a setting")),
         }
@@ -356,5 +371,29 @@ mod tests {
         let (_, complaints) = apply_conf(&LaunchConfig::default(), "model = orphan\n");
         assert_eq!(complaints.len(), 1);
         assert!(complaints[0].contains("before any [section]"), "{complaints:#?}");
+    }
+
+    /// WP-08's own knob: `open` is the only posture that exists, and setting it
+    /// explicitly must round-trip cleanly — this key is a no-op today, but a
+    /// no-op that fails to parse would be a worse first impression than one that
+    /// silently did nothing.
+    #[test]
+    fn fence_posture_open_parses_with_no_complaint() {
+        let (config, complaints) = apply_conf(&LaunchConfig::default(), "[fence]\nposture = open\n");
+        assert!(complaints.is_empty(), "{complaints:#?}");
+        assert_eq!(config.fence_posture, "open");
+    }
+
+    /// A posture this parser doesn't implement must not read as if it took
+    /// effect: no Posture Ladder exists yet, so anything other than `open`
+    /// falls back to `open` and says so loudly rather than being stored as a
+    /// setting nothing honors.
+    #[test]
+    fn an_unsupported_posture_falls_back_to_open_and_warns() {
+        let (config, complaints) = apply_conf(&LaunchConfig::default(), "[fence]\nposture = locked-down\n");
+        assert_eq!(config.fence_posture, "open", "an unimplemented posture must not silently \"take effect\"");
+        assert_eq!(complaints.len(), 1);
+        assert!(complaints[0].contains("locked-down"), "{complaints:#?}");
+        assert!(complaints[0].contains("only `open` exists"), "{complaints:#?}");
     }
 }

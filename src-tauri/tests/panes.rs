@@ -128,7 +128,15 @@ fn fleet_with_registry_path() -> (Arc<PaneRegistry>, Arc<Transcript>, PathBuf) {
     let socket = PathBuf::from("/tmp/fleetor-panes-test.sock");
     registry.spawn(PaneId::Orch, spawn::orch_command(&cwd, &socket, &PaneContext::baked()), 24, 80).unwrap();
     for slot in WORKER_SLOTS {
-        let command = spawn::worker_command(slot, &cwd, &cwd.join("unused-cfg"), &socket, "sk-test", &PaneContext::baked());
+        let command = spawn::worker_command(
+            slot,
+            &cwd,
+            &cwd.join("unused-home"),
+            &cwd.join("unused-cfg"),
+            &socket,
+            "sk-test",
+            &PaneContext::baked(),
+        );
         registry.spawn(PaneId::Worker(slot), command, 24, 80).unwrap();
     }
     (registry, transcript, registry_path)
@@ -310,7 +318,15 @@ fn a_killed_pane_can_be_spawned_again() {
 
     let cwd = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let socket = PathBuf::from("/tmp/fleetor-panes-test.sock");
-    let command = spawn::worker_command(4, &cwd, &cwd.join("unused-cfg"), &socket, "sk-test", &PaneContext::baked());
+    let command = spawn::worker_command(
+        4,
+        &cwd,
+        &cwd.join("unused-home"),
+        &cwd.join("unused-cfg"),
+        &socket,
+        "sk-test",
+        &PaneContext::baked(),
+    );
     registry.spawn(target, command, 24, 80).expect("a dead pane respawns");
 
     registry.write_paste(target, "still here?").unwrap();
