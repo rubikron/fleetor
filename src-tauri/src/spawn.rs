@@ -29,6 +29,14 @@
 //! decides how a process is shaped; that one decides what goes in its head. The
 //! two `env_remove` calls below are the deliberate exception: they are not
 //! settings, they are the three ways a pane wedges forever (D-042).
+//!
+//! **The brief is `--system-prompt`, not `--append-system-prompt` (D-043).** It
+//! *replaces* Claude Code's own prompt rather than following it, so the rendered
+//! file is the whole of what a pane is told. `docs/system-prompt-notes.md` is the
+//! measurement behind that switch, against CC 2.1.223. Note the one thing it made
+//! this module responsible for: `cwd` is passed into the renderer as well as onto
+//! the command, because CC's `# Environment` section carried the working directory
+//! and that section is gone.
 
 use std::path::{Path, PathBuf};
 
@@ -62,8 +70,8 @@ fn roster() -> Vec<PaneId> {
 /// five things that make it a pane.
 pub fn orch_command(cwd: &Path, socket: &Path, ctx: &PaneContext) -> CommandBuilder {
     let mut cmd = base_command(&[
-        "--append-system-prompt".to_string(),
-        render_orch(&ctx.orch_template, &roster()),
+        "--system-prompt".to_string(),
+        render_orch(&ctx.orch_template, &roster(), &cwd.display().to_string()),
     ]);
     cmd.cwd(cwd);
     apply_pane_env(&mut cmd, PaneId::Orch, socket);
@@ -90,8 +98,8 @@ pub fn worker_command(
     let mut cmd = base_command(&[
         "--permission-mode".to_string(),
         ctx.launch.worker_permission_mode.clone(),
-        "--append-system-prompt".to_string(),
-        render_worker(&ctx.worker_template, pane, &roster()),
+        "--system-prompt".to_string(),
+        render_worker(&ctx.worker_template, pane, &roster(), &cwd.display().to_string()),
     ]);
     cmd.cwd(cwd);
     apply_pane_env(&mut cmd, pane, socket);
@@ -383,7 +391,8 @@ mod tests {
 
     /// `--permission-mode auto` is load-bearing: the default is `manual`, which
     /// wedges on the first tool call. And the brief goes in as a system prompt,
-    /// never as a `CLAUDE.md` the worker could see in `git status` and delete.
+    /// never as a `CLAUDE.md` the worker could see in `git status` and delete —
+    /// now *replacing* CC's own rather than appending to it (D-043).
     #[test]
     fn a_worker_runs_prompt_free_and_is_briefed_through_its_system_prompt() {
         let worker =
@@ -391,7 +400,12 @@ mod tests {
         let args: Vec<String> =
             worker.get_argv().iter().map(|a| a.to_string_lossy().into_owned()).collect();
         assert!(args.windows(2).any(|w| w == ["--permission-mode", "auto"]), "{args:?}");
-        let brief_at = args.iter().position(|a| a == "--append-system-prompt").expect("briefed");
+        assert!(
+            !args.iter().any(|a| a == "--append-system-prompt"),
+            "D-043: the brief replaces CC's system prompt, it no longer appends to it",
+        );
+        let brief_at = args.iter().position(|a| a == "--system-prompt").expect("briefed");
         assert!(args[brief_at + 1].contains("You are `worker-2`"), "the brief names the pane");
+        assert!(args[brief_at + 1].contains("/tmp"), "and says where the pane is working");
     }
 }

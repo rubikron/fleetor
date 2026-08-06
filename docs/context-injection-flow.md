@@ -28,13 +28,13 @@ sequenceDiagram
     rect rgba(120,200,150,0.10)
     note over OP,APP: T1 — spawn, once per pane
     OP->>APP: start the fleet
-    APP->>APP: render_worker(template, me, roster)<br/>fragments composed in at their placeholders
+    APP->>APP: render_worker(template, me, roster, cwd)<br/>fragments composed in at their placeholders
     APP->>APP: build argv + env from launch.conf
     end
 
     rect rgba(255,180,120,0.12)
     note over APP,PANE: T2 — exec, once per pane
-    APP->>PANE: claude --permission-mode auto --append-system-prompt "<brief>"<br/>cwd = worktree · CLAUDE_CONFIG_DIR · ANTHROPIC_MODEL · FLEETOR_PANE
+    APP->>PANE: claude --permission-mode auto --system-prompt "<brief>"<br/>cwd = worktree · CLAUDE_CONFIG_DIR · ANTHROPIC_MODEL · FLEETOR_PANE
     PANE->>PANE: assembles its own context window (§2)
     end
 
@@ -59,22 +59,23 @@ This is the part that matters when you are writing a brief: your text is not the
 graph TB
     subgraph win["the pane's context window, in assembly order"]
         direction TB
-        S1["<b>1 · Claude Code's own system prompt</b><br/>tone, tool discipline, refusal rules<br/><i>we do not touch this</i>"]
-        S2["<b>2 · our brief</b> ← --append-system-prompt<br/>orch.md / worker.md, rendered<br/>+ delivery-contract.md<br/>+ broadcast-rule.md"]
+        S1["<b>1 · what CC still supplies</b><br/>“You are Claude Code…” + git status<br/><i>its 6.5 KB of guidance is gone (D-043)</i>"]
+        S2["<b>2 · our brief</b> ← --system-prompt<br/>orch.md / worker.md, rendered<br/>+ delivery-contract.md<br/>+ broadcast-rule.md<br/>+ scaffolding.md"]
         S3["<b>3 · tool definitions</b><br/>Bash · Read · Edit · …<br/><i>`fleet` is a Bash command, not a tool</i>"]
-        S4["<b>4 · environment block</b><br/>cwd · platform · git branch<br/><i>from the worktree we set</i>"]
+        S4["<b>4 · CC's environment block</b><br/>cwd · platform · shell · model<br/><i>gone under --system-prompt —<br/>cwd is restated in our brief</i>"]
         S5["<b>5 · memory files</b><br/>project CLAUDE.md — from the cwd<br/>user CLAUDE.md, skills, agents, MCP —<br/>from CLAUDE_CONFIG_DIR"]
         S6["<b>6 · the conversation</b><br/>operator keystrokes, and every<br/>[fleet · …] message as a user turn"]
         S1 --> S2 --> S3 --> S4 --> S5 --> S6
     end
     T2A["T2 · exec"] -.->|"argv"| S2
     T2B["T2 · exec"] -.->|"cwd + CLAUDE_CONFIG_DIR"| S5
+    T2C["T2 · exec"] -.->|"cwd"| S2
     T3["T3 · runtime"] -.->|"bracketed paste"| S6
 ```
 
 Three consequences worth designing around:
 
-**Our brief is an *append*, not a replacement.** It sits after Claude Code's own system prompt and cannot override it. A brief that says "never ask permission" loses to `--permission-mode`; a brief that says "you are not Claude Code" is just confusing. Write it as what it is — a job description handed to an agent that already knows how to work.
+**Our brief is a *replacement*, but a narrower one than that sounds (D-043).** `--system-prompt` empties Claude Code's guidance out of the system prompt — 6,866 chars down to 364 in the measured run — and leaves everything else exactly where it was. Tools, memory files, skills, agents and the git-status section are byte-identical under either flag; `docs/system-prompt-notes.md` has the diff. Two consequences for anyone writing a brief: the line "You are Claude Code, Anthropic's official CLI for Claude." is its own system block and still arrives, so a brief saying "you are not Claude Code" contradicts the text above it; and the working posture that *did* leave has to come from `scaffolding.md`, which is why that fragment is composed into both briefs and cannot be dropped. A brief still cannot beat `--permission-mode` — that is a flag, not prose.
 
 **Layer 5 is where orch and worker diverge hardest.** The orchestrator runs on the operator's own `CLAUDE_CONFIG_DIR`, so it gets their user `CLAUDE.md`, skills, subagents and MCP servers. A worker's config dir is private and holds two onboarding keys and nothing else — it gets **none** of that. Both get the repo's own committed `CLAUDE.md`, because both have a checkout as their cwd. So a worker that needs to know something must be told it in `worker.md` or in a file committed to the repo. There is no third place.
 
@@ -86,10 +87,12 @@ Three consequences worth designing around:
 
 | What | File / source | Lands in | When | Editable without a rebuild |
 |---|---|---|---|---|
-| Orchestrator brief | `prompts/orch.md` | system prompt (append) | T2, once | ✅ `~/.fleetor/prompts/orch.md` |
-| Worker brief (all 4 slots) | `prompts/worker.md` | system prompt (append) | T2, once | ✅ `~/.fleetor/prompts/worker.md` |
+| Orchestrator brief | `prompts/orch.md` | system prompt (replace) | T2, once | ✅ `~/.fleetor/prompts/orch.md` |
+| Worker brief (all 4 slots) | `prompts/worker.md` | system prompt (replace) | T2, once | ✅ `~/.fleetor/prompts/worker.md` |
 | Exit-code contract | `prompts/delivery-contract.md` | inside both briefs | T2, once | ✅ — but the placeholder is required |
 | Anti-amplification clause | `prompts/broadcast-rule.md` | inside the worker brief | T2, once | ✅ — but the placeholder is required |
+| Working posture CC no longer supplies | `prompts/scaffolding.md` | inside both briefs | T2, once | ✅ — but the placeholder is required |
+| The pane's working directory | the cwd `spawn.rs` sets | `{cwd}` in both briefs | T2, once | ❌ — CC's `# Environment` section used to carry it |
 | Peer roster | computed — `PaneId::roster` | `{peers}` / `{workers}` | T2, once | ❌ `WORKER_SLOTS` |
 | Worker model | `prompts/launch.conf` | `ANTHROPIC_MODEL` | T2, once | ✅ |
 | Worker endpoint | `prompts/launch.conf` | `ANTHROPIC_BASE_URL` | T2, once | ✅ |

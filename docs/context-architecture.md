@@ -21,7 +21,7 @@ Every pane's understanding of the world comes from four distinct sources. They a
 ```mermaid
 graph TB
     subgraph spawn["At spawn — frozen for the pane's lifetime"]
-        L1["<b>Layer 1 — The brief</b><br/>--append-system-prompt<br/><i>fleetor-core::brief</i>"]
+        L1["<b>Layer 1 — The brief</b><br/>--system-prompt<br/><i>fleetor-core::brief</i>"]
         L2["<b>Layer 2 — Process shape</b><br/>model · endpoint · permission mode · env<br/><i>src-tauri::spawn</i>"]
         L3["<b>Layer 3 — Filesystem context</b><br/>cwd → project CLAUDE.md<br/>CLAUDE_CONFIG_DIR → user memory, skills, agents, MCP"]
     end
@@ -36,7 +36,7 @@ graph TB
 
 ### Layer 1 — The brief (`prompts/*.md`, rendered by `crates/fleetor-core/src/brief.rs`)
 
-The only thing that tells a `claude` it is part of a fleet. Two templates, `prompts/orch.md` and `prompts/worker.md`, rendered by `orch_brief(roster)` and `worker_brief(me, roster)` and passed via `--append-system-prompt`.
+The only thing that tells a `claude` it is part of a fleet. Two templates, `prompts/orch.md` and `prompts/worker.md`, rendered by `orch_brief(roster, cwd)` and `worker_brief(me, roster, cwd)` and passed via `--system-prompt` — which *replaces* Claude Code's own system prompt rather than appending to it (D-043).
 
 > When this survey was taken the prose lived in two `format!` literals in `brief.rs`, and §4 below is the argument for getting it out of there. That argument was made and won — D-042. The rendered briefs did not change a byte; where they come from did. `brief.rs` is now the renderer and the validator, and `prompts/README.md` is the account of the files.
 

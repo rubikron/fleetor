@@ -8,13 +8,16 @@ For *when* each piece arrives and where it lands inside the pane's context windo
 
 | File | What it is | Placeholders it must keep |
 |---|---|---|
-| `orch.md` | The orchestrator's brief | `{workers}` `{delivery_contract}` |
-| `worker.md` | The brief every worker slot renders | `{me}` `{peers}` `{delivery_contract}` `{broadcast_rule}` |
+| `orch.md` | The orchestrator's brief | `{cwd}` `{workers}` `{delivery_contract}` `{scaffolding}` |
+| `worker.md` | The brief every worker slot renders | `{me}` `{cwd}` `{peers}` `{delivery_contract}` `{broadcast_rule}` `{scaffolding}` |
 | `delivery-contract.md` | Fragment: what a `fleet` exit code means | — |
 | `broadcast-rule.md` | Fragment: never answer a broadcast unless it names you | — |
+| `scaffolding.md` | Fragment: the working posture CC's own prompt used to supply | — |
 | `launch.conf` | Model, endpoint and flags a worker starts with | — |
 
-All four workers render the same `worker.md`. They differ only in `{me}` and `{peers}`.
+All four workers render the same `worker.md`. They differ only in `{me}`, `{peers}` and `{cwd}`.
+
+**These briefs are the pane's *whole* system prompt (D-043).** They go in via `--system-prompt`, which replaces Claude Code's own rather than appending to it. What that does and does not take away is measured in [`docs/system-prompt-notes.md`](../docs/system-prompt-notes.md) — the short version is that CC's guidance leaves and its tools, memory files, skills and git-status section stay. `scaffolding.md` is the part worth restating, and `{cwd}` covers the one thing genuinely lost.
 
 ## Placeholders
 
@@ -23,19 +26,22 @@ All four workers render the same `worker.md`. They differ only in `{me}` and `{p
 | `{me}` | this pane's name — `worker-2` |
 | `{peers}` | the roster minus this pane, in prose — `orch, worker-1, worker-3 and worker-4` |
 | `{workers}` | the roster minus `orch` — `worker-1, worker-2, worker-3 and worker-4` |
+| `{cwd}` | the directory this pane was started in — a worker's own git worktree, or the target itself for `orch` |
 | `{delivery_contract}` | the whole of `delivery-contract.md` |
 | `{broadcast_rule}` | the whole of `broadcast-rule.md` |
+| `{scaffolding}` | the whole of `scaffolding.md` |
 
 Anything else in braces is left alone — these are markdown files, not format strings, so `Vec<{}>` in prose survives.
 
-## Why two of them are fragments
+## Why three of them are fragments
 
-`delivery-contract.md` and `broadcast-rule.md` are composed *into* the briefs at a placeholder rather than written out in them, and a template that drops its placeholder is **refused** rather than rendered.
+`delivery-contract.md`, `broadcast-rule.md` and `scaffolding.md` are composed *into* the briefs at a placeholder rather than written out in them, and a template that drops its placeholder is **refused** rather than rendered.
 
-Both are load-bearing:
+All three are load-bearing:
 
 - The **delivery contract** is the only reason a model can tell a failed send from a good one. It reads its own Bash exit code and self-corrects. A pane without it silently believes every message arrived.
 - The **broadcast rule** is the only mitigation left for broadcast amplification. The hub-side rate limiter was deliberately removed (`decisions.md` D-031) on the grounds that nothing in the delivery path may be able to refuse a message — which is only safe while this clause holds. Five peers that all answer every broadcast is a token fire that looks like a working fleet.
+- The **scaffolding** is everything a pane used to inherit from Claude Code's system prompt and no longer does (D-043): tool discipline, what a denied call means, that a long conversation is summarized rather than ended, faithful reporting of outcomes, and the refusal and pronoun defaults. Rewrite it freely — but a brief that drops it is a pane with a job description and no working posture.
 
 So you can rewrite every word around them and they still arrive. You edit the prose; the fleet keeps its contracts.
 

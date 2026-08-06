@@ -1,8 +1,16 @@
-//! The briefings appended to each pane's system prompt at spawn (D-030, D-042).
+//! Each pane's system prompt at spawn (D-030, D-042, D-043).
 //!
 //! These are the *only* thing that tells a live `claude` it is part of a fleet.
-//! They go in via `--append-system-prompt`, never as a `CLAUDE.md` in the pane's
-//! cwd — a file there would show up in `git status` and the worker could delete it.
+//! They go in via `--system-prompt`, never as a `CLAUDE.md` in the pane's cwd —
+//! a file there would show up in `git status` and the worker could delete it.
+//!
+//! **This is a replacement, not an append (D-043).** Since 2.1.223 the flag is
+//! `--system-prompt`, so what is rendered here is the pane's whole prompt rather
+//! than a postscript to Claude Code's own. `docs/system-prompt-notes.md` measured
+//! what that costs: CC's ~6.5 KB of guidance leaves, while its tools, the memory
+//! files, the skills listing and the git-status section all stay. The part worth
+//! restating is `scaffolding.md`, and the one thing genuinely lost is the working
+//! directory — hence `{cwd}`.
 //!
 //! **The prose lives in `prompts/*.md`, not here.** This module is the renderer:
 //! it bakes those files in with `include_str!` so the binary always has a working
@@ -10,14 +18,16 @@
 //! operator's own copies are loaded from disk by `src-tauri::prompts` and handed
 //! back here as a `template` argument — `fleetor-core` does no I/O (lib.rs §1).
 //!
-//! Two of the four files are **fragments, not templates**: `delivery-contract.md`
-//! and `broadcast-rule.md` are composed *into* the briefs at a placeholder rather
-//! than written out in them. That is deliberate. Both are load-bearing —
-//! the first is the only reason a model can tell a failed send from a good one,
-//! the second is the only mitigation left for broadcast amplification after the
-//! rate limiter was removed (D-031) — and a template that drops its placeholder
-//! is refused rather than rendered. An operator can rewrite everything around
-//! them; they cannot be lost by editing prose.
+//! Three of the files are **fragments, not templates**: `delivery-contract.md`,
+//! `broadcast-rule.md` and `scaffolding.md` are composed *into* the briefs at a
+//! placeholder rather than written out in them. That is deliberate. All three are
+//! load-bearing — the first is the only reason a model can tell a failed send
+//! from a good one, the second is the only mitigation left for broadcast
+//! amplification after the rate limiter was removed (D-031), and the third is the
+//! working posture a pane no longer inherits from CC now that the prompt is
+//! replaced rather than appended (D-043). A template that drops its placeholder is
+//! refused rather than rendered. An operator can rewrite everything around them;
+//! they cannot be lost by editing prose.
 //!
 //! [`VERBS`] is the shared list the briefs are checked against and the `fleet` CLI
 //! registers its subcommands from, so a rename shows up in both places at once.
@@ -46,50 +56,67 @@ const DELIVERY_CONTRACT: &str = include_str!("../../../prompts/delivery-contract
 /// The L5 anti-amplification clause. Composed into the worker brief verbatim.
 const BROADCAST_RULE: &str = include_str!("../../../prompts/broadcast-rule.md");
 
+/// The working posture a pane used to inherit from Claude Code's own system
+/// prompt and no longer does (D-043). Composed into both briefs verbatim.
+const SCAFFOLDING: &str = include_str!("../../../prompts/scaffolding.md");
+
 /// The placeholders an orchestrator template must contain to be usable.
-const ORCH_PLACEHOLDERS: [&str; 2] = ["workers", "delivery_contract"];
+const ORCH_PLACEHOLDERS: [&str; 4] = ["cwd", "workers", "delivery_contract", "scaffolding"];
 
 /// The placeholders a worker template must contain to be usable.
-const WORKER_PLACEHOLDERS: [&str; 4] = ["me", "peers", "delivery_contract", "broadcast_rule"];
+const WORKER_PLACEHOLDERS: [&str; 6] =
+    ["me", "cwd", "peers", "delivery_contract", "broadcast_rule", "scaffolding"];
+
+/// What `validate_orch` / `validate_worker` render `{cwd}` as. A template is
+/// checked for verbs and placeholders, never for a real path, and inventing one
+/// here would only make the failure messages lie about where a pane runs.
+const CWD_FOR_VALIDATION: &str = "the pane's working directory";
 
 // --- the briefs ---------------------------------------------------------------
 
 /// Briefing for the orchestrator pane, from the baked-in template — the operator's
 /// own `claude`, driving the fleet. It keeps the operator's model and permissions;
 /// all this adds is the existence of the other four terminals and how to reach them.
-pub fn orch_brief(roster: &[PaneId]) -> String {
-    render_orch(DEFAULT_ORCH, roster)
+pub fn orch_brief(roster: &[PaneId], cwd: &str) -> String {
+    render_orch(DEFAULT_ORCH, roster, cwd)
 }
 
 /// Briefing for a worker pane, from the baked-in template. Shorter than the
 /// orchestrator's, and carrying the L5 anti-amplification clause — five peers that
 /// all reply to broadcasts is a token fire that looks like a working fleet.
-pub fn worker_brief(me: PaneId, roster: &[PaneId]) -> String {
-    render_worker(DEFAULT_WORKER, me, roster)
+pub fn worker_brief(me: PaneId, roster: &[PaneId], cwd: &str) -> String {
+    render_worker(DEFAULT_WORKER, me, roster, cwd)
 }
 
 /// The orchestrator brief from an arbitrary template — the seam the operator's own
 /// `orch.md` comes in through. Validate it first; this renders whatever it is given.
-pub fn render_orch(template: &str, roster: &[PaneId]) -> String {
+pub fn render_orch(template: &str, roster: &[PaneId], cwd: &str) -> String {
     let workers = peer_list(roster, PaneId::Orch);
     render(
         template,
-        &[("workers", workers.as_str()), ("delivery_contract", DELIVERY_CONTRACT.trim_end())],
+        &[
+            ("cwd", cwd),
+            ("workers", workers.as_str()),
+            ("delivery_contract", DELIVERY_CONTRACT.trim_end()),
+            ("scaffolding", SCAFFOLDING.trim_end()),
+        ],
     )
 }
 
-/// One worker's brief from an arbitrary template. `me` and `peers` are the only
-/// things that differ between the four slots.
-pub fn render_worker(template: &str, me: PaneId, roster: &[PaneId]) -> String {
+/// One worker's brief from an arbitrary template. `me`, `peers` and `cwd` are the
+/// only things that differ between the four slots.
+pub fn render_worker(template: &str, me: PaneId, roster: &[PaneId], cwd: &str) -> String {
     let peers = peer_list(roster, me);
     let name = me.to_string();
     render(
         template,
         &[
             ("me", name.as_str()),
+            ("cwd", cwd),
             ("peers", peers.as_str()),
             ("delivery_contract", DELIVERY_CONTRACT.trim_end()),
             ("broadcast_rule", BROADCAST_RULE.trim_end()),
+            ("scaffolding", SCAFFOLDING.trim_end()),
         ],
     )
 }
@@ -108,13 +135,13 @@ pub fn render(template: &str, vars: &[(&str, &str)]) -> String {
 /// operator can act on — it reaches them as a `Warn` on the Activity feed.
 pub fn validate_orch(template: &str) -> Result<(), String> {
     require_placeholders(template, &ORCH_PLACEHOLDERS)?;
-    require_verbs(&render_orch(template, &default_roster()))
+    require_verbs(&render_orch(template, &default_roster(), CWD_FOR_VALIDATION))
 }
 
 /// Whether a worker template can be used.
 pub fn validate_worker(template: &str) -> Result<(), String> {
     require_placeholders(template, &WORKER_PLACEHOLDERS)?;
-    require_verbs(&render_worker(template, PaneId::Worker(1), &default_roster()))
+    require_verbs(&render_worker(template, PaneId::Worker(1), &default_roster(), CWD_FOR_VALIDATION))
 }
 
 fn default_roster() -> Vec<PaneId> {
@@ -166,13 +193,17 @@ mod tests {
         PaneId::roster(&WORKER_SLOTS)
     }
 
+    /// Every test renders against the same working directory, so a brief that
+    /// differs between two slots differs for a reason other than where it runs.
+    const CWD: &str = "/tmp/fleetor-test-target";
+
     /// A verb rename must not be able to leave the briefs teaching the old one.
     /// Asserted against literals, not `VERBS`, so this test is the tripwire.
     #[test]
     fn both_briefs_teach_every_cli_verb() {
         let literals = ["send", "broadcast", "reply", "roster", "whoami"];
         assert_eq!(literals.to_vec(), VERBS.to_vec(), "VERBS drifted from the verbs the briefs teach");
-        for brief in [orch_brief(&roster()), worker_brief(PaneId::Worker(1), &roster())] {
+        for brief in [orch_brief(&roster(), CWD), worker_brief(PaneId::Worker(1), &roster(), CWD)] {
             for verb in literals {
                 assert!(brief.contains(&format!("fleet {verb}")), "brief never mentions `fleet {verb}`");
             }
@@ -181,13 +212,13 @@ mod tests {
 
     #[test]
     fn the_worker_brief_carries_the_anti_amplification_clause() {
-        let brief = worker_brief(PaneId::Worker(2), &roster());
+        let brief = worker_brief(PaneId::Worker(2), &roster(), CWD);
         assert!(brief.contains("Never reply to a broadcast unless it names you"), "L5 clause missing");
     }
 
     #[test]
     fn both_briefs_state_that_a_nonzero_exit_means_not_delivered() {
-        for brief in [orch_brief(&roster()), worker_brief(PaneId::Worker(1), &roster())] {
+        for brief in [orch_brief(&roster(), CWD), worker_brief(PaneId::Worker(1), &roster(), CWD)] {
             assert!(brief.contains("exits non-zero"));
             assert!(brief.contains("not a promise"), "must not let the model read success as delivery (L3)");
         }
@@ -199,14 +230,14 @@ mod tests {
         // framing change cannot leave the briefs describing the old one.
         let direct = crate::message::frame_for_pane(PaneId::Worker(3), "x");
         let prefix = direct.trim_end_matches(" x");
-        assert!(worker_brief(PaneId::Worker(1), &roster()).contains(prefix), "worker brief shows {prefix}");
-        assert!(orch_brief(&roster()).contains("[fleet · worker-2]"));
-        assert!(orch_brief(&roster()).contains("→ all"), "orch must be able to spot a broadcast too");
+        assert!(worker_brief(PaneId::Worker(1), &roster(), CWD).contains(prefix), "worker brief shows {prefix}");
+        assert!(orch_brief(&roster(), CWD).contains("[fleet · worker-2]"));
+        assert!(orch_brief(&roster(), CWD).contains("→ all"), "orch must be able to spot a broadcast too");
     }
 
     #[test]
     fn a_pane_is_never_listed_among_its_own_peers() {
-        let brief = worker_brief(PaneId::Worker(2), &roster());
+        let brief = worker_brief(PaneId::Worker(2), &roster(), CWD);
         let peers = brief.lines().find(|l| l.contains("coordinates you")).unwrap();
         assert!(!peers.contains("worker-2"), "worker-2 listed itself as a peer: {peers}");
         assert!(peers.contains("worker-1") && peers.contains("worker-4"));
@@ -230,7 +261,7 @@ mod tests {
     /// reads as a working brief right up until it matters.
     #[test]
     fn a_rendered_brief_has_no_placeholders_left_in_it() {
-        for brief in [orch_brief(&roster()), worker_brief(PaneId::Worker(3), &roster())] {
+        for brief in [orch_brief(&roster(), CWD), worker_brief(PaneId::Worker(3), &roster(), CWD)] {
             for name in ORCH_PLACEHOLDERS.iter().chain(WORKER_PLACEHOLDERS.iter()) {
                 assert!(!brief.contains(&format!("{{{name}}}")), "unrendered {{{name}}}: {brief}");
             }
@@ -240,8 +271,8 @@ mod tests {
     /// The four workers share one template on purpose; only their identity differs.
     #[test]
     fn every_worker_renders_the_same_template_with_its_own_name() {
-        let one = worker_brief(PaneId::Worker(1), &roster());
-        let three = worker_brief(PaneId::Worker(3), &roster());
+        let one = worker_brief(PaneId::Worker(1), &roster(), CWD);
+        let three = worker_brief(PaneId::Worker(3), &roster(), CWD);
         assert!(one.contains("You are `worker-1`"));
         assert!(three.contains("You are `worker-3`"));
 
@@ -264,6 +295,10 @@ mod tests {
                 !template.contains("exits non-zero"),
                 "the delivery contract is spelled out in the template instead of composed in",
             );
+            assert!(
+                !template.contains("rendered as GitHub-flavored markdown"),
+                "the scaffolding is spelled out in the template instead of composed in",
+            );
         }
         assert!(
             !DEFAULT_WORKER.contains("Never reply to a broadcast"),
@@ -271,15 +306,41 @@ mod tests {
         );
     }
 
+    /// D-043: the prompt is a *replacement* now, so everything CC used to supply
+    /// and no longer does has to arrive from here. These are the clauses whose
+    /// absence changes what a pane will actually do, pinned as literals for the
+    /// same reason the verb list is — a reworded `scaffolding.md` that quietly
+    /// dropped one would still render, still validate, and still look right.
+    #[test]
+    fn both_briefs_restate_the_posture_the_default_prompt_used_to_supply() {
+        for brief in [orch_brief(&roster(), CWD), worker_brief(PaneId::Worker(1), &roster(), CWD)] {
+            assert!(brief.contains("Report outcomes faithfully"), "a fleet runs on honest reports");
+            assert!(brief.contains("never wrap up early"), "a pane must not abandon work for context");
+            assert!(brief.contains("adapt rather than retrying it verbatim"), "denied means declined");
+            assert!(brief.contains("they/them"), "the pronoun default governs user-visible text");
+            assert!(brief.contains("refuse destructive techniques"), "the security posture is not optional");
+        }
+    }
+
+    /// The one thing `--system-prompt` genuinely takes away: CC's `# Environment`
+    /// section carried the working directory, and nothing else in the request
+    /// names it. A pane that does not know where it is cannot be trusted to edit.
+    #[test]
+    fn every_brief_says_where_the_pane_is_working() {
+        assert!(orch_brief(&roster(), "/tmp/target").contains("/tmp/target"));
+        assert!(worker_brief(PaneId::Worker(2), &roster(), "/tmp/wt-2").contains("/tmp/wt-2"));
+    }
+
     /// The whole point of the fragment split: prose can be rewritten freely and
     /// the load-bearing clauses still arrive.
     #[test]
     fn a_rewritten_template_keeps_the_clauses_it_cannot_afford_to_lose() {
-        let rewritten = "# hi {me}\n\nyour peers: {peers}. use fleet send / fleet broadcast / \
-             fleet reply / fleet roster / fleet whoami.\n\n{delivery_contract}\n\n{broadcast_rule}\n";
+        let rewritten = "# hi {me} in {cwd}\n\nyour peers: {peers}. use fleet send / fleet broadcast / \
+             fleet reply / fleet roster / fleet whoami.\n\n{delivery_contract}\n\n{broadcast_rule}\n\n\
+             {scaffolding}\n";
         validate_worker(rewritten).expect("a template with every placeholder is usable");
 
-        let brief = render_worker(rewritten, PaneId::Worker(2), &roster());
+        let brief = render_worker(rewritten, PaneId::Worker(2), &roster(), CWD);
         assert!(brief.contains("exits non-zero"), "the delivery contract still arrives");
         assert!(brief.contains("Never reply to a broadcast unless it names you"), "L5 still arrives");
         assert!(brief.contains("You are `worker-2`") || brief.contains("hi worker-2"));
@@ -289,23 +350,32 @@ mod tests {
     /// one to put back — the operator reads this on the Activity feed.
     #[test]
     fn a_template_that_drops_a_load_bearing_placeholder_is_refused() {
-        let no_contract = "# {me}\n\npeers: {peers}\n\n{broadcast_rule}\n";
+        let no_contract = "# {me} in {cwd}\n\npeers: {peers}\n\n{broadcast_rule}\n\n{scaffolding}\n";
         let why = validate_worker(no_contract).expect_err("must not be usable");
         assert!(why.contains("{delivery_contract}"), "the refusal names the placeholder: {why}");
 
-        let no_rule = "# {me}\n\npeers: {peers}\n\n{delivery_contract}\n";
+        let no_rule = "# {me} in {cwd}\n\npeers: {peers}\n\n{delivery_contract}\n\n{scaffolding}\n";
         assert!(validate_worker(no_rule).is_err(), "a worker brief without the L5 rule is not usable");
 
-        let no_workers = "# orch\n\n{delivery_contract}\n";
+        let no_workers = "# orch in {cwd}\n\n{delivery_contract}\n\n{scaffolding}\n";
         assert!(validate_orch(no_workers).is_err(), "an orch brief that never names its peers");
+
+        // D-043's additions are load-bearing the same way, and refused the same way.
+        let no_scaffolding = "# {me} in {cwd}\n\npeers: {peers}\n\n{delivery_contract}\n\n{broadcast_rule}\n";
+        let why = validate_worker(no_scaffolding).expect_err("must not be usable");
+        assert!(why.contains("{scaffolding}"), "the refusal names the placeholder: {why}");
+
+        let no_cwd = "# {me}\n\npeers: {peers}\n\n{delivery_contract}\n\n{broadcast_rule}\n\n{scaffolding}\n";
+        let why = validate_worker(no_cwd).expect_err("must not be usable");
+        assert!(why.contains("{cwd}"), "the refusal names the placeholder: {why}");
     }
 
     /// A template can keep every placeholder and still teach a verb list that has
     /// drifted from the CLI. That is a pane running commands which exit 2.
     #[test]
     fn a_template_that_forgets_a_verb_is_refused() {
-        let missing_whoami = "# {me}\n\npeers: {peers}. fleet send / fleet broadcast / fleet reply / \
-             fleet roster.\n\n{delivery_contract}\n\n{broadcast_rule}\n";
+        let missing_whoami = "# {me} in {cwd}\n\npeers: {peers}. fleet send / fleet broadcast / \
+             fleet reply / fleet roster.\n\n{delivery_contract}\n\n{broadcast_rule}\n\n{scaffolding}\n";
         let why = validate_worker(missing_whoami).expect_err("must not be usable");
         assert!(why.contains("fleet whoami"), "the refusal names the missing verb: {why}");
     }

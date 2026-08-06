@@ -256,8 +256,9 @@ mod tests {
     #[test]
     fn a_valid_override_is_used_and_announced() {
         let dir = temp_dir("valid");
-        let mine = "# {me}\n\nyou work with {peers}. verbs: fleet send, fleet broadcast, \
-             fleet reply, fleet roster, fleet whoami.\n\n{delivery_contract}\n\n{broadcast_rule}\n";
+        let mine = "# {me} in {cwd}\n\nyou work with {peers}. verbs: fleet send, fleet broadcast, \
+             fleet reply, fleet roster, fleet whoami.\n\n{delivery_contract}\n\n{broadcast_rule}\n\n\
+             {scaffolding}\n";
         std::fs::write(dir.join("worker.md"), mine).unwrap();
 
         let ctx = PaneContext::resolve(&dir);
@@ -270,7 +271,8 @@ mod tests {
         );
 
         // And it really does reach a rendered brief, fragments intact.
-        let brief = render_worker(&ctx.worker_template, PaneId::Worker(2), &PaneId::roster(&WORKER_SLOTS));
+        let brief =
+            render_worker(&ctx.worker_template, PaneId::Worker(2), &PaneId::roster(&WORKER_SLOTS), "/tmp/wt");
         assert!(brief.contains("you work with"));
         assert!(brief.contains("exits non-zero"), "the delivery contract survived the override");
         assert!(brief.contains("Never reply to a broadcast unless it names you"), "L5 survived");
@@ -284,7 +286,8 @@ mod tests {
     fn a_broken_override_falls_back_and_says_why() {
         let dir = temp_dir("broken");
         // Everything a brief needs except the fragment it cannot afford to lose.
-        std::fs::write(dir.join("worker.md"), "# {me}\n\nyou work with {peers}. no fragments.\n").unwrap();
+        std::fs::write(dir.join("worker.md"), "# {me} in {cwd}\n\nyou work with {peers}. no fragments.\n")
+            .unwrap();
 
         let ctx = PaneContext::resolve(&dir);
         assert_eq!(ctx.worker_template, DEFAULT_WORKER, "a pane must never run a half-valid brief");
