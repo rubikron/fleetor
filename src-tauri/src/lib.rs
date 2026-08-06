@@ -10,9 +10,11 @@
 //! A registry that could only be exercised through a GUI would be a registry
 //! nothing tests.
 
+pub mod context_gauge;
 pub mod deliver;
 pub mod fleet;
 mod orphans;
+pub mod prompts;
 pub mod pty;
 pub mod spawn;
 pub mod testbed;
@@ -82,6 +84,8 @@ pub fn run() {
             fleet::fleet_target,
             fleet::fleet_pick_target,
             fleet::fleet_set_target,
+            fleet::fleet_roster,
+            fleet::fleet_send,
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { .. } = event {

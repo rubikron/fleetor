@@ -19,10 +19,12 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
-import { warmTheme } from "../theme";
+import { warmTheme, warmThemeLight } from "../theme";
 import { onPaneExit, onPaneOutput, resizePane, spawnPane, writePane } from "../fleet/api";
 import { statusTone, STATUS_LABEL } from "../lib/statusTone";
-import type { PaneId, PaneStatus } from "../fleet/types";
+import { gaugeTone, gaugeLabel, gaugeTitle } from "../lib/contextGaugeTone";
+import type { ContextGauge, PaneId, PaneStatus } from "../fleet/types";
+import type { Theme } from "../ui/useTheme";
 
 // Raw pty bytes arrive base64-encoded so escape sequences and multibyte UTF-8
 // never split across a chunk boundary.
@@ -56,11 +58,21 @@ interface TerminalPaneProps {
   status: PaneStatus;
   /// The model running this pane, shown alongside the label when known.
   model?: string;
+  /// This pane's live context gauge (WP-04) — absent for orch always (its
+  /// transcript is the operator's own, out of scope), and for a worker until
+  /// its own transcript has a completed turn. Never rendered as 0%; absent
+  /// means unknown, so the pane head simply shows nothing for it.
+  gauge?: ContextGauge;
   /// xterm's fontSize in px, driven by the app-wide zoom factor
   /// (TERMINAL_FONT_SIZE_PX * zoom — see ui/useZoom.ts). Read once as the
   /// initial value at mount; changes afterward are applied by a separate
   /// effect below, never by re-running the mount effect (L8).
   fontSize: number;
+  /// The app-wide light/dark preference (ui/useTheme.ts). Same treatment as
+  /// fontSize: read once at mount for the Terminal's initial theme, then
+  /// re-applied by its own effect below on every change — never folded into
+  /// the mount effect's deps (L8).
+  theme: Theme;
   onStatus: (pane: PaneId, status: PaneStatus) => void;
   /// Rendered in the pane head; the per-pane restart when one wedges.
   onRestart?: () => void;
@@ -78,7 +90,9 @@ export function TerminalPane({
   started,
   status,
   model,
+  gauge,
   fontSize,
+  theme,
   onStatus,
   onRestart,
   onFocusReady,
@@ -95,6 +109,8 @@ export function TerminalPane({
   // it changes (L8) — a separate effect further down handles updates.
   const fontSizeRef = useRef(fontSize);
   fontSizeRef.current = fontSize;
+  const themeRef = useRef(theme);
+  themeRef.current = theme;
   const onFocusReadyRef = useRef(onFocusReady);
   onFocusReadyRef.current = onFocusReady;
 
@@ -112,7 +128,7 @@ export function TerminalPane({
     if (!host) return;
 
     const term = new Terminal({
-      theme: warmTheme,
+      theme: themeRef.current === "light" ? warmThemeLight : warmTheme,
       fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
       fontSize: fontSizeRef.current,
       lineHeight: 1.2,
@@ -285,6 +301,17 @@ export function TerminalPane({
     }
   }, [fontSize]);
 
+  // Theme: same shape as the fontSize effect above and for the same reason —
+  // it only mutates the live xterm instance's `theme` option, never the
+  // mount effect's deps, so switching light/dark never tears down and
+  // recreates the terminal (L7/L8). xterm's options object applies a new
+  // theme immediately, no refit needed.
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    term.options.theme = theme === "light" ? warmThemeLight : warmTheme;
+  }, [theme]);
+
   // Spawn once the operator has started the fleet. The command is idempotent, so
   // a re-run after a spurious flip is harmless; a failure is written into the
   // pane itself, because a pane that silently never starts is the worst outcome.
@@ -319,6 +346,14 @@ export function TerminalPane({
         <span className={`dot dot--${statusTone(status)}`} />
         <span className="mono pane__title">{label}</span>
         {model && <span className="mono pane__meta">{model}</span>}
+        {gauge && (
+          <span
+            className={`mono pane__meta pane__gauge pane__gauge--${gaugeTone(gauge.pct)}`}
+            title={gaugeTitle(gauge)}
+          >
+            {gaugeLabel(gauge)} ctx
+          </span>
+        )}
         <span className="grow" style={{ flex: "1 1 auto" }} />
         <span className="pane__status">{STATUS_LABEL[status]}</span>
         {started && onRestart && (

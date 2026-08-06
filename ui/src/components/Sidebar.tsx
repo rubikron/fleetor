@@ -22,12 +22,21 @@
 //    degrades to a dot on the icon instead of clipping out of the rail
 //
 // Icons are hand-written inline SVG on purpose: no icon library is installed
-// and none is worth a dependency for four glyphs. They inherit currentColor,
+// and none is worth a dependency for five glyphs. They inherit currentColor,
 // so they follow the row's active/hover state for free.
+//
+// Settings renders right after WORKSPACE, in the same list — not down in
+// .sidebar__footer with Collapse, which would strand it behind the flex
+// spacer at the bottom of a tall rail. It's appended after the .map() call
+// rather than folded into the WORKSPACE array, so it stays the last row by
+// construction as more workspace tabs are added, without needing a manual
+// reorder each time. An earlier pass removed a *disabled* Settings
+// placeholder alongside five other dead roadmap buttons — this is not that:
+// it's a real, working destination.
 
 import type { ReactNode } from "react";
 
-export type View = "fleet" | "messages" | "activity";
+export type View = "fleet" | "messages" | "tasks" | "activity" | "settings";
 
 interface SidebarProps {
   view: View;
@@ -65,10 +74,35 @@ const ICONS: Record<View, ReactNode> = {
       <polyline points="2.2,4.6 8,8.8 13.8,4.6" />
     </svg>
   ),
+  // a checklist: the task board. Boxes with rules beside them, not ticks —
+  // this shell never renders a claimed `done` as a checkmark (see TaskBoard).
+  tasks: (
+    <svg {...ICON_PROPS}>
+      <rect x="1.8" y="2.6" width="5" height="5" rx="1.2" />
+      <rect x="1.8" y="9.4" width="5" height="5" rx="1.2" />
+      <line x1="9.2" y1="5.1" x2="14.2" y2="5.1" />
+      <line x1="9.2" y1="11.9" x2="14.2" y2="11.9" />
+    </svg>
+  ),
   // a pulse trace: the activity log
   activity: (
     <svg {...ICON_PROPS}>
       <polyline points="1.6,8 4.4,8 6.4,3.6 9.6,12.4 11.6,8 14.4,8" />
+    </svg>
+  ),
+  // a gear: preferences
+  settings: (
+    <svg {...ICON_PROPS}>
+      <circle cx="8" cy="8" r="3.1" />
+      <circle cx="8" cy="8" r="1.1" />
+      <line x1="11.1" y1="8" x2="14.4" y2="8" />
+      <line x1="10.2" y1="10.2" x2="12.5" y2="12.5" />
+      <line x1="8" y1="11.1" x2="8" y2="14.4" />
+      <line x1="5.8" y1="10.2" x2="3.5" y2="12.5" />
+      <line x1="4.9" y1="8" x2="1.6" y2="8" />
+      <line x1="5.8" y1="5.8" x2="3.5" y2="3.5" />
+      <line x1="8" y1="4.9" x2="8" y2="1.6" />
+      <line x1="10.2" y1="5.8" x2="12.5" y2="3.5" />
     </svg>
   ),
 };
@@ -76,6 +110,9 @@ const ICONS: Record<View, ReactNode> = {
 const WORKSPACE: { view: View; label: string }[] = [
   { view: "fleet", label: "Terminals" },
   { view: "messages", label: "Messages" },
+  // Next to Messages on purpose: the board is what the fleet agreed on and the
+  // record is what it then said about it, and they get read together.
+  { view: "tasks", label: "Tasks" },
   { view: "activity", label: "Activity" },
 ];
 
@@ -116,6 +153,21 @@ export function Sidebar({
             </button>
           );
         })}
+
+        {/* Appended after the map, not folded into WORKSPACE — see the header
+            comment. Always the last row, however many workspace tabs precede
+            it. */}
+        <button
+          role="tab"
+          aria-selected={view === "settings"}
+          className={`nav ${view === "settings" ? "nav--active" : ""}`}
+          onClick={() => onSelect("settings")}
+          title={collapsed ? "Settings" : undefined}
+          aria-label={collapsed ? "Settings" : undefined}
+        >
+          <span className="nav__icon">{ICONS.settings}</span>
+          <span className="nav__label">Settings</span>
+        </button>
       </div>
 
       <div className="sidebar__footer">

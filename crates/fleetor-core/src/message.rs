@@ -69,6 +69,27 @@ impl Message {
     /// Turn the record into its log entry. `accepted` means *the target pane was
     /// live and the bytes were queued to its pty* — never that the model read
     /// them. Nothing downstream may render it as "delivered" (L3).
+    /// Turn a message that never went near a pty into its log entry (WP-07) —
+    /// the **recorded** outcome, for the one addressee with no terminal.
+    ///
+    /// `accepted: false` here is not a failure and is not a compromise: it is
+    /// the literal truth of the field's one meaning, "the bytes reached a live
+    /// pty." No pty exists, so none did. The word `recorded` is not stored
+    /// anywhere, because storing it would be storing a second copy of
+    /// something already in the row — every renderer derives it the same way,
+    /// from `to.has_pty()`, which is a total function and cannot disagree with
+    /// itself. A `detail` would be a reason for a failure that did not happen.
+    ///
+    /// The asymmetry that comes with it: for a pane message the log is a
+    /// *record* of something that already happened at a terminal, so a failed
+    /// append is reported and the send still succeeds. Here the log **is** the
+    /// delivery, so a failed append means nothing happened at all — the hub
+    /// answers with an error rather than a receipt.
+    pub fn into_recorded_event(self) -> FleetEvent {
+        debug_assert!(!self.to.has_pty(), "only a pty-less addressee is recorded");
+        self.into_event(false, None)
+    }
+
     pub fn into_event(self, accepted: bool, detail: Option<String>) -> FleetEvent {
         FleetEvent::Message {
             id: self.id,
@@ -217,6 +238,41 @@ mod tests {
         let msg = Message::direct(PaneId::Orch, PaneId::Worker(1), "a\x1b[201~b");
         assert_eq!(msg.body, "a\x1b[201~b");
         assert_eq!(msg.framed(), "[fleet · orch] a[201~b");
+    }
+
+    // --- the operator as a participant (WP-07) ---------------------------------
+
+    /// The human's name falls straight out of `Display`, in both framings —
+    /// there is no second spelling to keep in sync, which is the whole reason
+    /// `PaneId` renders as a bare string.
+    #[test]
+    fn the_operator_is_framed_by_name_like_any_other_sender() {
+        assert_eq!(frame_for_pane(PaneId::Operator, "ship it"), "[fleet · operator] ship it");
+        assert_eq!(
+            frame_broadcast_for_pane(PaneId::Operator, "stop"),
+            "[fleet · operator → all] stop",
+            "an operator broadcast wears the same `→ all` the anti-amplification rule keys on",
+        );
+    }
+
+    /// A message to the human is `recorded`, and the row says so by being
+    /// honest about the only thing `accepted` ever meant: no pty received
+    /// these bytes, because there is no pty. Nothing invents a third boolean
+    /// and nothing writes the word into the payload — every renderer derives
+    /// it from the addressee.
+    #[test]
+    fn a_message_to_the_operator_is_never_accepted_and_carries_no_failure() {
+        let msg = Message::direct(PaneId::Worker(2), PaneId::Operator, "which schema did you mean?");
+        let body = msg.body.clone();
+        let event = msg.into_recorded_event();
+        let FleetEvent::Message { to, body: got, accepted, detail, .. } = event else {
+            panic!("expected a message event");
+        };
+        assert_eq!(to, PaneId::Operator);
+        assert_eq!(got, body, "the question is in the log, or the inbox has nothing to show");
+        assert!(!accepted, "`accepted` means bytes reached a live pty (Tier 1.5)");
+        assert_eq!(detail, None, "nothing failed — a detail would invent a reason");
+        assert!(!to.has_pty(), "the derivation every renderer uses to say `recorded`");
     }
 
     #[test]

@@ -54,6 +54,26 @@
   --border: #383229;
   --border-soft: #2c2720;
 
+  /* Text color for content sitting on a filled --accent surface (e.g. the
+     start-fleet button). Split out from the bg ramp on purpose: --bg-0 used
+     to double as this value (dark enough for AA contrast on coral), which
+     worked only because --bg-0 was itself always dark. Light mode needs
+     --bg-0 to be a light chrome surface, so this token exists to keep
+     text-on-accent pinned to a value that stays legible on coral in both
+     themes, independent of what --bg-0 means. Not redeclared in the light
+     block below — same value in both themes, by design. */
+  --on-accent: #1b1813;
+
+  /* The terminal pane's own background — kept apart from --bg-1 because
+     xterm paints its canvas from a hardcoded hex in theme.ts
+     (warmTheme/warmThemeLight), outside CSS's reach, and `.terminal-host`'s
+     padding shows this value in the ring around that canvas. Redeclared in
+     the light theme block below to match warmThemeLight.background — if the
+     two ever drift, light mode gets a mismatched ring around the canvas.
+     This value must always equal whichever of warmTheme/warmThemeLight
+     TerminalPane.tsx currently hands to xterm for the active theme. */
+  --term-bg: #201d18;
+
   --mono: ui-monospace, "SF Mono", Menlo, monospace;
   --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
 
@@ -135,6 +155,41 @@
     --transition-label-out: none;
     --transition-label-in: none;
   }
+}
+
+/* LIGHT THEME — set via `data-theme="light"` on <html> (see ui/useTheme.ts).
+   Same warm family as the dark palette above (gold's ~38° hue, no blue
+   anywhere), re-lit for a light surface rather than a straight inversion:
+   --bg-0/1 stay the lightest steps (chrome recedes a shade below content,
+   mirroring dark mode's rail-is-darker-than-content relationship) while
+   --bg-2/3 step progressively deeper for hover/active, since "more
+   prominent" means darker on a light surface, not lighter. --accent/--gold
+   /--green/--red are deepened from their dark-mode hex, not just reused —
+   each of those is used as *text* somewhere (nav__count, line__kind, …) and
+   the original values were tuned for legibility on --bg-1's near-black, not
+   on cream; reused as-is they fail AA as text here. --on-accent is
+   deliberately absent — see its definition above. --term-bg IS redeclared
+   here (unlike --on-accent), matching warmThemeLight.background in
+   theme.ts — see that token's comment above for why the two must move
+   together. */
+:root[data-theme="light"] {
+  --bg-0: #efe7d8;
+  --bg-1: #f7f2ea;
+  --bg-2: #e9dfcd;
+  --bg-3: #ded1b6;
+  --term-bg: #f7f2ea;
+
+  --fg: #2b2318;
+  --fg-dim: #453c30;
+  --fg-mute: #5a5244; /* ≥5:1 on every surface step, bg-3 included */
+
+  --accent: #a84c2a;
+  --gold: #93691f;
+  --green: #4f7a3d;
+  --red: #b23f39;
+
+  --border: #d9c9a8;
+  --border-soft: #e3d6b9;
 }
 
 * {
@@ -521,7 +576,7 @@ body,
   display: flex;
 }
 .terminal-pane {
-  background: var(--bg-1);
+  background: var(--term-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   min-height: 0;
@@ -583,6 +638,13 @@ body,
 .pane__title { color: var(--fg-dim); }
 .pane__meta { color: var(--fg-mute); }
 .pane__status { font-size: var(--t-label); color: var(--fg-mute); }
+/* The WP-04 live gauge, in the pane head next to the model. Muted by
+   default — this is awareness, not an alarm — and gold only once a pane
+   nears/crosses the same ~80% line the backend's one-time Notice fires at
+   (`lib/contextGaugeTone.ts`). Never coral: that hue is reserved app-wide for
+   "needs you," and an approximate, honestly-labeled figure is not that. */
+.pane__gauge--muted { color: var(--fg-mute); }
+.pane__gauge--gold { color: var(--gold); }
 .pane__ctl {
   font-family: var(--mono);
   font-size: var(--t-label);
@@ -730,7 +792,7 @@ body,
 .pane-gate__go {
   font-family: var(--mono);
   font-size: var(--t-small);
-  color: var(--bg-0);
+  color: var(--on-accent);
   background: var(--accent);
   border: none;
   border-radius: var(--radius-sm);
@@ -797,6 +859,11 @@ body,
   display: flex;
   gap: 0.375rem;
   flex: 0 0 auto;
+  /* As many worker tabs as the fleet ever grows to must stay readable, not
+     squeezed into wrapped two-line labels as the strip narrows — so the
+     strip scrolls horizontally instead of shrinking its children. */
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 .tab {
   display: flex;
@@ -810,6 +877,10 @@ body,
   border-radius: var(--radius-sm);
   padding: 0.375rem 0.625rem;
   cursor: pointer;
+  /* Full content width, never compressed by the flex container and never
+     wrapped onto a second line — see .tabstrip's overflow-x above. */
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 .tab:hover { border-color: var(--border); color: var(--fg-dim); }
 /* Selection, not focus. This used to tint coral, which collided head-on with
@@ -825,6 +896,13 @@ body,
   border-color: var(--border);
 }
 .tab__status { font-size: var(--t-label); color: var(--fg-mute); }
+/* The WP-04 live gauge's second home — the same figure the pane head shows,
+   so a worker's usage is visible from the tab strip without switching to it.
+   Same muted/gold split as `.pane__gauge`, single-sourced in
+   `lib/contextGaugeTone.ts` so the two places can never disagree. */
+.tab__gauge { font-size: var(--t-label); }
+.tab__gauge--muted { color: var(--fg-mute); }
+.tab__gauge--gold { color: var(--gold); }
 /* unread-output marker: presence only, no count. Gold (awareness/unread),
    never the accent — coral is reserved for the focused-pane frame in this
    pass (see .terminal-pane--focused). */
@@ -895,6 +973,151 @@ body,
   font-size: var(--t-label);
   color: var(--gold); /* awareness — the failure lives in this text, not a card rail */
 }
+.msg__note {
+  font-size: var(--t-label);
+  color: var(--fg-mute);
+}
+
+/* a command (D-045) — the fleet doing something to a pane rather than saying
+   something to it. Gold-edged so it reads as a different kind of row at a
+   glance, and never mistakable for a message the pane sent. */
+.msg--command {
+  border-color: color-mix(in srgb, var(--gold) 38%, var(--border-soft));
+  border-left-width: 2px;
+}
+.msg__command {
+  margin: 0.375rem 0 0;
+  font-size: var(--t-small);
+  color: var(--fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.msg__why {
+  margin: 0.25rem 0 0;
+  font-family: var(--sans);
+  font-size: var(--t-small);
+  line-height: 1.5;
+  color: var(--fg-dim);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.msg__why-label {
+  font-family: var(--mono);
+  font-size: var(--t-label);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--gold);
+  margin-right: 0.3125rem;
+}
+
+/* the task board (WP-05) — the third sibling of the message record and the
+   activity log, and the one that shows a *state* rather than a timeline.
+   Deliberately quiet: no progress bars, no ticks, no colour-only status. A
+   status pill always carries its word, because what it reports is a claim
+   somebody made and not a verdict this app can check. */
+.feed--tasks {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.625rem 0.75rem;
+}
+.task {
+  background: var(--bg-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  padding: 0.5rem 0.6875rem;
+}
+/* one level of indent for a block cut from the one above it — enough to read a
+   decomposition without this view having to walk (and validate) a graph. */
+.task--nested { margin-left: 1.25rem; border-left-width: 2px; }
+.task__head {
+  display: flex;
+  align-items: center;
+  gap: 0.4375rem;
+  font-size: var(--t-small);
+  flex-wrap: wrap;
+}
+.task__id { color: var(--fg-dim); }
+.task__worker { color: var(--fg); }
+.task__posted { font-size: var(--t-label); color: var(--fg-mute); }
+.task__status {
+  font-size: var(--t-label);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-radius: var(--radius-sm);
+  padding: 0 0.3125rem;
+  border: 1px solid currentColor;
+}
+.task__status--planned { color: var(--fg-mute); }
+.task__status--claimed { color: var(--gold); }
+/* green for a `done` *claim*, never a tick and never a bar — the word is the
+   whole of what is being reported, and WP-06's review is what verifies it. */
+.task__status--done { color: var(--green); }
+.task__status--dropped { color: var(--fg-mute); text-decoration: line-through; }
+/* agent-authored prose, like .msg__body — the same deliberate exception to the
+   all-mono shell. */
+.task__outcome {
+  margin: 0.4375rem 0 0;
+  font-family: var(--sans);
+  font-size: var(--t-small);
+  line-height: 1.55;
+  color: var(--fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.task__crits { margin-top: 0.4375rem; display: flex; gap: 0.5rem; align-items: baseline; }
+.task__crits-label {
+  font-family: var(--mono);
+  font-size: var(--t-label);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--gold);
+  flex: 0 0 3.5rem;
+}
+.task__crit-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 0.125rem; }
+/* mono: a technical criterion is usually a command, and a command has to be
+   readable as one. */
+.task__crit {
+  font-family: var(--mono);
+  font-size: var(--t-small);
+  line-height: 1.5;
+  color: var(--fg-dim);
+  word-break: break-word;
+}
+.task__instructions {
+  margin: 0.4375rem 0 0;
+  font-family: var(--sans);
+  font-size: var(--t-small);
+  line-height: 1.5;
+  color: var(--fg-mute);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.task__links { margin-top: 0.4375rem; display: flex; flex-wrap: wrap; gap: 0.375rem; }
+.task__link {
+  font-size: var(--t-label);
+  color: var(--fg-mute);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  padding: 0 0.3125rem;
+}
+.task__trail {
+  margin-top: 0.4375rem;
+  padding-top: 0.375rem;
+  border-top: 1px solid var(--border-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.task__claim { display: flex; align-items: baseline; gap: 0.375rem; flex-wrap: wrap; }
+.task__claim-from { font-size: var(--t-label); color: var(--fg-dim); }
+.task__claim-note {
+  font-family: var(--sans);
+  font-size: var(--t-label);
+  line-height: 1.5;
+  color: var(--fg-mute);
+  word-break: break-word;
+}
 
 /* activity log */
 .events-view {
@@ -942,4 +1165,219 @@ body,
 .line__kind--red { color: var(--red); }
 .line__text { color: var(--fg-dim); }
 .line__text .mono { color: var(--fg); }
+
+/* the operator as a participant (WP-07) — the human's two surfaces, both
+   footers to the record rather than a second column beside it.
+
+   Quiet on purpose. The inbox has a count and no badge, no chime and no
+   colour that demands anything: the rule is "a surface, not a system". Coral
+   is spent on exactly one thing here — the composer's own send button, which
+   is the single place in this view where something is about to happen. */
+
+/* a message the human said. A left rail in coral, the same idiom .msg--command
+   uses in gold, so "who is talking" is legible without reading the name. */
+.msg--operator {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--border-soft));
+  border-left-width: 2px;
+}
+
+.inbox {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--border-soft);
+  padding: 0.5rem 0.75rem;
+  max-height: 11rem;
+  overflow-y: auto;
+}
+.inbox__head {
+  display: flex;
+  align-items: center;
+  gap: 0.4375rem;
+  font-size: var(--t-label);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-mute);
+}
+.inbox__empty {
+  margin: 0.375rem 0 0;
+  font-size: var(--t-small);
+  color: var(--fg-mute);
+}
+.inbox__list {
+  margin: 0.375rem 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3125rem;
+}
+.inbox__item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4375rem;
+  font-size: var(--t-small);
+}
+.inbox__from { color: var(--fg); flex: 0 0 auto; }
+/* the word, on every row. Gold: noteworthy, not urgent — it labels. */
+.inbox__outcome {
+  flex: 0 0 auto;
+  font-size: var(--t-label);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--gold);
+}
+.inbox__body {
+  font-family: var(--sans);
+  color: var(--fg-dim);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.composer {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4375rem;
+  padding: 0.5rem 0.75rem;
+  border-top: 1px solid var(--border-soft);
+  background: var(--bg-2);
+}
+.composer__label {
+  font-size: var(--t-label);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-mute);
+}
+.composer__me { color: var(--accent); }
+.composer__target,
+.composer__input {
+  font-family: var(--mono);
+  font-size: var(--t-small);
+  color: var(--fg);
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.25rem 0.4375rem;
+}
+.composer__input {
+  flex: 1 1 12rem;
+  min-width: 0;
+  font-family: var(--sans);
+}
+.composer__input::placeholder { color: var(--fg-mute); }
+/* focus is coral, like everything else that has attention — there is no blue
+   anywhere in this app, and a form control is not an exception. */
+.composer__target:focus-visible,
+.composer__input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+.composer__send {
+  font-family: var(--mono);
+  font-size: var(--t-small);
+  color: var(--on-accent);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 0.25rem 0.75rem;
+  cursor: pointer;
+}
+.composer__send:disabled {
+  color: var(--fg-mute);
+  background: transparent;
+  border-color: var(--border);
+  cursor: default;
+}
+.composer__result {
+  flex: 1 1 100%;
+  font-size: var(--t-label);
+  color: var(--fg-mute);
+}
+.composer__result--bad { color: var(--gold); }
+
+/* settings — same panel shell as .events-view (bg-1 card, border-soft head
+   hairline), so it reads as one more view of the same shell rather than a
+   one-off. Grouped rows so new settings extend this by adding another
+   .setting-row inside an existing .settings-group, or another group — see
+   SettingsPanel.tsx. */
+.settings-view {
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+.settings-view__head {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border-soft);
+  flex: 0 0 auto;
+}
+.settings-view__head h3 { margin: 0; font-size: var(--t-title); font-weight: 600; color: var(--fg); }
+.settings-group {
+  padding: 0.875rem 1rem;
+  border-bottom: 1px solid var(--border-soft);
+}
+.settings-group:last-child { border-bottom: none; }
+.settings-group__title {
+  margin: 0 0 0.625rem;
+  font-size: var(--t-label);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-mute);
+}
+.setting-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.5rem 0;
+}
+.setting-row__text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  min-width: 0;
+}
+.setting-row__label { font-size: var(--t-body); color: var(--fg); }
+.setting-row__desc { font-size: var(--t-small); color: var(--fg-mute); }
+
+/* a plain neutral switch — deliberately no accent/gold fill. Both colours are
+   already spoken for elsewhere (coral = the one eye-catch, gold = awareness/
+   pending) and neither means "this preference is on"; a lightness step reads
+   the state without borrowing either. */
+.switch {
+  flex: 0 0 auto;
+  position: relative;
+  width: 2.25rem;
+  height: 1.25rem;
+  padding: 2px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.switch:hover { border-color: var(--fg-mute); }
+.switch__thumb {
+  display: block;
+  width: 0.875rem;
+  height: 0.875rem;
+  border-radius: 50%;
+  background: var(--fg-mute);
+  transition: var(--transition-fast), transform 120ms ease;
+}
+.switch--on {
+  background: var(--bg-3);
+  border-color: var(--fg-dim);
+}
+.switch--on .switch__thumb {
+  background: var(--fg);
+  transform: translateX(1rem);
+}
 

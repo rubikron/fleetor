@@ -12,6 +12,7 @@
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { TerminalPane } from "./TerminalPane";
 import { statusTone, STATUS_LABEL } from "../lib/statusTone";
+import { gaugeTone, gaugeLabel, gaugeTitle } from "../lib/contextGaugeTone";
 import {
   ORCH,
   WORKER_SLOTS,
@@ -20,6 +21,8 @@ import {
   type PaneId,
   type PaneStatus,
 } from "../fleet/types";
+import type { ContextGaugeMap } from "../fleet/useContextGauge";
+import type { Theme } from "../ui/useTheme";
 
 /// The orchestrator is the operator's own session and the one they read back
 /// through; the workers are watched, not scrolled.
@@ -38,6 +41,9 @@ interface TerminalGridProps {
   /// xterm fontSize in px, from the app-wide zoom factor — forwarded
   /// unchanged to every pane so all five terminals zoom in lockstep.
   fontSize: number;
+  /// The app-wide light/dark preference — forwarded unchanged so all five
+  /// terminals theme in lockstep with the chrome.
+  theme: Theme;
   onStatus: (pane: PaneId, status: PaneStatus) => void;
   onRestart: (pane: PaneId) => void;
   /// Worker slots that have produced output since the operator last viewed
@@ -47,6 +53,10 @@ interface TerminalGridProps {
   /// Registers each pane's `focus()` callback with App.tsx, for the
   /// Cmd+1..5 pane-jump shortcut.
   onRegisterFocus: (pane: PaneId, focus: () => void) => void;
+  /// Each pane's live context gauge (WP-04) — absent for orch always, and
+  /// for a worker until its transcript has a completed turn. Threaded down
+  /// to both the pane head and the tab strip so they never drift apart.
+  gauges: ContextGaugeMap;
 }
 
 export function TerminalGrid({
@@ -56,10 +66,12 @@ export function TerminalGrid({
   statuses,
   config,
   fontSize,
+  theme,
   onStatus,
   onRestart,
   unreadWorkers,
   onRegisterFocus,
+  gauges,
 }: TerminalGridProps) {
   const leadModel = config?.lead_model ?? "opus (operator)";
   const workerModel = config?.worker_backend ?? "…";
@@ -76,9 +88,11 @@ export function TerminalGrid({
           status={orchStatus}
           model={leadModel}
           fontSize={fontSize}
+          theme={theme}
           onStatus={onStatus}
           onRestart={() => onRestart(ORCH)}
           onFocusReady={(focus) => onRegisterFocus(ORCH, focus)}
+          gauge={gauges[ORCH]}
         />
       </Panel>
       <PanelResizeHandle className="divider">
@@ -91,6 +105,7 @@ export function TerminalGrid({
               const pane = workerPane(slot);
               const status = statuses[pane] ?? "idle";
               const isSelected = selected === slot;
+              const gauge = gauges[pane];
               return (
                 <button
                   key={slot}
@@ -102,6 +117,14 @@ export function TerminalGrid({
                   <span className={`dot dot--${statusTone(status)}`} />
                   <span className="mono">worker-{slot}</span>
                   <span className="tab__status">{STATUS_LABEL[status]}</span>
+                  {gauge && (
+                    <span
+                      className={`tab__gauge tab__gauge--${gaugeTone(gauge.pct)}`}
+                      title={gaugeTitle(gauge)}
+                    >
+                      {gaugeLabel(gauge)}
+                    </span>
+                  )}
                   {!isSelected && unreadWorkers.has(slot) && (
                     <span className="tab__unread" title="new output" aria-label="new output" />
                   )}
@@ -125,9 +148,11 @@ export function TerminalGrid({
                   status={statuses[pane] ?? "idle"}
                   model={workerModel}
                   fontSize={fontSize}
+                  theme={theme}
                   onStatus={onStatus}
                   onRestart={() => onRestart(pane)}
                   onFocusReady={(focus) => onRegisterFocus(pane, focus)}
+                  gauge={gauges[pane]}
                 />
               </div>
             );

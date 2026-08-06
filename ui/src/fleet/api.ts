@@ -4,7 +4,14 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { paneKey, type BootSnapshot, type FleetConfig, type FleetEvent, type PaneId } from "./types";
+import {
+  paneKey,
+  type BootSnapshot,
+  type FleetConfig,
+  type FleetEvent,
+  type PaneEntry,
+  type PaneId,
+} from "./types";
 
 const FLEET_EVENT = "fleet://event";
 
@@ -30,6 +37,40 @@ export function pickTarget(): Promise<string | null> {
 /// (`~` expanded, `..` and symlinks resolved).
 export function setTarget(path: string): Promise<string> {
   return invoke<string>("fleet_set_target", { path });
+}
+
+/// Every pane and its state, each worker's context gauge attached when one
+/// could be sampled (WP-04). The same `AppCommand::Roster` a `fleet roster`
+/// from inside a pane reaches over the socket — this is the UI's on-demand
+/// poll of it, not a second source of truth. Read-only: nothing here can fail
+/// a `fleet send`, and a rejected call renders as "figures unavailable," not
+/// a crash — see `useContextGauge`.
+export function fetchRoster(): Promise<PaneEntry[]> {
+  return invoke<PaneEntry[]>("fleet_roster");
+}
+
+// --- the operator's own messages (WP-07) --------------------------------------
+
+/// What one composed message did, in the fleet's own three words.
+export interface OperatorSend {
+  /// `accepted` — the bytes reached a live pty, which is **not** a claim the
+  /// agent read them (L3). `undelivered` — they did not, and `detail` says
+  /// which pane and why. `recorded` — it entered the log and no pty exists.
+  /// There is no fourth word, and none of them is "delivered".
+  outcome: "accepted" | "undelivered" | "recorded";
+  /// The message id, or a broadcast's shared group id.
+  id: string;
+  detail?: string;
+}
+
+/// Send a message **as the operator**, through the hub every pane uses.
+///
+/// `target` is a pane name, `"all"` for a broadcast, or `"reply"` for whoever
+/// last messaged the operator — the fleet's three message verbs and no fourth
+/// thing. Rejects with a sentence the operator can act on (an empty body, a
+/// name that is not a participant, nobody to reply to).
+export function sendAsOperator(target: PaneId | "all" | "reply", text: string): Promise<OperatorSend> {
+  return invoke<OperatorSend>("fleet_send", { target, text });
 }
 
 // --- panes --------------------------------------------------------------------

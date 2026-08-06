@@ -14,13 +14,24 @@
 
 import { useEffect, useState } from "react";
 import { bootstrap, fetchConfig, onFleetEvent } from "./api";
-import { isMessage, type FleetConfig, type FleetEvent, type MessageEvent } from "./types";
+import {
+  isCommand,
+  isMessage,
+  isTask,
+  type CommandEvent,
+  type FleetConfig,
+  type FleetEvent,
+  type MessageEvent,
+  type TaskEvent,
+} from "./types";
 
 export interface FleetView {
   ready: boolean;
   error: string | null;
   feed: FleetEvent[];
   messages: MessageEvent[];
+  commands: CommandEvent[];
+  tasks: TaskEvent[];
   config: FleetConfig | null;
   refreshConfig: () => void;
 }
@@ -33,6 +44,8 @@ export function useFleet(): FleetView {
   const [error, setError] = useState<string | null>(null);
   const [feed, setFeed] = useState<FleetEvent[]>([]);
   const [messages, setMessages] = useState<MessageEvent[]>([]);
+  const [commands, setCommands] = useState<CommandEvent[]>([]);
+  const [tasks, setTasks] = useState<TaskEvent[]>([]);
   const [config, setConfig] = useState<FleetConfig | null>(null);
   const [configNonce, setConfigNonce] = useState(0);
 
@@ -45,6 +58,14 @@ export function useFleet(): FleetView {
         unlisten = await onFleetEvent((event) => {
           setFeed((f) => [event, ...f].slice(0, MAX_FEED));
           if (isMessage(event)) setMessages((m) => [event, ...m]);
+          // Unbounded for the same reason messages are: a command's `why` is the
+          // reasoning chain the log exists to keep, and dropping the oldest ones
+          // would quietly delete the earliest reasoning first.
+          if (isCommand(event)) setCommands((c) => [event, ...c]);
+          // Unbounded, and here for a harder reason than the other two: the
+          // board is a *fold* over these events, so dropping the oldest would
+          // silently delete blocks from the board rather than trimming a log.
+          if (isTask(event)) setTasks((t) => [event, ...t]);
         });
         if (cancelled) {
           unlisten();
@@ -88,6 +109,8 @@ export function useFleet(): FleetView {
     error,
     feed,
     messages,
+    commands,
+    tasks,
     config,
     refreshConfig: () => setConfigNonce((n) => n + 1),
   };

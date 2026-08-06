@@ -20,12 +20,22 @@ use std::time::{Duration, Instant};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use fleetor_core::message::frame_for_pane;
 use fleetor_core::pane::{PaneId, WORKER_SLOTS};
+use fleetor_core::Store;
+use fleetor_db::SqliteStore;
+use fleetor_shell::context_gauge::GaugeSources;
 use fleetor_shell::deliver::spawn_delivery;
 use fleetor_shell::pty::{exit_channel, out_channel, Emit, PaneRegistry};
+use fleetor_shell::prompts::PaneContext;
 use fleetor_shell::spawn;
 use fleetor_server::AppCommand;
 use portable_pty::CommandBuilder;
 use tokio::sync::{mpsc, oneshot};
+
+/// A fresh in-memory store for the tests that only need `spawn_delivery`'s
+/// signature satisfied, not the event log itself.
+fn scratch_store() -> Arc<dyn Store> {
+    Arc::new(SqliteStore::open_in_memory().unwrap())
+}
 
 /// Long enough for a shell to start and echo on a loaded machine; short enough
 /// that a genuine failure doesn't look like a hang.
@@ -116,9 +126,17 @@ fn fleet_with_registry_path() -> (Arc<PaneRegistry>, Arc<Transcript>, PathBuf) {
 
     let cwd = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let socket = PathBuf::from("/tmp/fleetor-panes-test.sock");
-    registry.spawn(PaneId::Orch, spawn::orch_command(&cwd, &socket), 24, 80).unwrap();
+    registry.spawn(PaneId::Orch, spawn::orch_command(&cwd, &socket, &PaneContext::baked()), 24, 80).unwrap();
     for slot in WORKER_SLOTS {
-        let command = spawn::worker_command(slot, &cwd, &cwd.join("unused-cfg"), &socket, "sk-test");
+        let command = spawn::worker_command(
+            slot,
+            &cwd,
+            &cwd.join("unused-home"),
+            &cwd.join("unused-cfg"),
+            &socket,
+            "sk-test",
+            &PaneContext::baked(),
+        );
         registry.spawn(PaneId::Worker(slot), command, 24, 80).unwrap();
     }
     (registry, transcript, registry_path)
@@ -177,6 +195,75 @@ fn a_delivered_message_lands_in_its_target_pane_and_nowhere_else() {
     registry.kill_all();
 }
 
+/// **The command channel against a real pty (D-045).** A `fleet cmd` must reach
+/// the far end as its own submitted line, with the command's `/` as the first
+/// character after the paste marker — no `[fleet · …]`, nothing joined onto it.
+///
+/// Sent as a burst with two messages so the writer has something to batch: the
+/// messages join, the command does not, and the assertion is on the exact bytes
+/// the pane's tty echoed back. A fake pane cannot prove Claude Code *executes*
+/// it — that is `docs/command-channel-notes.md`, measured against the real
+/// binary — but it is exactly the right thing to prove what we typed.
+#[test]
+fn a_command_reaches_a_real_pty_unframed_and_in_a_write_of_its_own() {
+    let (registry, transcript) = fleet();
+    let target = PaneId::Worker(2);
+    transcript.wait_for(&out_channel(target), "ready");
+
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let (tx, rx) = mpsc::unbounded_channel::<AppCommand>();
+    spawn_delivery(&rt, registry.clone(), rx, scratch_store(), Arc::new(GaugeSources::default()));
+
+    let (first_ack, first) = oneshot::channel();
+    tx.send(AppCommand::Deliver {
+        to: target,
+        text: frame_for_pane(PaneId::Orch, "wrap up the parser"),
+        ack: first_ack,
+    })
+    .unwrap();
+    let (cmd_ack, commanded) = oneshot::channel();
+    tx.send(AppCommand::Command {
+        to: target,
+        command: "/compact keep the parser".into(),
+        ack: cmd_ack,
+    })
+    .unwrap();
+    let (last_ack, last) = oneshot::channel();
+    tx.send(AppCommand::Deliver {
+        to: target,
+        text: frame_for_pane(PaneId::Orch, "now take the CLI"),
+        ack: last_ack,
+    })
+    .unwrap();
+
+    for (label, answer) in [("message", first), ("command", commanded), ("re-brief", last)] {
+        let result = rt.block_on(answer).unwrap_or_else(|_| panic!("{label} went unanswered"));
+        assert!(result.accepted, "{label} was refused: {result:?}");
+    }
+
+    // The stand-in is a plain shell, so it echoes the bracketed-paste markers
+    // back as ordinary characters — which is what makes the boundary visible.
+    let seen = transcript.wait_for(&out_channel(target), "now take the CLI");
+    assert!(
+        seen.contains("echo: \u{1b}[200~/compact keep the parser\u{1b}[201~"),
+        "the command must be its own write, with `/` first after the paste marker: {seen:?}"
+    );
+    assert!(
+        !seen.contains("[fleet · orch] /compact"),
+        "the command was framed like a message: {seen:?}"
+    );
+    // Ordering is the hub's: the re-brief a cleared worker needs cannot overtake
+    // the command it is meant to follow.
+    let at = |needle: &str| seen.find(needle).unwrap_or_else(|| panic!("missing {needle:?}"));
+    assert!(
+        at("wrap up the parser") < at("/compact keep the parser")
+            && at("/compact keep the parser") < at("now take the CLI"),
+        "the pane saw the burst out of the order the hub took it: {seen:?}"
+    );
+
+    registry.kill_all();
+}
+
 /// Operator keystrokes and an injected message share one writer lock, so they
 /// cannot interleave. Both must still get through.
 #[test]
@@ -231,7 +318,15 @@ fn a_killed_pane_can_be_spawned_again() {
 
     let cwd = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let socket = PathBuf::from("/tmp/fleetor-panes-test.sock");
-    let command = spawn::worker_command(4, &cwd, &cwd.join("unused-cfg"), &socket, "sk-test");
+    let command = spawn::worker_command(
+        4,
+        &cwd,
+        &cwd.join("unused-home"),
+        &cwd.join("unused-cfg"),
+        &socket,
+        "sk-test",
+        &PaneContext::baked(),
+    );
     registry.spawn(target, command, 24, 80).expect("a dead pane respawns");
 
     registry.write_paste(target, "still here?").unwrap();
@@ -374,7 +469,7 @@ fn a_burst_from_four_peers_arrives_whole_in_order_and_in_fewer_writes() {
 
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
     let (tx, rx) = mpsc::unbounded_channel::<AppCommand>();
-    spawn_delivery(&rt, registry.clone(), rx);
+    spawn_delivery(&rt, registry.clone(), rx, scratch_store(), Arc::new(GaugeSources::default()));
 
     // Fire all four without awaiting any of them — a real burst, not a sequence.
     let answers: Vec<oneshot::Receiver<_>> = WORKER_SLOTS
@@ -420,4 +515,74 @@ fn a_burst_from_four_peers_arrives_whole_in_order_and_in_fewer_writes() {
     );
 
     registry.kill_all();
+}
+
+/// **WP-04, end to end.** A real pty, a real `GaugeSources` recording, a real
+/// transcript fixture on disk, and a real `AppCommand::Roster` round trip —
+/// the whole chain `crate::fleet::spawn_pane` → `GaugeSources::record` →
+/// `deliver::spawn_delivery`'s `Roster` arm → the answer a `fleet roster` (or
+/// the UI's poll) actually receives. `src-tauri/src/deliver.rs`'s own tests
+/// cover `augment_with_gauge` in isolation; this is the one place the pty and
+/// the sampler are proven to agree on which pane is which.
+#[test]
+fn a_roster_ask_surfaces_a_workers_sampled_context_gauge() {
+    let (registry, transcript) = fleet();
+    let target = PaneId::Worker(1);
+    transcript.wait_for(&out_channel(target), "ready");
+
+    // The fixture: a worker's own transcript, seeded exactly where
+    // `context_gauge::project_dir` will look for it — the same cwd
+    // `fleet_with_registry_path` spawned worker-1 in, under a config dir this
+    // test owns outright.
+    let cwd = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let config_dir = std::env::temp_dir().join(format!(
+        "fleetor-panes-gauge-cfg-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&config_dir);
+    let resolved = spawn::project_key(&cwd);
+    let slug: String = resolved.chars().map(|c| if c == '/' || c == '.' { '-' } else { c }).collect();
+    let project_dir = config_dir.join("projects").join(slug);
+    std::fs::create_dir_all(&project_dir).unwrap();
+    // A fifth of the window constant — derived, so this stays 20% if D-054's
+    // number moves again.
+    let fifth = fleetor_shell::context_gauge::WORKER_WINDOW_TOKENS / 5;
+    std::fs::write(
+        project_dir.join("session.jsonl"),
+        serde_json::json!({
+            "type": "assistant",
+            "message": {"usage": {"input_tokens": fifth, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let gauges = Arc::new(GaugeSources::default());
+    gauges.record(
+        target,
+        fleetor_shell::context_gauge::TranscriptSource { config_dir: config_dir.clone(), cwd },
+    );
+
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let (tx, rx) = mpsc::unbounded_channel::<AppCommand>();
+    spawn_delivery(&rt, registry.clone(), rx, scratch_store(), gauges);
+
+    let (ack, answer) = oneshot::channel();
+    tx.send(AppCommand::Roster { ack }).unwrap();
+    let panes = rt.block_on(answer).expect("the roster ack must arrive");
+
+    let worker_one = panes.iter().find(|e| e.pane == target).expect("worker-1 is on the roster");
+    let gauge = worker_one.context.expect("worker-1's seeded transcript must be sampled");
+    assert_eq!(gauge.used_tokens, fifth);
+    assert_eq!(gauge.pct, 20, "a fifth of the worker window is 20%");
+
+    let orch = panes.iter().find(|e| e.pane == PaneId::Orch).expect("orch is on the roster");
+    assert_eq!(orch.context, None, "orch is never sampled, even when it is live");
+
+    let other_worker = panes.iter().find(|e| e.pane == PaneId::Worker(2)).expect("worker-2 is on the roster");
+    assert_eq!(other_worker.context, None, "a worker nobody recorded a source for stays absent");
+
+    registry.kill_all();
+    let _ = std::fs::remove_dir_all(&config_dir);
 }

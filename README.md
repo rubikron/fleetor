@@ -10,10 +10,16 @@ They coordinate through one command:
 fleet send 2 "take the parser, I have the CLI"
 fleet broadcast "rebasing onto master"
 fleet reply "on it"
+fleet cmd self "/compact keep the parser design" --why "task block done; the rest is stale"
+fleet task post --to 2 --outcome "the parser accepts nested groups" --crit-t "cargo test -p parser" --crit-s "one grammar, end to end"
 fleet roster
 ```
 
 That's the whole agent-facing surface. A message is typed straight into the target terminal — you watch it land.
+
+`fleet cmd` is the one verb that is not a message: it runs `/clear` or `/compact` — and nothing else — in a pane's own terminal, so a worker can prune its own context between tasks. `--why` is required, because the record of *why* the fleet cleared or compacted is the point of the verb (D-045).
+
+`fleet task` is the shared board: the decomposition the fleet agreed on, with each block's outcome and its performance criteria, visible to every pane and to you. It is **a diary, not a dispatcher** — posting a block assigns nobody, nothing is scheduled from it, and a `done` on it is a claim its author made. Assignment is still an ordinary `fleet send` (D-047).
 
 Tauri 2 · Rust · React · macOS-first. Plugs in on top of your repo: `rm -rf ~/.fleetor` leaves it untouched.
 

@@ -7,10 +7,11 @@
 //!    the fleet needs, and ours must win, so every override lands *after* the
 //!    inherit.
 //!  - [`worker_command`] — an isolated Flash worker: its own `CLAUDE_CONFIG_DIR`,
-//!    its own worktree, `--permission-mode auto`, and the DeepSeek endpoint.
+//!    its own worktree, its own private `HOME` (WP-08), `--permission-mode
+//!    auto`, and the DeepSeek endpoint.
 //!
 //! Everything here that looks like a detail was measured in Phase 0
-//! (`docs/tui-spawn-notes.md`) against a real interactive `claude`. The three that
+//! (`docs/tui-spawn-notes.md`) against a real interactive `claude`. The four that
 //! each silently wedge a pane forever:
 //!
 //!  - **[`seed_config_dir`] is not optional (L1).** A virgin config dir does not
@@ -21,18 +22,35 @@
 //!    box. It is `env_remove`d rather than merely not-set, because the worker
 //!    inherits the operator's environment and they may well have one.
 //!  - **`--permission-mode auto`.** The default is `manual`, which wedges on the
-//!    first tool call.
+//!    first tool call. It is `prompts/launch.conf`'s `permission_mode`, which
+//!    ships as `auto` and is documented there with that consequence attached.
+//!  - **[`seed_worker_home`] is not optional either (WP-08, the Fence).** Once a
+//!    worker's `HOME` is a private dir instead of the operator's real one, the
+//!    global `user.name`/`user.email` git used to find there are gone too — a
+//!    worker's first commit fails outright, and `fleet done`'s receipt (WP-06)
+//!    points at a commit that was never made.
+//!
+//! What a pane is *told* is not here — it is in `prompts/`, resolved once at
+//! bootstrap by [`crate::prompts`] and handed in as a [`PaneContext`]. This module
+//! decides how a process is shaped; that one decides what goes in its head. The
+//! two `env_remove` calls below are the deliberate exception: they are not
+//! settings, they are the three ways a pane wedges forever (D-042).
+//!
+//! **The brief is `--system-prompt`, not `--append-system-prompt` (D-043).** It
+//! *replaces* Claude Code's own prompt rather than following it, so the rendered
+//! file is the whole of what a pane is told. `docs/system-prompt-notes.md` is the
+//! measurement behind that switch, against CC 2.1.223. Note the one thing it made
+//! this module responsible for: `cwd` is passed into the renderer as well as onto
+//! the command, because CC's `# Environment` section carried the working directory
+//! and that section is gone.
 
 use std::path::{Path, PathBuf};
 
-use fleetor_core::brief::{orch_brief, worker_brief};
+use fleetor_core::brief::{render_orch, render_worker};
 use fleetor_core::pane::{PaneId, WORKER_SLOTS};
 use portable_pty::CommandBuilder;
 
-/// The DeepSeek Anthropic-compatible endpoint the worker panes talk to.
-const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/anthropic";
-/// The model in every worker seat.
-const MODEL_FLASH: &str = "deepseek-v4-flash";
+use crate::prompts::PaneContext;
 
 /// Overrides the program every pane runs. Set by `src-tauri/tests/panes.rs` to
 /// `tests/fake-pane/fake-pane.sh` so the registry is exercised end-to-end without
@@ -56,45 +74,65 @@ fn roster() -> Vec<PaneId> {
 /// `CommandBuilder::new` already seeds the parent environment, so this is an
 /// inherit-then-override — their login, their config dir, their model, plus the
 /// five things that make it a pane.
-pub fn orch_command(cwd: &Path, socket: &Path) -> CommandBuilder {
+pub fn orch_command(cwd: &Path, socket: &Path, ctx: &PaneContext) -> CommandBuilder {
     let mut cmd = base_command(&[
-        "--append-system-prompt".to_string(),
-        orch_brief(&roster()),
+        "--system-prompt".to_string(),
+        render_orch(&ctx.orch_template, &roster(), &cwd.display().to_string()),
     ]);
     cmd.cwd(cwd);
-    apply_pane_env(&mut cmd, PaneId::Orch, socket);
+    apply_pane_env(&mut cmd, PaneId::Orch, socket, augmented_path());
     cmd
 }
 
 // --- the workers --------------------------------------------------------------
 
-/// One worker pane: isolated config dir, its own worktree, Flash on DeepSeek.
+/// One worker pane: isolated config dir, its own worktree, its own private
+/// `HOME`, Flash on DeepSeek.
 ///
 /// `config_dir` must already have been through [`seed_config_dir`] for this exact
 /// `cwd` — the trust flag is keyed by absolute project path, so a worker pointed
 /// at a new target with an old seed sits on a trust dialog while `fleet send`
-/// reports success (L1).
+/// reports success (L1). `home` must already have been through
+/// [`seed_worker_home`] — see this module's doc comment for what an unseeded one
+/// costs.
 pub fn worker_command(
     slot: u8,
     cwd: &Path,
+    home: &Path,
     config_dir: &Path,
     socket: &Path,
     api_key: &str,
+    ctx: &PaneContext,
 ) -> CommandBuilder {
     let pane = PaneId::Worker(slot);
     let mut cmd = base_command(&[
         "--permission-mode".to_string(),
-        "auto".to_string(),
-        "--append-system-prompt".to_string(),
-        worker_brief(pane, &roster()),
+        ctx.launch.worker_permission_mode.clone(),
+        "--system-prompt".to_string(),
+        render_worker(&ctx.worker_template, pane, &roster(), &cwd.display().to_string()),
     ]);
     cmd.cwd(cwd);
-    apply_pane_env(&mut cmd, pane, socket);
+    apply_pane_env(&mut cmd, pane, socket, worker_augmented_path());
 
+    // The Fence (WP-08): a private HOME so `~/.ssh`, the operator's real Claude
+    // config and shell profiles stop being reachable *by name*. Set after the
+    // parent-environment inherit like every other override here, so ours wins.
+    // `home` must already exist and carry a seeded `.gitconfig` — see
+    // `seed_worker_home` — or a worker's first commit fails with no
+    // `user.name`/`user.email` and WP-06's receipt points at nothing.
+    cmd.env("HOME", home);
     cmd.env("CLAUDE_CONFIG_DIR", config_dir);
-    cmd.env("ANTHROPIC_BASE_URL", DEEPSEEK_BASE_URL);
+    cmd.env("ANTHROPIC_BASE_URL", &ctx.launch.worker_base_url);
     cmd.env("ANTHROPIC_AUTH_TOKEN", api_key);
-    cmd.env("ANTHROPIC_MODEL", MODEL_FLASH);
+    cmd.env("ANTHROPIC_MODEL", &ctx.launch.worker_model);
+    // CC does not recognize the worker model name and would assume a 200k
+    // window, auto-compacting early (WP-02 finding). Export the fleet's own
+    // stated window instead — the same constant the context gauge divides by,
+    // so CC's bookkeeping and our display can never disagree (D-054).
+    cmd.env(
+        "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+        crate::context_gauge::WORKER_WINDOW_TOKENS.to_string(),
+    );
     // Not "don't set it" — *unset* it. The worker inherits the operator's
     // environment, and an `ANTHROPIC_API_KEY` sitting in their shell profile is
     // enough to park the pane on an api-key approval prompt forever (L2).
@@ -120,8 +158,13 @@ fn base_command(args: &[String]) -> CommandBuilder {
 
 /// What makes any process a pane: a truecolor terminal, a PATH that can find both
 /// `claude` and `fleet`, its own name, and the socket to reach the fleet on.
-fn apply_pane_env(cmd: &mut CommandBuilder, pane: PaneId, socket: &Path) {
-    cmd.env("PATH", augmented_path());
+///
+/// `path` is the caller's to choose (WP-08, the Fence): [`augmented_path`] for
+/// orch, [`worker_augmented_path`] for a worker. Both resolve `fleet`'s location
+/// the identical way; they differ only in whether the operator's own HOME
+/// contributes rungs.
+fn apply_pane_env(cmd: &mut CommandBuilder, pane: PaneId, socket: &Path, path: String) {
+    cmd.env("PATH", path);
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     cmd.env("FLEETOR_PANE", pane.to_string());
@@ -134,6 +177,13 @@ fn apply_pane_env(cmd: &mut CommandBuilder, pane: PaneId, socket: &Path) {
 
 /// A PATH that finds `claude` and `fleet` even when the app was launched from a
 /// GUI context whose environment never saw the login shell's additions.
+///
+/// **Orch only.** This reads `$HOME` from the *app's own* environment — the
+/// operator's real HOME, since orch is their own `claude` (D-030's "orch is
+/// untouched"). [`worker_augmented_path`] is the worker's version and
+/// deliberately does not call this: it must not bake the operator's HOME into a
+/// worker's PATH, which is the other half of the fix this module's doc comment
+/// promises alongside the private `HOME` itself.
 pub fn augmented_path() -> String {
     let home = std::env::var("HOME").unwrap_or_default();
     let existing = std::env::var("PATH").unwrap_or_default();
@@ -143,6 +193,27 @@ pub fn augmented_path() -> String {
         prefix.push(':');
     }
     format!("{prefix}{home}/.local/bin:{home}/.bun/bin:/opt/homebrew/bin:/usr/local/bin:{existing}")
+}
+
+/// The worker's PATH (WP-08, the Fence): the fleet-bin rung and the system
+/// dirs, none of the operator-HOME rungs `augmented_path` adds. Before this fix,
+/// every worker's PATH carried `{operator's real $HOME}/.local/bin` and
+/// `.../.bun/bin` regardless of the worker's own (now private) `HOME` — a name
+/// pointed straight at the operator's tooling, defeating the point of fencing
+/// `HOME` at all.
+///
+/// `existing` — the PATH inherited from the app's own process — is left alone.
+/// It is not an operator-HOME rung by construction (it is whatever launched the
+/// app), and stripping it is a sandboxing decision this package's spec rules
+/// out; see `docs/fence-notes.md` for what that leaves reachable.
+pub fn worker_augmented_path() -> String {
+    let existing = std::env::var("PATH").unwrap_or_default();
+    let mut prefix = String::new();
+    if let Some(dir) = fleet_bin_path().and_then(|p| p.parent().map(Path::to_path_buf)) {
+        prefix.push_str(&dir.to_string_lossy());
+        prefix.push(':');
+    }
+    format!("{prefix}/opt/homebrew/bin:/usr/local/bin:{existing}")
 }
 
 /// Where the `fleet` binary is, if it exists — an explicit ladder, checked for
@@ -237,6 +308,35 @@ pub fn project_key(cwd: &Path) -> String {
 
 fn json_object() -> serde_json::Value {
     serde_json::Value::Object(serde_json::Map::new())
+}
+
+// --- the private HOME (WP-08, the Fence) ---------------------------------------
+
+/// Give a worker's private `HOME` the one file its commits need: a minimal
+/// `.gitconfig` naming it as the commit author.
+///
+/// This is the WP-06 interaction `00-index.md` records: once `HOME` stops
+/// pointing at the operator's real one, the global `user.name`/`user.email` git
+/// used to inherit are gone too, and a worker's first `git commit` (`fleet
+/// done`'s first step) fails outright — no name, no receipt, nothing for a
+/// reviewer to read.
+///
+/// Unlike [`seed_config_dir`], this does **not** merge-write on every spawn: a
+/// worker's private HOME is not a shared, evolving config dir the way
+/// `CLAUDE_CONFIG_DIR` is (nothing else legitimately writes into it), so
+/// touching an existing file on every relaunch would only risk clobbering
+/// something a future breakage-catalogue entry seeded on purpose. Written once,
+/// left alone after that.
+pub fn seed_worker_home(dir: &Path, slot: u8) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("create worker home {}: {e}", dir.display()))?;
+    let file = dir.join(".gitconfig");
+    if file.exists() {
+        return Ok(());
+    }
+    let text = format!("[user]\n\tname = fleet worker-{slot}\n\temail = worker-{slot}@fleetor.local\n");
+    let tmp = dir.join(".gitconfig.tmp");
+    std::fs::write(&tmp, text).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, &file).map_err(|e| format!("install {}: {e}", file.display()))
 }
 
 #[cfg(test)]
@@ -349,12 +449,14 @@ mod tests {
     fn every_pane_knows_its_name_and_where_the_fleet_is() {
         let socket = PathBuf::from("/tmp/fleetor-test.sock");
         let cwd = PathBuf::from("/tmp");
-        let orch = orch_command(&cwd, &socket);
+        let ctx = PaneContext::baked();
+        let orch = orch_command(&cwd, &socket, &ctx);
         assert_eq!(orch.get_env("FLEETOR_PANE").unwrap(), "orch");
         assert_eq!(orch.get_env("FLEET_SOCKET").unwrap(), socket.as_os_str());
         assert!(orch.get_env("CLAUDE_CODE_CHILD_SESSION").is_none());
 
-        let worker = worker_command(3, &cwd, Path::new("/tmp/cfg"), &socket, "sk-test");
+        let worker =
+            worker_command(3, &cwd, Path::new("/tmp/home"), Path::new("/tmp/cfg"), &socket, "sk-test", &ctx);
         assert_eq!(worker.get_env("FLEETOR_PANE").unwrap(), "worker-3");
         assert_eq!(worker.get_env("FLEET_SOCKET").unwrap(), socket.as_os_str());
         assert!(worker.get_env("CLAUDE_CODE_CHILD_SESSION").is_none());
@@ -364,25 +466,168 @@ mod tests {
     /// not. With both set, the interactive TUI never reaches its input box.
     #[test]
     fn a_worker_carries_the_auth_token_and_never_the_api_key() {
-        let worker =
-            worker_command(1, Path::new("/tmp"), Path::new("/tmp/cfg"), Path::new("/tmp/s.sock"), "sk-secret");
+        let worker = worker_command(
+            1,
+            Path::new("/tmp"),
+            Path::new("/tmp/home"),
+            Path::new("/tmp/cfg"),
+            Path::new("/tmp/s.sock"),
+            "sk-secret",
+            &PaneContext::baked(),
+        );
         assert_eq!(worker.get_env("ANTHROPIC_AUTH_TOKEN").unwrap(), "sk-secret");
         assert!(worker.get_env("ANTHROPIC_API_KEY").is_none(), "L2: this wedges the pane on approval");
-        assert_eq!(worker.get_env("ANTHROPIC_BASE_URL").unwrap(), DEEPSEEK_BASE_URL);
+        assert_eq!(
+            worker.get_env("ANTHROPIC_BASE_URL").unwrap(),
+            PaneContext::baked().launch.worker_base_url.as_str(),
+        );
         assert_eq!(worker.get_env("CLAUDE_CONFIG_DIR").unwrap(), "/tmp/cfg");
+    }
+
+    /// D-054: a worker is told its real window, and it is the gauge's number —
+    /// spelled once. Orch never gets the override; its model is recognized and
+    /// its window is not ours to state.
+    #[test]
+    fn a_worker_is_told_the_window_the_gauge_divides_by() {
+        let ctx = PaneContext::baked();
+        let worker = worker_command(
+            2,
+            Path::new("/tmp"),
+            Path::new("/tmp/home"),
+            Path::new("/tmp/cfg"),
+            Path::new("/tmp/s.sock"),
+            "sk-test",
+            &ctx,
+        );
+        assert_eq!(
+            worker.get_env("CLAUDE_CODE_MAX_CONTEXT_TOKENS").unwrap(),
+            crate::context_gauge::WORKER_WINDOW_TOKENS.to_string().as_str(),
+        );
+        let orch = orch_command(Path::new("/tmp"), Path::new("/tmp/s.sock"), &ctx);
+        assert!(orch.get_env("CLAUDE_CODE_MAX_CONTEXT_TOKENS").is_none());
     }
 
     /// `--permission-mode auto` is load-bearing: the default is `manual`, which
     /// wedges on the first tool call. And the brief goes in as a system prompt,
-    /// never as a `CLAUDE.md` the worker could see in `git status` and delete.
+    /// never as a `CLAUDE.md` the worker could see in `git status` and delete —
+    /// now *replacing* CC's own rather than appending to it (D-043).
     #[test]
     fn a_worker_runs_prompt_free_and_is_briefed_through_its_system_prompt() {
-        let worker =
-            worker_command(2, Path::new("/tmp"), Path::new("/tmp/cfg"), Path::new("/tmp/s.sock"), "k");
+        let worker = worker_command(
+            2,
+            Path::new("/tmp"),
+            Path::new("/tmp/home"),
+            Path::new("/tmp/cfg"),
+            Path::new("/tmp/s.sock"),
+            "k",
+            &PaneContext::baked(),
+        );
         let args: Vec<String> =
             worker.get_argv().iter().map(|a| a.to_string_lossy().into_owned()).collect();
         assert!(args.windows(2).any(|w| w == ["--permission-mode", "auto"]), "{args:?}");
-        let brief_at = args.iter().position(|a| a == "--append-system-prompt").expect("briefed");
+        assert!(
+            !args.iter().any(|a| a == "--append-system-prompt"),
+            "D-043: the brief replaces CC's system prompt, it no longer appends to it",
+        );
+        let brief_at = args.iter().position(|a| a == "--system-prompt").expect("briefed");
         assert!(args[brief_at + 1].contains("You are `worker-2`"), "the brief names the pane");
+        assert!(args[brief_at + 1].contains("/tmp"), "and says where the pane is working");
+    }
+
+    // --- WP-08: the Fence ------------------------------------------------------
+
+    /// The whole point of the fence: a worker's `HOME` is the private dir it was
+    /// handed, never the operator's real one it would otherwise inherit — and orch
+    /// is untouched, because it is the operator's own `claude` (D-030).
+    ///
+    /// `CommandBuilder::new` seeds the *parent* environment at construction
+    /// (`get_base_env`), so orch's `HOME` is never literally absent — it is
+    /// whatever this test process's own `HOME` is, exactly as inherited. The
+    /// assertion is that `spawn.rs` never overrides it, not that the key is
+    /// unset.
+    #[test]
+    fn a_worker_gets_a_private_home_and_orch_keeps_its_own() {
+        let socket = PathBuf::from("/tmp/s.sock");
+        let ctx = PaneContext::baked();
+        let real_home = std::env::var_os("HOME");
+
+        let orch = orch_command(Path::new("/tmp"), &socket, &ctx);
+        assert_eq!(
+            orch.get_env("HOME").map(|s| s.to_os_string()),
+            real_home,
+            "orch must inherit the operator's real HOME untouched"
+        );
+
+        let worker = worker_command(
+            1,
+            Path::new("/tmp"),
+            Path::new("/tmp/private-home"),
+            Path::new("/tmp/cfg"),
+            &socket,
+            "k",
+            &ctx,
+        );
+        assert_eq!(worker.get_env("HOME").unwrap(), "/tmp/private-home");
+    }
+
+    /// The other half of the fix, in the same commit as the private HOME: a
+    /// worker's PATH must not carry the rungs `augmented_path` derives from the
+    /// operator's real HOME (`~/.local/bin`, `~/.bun/bin`) — otherwise a fenced
+    /// `HOME` still leaves the operator's own tooling reachable by name through
+    /// PATH instead. Orch keeps today's PATH unchanged.
+    #[test]
+    fn worker_path_drops_the_operator_home_rungs_orch_keeps_them() {
+        let previous = std::env::var("HOME").ok();
+        std::env::set_var("HOME", "/Users/operator");
+
+        let orch_path = augmented_path();
+        assert!(orch_path.contains("/Users/operator/.local/bin"), "{orch_path}");
+        assert!(orch_path.contains("/Users/operator/.bun/bin"), "{orch_path}");
+        assert!(orch_path.contains("/opt/homebrew/bin"), "{orch_path}");
+
+        let worker_path = worker_augmented_path();
+        assert!(
+            !worker_path.contains("/Users/operator"),
+            "the operator's HOME must not appear anywhere in a worker's PATH: {worker_path}"
+        );
+        assert!(worker_path.contains("/opt/homebrew/bin"), "{worker_path}");
+        assert!(worker_path.contains("/usr/local/bin"), "{worker_path}");
+
+        match previous {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    /// The WP-06 interaction: a worker's private HOME must come seeded with a
+    /// gitconfig, or its first `git commit` — `fleet done`'s first step — fails
+    /// with no `user.name`/`user.email` once the global one stops being reachable.
+    #[test]
+    fn seeding_a_worker_home_gives_it_a_gitconfig_naming_the_worker() {
+        let dir = temp_dir("worker-home");
+        seed_worker_home(&dir, 2).unwrap();
+
+        let text = std::fs::read_to_string(dir.join(".gitconfig")).unwrap();
+        assert!(text.contains("fleet worker-2"), "{text}");
+        assert!(text.contains("worker-2@fleetor.local"), "{text}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Written once, left alone after that (unlike `seed_config_dir`'s
+    /// merge-on-every-spawn): a second seed on an existing gitconfig must not
+    /// clobber whatever is already there.
+    #[test]
+    fn seeding_a_worker_home_a_second_time_does_not_clobber_an_existing_gitconfig() {
+        let dir = temp_dir("worker-home-existing");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".gitconfig"), "[user]\n\tname = hand-edited\n").unwrap();
+
+        seed_worker_home(&dir, 4).unwrap();
+
+        let text = std::fs::read_to_string(dir.join(".gitconfig")).unwrap();
+        assert_eq!(text, "[user]\n\tname = hand-edited\n", "an existing gitconfig must survive re-seeding");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
