@@ -21,18 +21,22 @@
 //!    box. It is `env_remove`d rather than merely not-set, because the worker
 //!    inherits the operator's environment and they may well have one.
 //!  - **`--permission-mode auto`.** The default is `manual`, which wedges on the
-//!    first tool call.
+//!    first tool call. It is `prompts/launch.conf`'s `permission_mode`, which
+//!    ships as `auto` and is documented there with that consequence attached.
+//!
+//! What a pane is *told* is not here — it is in `prompts/`, resolved once at
+//! bootstrap by [`crate::prompts`] and handed in as a [`PaneContext`]. This module
+//! decides how a process is shaped; that one decides what goes in its head. The
+//! two `env_remove` calls below are the deliberate exception: they are not
+//! settings, they are the three ways a pane wedges forever (D-041).
 
 use std::path::{Path, PathBuf};
 
-use fleetor_core::brief::{orch_brief, worker_brief};
+use fleetor_core::brief::{render_orch, render_worker};
 use fleetor_core::pane::{PaneId, WORKER_SLOTS};
 use portable_pty::CommandBuilder;
 
-/// The DeepSeek Anthropic-compatible endpoint the worker panes talk to.
-const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/anthropic";
-/// The model in every worker seat.
-const MODEL_FLASH: &str = "deepseek-v4-flash";
+use crate::prompts::PaneContext;
 
 /// Overrides the program every pane runs. Set by `src-tauri/tests/panes.rs` to
 /// `tests/fake-pane/fake-pane.sh` so the registry is exercised end-to-end without
@@ -56,10 +60,10 @@ fn roster() -> Vec<PaneId> {
 /// `CommandBuilder::new` already seeds the parent environment, so this is an
 /// inherit-then-override — their login, their config dir, their model, plus the
 /// five things that make it a pane.
-pub fn orch_command(cwd: &Path, socket: &Path) -> CommandBuilder {
+pub fn orch_command(cwd: &Path, socket: &Path, ctx: &PaneContext) -> CommandBuilder {
     let mut cmd = base_command(&[
         "--append-system-prompt".to_string(),
-        orch_brief(&roster()),
+        render_orch(&ctx.orch_template, &roster()),
     ]);
     cmd.cwd(cwd);
     apply_pane_env(&mut cmd, PaneId::Orch, socket);
@@ -80,21 +84,22 @@ pub fn worker_command(
     config_dir: &Path,
     socket: &Path,
     api_key: &str,
+    ctx: &PaneContext,
 ) -> CommandBuilder {
     let pane = PaneId::Worker(slot);
     let mut cmd = base_command(&[
         "--permission-mode".to_string(),
-        "auto".to_string(),
+        ctx.launch.worker_permission_mode.clone(),
         "--append-system-prompt".to_string(),
-        worker_brief(pane, &roster()),
+        render_worker(&ctx.worker_template, pane, &roster()),
     ]);
     cmd.cwd(cwd);
     apply_pane_env(&mut cmd, pane, socket);
 
     cmd.env("CLAUDE_CONFIG_DIR", config_dir);
-    cmd.env("ANTHROPIC_BASE_URL", DEEPSEEK_BASE_URL);
+    cmd.env("ANTHROPIC_BASE_URL", &ctx.launch.worker_base_url);
     cmd.env("ANTHROPIC_AUTH_TOKEN", api_key);
-    cmd.env("ANTHROPIC_MODEL", MODEL_FLASH);
+    cmd.env("ANTHROPIC_MODEL", &ctx.launch.worker_model);
     // Not "don't set it" — *unset* it. The worker inherits the operator's
     // environment, and an `ANTHROPIC_API_KEY` sitting in their shell profile is
     // enough to park the pane on an api-key approval prompt forever (L2).
@@ -349,12 +354,13 @@ mod tests {
     fn every_pane_knows_its_name_and_where_the_fleet_is() {
         let socket = PathBuf::from("/tmp/fleetor-test.sock");
         let cwd = PathBuf::from("/tmp");
-        let orch = orch_command(&cwd, &socket);
+        let ctx = PaneContext::baked();
+        let orch = orch_command(&cwd, &socket, &ctx);
         assert_eq!(orch.get_env("FLEETOR_PANE").unwrap(), "orch");
         assert_eq!(orch.get_env("FLEET_SOCKET").unwrap(), socket.as_os_str());
         assert!(orch.get_env("CLAUDE_CODE_CHILD_SESSION").is_none());
 
-        let worker = worker_command(3, &cwd, Path::new("/tmp/cfg"), &socket, "sk-test");
+        let worker = worker_command(3, &cwd, Path::new("/tmp/cfg"), &socket, "sk-test", &ctx);
         assert_eq!(worker.get_env("FLEETOR_PANE").unwrap(), "worker-3");
         assert_eq!(worker.get_env("FLEET_SOCKET").unwrap(), socket.as_os_str());
         assert!(worker.get_env("CLAUDE_CODE_CHILD_SESSION").is_none());
@@ -365,10 +371,13 @@ mod tests {
     #[test]
     fn a_worker_carries_the_auth_token_and_never_the_api_key() {
         let worker =
-            worker_command(1, Path::new("/tmp"), Path::new("/tmp/cfg"), Path::new("/tmp/s.sock"), "sk-secret");
+            worker_command(1, Path::new("/tmp"), Path::new("/tmp/cfg"), Path::new("/tmp/s.sock"), "sk-secret", &PaneContext::baked());
         assert_eq!(worker.get_env("ANTHROPIC_AUTH_TOKEN").unwrap(), "sk-secret");
         assert!(worker.get_env("ANTHROPIC_API_KEY").is_none(), "L2: this wedges the pane on approval");
-        assert_eq!(worker.get_env("ANTHROPIC_BASE_URL").unwrap(), DEEPSEEK_BASE_URL);
+        assert_eq!(
+            worker.get_env("ANTHROPIC_BASE_URL").unwrap(),
+            PaneContext::baked().launch.worker_base_url.as_str(),
+        );
         assert_eq!(worker.get_env("CLAUDE_CONFIG_DIR").unwrap(), "/tmp/cfg");
     }
 
@@ -378,7 +387,7 @@ mod tests {
     #[test]
     fn a_worker_runs_prompt_free_and_is_briefed_through_its_system_prompt() {
         let worker =
-            worker_command(2, Path::new("/tmp"), Path::new("/tmp/cfg"), Path::new("/tmp/s.sock"), "k");
+            worker_command(2, Path::new("/tmp"), Path::new("/tmp/cfg"), Path::new("/tmp/s.sock"), "k", &PaneContext::baked());
         let args: Vec<String> =
             worker.get_argv().iter().map(|a| a.to_string_lossy().into_owned()).collect();
         assert!(args.windows(2).any(|w| w == ["--permission-mode", "auto"]), "{args:?}");
