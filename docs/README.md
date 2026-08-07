@@ -38,6 +38,7 @@ Each is stamped with the Claude Code version it measured; re-measure on a CC upd
 | [`blackboard-shakedown.md`](./notes/blackboard-shakedown.md) | The WP-09 live-run findings | **live log** — CC 2.1.223, ongoing |
 | [`run-rotation-notes.md`](./notes/run-rotation-notes.md) | Which files an archived run has to take, measured against a crashed WAL (D-058) | 2026-08-07, SQLite/macOS 15 |
 | [`orch-config-dir-notes.md`](./notes/orch-config-dir-notes.md) | Why a fleet-owned `CLAUDE_CONFIG_DIR` silently logs `orch` out, and the variable that keeps its login (D-062) | CC 2.1.224 |
+| [`write-guardrail-notes.md`](./notes/write-guardrail-notes.md) | That a `PreToolUse` deny really stops `Bash`, and where a real build and a real commit actually write (D-065) | CC 2.1.224 |
 
 ## Roadmap (`docs/roadmap/`)
 
@@ -52,6 +53,12 @@ up. The rewind harness it names lives in a separate repo by design.
 also the as-built record for dev mode: where the flag lives, the one function that reads
 it, and the two tests that keep the mode out of the delivery path (Tier 1.4) and out of
 every word a pane is told (WP-12's open question 4).
+
+[`17-write-guardrail.md`](./roadmap/17-write-guardrail.md) landed the write guardrail
+(D-065) and is also its as-built record: the per-pane roots, the `PreToolUse` hook that
+enforces them, what it deliberately does not stop, and why narrowing auto-approve does not
+trip Tier 1.7. It is the package WP-12 puts between an auto-approving worker and the
+evaluator's own code, so it blocks any improve run.
 
 [`13-done-verb.md`](./roadmap/13-done-verb.md) landed the ninth `fleet` verb (D-064):
 `fleet handoff`, by which `orch` declares the confirmed goal met. The message path's

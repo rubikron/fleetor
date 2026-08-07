@@ -42,7 +42,7 @@ one of these has the word wrong, not the concept.
 | **rewind mission** | A real repo pinned to an old tag, aimed at a feature upstream actually shipped next. |
 | **the answer key** | Upstream's real commit for that feature. Not on disk until the retro starts. |
 | **the proposal ledger** | Where proposals accumulate across cycles. Approve now, or defer until there is data. |
-| **the fence** | Deny-paths stopping the fleet touching dev-mode code, the evaluator, or its brief. |
+| **the write guardrail** | Built as WP-17 (D-065): a `PreToolUse` hook per pane refusing writes outside that pane's own roots. This doc called it *the fence* below; that name was already WP-08's private `HOME` (D-052), so the built thing took a name of its own. Writes only — reads stay open, deliberately. |
 | **the veil** | The property that `orch` does not know the evaluator exists until the retro starts. |
 | **the done verb** | Built as **`fleet handoff`** (WP-13, D-064) — `orch` declaring the goal met. Spelled `handoff` because `fleet done` was already the worker's block receipt. |
 | **improve run** | A second fleet, pointed at FLEETOR's own source, implementing approved proposals. |
@@ -327,8 +327,12 @@ claims are qualitative, and only within-generation findings rest on measurement.
    config. *Unverified: the exact path and precedence for the installed CC version has
    not been checked. Verify before relying on it.*
 3. **A `PreToolUse` hook** — inspects the actual Bash command string rather than a glob,
-   so it catches `cat`/`python`/`find` variants pattern rules miss. *Also unverified for
-   the installed version.*
+   so it catches `cat`/`python`/`find` variants pattern rules miss. **Verified at CC 2.1.224
+   and built as WP-17** (D-065): a deny really does stop the tool call, it beats an explicit
+   `--allowedTools` allow, and the reason reaches the model as words it acts on
+   (`docs/notes/write-guardrail-notes.md` §1). What it enforces is *writes*; and for `Bash`
+   only what a command actually **names**, which is why `cargo build` and `git commit` still
+   work — measured, §3 of the same file.
 4. **The Fence** (D-052, built) — workers get a private `HOME`, so `~/.fleetor` does not
    resolve by name. Absolute paths still do; `docs/notes/fence-notes.md` says so outright.
 
@@ -351,7 +355,7 @@ step.
 | 14 | 1 | `orch`'s own transcript + config dir | — | yes — `spawn.rs`, `runs.rs` |
 | 15 | 1 | The evaluator window | 13, 16 · soft 14 | yes — 2nd window, `PaneId` |
 | 16 | 2 — dev mode & the fence | Dev mode | — | no |
-| 17 | 2 | The fence | 16 · **blocks any improve run** | yes |
+| 17 | 2 | The write guardrail (`17-write-guardrail.md`, landed) | 14, 16 · **blocks any improve run** | yes |
 | 18 | 4 — multi-fleet | More than one fleet at once | — | yes |
 | 19 | 4 | Orch-to-orch, and its cutoff | 18 | yes |
 | — | 3 — rewind evidence | The rewind harness + mission bank | — | **no — imports nothing from the app** |

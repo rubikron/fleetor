@@ -36,7 +36,7 @@ use tokio::sync::{mpsc, oneshot, Notify};
 use crate::context_gauge::{self, GaugeSources, TranscriptSource};
 use crate::prompts::PaneContext;
 use crate::pty::PaneRegistry;
-use crate::{deliver, prompts, runs, spawn, testbed};
+use crate::{deliver, guardrail, prompts, runs, spawn, testbed};
 
 /// Emitted for every appended event, in `seq` order, the moment it persists.
 const EVENT_FLEET: &str = "fleet://event";
@@ -285,6 +285,11 @@ pub fn fleet_bootstrap(
     // `fleet roster` does over the socket (see the `Fleet::app` doc).
     let (hub, shutdown) = spawn_hub(&rt, store.clone(), app_tx.clone(), socket_path());
 
+    // The write guardrail's own feed (WP-17). Started with the run and emptied
+    // by it, so what the operator reads is this run's refusals and not the last
+    // one's — those went to `runs/` with the rest of that log (D-058).
+    spawn_guardrail_feed(&rt, store.clone(), &dir);
+
     let snap = snapshot(&store)?;
     *guard =
         Some(Fleet { rt, store, shutdown, config, target, context, gauges, app: app_tx, hub });
@@ -354,6 +359,7 @@ pub(crate) fn spawn_pane(
             std::fs::create_dir_all(&target).map_err(|e| format!("create orchestrator cwd: {e}"))?;
             let config_dir = pane_config_dir(pane);
             spawn::seed_config_dir(&config_dir, &target)?;
+            install_guardrail(&store, pane, &config_dir, &target, &context)?;
             note_spawn_estimate(&store, &context, pane, &target, None);
             note(&store, NoticeLevel::Info, &orch_config_dir_notice(&config_dir));
             spawn::orch_command(&target, &socket, &config_dir, &context)
@@ -368,6 +374,7 @@ pub(crate) fn spawn_pane(
             // than at the target picker (see this function's doc comment).
             let home = worker_home_dir(slot);
             spawn::seed_worker_home(&home, slot)?;
+            install_guardrail(&store, pane, &config_dir, &cwd, &context)?;
             note_spawn_estimate(&store, &context, pane, &cwd, Some(context_gauge::WORKER_WINDOW_TOKENS));
             // The WP-04 live gauge's source of truth: where to find this
             // worker's own transcript once it has one. Recorded before the
@@ -380,6 +387,60 @@ pub(crate) fn spawn_pane(
     };
 
     registry.spawn(pane, command, rows, cols)
+}
+
+/// Install this pane's write guardrail (WP-17), at the spawn site for the same
+/// reason the config seed is: the roots are derived from the cwd this pane is
+/// actually about to run in, so they cannot be got wrong by a code path that
+/// forgot to recompute them.
+///
+/// `cwd` is the pane's own — `orch`'s target repo, a worker's worktree, or (in
+/// the shared-checkout fallback) the target, which degrades the guardrail
+/// exactly the way `shared_checkout_warning` says peer review degrades rather
+/// than inventing a directory that is not there.
+fn install_guardrail(
+    store: &Arc<dyn Store>,
+    pane: PaneId,
+    config_dir: &Path,
+    cwd: &Path,
+    context: &PaneContext,
+) -> Result<(), String> {
+    let shell = shell_dir();
+    let roots = guardrail::roots_for(cwd, &shell, &context.launch.fence_allow);
+    let notices = guardrail::install(
+        config_dir,
+        pane,
+        &roots,
+        &guardrail::policy_dir(&shell),
+        &guardrail::journal_path(&shell),
+    )?;
+    for (level, text) in notices {
+        note(store, level, &text);
+    }
+    Ok(())
+}
+
+/// Poll the guardrail's refusal journal onto the Activity feed.
+///
+/// **A silent denial is the wrong answer.** A pane that cannot tell a guardrail
+/// from a broken path retries forever or reports confident nonsense, and an
+/// operator who never learns a pane was refused cannot tell a mission that is
+/// going badly from one that is fenced badly.
+///
+/// A task of its own on the fleet's runtime, deliberately not a hook into
+/// anything the message path touches (Tier 1.4): a refusal is at most a second
+/// late reaching the feed, and no delivery ever waits on one.
+fn spawn_guardrail_feed(rt: &Runtime, store: Arc<dyn Store>, shell: &Path) {
+    let mut journal = guardrail::Journal::fresh(guardrail::journal_path(shell));
+    rt.spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+        loop {
+            tick.tick().await;
+            for (level, text) in journal.drain() {
+                note(&store, level, &text);
+            }
+        }
+    });
 }
 
 /// What the operator is told when `orch` spawns on its own config dir (WP-14).
