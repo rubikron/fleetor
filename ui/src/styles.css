@@ -1417,6 +1417,12 @@ body,
   cursor: pointer;
 }
 .switch:hover { border-color: var(--fg-mute); }
+/* a switch whose state is not known yet (WP-16: the backend has not answered
+   what mode the app is in). It must not invite a click, and it must not read as
+   "off" — dimming the whole control says "no answer" where a thumb position
+   would say a wrong answer. */
+.switch:disabled { cursor: default; opacity: 0.45; }
+.switch:disabled:hover { border-color: var(--border); }
 .switch__thumb {
   display: block;
   width: 0.875rem;
