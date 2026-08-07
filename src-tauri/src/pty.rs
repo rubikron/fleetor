@@ -220,13 +220,28 @@ impl PaneRegistry {
         crate::orphans::write_registry(&self.registry_path, &[]);
     }
 
-    /// Every pane the shell is running, orch first. The hub's single source of
-    /// truth for fleet membership — a pane that was never spawned must not appear
-    /// here, or `fleet broadcast` fans out to somewhere that cannot receive.
+    /// Every **fleet** pane the shell is running, orch first. The hub's single
+    /// source of truth for fleet membership — a pane that was never spawned must
+    /// not appear here, or `fleet broadcast` fans out to somewhere that cannot
+    /// receive.
+    ///
+    /// **Membership, not liveness, and the two are different questions.** A
+    /// terminal this registry is running is not automatically a member of the
+    /// fleet: `PaneId::is_fleet_member` is what decides, and it is filtered here
+    /// because this one answer feeds both places the fleet gets enumerated — the
+    /// `fleet roster` listing and a `fleet broadcast`'s target list (`Hub::roster`
+    /// and `Hub::broadcast`, both through `app_roster`). Filtering once, at the
+    /// source, is what stops those two from ever disagreeing.
+    ///
+    /// Nothing about *delivery* consults this. `writable` looks a name up in the
+    /// map directly, so a non-member with a live terminal is still addressable
+    /// by name in both directions — which is the whole shape: not enumerated,
+    /// and not unreachable.
     pub fn roster(&self) -> Vec<PaneEntry> {
         let Ok(panes) = self.panes.lock() else { return Vec::new() };
         let mut entries: Vec<PaneEntry> = panes
             .iter()
+            .filter(|(pane, _)| pane.is_fleet_member())
             .map(|(pane, p)| PaneEntry::new(*pane, decode_state(p.state.load(Ordering::Relaxed))))
             .collect();
         entries.sort_by_key(|e| e.pane);
@@ -267,10 +282,22 @@ pub fn exit_channel(pane: PaneId) -> String {
     format!("pty://exit/{}", channel_key(pane))
 }
 
+/// **Exhaustive on the identity, never on `slot()`.** This used to be
+/// `match pane.slot() { Some(n) => n, None => "orch" }`, which quietly gave
+/// *every* slotless name orch's channel: a second slotless pane would have had
+/// its bytes rendered in the orchestrator's terminal, and there is no failure
+/// signal for listening on the wrong name (which is why the pair is pinned by a
+/// test at all). A `match` on the variant makes the next one a compile error.
+///
+/// `ui/src/fleet/types.ts::paneKey` is the other half of each of these strings.
 fn channel_key(pane: PaneId) -> String {
-    match pane.slot() {
-        Some(n) => n.to_string(),
-        None => "orch".to_string(),
+    match pane {
+        PaneId::Orch => "orch".to_string(),
+        PaneId::Worker(n) => n.to_string(),
+        PaneId::Evaluator => "evaluator".to_string(),
+        // No pty, so no channel — this name is refused before a spawn is
+        // attempted (`fleet::spawn_pane`) and nothing ever listens here.
+        PaneId::Operator => "operator".to_string(),
     }
 }
 
@@ -438,12 +465,47 @@ mod tests {
         assert_eq!(exit_channel(PaneId::Orch), "pty://exit/orch");
         assert_eq!(exit_channel(PaneId::Worker(4)), "pty://exit/4");
 
+        // **Every name, not just the roster** (WP-15). The roster is the fleet,
+        // and a terminal that is not in the fleet still has a pty and still
+        // needs a channel nobody else is listening on. The old version of
+        // `channel_key` gave `orch`'s name to every slotless identity, so this
+        // list is what would have caught it.
         let all: Vec<String> = PaneId::roster(&fleetor_core::pane::WORKER_SLOTS)
             .into_iter()
+            .chain([PaneId::Evaluator, PaneId::Operator])
             .flat_map(|p| [out_channel(p), exit_channel(p)])
             .collect();
         let unique: std::collections::HashSet<&String> = all.iter().collect();
         assert_eq!(all.len(), unique.len(), "two panes share a channel: {all:?}");
+        assert_eq!(out_channel(PaneId::Evaluator), "pty://output/evaluator");
+    }
+
+    /// **The veil at the registry** (WP-15). A terminal this registry runs is
+    /// not automatically a member of the fleet, and this one answer feeds both
+    /// places the fleet gets enumerated — `fleet roster`'s listing and a
+    /// `fleet broadcast`'s target list, which both go through
+    /// `AppCommand::Roster`. Filtering once here is what stops them disagreeing.
+    ///
+    /// Driven through a real spawn rather than asserted on the predicate, so it
+    /// fails if the filter is ever dropped from `roster()` itself.
+    #[test]
+    fn a_running_evaluator_is_not_on_the_fleets_roster() {
+        let dir = std::env::temp_dir().join(format!("fleetor-roster-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let registry = PaneRegistry::new(Arc::new(|_: &str, _: String| {}), dir.join("panes.pids"));
+
+        for pane in [PaneId::Orch, PaneId::Worker(1), PaneId::Evaluator] {
+            let mut cmd = CommandBuilder::new("/bin/cat");
+            cmd.env("TERM", "dumb");
+            registry.spawn(pane, cmd, 24, 80).expect("spawn");
+        }
+
+        let roster: Vec<PaneId> = registry.roster().into_iter().map(|e| e.pane).collect();
+        assert_eq!(roster, vec![PaneId::Orch, PaneId::Worker(1)], "the evaluator is not the fleet");
+        // …and it is still addressable, which is the whole shape: a name that is
+        // in no enumeration and is not unreachable.
+        assert!(registry.writable(PaneId::Evaluator).is_ok(), "still a live pty to write to");
+        registry.kill_all();
     }
 
     /// Only a dead pane refuses input — asserted on the decoder the registry

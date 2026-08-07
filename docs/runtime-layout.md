@@ -21,6 +21,25 @@ Everything FLEETOR writes at runtime lives here, and nowhere else — that is Ti
       transcripts/     each pane's own Claude Code session .jsonl files, MOVED
         orch/          here at archive time so they do not accumulate in
         worker-N/      pane-config/. `orch` included since WP-14 (D-062)
+  dev/               DEV MODE ONLY (WP-15, D-066). Absent unless an evaluator has
+                     woken. A SIBLING of _shell/, not a child, and that placement
+                     is load-bearing: every pane's write guardrail has _shell as a
+                     root, so a retro laid out inside it would be writable by the
+                     fleet being judged.
+    retro/           the run the evaluator reads, in the archive's own shape
+      <run-id>/      named after the directory the run WILL get under runs/
+        events.json    the live log, read in place read-only through the same
+                       archive::to_json rotation uses — never a copy of state.db,
+                       which between checkpoints is a 4 KB file with no schema
+        manifest.json  says outright that this is a mid-run snapshot and that the
+                       archive under runs/ supersedes it
+        transcripts/   COPIED, not moved: every pane is alive and Claude Code
+                       still has these files open (docs/notes/live-run-snapshot-notes.md)
+    evaluator-config/  the evaluator's CLAUDE_CONFIG_DIR — deliberately NOT under
+                       _shell/pane-config/, because harvest_transcripts walks that
+                       directory and would file the evaluator's own reasoning into
+                       runs/<id>/transcripts/, handing the next generation's fleet
+                       the past retros WP-12 requires to be absent
   prompts/           OPERATOR OVERRIDES for the shipped prompt files — same names as
                      the repo's prompts/ (orch.md, worker.md, the fragments,
                      launch.conf). Read once at fleet start; absent files fall back
@@ -59,7 +78,8 @@ Points that bite:
 
 - **The orchestrator is exempt from most of this.** It runs as the operator's own `claude` — their login, their model, their HOME — in the target repo (or the testbed). Only workers get `home/` and worktrees; that asymmetry is the product, not an accident. Since WP-14 it shares exactly one thing with them: a `pane-config/` directory of its own.
 - **Workers must not see `ANTHROPIC_API_KEY`.** They talk to DeepSeek via `ANTHROPIC_BASE_URL` with the key from the repo-root `.env`; the spawn env is curated in `src-tauri/src/spawn.rs`, and the three env settings there each wedge a pane forever if wrong (`prompts/README.md` names them).
-- **`prompts/` overrides take effect at the next fleet start**, not live — they are read once at bootstrap (D-042).
+- **`prompts/` overrides take effect at the next fleet start**, not live — they are read once at bootstrap (D-042). **There is exactly one brief with no override here, and it is not in this directory:** the evaluator's (D-066). It is compiled into the binary from a separate repo behind the `devmode` cargo feature, because an override path would put the rubric on disk where every pane can read it by absolute path and a worker's auto-approve could write to it. `prompts/README.md` §"The one brief with no override" is the account.
+- **`dev/` is the only thing under `~/.fleetor` a fleet pane cannot write into** (D-066). Every other directory here is inside some pane's guardrail roots — the evaluator's are its own working directory alone, and nobody else's include `dev/`.
 - **The Fence is a fence, not a sandbox** (D-052): name resolution stops; absolute paths, `SSH_AUTH_SOCK` and inherited PATH entries do not. `docs/notes/fence-notes.md` carries the breakage catalogue.
 - **The write guardrail is about writes only, and about paths a command *names*** (D-065). Each pane may write under its own cwd and `_shell/`, and nowhere else; reads are not restricted at all. What it cannot see is a write no command states — `cargo build` into `~/.cargo`, and a worker's `git commit` into the target repo's `.git`, both measured in `docs/notes/write-guardrail-notes.md` and both of which a pane cannot work without. `pane-config/` is inside a root and still refused, because a pane that edits its own `settings.json` switches the guardrail off.
 - **Nothing under `_shell/` is precious — but `runs/` is** (D-058). `_shell` holds only the live run and the machinery around it, and a deleted `~/.fleetor` costs history, never correctness of the target repo. `runs/` is where that history now accumulates, so it is the one directory here worth backing up.

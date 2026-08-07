@@ -29,14 +29,14 @@ use fleetor_db::SqliteStore;
 use fleetor_ipc::UnixTransport;
 use fleetor_server::{AppCommand, BroadcastStore, Hub};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, oneshot, Notify};
 
 use crate::context_gauge::{self, GaugeSources, TranscriptSource};
 use crate::prompts::PaneContext;
 use crate::pty::PaneRegistry;
-use crate::{deliver, guardrail, prompts, runs, spawn, testbed};
+use crate::{deliver, dev, evaluator, guardrail, prompts, runs, spawn, testbed};
 
 /// Emitted for every appended event, in `seq` order, the moment it persists.
 const EVENT_FLEET: &str = "fleet://event";
@@ -253,7 +253,7 @@ pub fn fleet_bootstrap(
     )));
     let store: Arc<dyn Store> = bcast.clone();
 
-    spawn_follower(&rt, bcast.clone(), app);
+    spawn_follower(&rt, bcast.clone(), app.clone());
 
     for (level, text) in &rotation {
         note(&store, *level, text);
@@ -289,6 +289,11 @@ pub fn fleet_bootstrap(
     // by it, so what the operator reads is this run's refusals and not the last
     // one's — those went to `runs/` with the rest of that log (D-058).
     spawn_guardrail_feed(&rt, store.clone(), &dir);
+
+    // The wake (WP-15), a second subscriber on the bus D-020 built for exactly
+    // this: downstream of `append_event`, outside the hub, sending no
+    // `AppCommand` and holding nothing up. See `spawn_evaluator_wake`.
+    spawn_evaluator_wake(&rt, bcast.clone(), store.clone(), app, target.clone());
 
     let snap = snapshot(&store)?;
     *guard =
@@ -364,6 +369,33 @@ pub(crate) fn spawn_pane(
             note(&store, NoticeLevel::Info, &orch_config_dir_notice(&config_dir));
             spawn::orch_command(&target, &socket, &config_dir, &context)
         }
+        // WP-15. Reached only through `wake_evaluator`, which has already
+        // checked the three conditions in `evaluator::readiness` — this arm
+        // re-checks the brief anyway, because "unreachable outside dev mode"
+        // has to be a property of the spawn site and not of its one caller.
+        //
+        // Shaped like `orch` (the operator's own account and model, no Fence,
+        // full environment inherit) and unlike it in three ways that are all
+        // about the veil rather than about permissions: its brief comes from a
+        // separate repo and has no `~/.fleetor/prompts/` override, its config
+        // dir is outside `pane-config/` so its own reasoning never lands in the
+        // run archive, and its guardrail roots are its own directory alone.
+        PaneId::Evaluator => {
+            let fleetor = fleetor_dir();
+            let brief = evaluator_brief(&fleetor, &target)?;
+            let cwd = brief.cwd;
+            let config_dir = evaluator::config_dir(&fleetor);
+            std::fs::create_dir_all(&cwd).map_err(|e| format!("create evaluator cwd: {e}"))?;
+            spawn::seed_config_dir(&config_dir, &cwd)?;
+            install_guardrail(&store, pane, &config_dir, &cwd, &context)?;
+            spawn::evaluator_command(
+                &cwd,
+                &socket,
+                &config_dir,
+                &brief.text,
+                &context.launch.worker_permission_mode,
+            )
+        }
         PaneId::Worker(slot) => {
             let key = load_api_key()?;
             let cwd = worker_cwd(&store, &target, slot);
@@ -406,7 +438,20 @@ fn install_guardrail(
     context: &PaneContext,
 ) -> Result<(), String> {
     let shell = shell_dir();
-    let roots = guardrail::roots_for(cwd, &shell, &context.launch.fence_allow);
+    // **The evaluator's roots are narrower than any pane's, deliberately.** It
+    // must read everything the run produced and change almost nothing — its own
+    // stated boundary is that running a test suite is fine and editing a tracked
+    // file, committing or touching a branch is not. So it gets its working
+    // directory and nothing else: not `_shell` (which would let it write the
+    // live event log it is reading), and not the operator's `[fence] allow`
+    // extras, which exist for panes that are doing the work. Reads are untouched
+    // for every pane alike — the hook is not registered for `Read` at all
+    // (D-065), which is what makes "read everything" true without a rule.
+    let roots = if pane.is_evaluator() {
+        vec![cwd.to_path_buf()]
+    } else {
+        guardrail::roots_for(cwd, &shell, &context.launch.fence_allow)
+    };
     let notices = guardrail::install(
         config_dir,
         pane,
@@ -441,6 +486,167 @@ fn spawn_guardrail_feed(rt: &Runtime, store: Arc<dyn Store>, shell: &Path) {
             }
         }
     });
+}
+
+// --- the wake (WP-15) ----------------------------------------------------------
+
+/// The evaluator's brief, rendered, and the directory it will work in.
+struct EvaluatorBrief {
+    text: String,
+    cwd: PathBuf,
+}
+
+/// Lay the live run out for reading and render the brief against it.
+///
+/// Called from the spawn arm rather than from the wake, so the pane cannot come
+/// up pointed at a directory that was never written.
+fn evaluator_brief(fleetor: &Path, target: &Path) -> Result<EvaluatorBrief, String> {
+    let evaluator::Readiness::Ready(mission) = evaluator::readiness(dev::is_enabled(), target)
+    else {
+        return Err("there is no evaluator in this build or this mode".to_string());
+    };
+    let shell = shell_dir();
+    let run_id = runs::live_run_id(&shell, fleetor_core::time::now_ms());
+    let cwd = evaluator::retro_dir(fleetor, &run_id);
+    runs::snapshot_live_run(&shell, &cwd, &run_id)?;
+    let text = evaluator::render_brief(&mission, &cwd)?;
+    Ok(EvaluatorBrief { text, cwd })
+}
+
+/// Watch the run's own event stream for a handoff, and wake the evaluator on one.
+///
+/// ## Why this is not on the message path, and why that is structural
+///
+/// Tier 1.4 forbids anything between `fleet send` and a pty that can delay,
+/// refuse, reorder, drop or alter a message.
+/// `crates/fleetor-server/tests/handoff.rs` counts the `AppCommand`s a handoff
+/// causes and expects **zero**. This task sends none: `Hub::handoff` is still not
+/// `async`, still never touches `self.app`, and still answers `Recorded` from its
+/// own append alone. The wake reaches the registry the way `pty_spawn` does —
+/// through [`spawn_pane`] — which is not a road any message travels.
+///
+/// It rides D-020's bus, which is **persist-then-publish**: by the time an event
+/// is on the channel it is already durable, and `broadcast::Sender::send` never
+/// blocks its publisher. So the handoff op is answered whether or not this task
+/// ever runs, a crash between the two loses the wake and never the record, and
+/// a lagging follower recovers from the database rather than from the ring.
+/// Nothing waits on any of it.
+///
+/// ## What it does mean, said plainly
+///
+/// **WP-15 is the first thing that reads a handoff back**, and `Hub::handoff`'s
+/// own doc had to be corrected to say so (it claimed *nothing anywhere* did).
+/// What `task.rs`'s tripwire list actually bars is a read that goes on to
+/// **permit, order or refuse** something — a board that became a dispatcher.
+/// This permits nothing, orders nothing and refuses nothing: it changes what
+/// *exists* (a window, an address), which is the allowed shape WP-16 named and
+/// WP-19 is held to. A `fleet send` is byte-identical before and after, and the
+/// test that says so is untouched.
+///
+/// Idempotent for a second handoff: `PaneRegistry::spawn` is a no-op for a pane
+/// that is still running, so `orch` finding more work and handing back again
+/// does not get a second evaluator — it gets the one that is already there.
+fn spawn_evaluator_wake(
+    rt: &Runtime,
+    bcast: Arc<BroadcastStore>,
+    store: Arc<dyn Store>,
+    app: AppHandle,
+    target: PathBuf,
+) {
+    rt.spawn(async move {
+        // A follower of its own rather than an arm inside `spawn_follower`, so a
+        // slow wake can never hold up the feed the operator is watching — and so
+        // the file that pushes events to the webview stays a file about that.
+        let mut follower = match bcast.follow(0) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("fleet: the handoff watch failed to start: {e}");
+                return;
+            }
+        };
+        while let Ok(Some((_, event))) = follower.next().await {
+            if !matches!(event, FleetEvent::Handoff { .. }) {
+                continue;
+            }
+            for (level, text) in wake_evaluator(&app, &target) {
+                note(&store, level, &text);
+            }
+        }
+    });
+}
+
+/// One wake. Returns what the operator should be told — never nothing, unless
+/// the mode is simply off, because a wake that silently did nothing is
+/// indistinguishable from a wake that is broken.
+/// `target` is the run's own, snapshotted at bootstrap — the same one
+/// [`spawn_pane`] renders the brief against. Re-reading `config.json` here
+/// instead would let a mid-run target change send the two at different repos.
+fn wake_evaluator(app: &AppHandle, target: &Path) -> Vec<(NoticeLevel, String)> {
+    let mut notices = Vec::new();
+    match evaluator::readiness(dev::is_enabled(), target) {
+        // A build with no grader in it, and the ordinary non-dev case. Both are
+        // silent: the first is what every release build is, and the second is
+        // what the operator asked for by leaving the mode off.
+        evaluator::Readiness::NotBuilt | evaluator::Readiness::ModeOff => return notices,
+        evaluator::Readiness::NoMission { target, workspaces } => {
+            notices.push((
+                NoticeLevel::Warn,
+                format!(
+                    "dev mode is on, but {} is not a prepared mission workspace under {} — \
+                     so this handoff has no ground truth to be judged against and nothing \
+                     was started. Point the fleet at a prepared workspace first.",
+                    target.display(),
+                    workspaces.display(),
+                ),
+            ));
+            return notices;
+        }
+        evaluator::Readiness::Ready(mission) => {
+            // The answer key lands **before** the pane exists: the brief has the
+            // evaluator seal a verdict against it before it speaks to `orch`, so
+            // a key that arrived mid-conversation would be read after its
+            // position had already formed from the fleet's own account.
+            match evaluator::reveal_answer_key(&mission) {
+                Ok(Some(text)) => notices.push((NoticeLevel::Info, text)),
+                Ok(None) => {}
+                Err(why) => notices.push((NoticeLevel::Warn, why)),
+            }
+        }
+    }
+    match open_evaluator_window(app) {
+        Ok(()) => notices.push((
+            NoticeLevel::Info,
+            "the mission was handed back — a review window has opened".to_string(),
+        )),
+        Err(why) => notices.push((NoticeLevel::Warn, format!("the review window: {why}"))),
+    }
+    notices
+}
+
+/// Create the evaluator's window, or show it if it is already there.
+///
+/// **Not declared in `tauri.conf.json`.** A window in that array exists at every
+/// launch, which is exactly what "outside dev mode the evaluator does not exist"
+/// forbids; this one is built here or not at all. Its pty is spawned by the
+/// window's own React root, through the same `pty_spawn` every terminal uses.
+fn open_evaluator_window(app: &AppHandle) -> Result<(), String> {
+    if let Some(existing) = app.get_webview_window(evaluator::WINDOW_LABEL) {
+        // A second handoff, or a window the operator closed. §7 rule 5 applies at
+        // the window level too — closing hides rather than destroys, so this is
+        // the same webview with the same xterm and the same scrollback.
+        return existing.show().map_err(|e| e.to_string());
+    }
+    tauri::WebviewWindowBuilder::new(
+        app,
+        evaluator::WINDOW_LABEL,
+        tauri::WebviewUrl::App(format!("index.html?window={}", evaluator::WINDOW_LABEL).into()),
+    )
+    .title("FLEETOR — review")
+    .inner_size(1100.0, 800.0)
+    .min_inner_size(520.0, 360.0)
+    .build()
+    .map(|_| ())
+    .map_err(|e| e.to_string())
 }
 
 /// What the operator is told when `orch` spawns on its own config dir (WP-14).
@@ -482,6 +688,10 @@ fn note_spawn_estimate(
         // but a brief for somebody with no terminal is nothing, not an empty
         // string dressed as one.
         PaneId::Operator => return,
+        // Its brief is not rendered from `context` and its size is not the
+        // fleet's business — the Loadout counter is a per-run budget line for
+        // the panes doing the work, and the evaluator is not one of them.
+        PaneId::Evaluator => return,
         PaneId::Orch => fleetor_core::brief::render_orch(&context.orch_template, &roster, &cwd_str),
         PaneId::Worker(_) => {
             fleetor_core::brief::render_worker(&context.worker_template, pane, &roster, &cwd_str)

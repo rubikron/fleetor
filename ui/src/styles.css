@@ -620,6 +620,19 @@ body,
   min-height: 0;
   display: flex;
 }
+/* The evaluator's window (WP-15). One terminal, filling the window, and no
+   chrome of its own: the pane's own head already names it, and a second window
+   with a top bar and a sidebar would read as a second app rather than as one
+   conversation. Flat, like everything else (§7 rule 1). */
+.evaluator-window {
+  position: fixed;
+  inset: 0;
+  padding: 10px;
+  background: var(--bg-0);
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+}
 .terminal-pane {
   background: var(--term-bg);
   border: 1px solid var(--border);

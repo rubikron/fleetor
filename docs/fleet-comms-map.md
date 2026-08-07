@@ -173,17 +173,46 @@ orch ──▶ fleet handoff ──▶ hub ──▶ Store::append_event ──�
 
 **`recorded`, for the reason a message to the operator is (§3c).** Nothing was typed anywhere, so `accepted` would be a word about a pty that was never opened (Tier 1.5). It reuses `OpResult::Recorded`, the one variant three things now share; `FleetEvent::Handoff` correspondingly has **no `accepted` field**, because there is no such fact to record.
 
-**Nothing reads it back.** No delivery, spawn or verb behaves differently once a handoff is in the log — that is `task.rs`'s tripwire list applied to a sixth event variant, and `crates/fleetor-server/tests/handoff.rs` counts it: zero `AppCommand`s, and a `fleet send` byte-identical either side of one. The day something branches on "has the goal been declared met", what has grown back is a delivery path that knows whether the mission is over.
+**Nothing on the message path reads it back.** No delivery, spawn or verb behaves differently once a handoff is in the log — that is `task.rs`'s tripwire list applied to a sixth event variant, and `crates/fleetor-server/tests/handoff.rs` counts it: zero `AppCommand`s, and a `fleet send` byte-identical either side of one. The day something branches on "has the goal been declared met", what has grown back is a delivery path that knows whether the mission is over.
+
+**That sentence was narrowed by WP-15 and the narrowing is worth reading** (D-066). It used to say *nothing anywhere*, which was true until something downstream started listening. Something now does — §3f — and it listens on the bus, *after* the append, sending no `AppCommand` and answering nothing. The tripwire bars a read that goes on to **permit, order or refuse**; that one does none of the three. `handoff.rs` is untouched and its count has not moved.
 
 What it is deliberately not: a message to `operator` (a declaration rendered in the message record would put words in `orch`'s mouth — it said nothing to anybody), an inbox entry, or a state anything can query. There is no mission object, no open/closed, nothing to correlate. A handoff is a claim in a log, appearing on the Activity feed and in the archived run's `events.json`.
 
 ---
 
-## 4. The registry — five ptys
+## 3f. `evaluator` — the terminal that is not in the fleet (WP-15, D-066)
 
-One pty per pane, keyed by `PaneId`. Three properties matter.
+The exact inverse of `operator` (§3c), and the two are worth reading together because each explains the other. The human is **in the roster listing and has no terminal**. The evaluator **has a real terminal and is in no listing** — not `fleet roster`'s answer, not a broadcast's legs, not any brief's peer list. `PaneId::has_pty()` and `PaneId::is_fleet_member()` are two different questions that disagree in both directions, which is why neither is derived from the other.
 
-**Per-pane event channels** (`pty://output/orch`, `pty://output/2`). Not one channel with an id in the payload. `AppHandle::emit` wakes *every* listener registered on a name, so a shared channel means all five panes' callbacks fire for every chunk from every pane and four of them discard it. Per-id names make cross-talk impossible rather than merely unlikely, and remove 5× the JS wakeups as a side effect.
+```
+orch ──▶ fleet handoff ──▶ hub ──▶ append_event ──▶ "recorded"  (exit 0, §3e)
+                                        │
+                                        ▼  (the bus — after the append, off this thread)
+                                   handoff watch ──▶ answer key lands
+                                                └──▶ 2nd window ──▶ spawn_pane(evaluator)
+
+evaluator ──▶ fleet send orch ──▶ (the path in §1, unmodified) ──▶ orch's pty
+                                                                  └▶ "accepted msg-…"
+orch ──▶ fleet reply ──▶ evaluator          ← works with no new code: the first
+                                              accepted delivery set last_inbound_from
+```
+
+**Nothing on the message path changed for it.** `Hub::deliver` has no evaluator arm — it looks a name up and asks the app, and the app finds a live pty. `accepted` is the honest word because bytes really did reach a terminal. The `fleet` CLI has no arm either: it parses a `PaneId` and the hub answers, so a `fleet send evaluator` when none is running is refused by the registry with the same sentence `worker-9` gets. **Not enumerated is not the same as not addressable**, and holding both is the whole design.
+
+**Where the veil actually lives: one filter.** `PaneRegistry::roster()` drops non-members, and that single answer feeds both places the fleet gets enumerated — `Hub::roster`'s listing and `Hub::broadcast`'s target list, which both go through `AppCommand::Roster`. Filtering once at the source is what stops the two from disagreeing. `writable()` does not consult it, which is why direct addressing survives.
+
+**The wake is not in this path.** It is a second subscriber on the event bus (D-020), downstream of persist-then-publish: the handoff op is durable and answered whether or not the wake ever runs, and nothing in §1 waits on it. See `src-tauri/tests/evaluator.rs`, which pins that in both directions.
+
+**Dev mode only, three conditions.** The `devmode` cargo feature (no feature, no brief, no reachable spawn), `dev::is_enabled()`, and the fleet being pointed at a prepared rewind-mission workspace — because a retro with no answer key converges on congratulation. Each failure says why on the Activity feed, except the mode being off, which is what the operator asked for.
+
+---
+
+## 4. The registry — five ptys, and sometimes a sixth
+
+One pty per pane, keyed by `PaneId`. Five are the fleet; in dev mode a sixth is the evaluator (§3f), in the same registry so `kill_all` and `orphans.rs` reap it like any other — a separate registry would reopen the leaked-Opus money bug. Three properties matter.
+
+**Per-pane event channels** (`pty://output/orch`, `pty://output/2`, `pty://output/evaluator`). Not one channel with an id in the payload. `AppHandle::emit` wakes *every* listener registered on a name, so a shared channel means all five panes' callbacks fire for every chunk from every pane and four of them discard it. Per-id names make cross-talk impossible rather than merely unlikely, and remove 5× the JS wakeups as a side effect. **They are also what lets a second window exist for free:** emit stays global, and the main window simply never listens on the evaluator's name. `channel_key` is exhaustive on the variant rather than on `slot()` — the earlier version gave every slotless name `orch`'s channel, which would have rendered a second pane's bytes in the orchestrator's terminal with no error to say so.
 
 **Coalesced reads.** `read()` returns as soon as any bytes are available, so a TUI's 200-byte spinner frame would otherwise make a complete trip across the IPC bridge — the event rate tracks the TUI's *repaint* rate, not its data rate. The pump merges ~16 ms or 64 KB before emitting. It is two threads, not one: a single thread could only check its window *after* the next blocking read returned, so the tail of a burst would sit unflushed until the pane happened to print again.
 

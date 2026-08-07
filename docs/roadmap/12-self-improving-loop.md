@@ -353,7 +353,7 @@ step.
 |----|--------|------|-----------|-------|
 | 13 | 1 — the retro loop | The done verb | — | yes — verb + both briefs, one commit |
 | 14 | 1 | `orch`'s own transcript + config dir | — | yes — `spawn.rs`, `runs.rs` |
-| 15 | 1 | The evaluator window | 13, 16 · soft 14 | yes — 2nd window, `PaneId` |
+| 15 | 1 | The evaluator window (`15-evaluator-window.md`, **landed**, D-066) | 13, 16 · soft 14 | yes — 2nd window, `PaneId` |
 | 16 | 2 — dev mode & the fence | Dev mode | — | no |
 | 17 | 2 | The write guardrail (`17-write-guardrail.md`, landed) | 14, 16 · **blocks any improve run** | yes |
 | 18 | 4 — multi-fleet | More than one fleet at once | — | yes |
