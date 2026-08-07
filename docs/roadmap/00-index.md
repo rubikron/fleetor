@@ -30,7 +30,7 @@ The Blackboard vision, split into nine session-sized work packages. The vision i
 | 13 | (from TEMPLATE) | The done verb | — | M | not-started |
 | 14 | (from TEMPLATE) | `orch`'s own transcript + config dir | — | M | not-started |
 | 15 | (from TEMPLATE) | The evaluator window | 13, 16 | L | not-started |
-| 16 | (from TEMPLATE) | Dev mode | — | S/M | not-started |
+| 16 | `16-dev-mode.md` | Dev mode | — | S/M | **landed** |
 | 17 | (from TEMPLATE) | The fence | 16 | M | not-started |
 | 18 | (from TEMPLATE) | More than one fleet at once | — | L | not-started |
 | 19 | (from TEMPLATE) | Orch-to-orch, and its cutoff | 18 | M | not-started |

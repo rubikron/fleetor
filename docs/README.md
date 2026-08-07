@@ -47,6 +47,11 @@ package: it carries the self-improvement design (both flow diagrams, the hiding 
 four invariant arguments) and files WP-13..19, each written from `TEMPLATE.md` when picked
 up. The rewind harness it names lives in a separate repo by design.
 
+[`16-dev-mode.md`](./roadmap/16-dev-mode.md) is the first of those to land (D-061). It is
+also the as-built record for dev mode: where the flag lives, the one function that reads
+it, and the two tests that keep the mode out of the delivery path (Tier 1.4) and out of
+every word a pane is told (WP-12's open question 4).
+
 `roadmap/source/` is the raw upstream material — the operator's vision-tenets essay (`vision_tenets.md`; the shipped copy is `prompts/vision-tenets.md`, D-056) and the "Autonomy Designs" catalogue (`fleetor-autonomy.html` and `fleetor-autonomy-plain.html` — two renders of one document).
 
 ## Archive (`docs/archive/`)
