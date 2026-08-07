@@ -77,7 +77,7 @@ Three consequences worth designing around:
 
 **Our brief is a *replacement*, but a narrower one than that sounds (D-043).** `--system-prompt` empties Claude Code's guidance out of the system prompt — 6,866 chars down to 364 in the measured run — and leaves everything else exactly where it was. Tools, memory files, skills, agents and the git-status section are byte-identical under either flag; `docs/notes/system-prompt-notes.md` has the diff. Two consequences for anyone writing a brief: the line "You are Claude Code, Anthropic's official CLI for Claude." is its own system block and still arrives, so a brief saying "you are not Claude Code" contradicts the text above it; and the working posture that *did* leave has to come from `scaffolding.md`, which is why that fragment is composed into both briefs and cannot be dropped. A brief still cannot beat `--permission-mode` — that is a flag, not prose.
 
-**Layer 5 is where orch and worker diverge hardest.** The orchestrator runs on the operator's own `CLAUDE_CONFIG_DIR`, so it gets their user `CLAUDE.md`, skills, subagents and MCP servers. A worker's config dir is private and holds two onboarding keys and nothing else — it gets **none** of that. Both get the repo's own committed `CLAUDE.md`, because both have a checkout as their cwd. So a worker that needs to know something must be told it in `worker.md` or in a file committed to the repo. There is no third place.
+**Layer 5 stopped being where orch and worker diverge (D-062).** Until WP-14 the orchestrator ran on the operator's own `CLAUDE_CONFIG_DIR` and got their user `CLAUDE.md`, skills, subagents and MCP servers. It now runs on a fleet-owned config dir holding the same two onboarding keys a worker's does — the price of having its transcript archived with the run — so **neither class** gets any of that. Both still get the repo's own committed `CLAUDE.md`, because both have a checkout as their cwd. So a pane that needs to know something must be told it in its brief or in a file committed to the repo. There is no third place, for either of them now.
 
 **Messages arrive as user turns, mid-conversation** — not as system context, and not at a turn boundary. That is why `broadcast-rule.md` exists: a user turn is exactly the thing a helpful model answers.
 
@@ -100,7 +100,8 @@ Three consequences worth designing around:
 | Permission mode | `prompts/launch.conf` | `--permission-mode` | T2, once | ✅ |
 | Worker credential | `DEEPSEEK_API_KEY` env or nearest `.env` | `ANTHROPIC_AUTH_TOKEN` | T2, once | ✅ (never in a file here) |
 | Project memory | the target repo's own `CLAUDE.md` | memory files | T2, once | ✅ — it is just a repo file |
-| Operator memory, skills, agents, MCP | `CLAUDE_CONFIG_DIR` | memory files | T2, once | orch: inherited · worker: none |
+| Operator memory, skills, agents, MCP | `CLAUDE_CONFIG_DIR` | memory files | T2, once | **none, for either class** (D-062) |
+| `orch`'s credential | the operator's Keychain entry | `CLAUDE_SECURESTORAGE_CONFIG_DIR=""` | T2, once | ❌ — unset it and orch is silently logged out |
 | Pane identity | `FLEETOR_PANE` | env, read by `fleet` | T2, once | ❌ by design |
 | Fleet messages | `fleetor-core::message` framing | a user turn | **T3, every send** | ❌ single-sourced |
 | The three wedge-forever removals | `src-tauri/src/spawn.rs` | env | T2, once | ❌ documented in `launch.conf` |

@@ -150,11 +150,17 @@ pub(crate) fn socket_path() -> PathBuf {
     shell_dir().join("fleet.sock")
 }
 
-/// A worker's isolated `CLAUDE_CONFIG_DIR`. Deliberately *not* the Phase-2
-/// `cc-config/worker-*` dirs: those were built by headless `-p` runs and carry no
-/// onboarding keys at all, which is precisely L1 (`docs/notes/tui-spawn-notes.md` §1).
-fn worker_config_dir(slot: u8) -> PathBuf {
-    shell_dir().join("pane-config").join(format!("worker-{slot}"))
+/// One pane's `CLAUDE_CONFIG_DIR`, by pane name.
+///
+/// Deliberately *not* the Phase-2 `cc-config/worker-*` dirs: those were built by
+/// headless `-p` runs and carry no onboarding keys at all, which is precisely L1
+/// (`docs/notes/tui-spawn-notes.md` §1).
+///
+/// Every pane with a config dir lives under this one root, `orch` included since
+/// WP-14 — which is what makes `runs::harvest_transcripts` archive `orch`'s
+/// transcript with no code of its own: it already walks `pane-config/*`.
+fn pane_config_dir(pane: PaneId) -> PathBuf {
+    shell_dir().join("pane-config").join(pane.to_string())
 }
 
 /// A worker's private `HOME` (WP-08, the Fence): `~/.ssh`, the operator's real
@@ -333,17 +339,29 @@ pub(crate) fn spawn_pane(
             return Err("the operator is a participant, not a pane — there is nothing to spawn"
                 .to_string())
         }
-        // The operator's own `claude`: already onboarded, already trusted, in the
-        // target itself. Nothing to seed — seeding would touch *their* config dir.
+        // The operator's own `claude` — their login, their model, their HOME — in
+        // the target itself. Since WP-14 it has one thing of its own: a
+        // fleet-owned `CLAUDE_CONFIG_DIR`, so its session transcript lands under
+        // `~/.fleetor` where rotation archives it with the run (D-062 closes
+        // D-059's named gap). That makes L1 apply to `orch` too — an unseeded
+        // config dir never reaches a prompt — so it is seeded here, at the spawn
+        // site, for exactly the reason a worker's is.
+        //
+        // Nothing here reaches into the operator's own config dir. `orch` gets a
+        // new directory going forward, and keeps its login through the keychain
+        // read `claude` already performs (see `spawn::orch_command`).
         PaneId::Orch => {
             std::fs::create_dir_all(&target).map_err(|e| format!("create orchestrator cwd: {e}"))?;
+            let config_dir = pane_config_dir(pane);
+            spawn::seed_config_dir(&config_dir, &target)?;
             note_spawn_estimate(&store, &context, pane, &target, None);
-            spawn::orch_command(&target, &socket, &context)
+            note(&store, NoticeLevel::Info, &orch_config_dir_notice(&config_dir));
+            spawn::orch_command(&target, &socket, &config_dir, &context)
         }
         PaneId::Worker(slot) => {
             let key = load_api_key()?;
             let cwd = worker_cwd(&store, &target, slot);
-            let config_dir = worker_config_dir(slot);
+            let config_dir = pane_config_dir(pane);
             spawn::seed_config_dir(&config_dir, &cwd)?;
             // The Fence (WP-08): a private HOME, created and seeded before the
             // process exists — same reason the config dir is seeded here rather
@@ -362,6 +380,28 @@ pub(crate) fn spawn_pane(
     };
 
     registry.spawn(pane, command, rows, cols)
+}
+
+/// What the operator is told when `orch` spawns on its own config dir (WP-14).
+///
+/// Kept separate from [`spawn_pane`] so the wording is pinned by a test, for the
+/// same reason [`shared_checkout_warning`] is: this is the one notice standing
+/// between the operator and a pane that looks perfectly healthy while being
+/// logged out. `orch` keeps its login through `CLAUDE_SECURESTORAGE_CONFIG_DIR`,
+/// which is an internal of Claude Code and version-stamped at 2.1.224 in
+/// `docs/notes/orch-config-dir-notes.md`. If a future release stops honouring it,
+/// `orch` boots into an empty credential namespace, reaches its input box, and
+/// fails on its first turn while every `fleet send` reports `accepted`. The fix
+/// is one `/login` inside the pane, and it sticks — so the operator needs the
+/// sentence more than they need the machinery to detect it.
+fn orch_config_dir_notice(config_dir: &Path) -> String {
+    format!(
+        "orch is running on the fleet's own config dir at {}, so its transcript is \
+         archived with the run. It keeps your login. If the orch pane says \
+         “Not logged in · Run /login”, run `/login` inside that pane once — it \
+         persists, and it cannot disturb your own `claude`.",
+        config_dir.display()
+    )
 }
 
 /// One Activity line per pane launch (WP-04's spawn-time "Loadout" counter):
@@ -1090,6 +1130,39 @@ mod tests {
             text.contains("treat a reviewed `done` as unreviewed"),
             "the operator needs what to do about it, not only what happened: {text}",
         );
+    }
+
+    /// WP-14's one operator-facing consequence. `orch` now runs on a fleet-owned
+    /// config dir, and the variable that keeps its login is a Claude Code
+    /// internal. If a release stops honouring it the pane still looks healthy —
+    /// input box, `accepted` on every send — and only its turns fail. So the
+    /// notice has to name the string the pane will show and the move that fixes
+    /// it, not merely announce that a directory changed.
+    #[test]
+    fn the_orch_config_dir_notice_says_what_to_do_if_the_login_did_not_carry() {
+        let text = orch_config_dir_notice(Path::new("/Users/me/.fleetor/_shell/pane-config/orch"));
+        assert!(text.contains("/Users/me/.fleetor/_shell/pane-config/orch"), "{text}");
+        assert!(text.contains("archived with the run"), "why it moved at all: {text}");
+        assert!(text.contains("Not logged in"), "the exact string the pane would show: {text}");
+        assert!(text.contains("/login"), "the move that fixes it: {text}");
+        assert!(
+            text.contains("cannot disturb your own"),
+            "and that the fix is safe to run — this is the operator's own claude: {text}",
+        );
+    }
+
+    /// Every pane's config dir hangs off one root under `_shell`, `orch`
+    /// included since WP-14 — which is the whole reason rotation archives its
+    /// transcript without an arm of its own. A worker's path must not have moved
+    /// while that was arranged, or four panes lose their trust flags at once.
+    #[test]
+    fn every_panes_config_dir_is_a_sibling_under_one_root() {
+        let orch = pane_config_dir(PaneId::Orch);
+        let worker = pane_config_dir(PaneId::Worker(2));
+        assert!(orch.ends_with("pane-config/orch"), "{}", orch.display());
+        assert!(worker.ends_with("pane-config/worker-2"), "{}", worker.display());
+        assert_eq!(orch.parent(), worker.parent(), "harvest_transcripts walks the parent");
+        assert_eq!(worker.parent().unwrap(), shell_dir().join("pane-config"));
     }
 
     /// A picked target must land in the config without costing the operator

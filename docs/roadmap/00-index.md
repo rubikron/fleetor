@@ -28,7 +28,7 @@ The Blackboard vision, split into nine session-sized work packages. The vision i
 | 11 | `11-run-history.md` | Run history — past runs as long-term memory | — | L | **landed** |
 | 12 | `12-self-improving-loop.md` | The self-improving loop — **arc doc**, not a package | 11 | XL | **design** |
 | 13 | (from TEMPLATE) | The done verb | — | M | not-started |
-| 14 | (from TEMPLATE) | `orch`'s own transcript + config dir | — | M | not-started |
+| 14 | `14-orch-transcript.md` | `orch`'s own transcript + config dir | — | M | **landed** |
 | 15 | (from TEMPLATE) | The evaluator window | 13, 16 | L | not-started |
 | 16 | `16-dev-mode.md` | Dev mode | — | S/M | **landed** |
 | 17 | (from TEMPLATE) | The fence | 16 | M | not-started |

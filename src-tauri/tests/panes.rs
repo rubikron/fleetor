@@ -126,7 +126,8 @@ fn fleet_with_registry_path() -> (Arc<PaneRegistry>, Arc<Transcript>, PathBuf) {
 
     let cwd = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let socket = PathBuf::from("/tmp/fleetor-panes-test.sock");
-    registry.spawn(PaneId::Orch, spawn::orch_command(&cwd, &socket, &PaneContext::baked()), 24, 80).unwrap();
+    let orch = spawn::orch_command(&cwd, &socket, &cwd.join("unused-orch-cfg"), &PaneContext::baked());
+    registry.spawn(PaneId::Orch, orch, 24, 80).unwrap();
     for slot in WORKER_SLOTS {
         let command = spawn::worker_command(
             slot,

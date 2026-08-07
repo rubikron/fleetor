@@ -267,7 +267,7 @@ Three things contaminate if read. Everything else about this feature is harmless
 
 | Must be absent | Why | How |
 |---|---|---|
-| **The answer key** | `orch` reads it, `orch` implements it, the evaluation is void | Clone pinned at the old tag — upstream's later commits are not in the local object DB. Fetched only after the done verb, into a directory no fleet is pointed at. **Airtight and free.** |
+| **The answer key** | `orch` reads it, `orch` implements it, the evaluation is void | Shallow clone pinned at the old tag — upstream's later commits are never downloaded. Fetched only after the done verb, into a directory no fleet is pointed at. **Free, and *not* airtight — see the correction below.** |
 | **The evaluator's brief** | `orch` optimizes for the rubric instead of doing the work | Separate private repo, compiled in via `include_str!` behind a `devmode` cargo feature. This repo's source carries zero evaluator prose; no file on disk holds it in a dev build either. |
 | **The ledger and past retros** | `orch` reading last cycle's critique pre-empts this cycle's finding | `~/.fleetor/dev/`, outside the repo, plus deny rules. Not airtight; the contamination cost is lower and post-hoc. |
 
@@ -279,6 +279,45 @@ answer key and the history are.**
 Compiling the brief in from a separate repo buys two properties at once: the fleet cannot
 **find** it, and there is nothing on disk for the fleet to **edit**. That second property
 is what freezes the grader across generations (Case 5 above).
+
+### Correction (2026-08-07) — the answer key is absent, not unobtainable
+
+This doc originally called the answer key "airtight and free." **It is free; it is not
+airtight**, and the measurement that says so is `fleetor-eval/NOTES.md`. Two facts, both
+measured rather than reasoned:
+
+- The pinned tree **names its own upstream in six files and states its own version**, so
+  `git clone <url> /tmp/x` retrieves everything the shallow clone withheld.
+- GitHub serves arbitrary SHAs to `git fetch` (`allowAnySHA1InWant` is on), so knowing a
+  SHA is sufficient — and the answer-key SHAs live in `missions/*.md`, readable by
+  absolute path.
+
+Scrubbing the upstream identity is not available as a fix: **the information that makes
+the hole possible is the project itself.** A mission whose repo cannot be identified is
+not a mission.
+
+**What absence actually buys** is therefore the same thing it buys for the ledger, not the
+stronger thing this doc claimed: it stops *accidental* discovery, and it makes deliberate
+contamination require an act that leaves a trace in the archived transcript. **The
+mitigation is a post-hoc audit, not network egress control** — a clone of upstream, or a
+fetch by SHA, appearing in the run's transcripts voids that run. That check is cheap, it
+is the evaluator's job, and it is honest about what it is. `verify-absence.sh` prints this
+limit as its own section on every run, because 31 green PASSes otherwise read as a
+guarantee the mechanism cannot give.
+
+### Correction (2026-08-07) — freezing the grader is not sufficient; the mission must be fixed too
+
+This doc says the grader must be frozen across generations (Case 5). That is necessary and
+**not sufficient.** Judging weights are per-mission, so a generation comparison holds only
+if the mission is fixed as well — and **the same mission run twice is contaminated**,
+because generation N+1's fleet can inherit context, branches and archived reasoning from
+generation N's attempt at it.
+
+So a real generation comparison needs **pairs of missions of matched difficulty**: N runs
+mission A, N+1 runs mission A′. Building a matched pair is materially harder than building
+two good missions, and nothing in the arc currently does it. **This is an open problem, not
+a solved one** — the honest fallback until it is solved is that generation-over-generation
+claims are qualitative, and only within-generation findings rest on measurement.
 
 ### The deny layers, ranked by whether they enforce
 

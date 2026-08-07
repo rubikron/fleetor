@@ -60,9 +60,9 @@ pub struct RunRecord {
     pub messages: i64,
     pub tasks: i64,
     pub bytes: u64,
-    /// How many pane transcripts were archived with the run. `0` is ordinary —
-    /// a run whose panes never started has none, and `orch` never contributes
-    /// one (see [`harvest_transcripts`]).
+    /// How many pane transcripts were archived with the run, `orch`'s included
+    /// (see [`harvest_transcripts`]). `0` is ordinary — a run whose panes never
+    /// started has none.
     #[serde(default)]
     pub transcripts: u32,
 }
@@ -202,26 +202,27 @@ fn archive_files(live: &Path, dest: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Move each worker's Claude Code transcript into the run it belongs to.
+/// Move every pane's Claude Code transcript into the run it belongs to.
 ///
 /// The event log records what the panes said **to each other**; a transcript
 /// records what one pane actually did — the tool calls, the reasoning, the work
 /// between two messages. An evaluator reading a past run wants both, and only
 /// one of them was being kept.
 ///
-/// **Moved, not copied**, for two reasons. Transcripts live in a per-worker
+/// **Moved, not copied**, for two reasons. Transcripts live in a per-pane
 /// config dir that outlives a run, so copying would leave last run's sessions
 /// sitting beside this run's and every archive would accumulate its
 /// predecessors. And moving is what makes the split clean: each run's directory
 /// holds that run's transcripts and no others. Safe because rotation runs before
-/// any pane exists, and workers are spawned fresh every time — nothing resumes a
+/// any pane exists, and panes are spawned fresh every time — nothing resumes a
 /// previous session.
 ///
-/// **`orch` is deliberately absent.** Its transcript lives in the operator's own
-/// `CLAUDE_CONFIG_DIR`, not under `~/.fleetor`, and reaching in there to move
-/// the operator's personal Claude history would cross the boundary Tier 1.1
-/// draws around this app's own state. The consequence is real and worth naming:
-/// the pane doing the deciding is the one whose reasoning is not archived.
+/// **`orch` is included, and this function did not have to learn about it**
+/// (WP-14, D-062). It was absent while `orch` ran on the operator's own
+/// `CLAUDE_CONFIG_DIR` — outside `~/.fleetor`, where reaching in would cross
+/// Tier 1.1. `orch` now has a fleet-owned config dir under the same
+/// `pane-config/` root a worker's lives in, so the scan below finds it by the
+/// name it already walks and files it under `transcripts/orch/`.
 fn harvest_transcripts(shell: &Path, dest: &Path) -> u32 {
     let Ok(panes) = std::fs::read_dir(shell.join("pane-config")) else { return 0 };
     let mut moved = 0;
@@ -267,7 +268,7 @@ fn write_agent_view(dest: &Path, record: &RunRecord) -> std::io::Result<()> {
         "layout": {
             "events.json": "the whole event log, one JSON array, oldest first; `seq` and `ts` are the row's own columns",
             "state.db": "the same log as SQLite — the source of truth events.json is generated from",
-            "transcripts/": "one directory per worker, holding its Claude Code session .jsonl files. orch's is not here: it lives in the operator's own config dir",
+            "transcripts/": "one directory per pane — orch and each worker — holding that pane's Claude Code session .jsonl files for this run only",
         },
         "reading_this": "The event log is what the panes said to each other. The transcripts are what each pane did between saying things. Neither records terminal output.",
     });
@@ -704,6 +705,40 @@ mod tests {
         let left = shell.join("pane-config/worker-1/projects/-tmp-slug");
         assert!(!left.join("a.jsonl").exists(), "a copied transcript would be archived twice");
         assert!(left.join("not-a-transcript.txt").is_file(), "only .jsonl moves");
+    }
+
+    /// WP-14, D-062: the pane that makes the decisions is archived like every
+    /// other one. `orch`'s config dir is a sibling of the workers' under the same
+    /// `pane-config/` root, so rotation files it under `transcripts/orch/` with
+    /// no arm of its own — and an evaluator reading the run gets the reasoning
+    /// behind the messages, not only the messages.
+    #[test]
+    fn a_run_takes_orchs_transcript_with_it_the_same_way_it_takes_a_workers() {
+        let root = scratch("orch-transcript");
+        let shell = root.join("_shell");
+        let runs = runs_dir(&root);
+        for (pane, session) in [("orch", "o1"), ("worker-1", "w1")] {
+            let project = shell.join("pane-config").join(pane).join("projects").join("-tmp-slug");
+            std::fs::create_dir_all(&project).unwrap();
+            std::fs::write(project.join(format!("{session}.jsonl")), r#"{"type":"user"}"#).unwrap();
+        }
+        begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"));
+        write_live(&shell, &["take the parser"]);
+
+        rotate(&shell, &runs, 0);
+
+        let all = list(&runs);
+        assert_eq!(all[0].transcripts, 2, "orch counts like any other pane");
+        let dir = runs.join(&all[0].id);
+        assert!(dir.join("transcripts/orch/o1.jsonl").is_file(), "the deciding pane is archived");
+        assert!(dir.join("transcripts/worker-1/w1.jsonl").is_file());
+        // Moved, not copied — the next run must not re-archive this one's session.
+        assert!(!shell.join("pane-config/orch/projects/-tmp-slug/o1.jsonl").exists());
+
+        let manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join(MANIFEST_JSON)).unwrap()).unwrap();
+        let layout = manifest["layout"]["transcripts/"].as_str().unwrap();
+        assert!(layout.contains("orch"), "a cold reader is told orch is in there: {layout}");
     }
 
     #[test]
