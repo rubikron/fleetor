@@ -1,6 +1,6 @@
 # WP-11 — Run history: past runs as long-term memory
 
-status: in-progress size: L
+status: landed size: L
 depends-on: — blocks: the evaluation sandbox
 brief-cost: 0 — touches no `prompts/*`
 
@@ -18,24 +18,24 @@ with it.
 
 ### Technical
 
-- [ ] `cargo test --workspace` and `cargo test --manifest-path src-tauri/Cargo.toml` green.
-- [ ] `tsc --noEmit && vite build` clean.
-- [ ] A test proves rotation preserves an event log left by a killed writer — the
+- [x] `cargo test --workspace` and `cargo test --manifest-path src-tauri/Cargo.toml` green.
+- [x] `tsc --noEmit && vite build` clean.
+- [x] A test proves rotation preserves an event log left by a killed writer — the
       uncheckpointed-WAL case from `docs/notes/run-rotation-notes.md`, not a
       cleanly-closed database.
-- [ ] A test proves a fleet start with an unreadable previous database still boots,
+- [x] A test proves a fleet start with an unreadable previous database still boots,
       and emits a `Warn`.
-- [ ] A test proves the run index survives its own deletion — rebuilt by scanning
+- [x] A test proves the run index survives its own deletion — rebuilt by scanning
       `runs/*/`, with labels the only thing actually lost.
-- [ ] `rm -rf ~/.fleetor` still leaves the target repo untouched (Tier 1.1 unchanged).
+- [x] `rm -rf ~/.fleetor` still leaves the target repo untouched (Tier 1.1 unchanged).
 
 ### Semantic
 
-- [ ] Opening a past run cannot write to it, send anything, or spawn anything — a
+- [x] Opening a past run cannot write to it, send anything, or spawn anything — a
       reader looking at history has no reachable control that acts on the live fleet.
-- [ ] The History list tells the operator which run is which without opening any of
+- [ ] (unverified — not yet seen running) The History list tells the operator which run is which without opening any of
       them: when it ran, what it was pointed at, how much happened.
-- [ ] A run archived from a crashed fleet is as complete as one archived from a clean
+- [x] A run archived from a crashed fleet is as complete as one archived from a clean
       quit. Teardown is not load-bearing.
 
 ## Invariant guardrails
@@ -152,3 +152,44 @@ Exit: the checklist at the bottom of this doc.
 - [ ] `docs/runtime-layout.md` updated — `~/.fleetor/runs/` is a new top-level directory.
 - [ ] This doc: status → landed, "How it landed" appended.
 - [ ] `00-index.md` status column updated — the last act of the session.
+
+## How it landed
+
+Two commits, storage then view, as the session prompt asked.
+
+**The spike changed the design before the code existed.** `docs/notes/run-rotation-notes.md`
+was written to answer "which files does the archive take", and found that the obvious
+answer — `fs::rename` on `state.db` — destroys the run it archives. The live specimen
+taken off the operator's machine was a 4 KB `state.db` that did not contain the schema,
+beside a 2.3 MB `-wal` holding all 146 events. It also found a better mechanism than the
+one this doc proposed: leaving WAL mode (`PRAGMA journal_mode=DELETE`) checkpoints and
+deletes the `-wal` as **one** operation, so the ship strategy is D, not the B this doc
+sketched, and there is no window where a half-archived run exists. D also made the read
+side simpler — an archived run is a plain rollback-journal file that opens read-only from
+a directory containing nothing else, where a WAL-mode file wants to create a `-shm` beside
+itself even for readers.
+
+**The open question resolved as recommended:** archives are opened read-only through
+`fleetor_db::archive`, which never migrates. `SqliteStore::open` is untouched and still
+migrates, so the live path is unchanged; a run written by an unknown schema fails to
+list with a reason rather than being silently upgraded.
+
+**Two things this doc did not anticipate.** The run's *target* is not recoverable from
+the event log — it appears there only as prose inside a boot notice — so the live run
+now drops a `_shell/run.json` marker at bootstrap that is archived with it; a run that
+ended without one lists with an unknown target rather than a parsed guess. And a
+run id can collide, because two runs can start in the same second on a fast restart,
+so `reserve` disambiguates with a suffix rather than overwriting.
+
+**Verified.** 103 shell tests (11 new) and 193 workspace tests green; `tsc --noEmit &&
+vite build` clean. The rotation was additionally run against a copy of the operator's
+real 2.3 MB WAL: all 146 events (89 messages, 32 notices, 22 tasks, 3 commands, spanning
+~47 minutes) recovered into one 184 KB file that reads read-only.
+
+**Not verified: the view has not been seen running.** The components compile and are fed
+by the same splitting logic as the live views, but no fleet has been started since the
+feature landed, so the first launch is also the first look at it. That launch is what
+archives the operator's existing 146-event run as run #1.
+
+**Left out of scope deliberately:** no frontend tests, because this repo has no frontend
+test framework and adding one is a Tier 2 dependency decision, not this package's to make.

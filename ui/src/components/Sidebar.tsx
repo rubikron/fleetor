@@ -36,7 +36,7 @@
 
 import type { ReactNode } from "react";
 
-export type View = "fleet" | "messages" | "tasks" | "activity" | "settings";
+export type View = "fleet" | "messages" | "tasks" | "activity" | "history" | "settings";
 
 interface SidebarProps {
   view: View;
@@ -90,6 +90,16 @@ const ICONS: Record<View, ReactNode> = {
       <polyline points="1.6,8 4.4,8 6.4,3.6 9.6,12.4 11.6,8 14.4,8" />
     </svg>
   ),
+  // a clock wound back: past runs. Deliberately not an archive box — the shape
+  // that reads as "storage" also reads as "somewhere things go to be forgotten",
+  // and this is the one view that is meant to be returned to.
+  history: (
+    <svg {...ICON_PROPS}>
+      <path d="M2.4 8a5.6 5.6 0 1 0 1.7-4" />
+      <polyline points="2.1,1.9 2.1,4.5 4.7,4.5" />
+      <polyline points="8,4.9 8,8 10.3,9.4" />
+    </svg>
+  ),
   // a gear: preferences
   settings: (
     <svg {...ICON_PROPS}>
@@ -114,6 +124,9 @@ const WORKSPACE: { view: View; label: string }[] = [
   // record is what it then said about it, and they get read together.
   { view: "tasks", label: "Tasks" },
   { view: "activity", label: "Activity" },
+  // Last, and after the live views on purpose: everything above is this run,
+  // this one is every run before it.
+  { view: "history", label: "History" },
 ];
 
 export function Sidebar({

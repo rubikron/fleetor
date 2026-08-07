@@ -167,6 +167,27 @@ export interface BootSnapshot {
   latest_seq: number;
 }
 
+/// One archived run, mirroring `src-tauri::runs::RunRecord` (WP-11, D-058).
+///
+/// Every field except `label` is derived from the run's own log and would come
+/// back identically if the index were deleted; `label` is the only thing a human
+/// authored, which is the whole reason the index file exists.
+///
+/// `started_ms` / `ended_ms` are the log's first and last timestamps, so they
+/// are absent for a run whose log is empty — a start-then-quit. Rendering
+/// `null` as an epoch date would date every empty run to 1970.
+export interface RunRecord {
+  id: string;
+  label: string;
+  target?: string;
+  started_ms?: number;
+  ended_ms?: number;
+  events: number;
+  messages: number;
+  tasks: number;
+  bytes: number;
+}
+
 /// The live fleet configuration: what a click will actually run, and where.
 export interface FleetConfig {
   target: string;
