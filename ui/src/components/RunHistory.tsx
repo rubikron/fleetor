@@ -64,11 +64,13 @@ function RunRow({
   onOpen,
   onRename,
   onDelete,
+  onSave,
 }: {
   run: RunRecord;
   onOpen: () => void;
   onRename: (label: string) => void;
   onDelete: () => void;
+  onSave: () => void;
 }) {
   const [draft, setDraft] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
@@ -105,6 +107,11 @@ function RunRow({
           {span && <span className="run__chip">{span}</span>}
           <span className="run__chip">{run.messages} msg</span>
           <span className="run__chip">{run.tasks} task</span>
+          {run.transcripts > 0 && (
+            <span className="run__chip" title="worker session transcripts archived with this run">
+              {run.transcripts} transcript{run.transcripts === 1 ? "" : "s"}
+            </span>
+          )}
           <span className="run__chip run__chip--quiet">{size(run.bytes)}</span>
         </div>
         {run.target && <div className="run__target">{run.target}</div>}
@@ -123,6 +130,9 @@ function RunRow({
           </>
         ) : (
           <>
+            <button className="run__act" onClick={onSave} title="Save this run's log as JSON">
+              Export
+            </button>
             <button className="run__act" onClick={() => setDraft(run.label)}>
               Rename
             </button>
@@ -139,7 +149,15 @@ function RunRow({
 /// One opened run. The banner is not decoration — every component below it looks
 /// exactly like the live view of the same name, and this line is the only thing
 /// saying otherwise.
-function OpenedRun({ open, onClose }: { open: OpenRun; onClose: () => void }) {
+function OpenedRun({
+  open,
+  onClose,
+  onSave,
+}: {
+  open: OpenRun;
+  onClose: () => void;
+  onSave: () => void;
+}) {
   const [tab, setTab] = useState<Tab>("messages");
   const { record } = open;
 
@@ -155,6 +173,9 @@ function OpenedRun({ open, onClose }: { open: OpenRun; onClose: () => void }) {
             {when(record.started_ms)} · {record.events} events · read-only
           </span>
         </div>
+        <button className="run__act" onClick={onSave} title="Save this run's log as JSON">
+          Export
+        </button>
         <nav className="run-open__tabs" role="tablist">
           {TABS.map((t) => (
             <button
@@ -188,7 +209,13 @@ function OpenedRun({ open, onClose }: { open: OpenRun; onClose: () => void }) {
 
 export function RunHistory({ runs }: { runs: RunsView }) {
   if (runs.open) {
-    return <OpenedRun open={runs.open} onClose={runs.close} />;
+    return (
+      <OpenedRun
+        open={runs.open}
+        onClose={runs.close}
+        onSave={() => void runs.save(runs.open!.record.id)}
+      />
+    );
   }
 
   return (
@@ -206,6 +233,9 @@ export function RunHistory({ runs }: { runs: RunsView }) {
 
       {runs.error && <div className="run-note run-note--warn">{runs.error}</div>}
       {runs.loading && <div className="run-note">Reading the run…</div>}
+      {/* Where the file went, kept on screen rather than flashed: an export the
+          operator cannot locate afterwards did not really happen. */}
+      {runs.saved && <div className="run-note run-note--ok">Exported to {runs.saved}</div>}
 
       {runs.runs.length === 0 && !runs.error ? (
         <div className="run-note">
@@ -221,6 +251,7 @@ export function RunHistory({ runs }: { runs: RunsView }) {
               onOpen={() => runs.openRun(run)}
               onRename={(label) => void runs.rename(run.id, label)}
               onDelete={() => void runs.remove(run.id)}
+              onSave={() => void runs.save(run.id)}
             />
           ))}
         </ul>

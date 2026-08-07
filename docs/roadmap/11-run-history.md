@@ -193,3 +193,25 @@ archives the operator's existing 146-event run as run #1.
 
 **Left out of scope deliberately:** no frontend tests, because this repo has no frontend
 test framework and adding one is a Tier 2 dependency decision, not this package's to make.
+## Addendum — the archive becomes agent-facing (D-059)
+
+The operator's purpose for History, stated after the package landed: **agents read
+and evaluate past runs; human ergonomics come later.** That inverted the design.
+A run directory is now the primary artifact and the UI is a view onto it, rather
+than the reverse:
+
+- `events.json` — the whole log as JSON, written at archive time so a reader with
+  a shell needs no SQLite and no running app. Re-emitted from parsed JSON rather
+  than through `FleetEvent`, so a field a future build adds survives an older reader.
+- `manifest.json` — what the run is, what each file holds, and what the data does
+  not cover.
+- `transcripts/worker-N/` — the workers' session `.jsonl` files, **moved** in at
+  archive time. The event log is what the panes said to each other; the transcripts
+  are what each pane did between saying things, and an evaluator needs both.
+- An Export button in each History row and in the opened-run banner, saving a copy
+  of `events.json` through the Rust-side dialog — no npm plugin added.
+
+**The gap this leaves, deliberately:** `orch`'s transcript is not archived. It sits
+in the operator's own `CLAUDE_CONFIG_DIR`, outside `~/.fleetor`, and reaching in
+there crosses Tier 1.1. So the pane that does the deciding is the one whose
+reasoning the evaluator cannot read. Closing it is an operator decision.

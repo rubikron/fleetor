@@ -123,6 +123,50 @@ pub fn events(path: &Path, after: i64) -> Result<Vec<(i64, FleetEvent)>> {
     Ok(read(path)?.into_iter().filter(|(seq, _)| *seq > after).collect())
 }
 
+/// The whole log as a JSON array — the form a reader with a shell and `jq` can
+/// use, with no SQLite and no running app.
+///
+/// This is the **agent-facing** shape, and the reason it exists rather than a
+/// "download" button generating it on demand: an evaluator reading past runs
+/// should be able to `cat` a directory, not drive a GUI to produce its own input.
+///
+/// Each element is the event exactly as it crossed the wire, plus the two
+/// columns that live on the row rather than in the payload:
+///
+/// ```json
+/// { "seq": 4, "ts": 1786038180002, "type": "message", "from": "orch", … }
+/// ```
+///
+/// The payload is re-emitted as parsed JSON rather than re-serialized from
+/// [`FleetEvent`], so a field this build's enum does not know about survives the
+/// round trip instead of being silently dropped by a newer reader.
+pub fn to_json(path: &Path) -> Result<String> {
+    let conn = open_readonly(path)?;
+    let mut stmt = conn
+        .prepare("SELECT seq, ts, payload FROM events ORDER BY seq")
+        .with_context(|| format!("{} does not hold an event log", path.display()))?;
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?))
+    })?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        let (seq, ts, payload) = row?;
+        let Ok(serde_json::Value::Object(mut fields)) =
+            serde_json::from_str::<serde_json::Value>(&payload)
+        else {
+            eprintln!("archive: skipping event {seq} — its payload is not a JSON object");
+            continue;
+        };
+        // Inserted rather than merged over: a payload that somehow carried its
+        // own `seq` would be shadowing the column the reader orders by.
+        fields.insert("seq".into(), seq.into());
+        fields.insert("ts".into(), ts.into());
+        out.push(serde_json::Value::Object(fields));
+    }
+    serde_json::to_string_pretty(&out).context("serializing the run as JSON")
+}
+
 // --- internals ----------------------------------------------------------------
 
 fn open_readonly(path: &Path) -> Result<Connection> {
@@ -301,6 +345,54 @@ mod tests {
         assert_eq!(all.len(), 3);
         assert!(all[0].0 < all[1].0 && all[1].0 < all[2].0);
         assert_eq!(events(&db, all[0].0).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn the_json_export_carries_the_row_columns_and_the_whole_payload() {
+        let dir = tempdir();
+        let db = dir.join("state.db");
+        write_log(&db, &[message("take the parser"), posted("a parser exists", 1_800_000_000_000)]);
+        freeze(&db).unwrap();
+
+        let json = to_json(&db).unwrap();
+        let rows: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(rows.len(), 2);
+        // The two columns a reader orders and dates by, which are not in the payload.
+        assert_eq!(rows[0]["seq"].as_i64(), Some(1));
+        assert!(rows[0]["ts"].as_i64().unwrap() > 0);
+        // The event, exactly as it crossed the wire.
+        assert_eq!(rows[0]["type"], "message");
+        assert_eq!(rows[0]["from"], "orch");
+        assert_eq!(rows[0]["body"], "take the parser");
+        assert_eq!(rows[1]["type"], "task");
+        assert_eq!(rows[1]["change"]["block"]["outcome"], "a parser exists");
+    }
+
+    /// The export is read back through `serde_json`, not through `FleetEvent`, so
+    /// a run written by a build that knew a field this one does not still exports
+    /// whole. An evaluator reading old runs is the entire point of the format.
+    #[test]
+    fn a_payload_field_this_build_does_not_know_survives_the_export() {
+        let dir = tempdir();
+        let db = dir.join("state.db");
+        write_log(&db, &[message("take the parser")]);
+        {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.execute(
+                "INSERT INTO events (ts, kind, payload) VALUES (?1, 'notice', ?2)",
+                rusqlite::params![
+                    1_800_000_000_001i64,
+                    r#"{"type":"notice","level":"info","text":"hi","invented_later":42}"#
+                ],
+            )
+            .unwrap();
+        }
+        freeze(&db).unwrap();
+
+        let rows: Vec<serde_json::Value> = serde_json::from_str(&to_json(&db).unwrap()).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1]["invented_later"].as_i64(), Some(42));
     }
 
     #[test]

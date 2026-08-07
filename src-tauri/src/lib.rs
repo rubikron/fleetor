@@ -91,6 +91,7 @@ pub fn run() {
             fleet::run_events,
             fleet::run_rename,
             fleet::run_delete,
+            fleet::run_export,
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { .. } = event {

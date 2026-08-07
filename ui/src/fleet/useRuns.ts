@@ -17,7 +17,7 @@
 // data never share a list.
 
 import { useCallback, useEffect, useState } from "react";
-import { deleteRun, listRuns, renameRun, runEvents } from "./api";
+import { deleteRun, exportRun, listRuns, renameRun, runEvents } from "./api";
 import {
   isCommand,
   isMessage,
@@ -48,6 +48,11 @@ export interface RunsView {
   close: () => void;
   rename: (id: string, label: string) => Promise<void>;
   remove: (id: string) => Promise<void>;
+  /// Resolves to where it was saved, or `null` if the dialog was dismissed.
+  save: (id: string) => Promise<string | null>;
+  /// The last successful save, so the view can say where the file went rather
+  /// than flashing a toast that is gone before it is read.
+  saved: string | null;
 }
 
 /// Newest-first, matching `useFleet`'s lists so the components below receive
@@ -69,6 +74,7 @@ export function useRuns(): RunsView {
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<OpenRun | null>(null);
   const [loading, setLoading] = useState(false);
+  const [saved, setSaved] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
 
   useEffect(() => {
@@ -117,5 +123,11 @@ export function useRuns(): RunsView {
     [refresh],
   );
 
-  return { runs, error, open, loading, refresh, openRun, close, rename, remove };
+  const save = useCallback(async (id: string) => {
+    const where = await exportRun(id);
+    if (where) setSaved(where);
+    return where;
+  }, []);
+
+  return { runs, error, open, loading, refresh, openRun, close, rename, remove, save, saved };
 }

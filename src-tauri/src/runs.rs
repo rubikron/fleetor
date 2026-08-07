@@ -36,6 +36,11 @@ use serde::{Deserialize, Serialize};
 /// Milliseconds in a day — the unit the civil-date conversion counts in.
 const MS_PER_DAY: i64 = 86_400_000;
 
+/// The agent-facing export, written into every run at archive time.
+const EVENTS_JSON: &str = "events.json";
+/// What the run is and what else is in its directory, for a reader arriving cold.
+const MANIFEST_JSON: &str = "manifest.json";
+
 /// One past run, as the History view lists it.
 ///
 /// Everything except `label` is derived from the archived log and re-derivable
@@ -55,6 +60,11 @@ pub struct RunRecord {
     pub messages: i64,
     pub tasks: i64,
     pub bytes: u64,
+    /// How many pane transcripts were archived with the run. `0` is ordinary —
+    /// a run whose panes never started has none, and `orch` never contributes
+    /// one (see [`harvest_transcripts`]).
+    #[serde(default)]
+    pub transcripts: u32,
 }
 
 /// What the live run knows about itself before it has a log worth reading:
@@ -142,10 +152,18 @@ pub fn rotate(shell: &Path, runs: &Path, now_ms: i64) -> Vec<(NoticeLevel, Strin
         )];
     }
     let _ = std::fs::remove_file(live_meta(shell));
+    let transcripts = harvest_transcripts(shell, &dest);
 
     let id = dest.file_name().unwrap_or_default().to_string_lossy().to_string();
     match record_for(&dest, &id, meta.target.as_deref()) {
-        Ok(record) => {
+        Ok(mut record) => {
+            record.transcripts = transcripts;
+            if let Err(e) = write_agent_view(&dest, &record) {
+                notices.push((
+                    NoticeLevel::Warn,
+                    format!("archived run {id}, but its JSON export did not write: {e}"),
+                ));
+            }
             let label = record.label.clone();
             if let Err(e) = upsert(runs, record) {
                 notices.push((NoticeLevel::Warn, format!("archived run {id}, but its index entry did not save: {e}")));
@@ -182,6 +200,81 @@ fn archive_files(live: &Path, dest: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Move each worker's Claude Code transcript into the run it belongs to.
+///
+/// The event log records what the panes said **to each other**; a transcript
+/// records what one pane actually did — the tool calls, the reasoning, the work
+/// between two messages. An evaluator reading a past run wants both, and only
+/// one of them was being kept.
+///
+/// **Moved, not copied**, for two reasons. Transcripts live in a per-worker
+/// config dir that outlives a run, so copying would leave last run's sessions
+/// sitting beside this run's and every archive would accumulate its
+/// predecessors. And moving is what makes the split clean: each run's directory
+/// holds that run's transcripts and no others. Safe because rotation runs before
+/// any pane exists, and workers are spawned fresh every time — nothing resumes a
+/// previous session.
+///
+/// **`orch` is deliberately absent.** Its transcript lives in the operator's own
+/// `CLAUDE_CONFIG_DIR`, not under `~/.fleetor`, and reaching in there to move
+/// the operator's personal Claude history would cross the boundary Tier 1.1
+/// draws around this app's own state. The consequence is real and worth naming:
+/// the pane doing the deciding is the one whose reasoning is not archived.
+fn harvest_transcripts(shell: &Path, dest: &Path) -> u32 {
+    let Ok(panes) = std::fs::read_dir(shell.join("pane-config")) else { return 0 };
+    let mut moved = 0;
+
+    for pane in panes.flatten() {
+        let name = pane.file_name();
+        let Ok(slugs) = std::fs::read_dir(pane.path().join("projects")) else { continue };
+        let into = dest.join("transcripts").join(&name);
+
+        for slug in slugs.flatten() {
+            let Ok(files) = std::fs::read_dir(slug.path()) else { continue };
+            for file in files.flatten() {
+                let from = file.path();
+                if from.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                    continue;
+                }
+                if std::fs::create_dir_all(&into).is_err() {
+                    continue;
+                }
+                if std::fs::rename(&from, into.join(file.file_name())).is_ok() {
+                    moved += 1;
+                }
+            }
+        }
+    }
+    moved
+}
+
+/// Write the two files an agent reads: the log as JSON, and a manifest saying
+/// what is in the directory.
+///
+/// Written **at archive time**, not generated on demand by an export button.
+/// The reader this is for is a `claude -p` with a shell, and it should be able
+/// to `cat` a run without SQLite, without this app running, and without knowing
+/// that a GUI exists.
+fn write_agent_view(dest: &Path, record: &RunRecord) -> std::io::Result<()> {
+    let json = fleetor_db::archive::to_json(&dest.join("state.db"))
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    std::fs::write(dest.join(EVENTS_JSON), json)?;
+
+    let manifest = serde_json::json!({
+        "run": record,
+        "layout": {
+            "events.json": "the whole event log, one JSON array, oldest first; `seq` and `ts` are the row's own columns",
+            "state.db": "the same log as SQLite — the source of truth events.json is generated from",
+            "transcripts/": "one directory per worker, holding its Claude Code session .jsonl files. orch's is not here: it lives in the operator's own config dir",
+        },
+        "reading_this": "The event log is what the panes said to each other. The transcripts are what each pane did between saying things. Neither records terminal output.",
+    });
+    std::fs::write(
+        dest.join(MANIFEST_JSON),
+        serde_json::to_string_pretty(&manifest).map_err(|e| std::io::Error::other(e.to_string()))?,
+    )
 }
 
 fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
@@ -301,7 +394,19 @@ fn record_for(dir: &Path, id: &str, target: Option<&str>) -> Result<RunRecord, S
         messages: digest.messages,
         tasks: digest.tasks,
         bytes: dir_bytes(dir),
+        transcripts: count_transcripts(dir),
     })
+}
+
+/// How many transcripts the run's directory actually holds, so a rebuilt index
+/// reports what is on disk rather than what rotation once returned.
+fn count_transcripts(dir: &Path) -> u32 {
+    let Ok(panes) = std::fs::read_dir(dir.join("transcripts")) else { return 0 };
+    panes
+        .flatten()
+        .filter_map(|pane| std::fs::read_dir(pane.path()).ok())
+        .map(|files| files.flatten().count() as u32)
+        .sum()
 }
 
 /// What the run gets called until the operator calls it something else.
@@ -347,12 +452,37 @@ fn write_index(runs: &Path, records: &[RunRecord]) -> std::io::Result<()> {
     std::fs::write(index_path(runs), text)
 }
 
+/// Everything under the run, transcripts included — the figure the History list
+/// shows is what deleting the run would actually reclaim.
 fn dir_bytes(dir: &Path) -> u64 {
-    std::fs::read_dir(dir)
-        .map(|entries| {
-            entries.flatten().filter_map(|e| e.metadata().ok()).map(|m| m.len()).sum()
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    entries
+        .flatten()
+        .map(|e| match e.metadata() {
+            Ok(m) if m.is_dir() => dir_bytes(&e.path()),
+            Ok(m) => m.len(),
+            Err(_) => 0,
         })
-        .unwrap_or(0)
+        .sum()
+}
+
+/// Copy a run's JSON export somewhere the operator chose.
+///
+/// A copy of a file that already exists rather than a fresh serialization: the
+/// download and the thing an agent reads must be the same bytes, or "export the
+/// logs" and "read the run" quietly become two formats.
+pub fn export(runs: &Path, id: &str, to: &Path) -> Result<(), String> {
+    let dir = run_dir(runs, id)?;
+    let source = dir.join(EVENTS_JSON);
+    // A run archived before the export existed has no events.json; generate it
+    // once, into the archive, so the next reader finds it there too.
+    if !source.is_file() {
+        let json = fleetor_db::archive::to_json(&dir.join("state.db")).map_err(|e| e.to_string())?;
+        std::fs::write(&source, json).map_err(|e| format!("writing {}: {e}", source.display()))?;
+    }
+    std::fs::copy(&source, to)
+        .map(|_| ())
+        .map_err(|e| format!("writing {}: {e}", to.display()))
 }
 
 fn read_live_meta(shell: &Path) -> LiveMeta {
@@ -542,6 +672,87 @@ mod tests {
         let all = list(&runs_dir(&root));
         assert!(all.is_empty(), "it cannot be summarized, so it does not list");
         assert!(notices.iter().any(|(l, _)| *l == NoticeLevel::Warn), "{notices:?}");
+    }
+
+    #[test]
+    fn a_run_takes_its_workers_transcripts_with_it_and_leaves_none_behind() {
+        let root = scratch("transcripts");
+        let shell = root.join("_shell");
+        let runs = runs_dir(&root);
+        // Two workers, one with two sessions — the shape a real config dir has.
+        for (worker, sessions) in [("worker-1", &["a", "b"][..]), ("worker-2", &["c"][..])] {
+            let project = shell.join("pane-config").join(worker).join("projects").join("-tmp-slug");
+            std::fs::create_dir_all(&project).unwrap();
+            for s in sessions {
+                std::fs::write(project.join(format!("{s}.jsonl")), r#"{"type":"user"}"#).unwrap();
+            }
+            std::fs::write(project.join("not-a-transcript.txt"), "ignore me").unwrap();
+        }
+        begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"));
+        write_live(&shell, &["take the parser"]);
+
+        rotate(&shell, &runs, 0);
+
+        let all = list(&runs);
+        assert_eq!(all[0].transcripts, 3, "two workers, three sessions");
+        let dir = runs.join(&all[0].id);
+        assert!(dir.join("transcripts/worker-1/a.jsonl").is_file());
+        assert!(dir.join("transcripts/worker-2/c.jsonl").is_file());
+        assert!(!dir.join("transcripts/worker-1/not-a-transcript.txt").exists());
+
+        // Moved, not copied: the next run must not inherit this one's sessions.
+        let left = shell.join("pane-config/worker-1/projects/-tmp-slug");
+        assert!(!left.join("a.jsonl").exists(), "a copied transcript would be archived twice");
+        assert!(left.join("not-a-transcript.txt").is_file(), "only .jsonl moves");
+    }
+
+    #[test]
+    fn an_archived_run_is_readable_without_sqlite_and_says_what_it_holds() {
+        let root = scratch("agentview");
+        let shell = root.join("_shell");
+        let runs = runs_dir(&root);
+        begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"));
+        write_live(&shell, &["take the parser", "on it"]);
+        rotate(&shell, &runs, 0);
+
+        let dir = runs.join(&list(&runs)[0].id);
+
+        let events: Vec<serde_json::Value> =
+            serde_json::from_str(&std::fs::read_to_string(dir.join(EVENTS_JSON)).unwrap()).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["body"], "take the parser");
+        assert!(events[0]["seq"].is_i64() && events[0]["ts"].is_i64());
+
+        let manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join(MANIFEST_JSON)).unwrap())
+                .unwrap();
+        assert_eq!(manifest["run"]["messages"], 2);
+        assert!(manifest["layout"][EVENTS_JSON].is_string(), "a cold reader is told the layout");
+    }
+
+    #[test]
+    fn exporting_writes_the_same_bytes_the_archive_holds() {
+        let root = scratch("export");
+        let shell = root.join("_shell");
+        let runs = runs_dir(&root);
+        begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"));
+        write_live(&shell, &["take the parser"]);
+        rotate(&shell, &runs, 0);
+        let id = list(&runs)[0].id.clone();
+
+        let out = root.join("downloaded.json");
+        export(&runs, &id, &out).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&out).unwrap(),
+            std::fs::read_to_string(runs.join(&id).join(EVENTS_JSON)).unwrap(),
+            "the download and what an agent reads must not be two formats"
+        );
+
+        // A run archived before events.json existed still exports, and gains one.
+        std::fs::remove_file(runs.join(&id).join(EVENTS_JSON)).unwrap();
+        export(&runs, &id, &out).unwrap();
+        assert!(runs.join(&id).join(EVENTS_JSON).is_file());
+        assert!(export(&runs, "no-such-run", &out).is_err());
     }
 
     #[test]

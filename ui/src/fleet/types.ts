@@ -186,6 +186,10 @@ export interface RunRecord {
   messages: number;
   tasks: number;
   bytes: number;
+  /// Worker session transcripts archived with the run. `orch` never contributes
+  /// one — its transcript lives in the operator's own config dir, outside
+  /// `~/.fleetor`, and this app does not reach in there.
+  transcripts: number;
 }
 
 /// The live fleet configuration: what a click will actually run, and where.

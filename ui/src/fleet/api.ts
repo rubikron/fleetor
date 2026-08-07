@@ -122,6 +122,13 @@ export function deleteRun(id: string): Promise<void> {
   return invoke("run_delete", { id });
 }
 
+/// Save a run's JSON export. Opens a native save dialog on the Rust side, so no
+/// dialog plugin is needed here. Resolves to `null` when the operator dismissed
+/// it — a cancel, not a failure, and it must not be shown as one.
+export function exportRun(id: string): Promise<string | null> {
+  return invoke<string | null>("run_export", { id });
+}
+
 // --- streams ------------------------------------------------------------------
 
 /// Subscribe to the live event stream. Returns an unlisten fn for cleanup.

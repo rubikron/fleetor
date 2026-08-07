@@ -819,6 +819,31 @@ pub fn run_delete(id: String) -> Result<(), String> {
     runs::delete(&runs::runs_dir(&fleetor_dir()), &id)
 }
 
+/// Save a run's JSON export wherever the operator points.
+///
+/// The dialog lives here rather than in the webview so no npm plugin has to be
+/// added for it — `fleet_pick_target` set the pattern. `Ok(None)` means the
+/// operator dismissed the dialog, which is not an error and must not be shown
+/// as one.
+#[tauri::command]
+pub fn run_export(app: AppHandle, id: String) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let suggested = format!("{id}-events.json");
+    let Some(chosen) = app
+        .dialog()
+        .file()
+        .set_file_name(&suggested)
+        .add_filter("JSON", &["json"])
+        .blocking_save_file()
+    else {
+        return Ok(None);
+    };
+    let path = chosen.into_path().map_err(|e| format!("that location has no usable path: {e}"))?;
+    runs::export(&runs::runs_dir(&fleetor_dir()), &id, &path)?;
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
+
 /// `~` and `~/…` are what an operator types; `std::path` treats them as literal
 /// directory names, so a typed home-relative path would silently miss.
 fn expand_home(input: &str) -> Result<PathBuf, String> {
