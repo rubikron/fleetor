@@ -26,6 +26,21 @@ The Blackboard vision, split into nine session-sized work packages. The vision i
 | 09 | `09-brief-budget-shakedown.md` | Prompt budget + live shakedown | all | S/M + live spend | **budget half landed** — shakedown half pending operator |
 | 10 | `10-ui-architecture-map.md` | The `ui/` architecture map (docs only) | — | S/M | not-started |
 | 11 | `11-run-history.md` | Run history — past runs as long-term memory | — | L | **landed** |
+| 12 | `12-self-improving-loop.md` | The self-improving loop — **arc doc**, not a package | 11 | XL | **design** |
+| 13 | (from TEMPLATE) | The done verb | — | M | not-started |
+| 14 | (from TEMPLATE) | `orch`'s own transcript + config dir | — | M | not-started |
+| 15 | (from TEMPLATE) | The evaluator window | 13, 16 | L | not-started |
+| 16 | (from TEMPLATE) | Dev mode | — | S/M | not-started |
+| 17 | (from TEMPLATE) | The fence | 16 | M | not-started |
+| 18 | (from TEMPLATE) | More than one fleet at once | — | L | not-started |
+| 19 | (from TEMPLATE) | Orch-to-orch, and its cutoff | 18 | M | not-started |
+
+WP-13..19 are filed by [`12-self-improving-loop.md`](./12-self-improving-loop.md), which
+carries their design, the diagrams and the invariant arguments already had. Write each
+package from `TEMPLATE.md` when it is picked up — the arc doc is the input, not a
+substitute. **The rewind harness (Stream 3) has no WP number on purpose:** it is a
+separate repo that imports nothing from this codebase, and that is what keeps the largest
+chunk of the arc incapable of causing core churn.
 
 ## Dependency graph
 
@@ -37,7 +52,12 @@ WP-01 ─┬─→ WP-02 ─→ WP-05 ─→ WP-06 ─┐
        └─→ WP-08 ───────────────────┘
 
 WP-10 (docs only, no dependencies — runnable any time)
-WP-11 (no dependencies — precedes the evaluation sandbox, which needs per-run isolation)
+WP-11 ─→ WP-12 (arc) ─┬─→ WP-13 ─┐
+                      ├─→ WP-14 ─┼─→ WP-15 ─→ ledger
+                      ├─→ WP-16 ─┴─→ WP-17 (blocks any improve run)
+                      └─→ WP-18 ─→ WP-19
+
+rewind harness (separate repo, no WP — fully parallel, no dependencies)
 ```
 
 - **Serial spine** (mirrors the session-cycle phases in the vision): 01 → 02 → 05 → 06 → 09.

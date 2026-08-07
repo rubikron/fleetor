@@ -42,6 +42,11 @@ Each is stamped with the Claude Code version it measured; re-measure on a CC upd
 
 [`00-index.md`](./roadmap/00-index.md) is the hub: package table with statuses, dependency graph, contention warning, standing tensions. To file new work: copy [`TEMPLATE.md`](./roadmap/TEMPLATE.md) to the next zero-padded number, fill it in, add a row and a graph edge to `00-index.md`. Statuses in the index move **as the last act of the session that lands a package**.
 
+[`12-self-improving-loop.md`](./roadmap/12-self-improving-loop.md) is an **arc doc**, not a
+package: it carries the self-improvement design (both flow diagrams, the hiding model, the
+four invariant arguments) and files WP-13..19, each written from `TEMPLATE.md` when picked
+up. The rewind harness it names lives in a separate repo by design.
+
 `roadmap/source/` is the raw upstream material — the operator's vision-tenets essay (`vision_tenets.md`; the shipped copy is `prompts/vision-tenets.md`, D-056) and the "Autonomy Designs" catalogue (`fleetor-autonomy.html` and `fleetor-autonomy-plain.html` — two renders of one document).
 
 ## Archive (`docs/archive/`)
