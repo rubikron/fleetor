@@ -31,7 +31,7 @@ The Blackboard vision, split into nine session-sized work packages. The vision i
 | 14 | `14-orch-transcript.md` | `orch`'s own transcript + config dir | — | M | **landed** |
 | 15 | (from TEMPLATE) | The evaluator window | 13, 16 | L | not-started |
 | 16 | `16-dev-mode.md` | Dev mode | — | S/M | **landed** |
-| 17 | (from TEMPLATE) | The fence | 16 | M | not-started |
+| 17 | `17-write-guardrail.md` | The write guardrail | 14, 16 | M | **landed** |
 | 18 | (from TEMPLATE) | More than one fleet at once | — | L | not-started |
 | 19 | (from TEMPLATE) | Orch-to-orch, and its cutoff | 18 | M | not-started |
 
@@ -54,7 +54,7 @@ WP-01 ─┬─→ WP-02 ─→ WP-05 ─→ WP-06 ─┐
 WP-10 (docs only, no dependencies — runnable any time)
 WP-11 ─→ WP-12 (arc) ─┬─→ WP-13 ─┐
                       ├─→ WP-14 ─┼─→ WP-15 ─→ ledger
-                      ├─→ WP-16 ─┴─→ WP-17 (blocks any improve run)
+                      ├─→ WP-16 ─┴─→ WP-17 (blocks any improve run; also needs 14)
                       └─→ WP-18 ─→ WP-19
 
 rewind harness (separate repo, no WP — fully parallel, no dependencies)
@@ -68,6 +68,7 @@ rewind harness (separate repo, no WP — fully parallel, no dependencies)
 
 - WP-03, WP-05, WP-06, WP-07 all edit `prompts/orch.md` + `prompts/worker.md`, `VERBS`, and the clap enum. The validation WP-01 lands **refuses** a prompt that fails to teach every verb, so a verb and its prompt text must move in one commit. Run **at most one verb-adding package (03, 05, 06, 13) at a time**. *WP-07 landed and added no verb — `VERBS` and the clap enum are untouched; it edited both prompt files and `prompts/delivery-contract.md`.*
 - **WP-13 landed and added the ninth verb, `handoff` (D-064).** It found the rule's sharpest edge: `require_verbs` validates the rendered **worker** brief against the same `VERBS` list, so an orchestrator-only verb still has to be named in `worker.md` or the shipped template fails its own validation. The verb list is written down in nine places — `VERBS`, the clap enum, `Op`, both prompt files, the pinned literals in `brief.rs` (three of them, including two rewritten-template fixtures) and `src-tauri/src/prompts.rs`'s override fixture. All nine move together or the build is broken between commits.
+- **WP-17 is "the write guardrail", not "the fence" (D-065).** `12-self-improving-loop.md`'s stream table calls it the fence; that name belongs to WP-08's private `HOME` (D-052) and one name per concept is a rule this repo keeps. The two are separate mechanisms with separate reversal conditions: the Fence is about *name resolution* for workers only, the write guardrail is a `PreToolUse` hook about *writes* for every pane. It also gained a dependency the arc doc did not have — **WP-14**, because `orch`'s deny rules need the config dir D-062 gave it; that is the second job WP-12 filed WP-14 for. Its spike found a real Fence breakage on the way past (a worker cannot `cargo build`, because rustup resolves `$HOME/.rustup`), which is D-052's to fix and is WP-17's open question 1 — worth closing before the first improve run, since an improve run is a Rust build.
 - **WP-06 landed first, so WP-08 discharged the debt (D-052).** A private HOME drops the global `user.name`/`user.email`, and WP-06 made worker commits load-bearing rather than incidental: the receipt names a commit and the reviewer reads it, so a worker that cannot commit produces a receipt pointing at nothing. WP-08 seeds a gitconfig for exactly this, and re-validated both a real worker commit and a peer's `git diff HEAD...fleet/worker-N` live, under the fenced env — `docs/notes/fence-notes.md` is the transcript; the worktree mechanism `peer-review-notes.md` measured turned out not to route through `HOME` at all, so peer review is unaffected.
 
 ## Reconciliation with the autonomy-designs build order

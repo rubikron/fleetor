@@ -45,6 +45,11 @@ pub struct LaunchConfig {
     /// Nothing in this codebase branches on it yet; it is a recorded default,
     /// not a gate.
     pub fence_posture: String,
+    /// WP-17, the write guardrail: extra roots every pane may write under,
+    /// beyond its own cwd and `~/.fleetor/_shell`. Repeatable (`allow = …` once
+    /// per line), empty by default, and absolute-only — a relative root would
+    /// resolve against each pane's own cwd and mean four different directories.
+    pub fence_allow: Vec<String>,
 }
 
 /// The baked-in `prompts/launch.conf`, parsed at startup. Shipping the file *and*
@@ -62,6 +67,7 @@ impl Default for LaunchConfig {
             worker_base_url: "https://api.deepseek.com/anthropic".to_string(),
             worker_permission_mode: "auto".to_string(),
             fence_posture: "open".to_string(),
+            fence_allow: Vec::new(),
         }
     }
 }
@@ -218,11 +224,42 @@ fn apply_conf(base: &LaunchConfig, text: &str) -> (LaunchConfig, Vec<String>) {
             ("fence", "posture") => complaints.push(format!(
                 "line {at}: `fence.posture = {value}` is not a supported posture — only `open` exists; using `open`"
             )),
+            // WP-17: the write guardrail's operator extension. Additive and
+            // repeatable, because "one more directory the fleet may write in" is
+            // the shape of the request — replacing the list would take away the
+            // pane's own worktree, which nothing wants.
+            ("fence", "allow") => match absolute_root(&value) {
+                Ok(root) => config.fence_allow.push(root),
+                Err(why) => complaints.push(format!("line {at}: `fence.allow = {value}` {why}")),
+            },
             ("", _) => complaints.push(format!("line {at}: `{key}` is before any [section] header")),
             _ => complaints.push(format!("line {at}: `[{section}] {key}` is not a setting")),
         }
     }
     (config, complaints)
+}
+
+/// One `[fence] allow` value as an absolute path, or why it cannot be one.
+///
+/// `~` is expanded because it is what an operator types. A relative path is
+/// refused rather than resolved: the guardrail hands these to five panes with
+/// five different working directories, so `scratch` would name `orch`'s target
+/// repo and four separate worktrees — five different permissions from one line,
+/// which is the class of setting that reads as working and is not.
+fn absolute_root(value: &str) -> Result<String, &'static str> {
+    let expanded = match value.strip_prefix('~') {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => {
+            let Some(home) = std::env::var_os("HOME") else {
+                return Err("starts with `~` and HOME is not set, so it cannot be resolved");
+            };
+            format!("{}{rest}", PathBuf::from(home).display())
+        }
+        _ => value.to_string(),
+    };
+    if !Path::new(&expanded).is_absolute() {
+        return Err("is not an absolute path — a relative root would mean a different directory in every pane");
+    }
+    Ok(expanded)
 }
 
 /// `~/.fleetor/prompts` — where the operator puts their own copies.
@@ -382,6 +419,44 @@ mod tests {
         let (config, complaints) = apply_conf(&LaunchConfig::default(), "[fence]\nposture = open\n");
         assert!(complaints.is_empty(), "{complaints:#?}");
         assert_eq!(config.fence_posture, "open");
+    }
+
+    /// WP-17's operator extension: `allow` is repeatable and additive, because
+    /// "one more directory the fleet may write in" is the shape of the request.
+    /// Replacing the list would take away the pane's own worktree.
+    #[test]
+    fn fence_allow_is_repeatable_and_adds_roots_rather_than_replacing_them() {
+        let (config, complaints) = apply_conf(
+            &LaunchConfig::default(),
+            "[fence]\nposture = open\nallow = /Users/me/scratch\nallow = /Volumes/data\n",
+        );
+        assert!(complaints.is_empty(), "{complaints:#?}");
+        assert_eq!(config.fence_allow, vec!["/Users/me/scratch", "/Volumes/data"]);
+        assert_eq!(config.fence_posture, "open", "the other [fence] key is untouched");
+        assert!(LaunchConfig::default().fence_allow.is_empty(), "nothing is allowed by default");
+    }
+
+    /// `~` is what an operator types, and a path they cannot see resolved is a
+    /// path they cannot tell is wrong.
+    #[test]
+    fn fence_allow_expands_a_leading_tilde() {
+        let home = std::env::var("HOME").expect("the test process has a HOME");
+        let (config, complaints) = apply_conf(&LaunchConfig::default(), "[fence]\nallow = ~/datasets\n");
+        assert!(complaints.is_empty(), "{complaints:#?}");
+        assert_eq!(config.fence_allow, vec![format!("{home}/datasets")]);
+    }
+
+    /// A relative root would resolve against each pane's own cwd — one line
+    /// meaning `orch`'s target repo and four separate worktrees. Refused with
+    /// the reason, not silently resolved against whichever cwd came first.
+    #[test]
+    fn a_relative_fence_allow_is_refused_with_the_reason() {
+        let (config, complaints) =
+            apply_conf(&LaunchConfig::default(), "[fence]\nallow = scratch\nallow = /Users/me/ok\n");
+        assert_eq!(config.fence_allow, vec!["/Users/me/ok"], "a bad line must not discard a good one");
+        assert_eq!(complaints.len(), 1);
+        assert!(complaints[0].contains("scratch"), "{complaints:#?}");
+        assert!(complaints[0].contains("absolute"), "{complaints:#?}");
     }
 
     /// A posture this parser doesn't implement must not read as if it took

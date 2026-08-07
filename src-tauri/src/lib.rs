@@ -16,6 +16,10 @@ pub mod deliver;
 /// delivery path (Tier 1.4; `tests/dev_mode.rs` is the tripwire).
 pub mod dev;
 pub mod fleet;
+/// The write guardrail (WP-17) — a `PreToolUse` hook per pane, never anything
+/// the delivery path can read (Tier 1.4; `tests/write_guardrail.rs` is the
+/// tripwire).
+pub mod guardrail;
 mod orphans;
 pub mod prompts;
 pub mod pty;

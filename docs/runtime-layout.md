@@ -32,13 +32,20 @@ Everything FLEETOR writes at runtime lives here, and nowhere else — that is Ti
     run.json           what the live run is: when it started, what it points at
     panes.pids         the orphan ledger: spawned pids, swept at next startup
                        (src-tauri/src/orphans.rs)
+    guardrail.jsonl    the write guardrail's refusal journal (WP-17, D-065): one
+                       line per refused tool call, drained onto the Activity feed
+                       once a second. Emptied at every fleet start — last run's
+                       refusals went to runs/ with the rest of its log
     pane-config/       one CLAUDE_CONFIG_DIR per pane: the seeded .claude.json
       orch/            that gets a pane past onboarding, and projects/<cwd-slug>/
       worker-N/        <session>.jsonl — the transcript the context gauge reads
                        (docs/notes/context-gauge-notes.md) and the one rotation
-                       archives. orch/ is WP-14 (D-062); it is also where WP-17's
-                       deny rules will go, since this app may write policy here
-                       and never into the operator's own ~/.claude
+                       archives. orch/ is WP-14 (D-062); it is also where the
+                       write guardrail lives, since this app may write policy here
+                       and never into the operator's own ~/.claude:
+        settings.json    the PreToolUse hook, merged into whatever the operator
+                         has already put there
+        write-guardrail.py  the decision, rewritten from the binary every spawn
     worktrees/         one git worktree per worker slot, branches fleet/worker-N;
                        reviewed work merges to fleet/integration, never trunk (D-050)
     home/              the Fence (D-052): a private HOME per worker
@@ -54,6 +61,7 @@ Points that bite:
 - **Workers must not see `ANTHROPIC_API_KEY`.** They talk to DeepSeek via `ANTHROPIC_BASE_URL` with the key from the repo-root `.env`; the spawn env is curated in `src-tauri/src/spawn.rs`, and the three env settings there each wedge a pane forever if wrong (`prompts/README.md` names them).
 - **`prompts/` overrides take effect at the next fleet start**, not live — they are read once at bootstrap (D-042).
 - **The Fence is a fence, not a sandbox** (D-052): name resolution stops; absolute paths, `SSH_AUTH_SOCK` and inherited PATH entries do not. `docs/notes/fence-notes.md` carries the breakage catalogue.
+- **The write guardrail is about writes only, and about paths a command *names*** (D-065). Each pane may write under its own cwd and `_shell/`, and nowhere else; reads are not restricted at all. What it cannot see is a write no command states — `cargo build` into `~/.cargo`, and a worker's `git commit` into the target repo's `.git`, both measured in `docs/notes/write-guardrail-notes.md` and both of which a pane cannot work without. `pane-config/` is inside a root and still refused, because a pane that edits its own `settings.json` switches the guardrail off.
 - **Nothing under `_shell/` is precious — but `runs/` is** (D-058). `_shell` holds only the live run and the machinery around it, and a deleted `~/.fleetor` costs history, never correctness of the target repo. `runs/` is where that history now accumulates, so it is the one directory here worth backing up.
 - **`orch`'s transcript is archived with the run** (D-062, closing the gap D-059 named). It used to sit in the operator's own `CLAUDE_CONFIG_DIR` outside `~/.fleetor`, and this app still does not reach in there — instead `orch` was given a directory of its own at `pane-config/orch/`. **Two environment variables make that safe and they move together:** `CLAUDE_CONFIG_DIR` alone would log `orch` out, because `claude` hashes the config dir into its Keychain service name, and the pane would reach its input box with no credential while every `fleet send` reported `accepted`. `CLAUDE_SECURESTORAGE_CONFIG_DIR` set to the *empty string* selects the operator's own entry. `docs/notes/orch-config-dir-notes.md` measures both, at CC 2.1.224.
 - **`orch` does not inherit the operator's Claude Code setup any more** (D-062). User `CLAUDE.md`, skills, subagents, MCP servers, settings and hooks are read from `CLAUDE_CONFIG_DIR`, so `orch`'s are now whatever is in `pane-config/orch/` — which this app seeds with two onboarding keys and nothing else. The operator may put their own files there; nothing else writes into it.
