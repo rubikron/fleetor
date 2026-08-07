@@ -16,6 +16,7 @@ pub mod fleet;
 mod orphans;
 pub mod prompts;
 pub mod pty;
+pub mod runs;
 pub mod spawn;
 pub mod testbed;
 
@@ -86,6 +87,10 @@ pub fn run() {
             fleet::fleet_set_target,
             fleet::fleet_roster,
             fleet::fleet_send,
+            fleet::runs_list,
+            fleet::run_events,
+            fleet::run_rename,
+            fleet::run_delete,
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { .. } = event {
