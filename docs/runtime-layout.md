@@ -18,9 +18,9 @@ Everything FLEETOR writes at runtime lives here, and nowhere else — that is Ti
                        the event as it crossed the wire plus its `seq` and `ts`
       manifest.json    what the run is, what each file here holds, and what the
                        data does NOT cover
-      transcripts/     the workers' own Claude Code session .jsonl files, MOVED
-        worker-N/      here at archive time so they do not accumulate in
-                       pane-config/. `orch` has none — see below
+      transcripts/     each pane's own Claude Code session .jsonl files, MOVED
+        orch/          here at archive time so they do not accumulate in
+        worker-N/      pane-config/. `orch` included since WP-14 (D-061)
   prompts/           OPERATOR OVERRIDES for the shipped prompt files — same names as
                      the repo's prompts/ (orch.md, worker.md, the fragments,
                      launch.conf). Read once at fleet start; absent files fall back
@@ -32,10 +32,13 @@ Everything FLEETOR writes at runtime lives here, and nowhere else — that is Ti
     run.json           what the live run is: when it started, what it points at
     panes.pids         the orphan ledger: spawned pids, swept at next startup
                        (src-tauri/src/orphans.rs)
-    pane-config/       one CLAUDE_CONFIG_DIR per worker: the seeded .claude.json
-      worker-N/        that gets a pane past onboarding, and projects/<cwd-slug>/
-                       <session>.jsonl — the transcript the context gauge reads
-                       (docs/notes/context-gauge-notes.md)
+    pane-config/       one CLAUDE_CONFIG_DIR per pane: the seeded .claude.json
+      orch/            that gets a pane past onboarding, and projects/<cwd-slug>/
+      worker-N/        <session>.jsonl — the transcript the context gauge reads
+                       (docs/notes/context-gauge-notes.md) and the one rotation
+                       archives. orch/ is WP-14 (D-061); it is also where WP-17's
+                       deny rules will go, since this app may write policy here
+                       and never into the operator's own ~/.claude
     worktrees/         one git worktree per worker slot, branches fleet/worker-N;
                        reviewed work merges to fleet/integration, never trunk (D-050)
     home/              the Fence (D-052): a private HOME per worker
@@ -47,10 +50,11 @@ Everything FLEETOR writes at runtime lives here, and nowhere else — that is Ti
 
 Points that bite:
 
-- **The orchestrator is exempt from most of this.** It runs as the operator's own `claude` — their login, their config, their HOME — in the target repo (or the testbed). Only workers get `pane-config/`, `home/` and worktrees; that asymmetry is the product, not an accident.
+- **The orchestrator is exempt from most of this.** It runs as the operator's own `claude` — their login, their model, their HOME — in the target repo (or the testbed). Only workers get `home/` and worktrees; that asymmetry is the product, not an accident. Since WP-14 it shares exactly one thing with them: a `pane-config/` directory of its own.
 - **Workers must not see `ANTHROPIC_API_KEY`.** They talk to DeepSeek via `ANTHROPIC_BASE_URL` with the key from the repo-root `.env`; the spawn env is curated in `src-tauri/src/spawn.rs`, and the three env settings there each wedge a pane forever if wrong (`prompts/README.md` names them).
 - **`prompts/` overrides take effect at the next fleet start**, not live — they are read once at bootstrap (D-042).
 - **The Fence is a fence, not a sandbox** (D-052): name resolution stops; absolute paths, `SSH_AUTH_SOCK` and inherited PATH entries do not. `docs/notes/fence-notes.md` carries the breakage catalogue.
 - **Nothing under `_shell/` is precious — but `runs/` is** (D-058). `_shell` holds only the live run and the machinery around it, and a deleted `~/.fleetor` costs history, never correctness of the target repo. `runs/` is where that history now accumulates, so it is the one directory here worth backing up.
-- **`orch`'s transcript is never archived** (D-059). It lives in the operator's own `CLAUDE_CONFIG_DIR`, outside `~/.fleetor`, and this app does not reach in there — so the one pane whose reasoning an evaluator most wants is the one it cannot read. Named here because it is a real gap, not an oversight.
+- **`orch`'s transcript is archived with the run** (D-061, closing the gap D-059 named). It used to sit in the operator's own `CLAUDE_CONFIG_DIR` outside `~/.fleetor`, and this app still does not reach in there — instead `orch` was given a directory of its own at `pane-config/orch/`. **Two environment variables make that safe and they move together:** `CLAUDE_CONFIG_DIR` alone would log `orch` out, because `claude` hashes the config dir into its Keychain service name, and the pane would reach its input box with no credential while every `fleet send` reported `accepted`. `CLAUDE_SECURESTORAGE_CONFIG_DIR` set to the *empty string* selects the operator's own entry. `docs/notes/orch-config-dir-notes.md` measures both, at CC 2.1.224.
+- **`orch` does not inherit the operator's Claude Code setup any more** (D-061). User `CLAUDE.md`, skills, subagents, MCP servers, settings and hooks are read from `CLAUDE_CONFIG_DIR`, so `orch`'s are now whatever is in `pane-config/orch/` — which this app seeds with two onboarding keys and nothing else. The operator may put their own files there; nothing else writes into it.
 - **Never copy `state.db` on its own.** Between runs it is typically a few KB while the whole log sits in an uncheckpointed `state.db-wal`; a backup that took the one file would capture an empty database. `docs/notes/run-rotation-notes.md` measures this — it is why archiving leaves WAL mode first.

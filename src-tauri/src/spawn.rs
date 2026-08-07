@@ -3,9 +3,10 @@
 //! Two commands, deliberately different postures:
 //!
 //!  - [`orch_command`] — the operator's **own** `claude`. Full environment
-//!    inherit, their login, their Opus, their config dir. We override only what
+//!    inherit, their login, their Opus, their `HOME`. We override only what
 //!    the fleet needs, and ours must win, so every override lands *after* the
-//!    inherit.
+//!    inherit. Since WP-14 that list includes a fleet-owned `CLAUDE_CONFIG_DIR`
+//!    — see [`orch_command`] for the pair of variables that keeps the login.
 //!  - [`worker_command`] — an isolated Flash worker: its own `CLAUDE_CONFIG_DIR`,
 //!    its own worktree, its own private `HOME` (WP-08), `--permission-mode
 //!    auto`, and the DeepSeek endpoint.
@@ -59,6 +60,14 @@ use crate::prompts::PaneContext;
 const ENV_PANE_CMD: &str = "FLEETOR_PANE_CMD";
 /// First rung of the `fleet` binary ladder (L4).
 const ENV_FLEET_BIN: &str = "FLEETOR_FLEET_BIN";
+/// Which macOS Keychain entry `claude` reads its OAuth credential from (WP-14).
+///
+/// Set to the empty string it selects the **unsuffixed** service name — the entry
+/// the operator's own `/login` already wrote. Left unset while `CLAUDE_CONFIG_DIR`
+/// is set, `claude` hashes the config dir into the service name instead and finds
+/// an empty namespace. `docs/notes/orch-config-dir-notes.md` §2 reads the
+/// derivation out of the CC 2.1.224 binary and measures both outcomes.
+const ENV_CC_SECURESTORAGE_DIR: &str = "CLAUDE_SECURESTORAGE_CONFIG_DIR";
 
 /// The full pane roster the briefs describe. Every pane is told about every other
 /// one, whether or not it has been spawned yet — a brief is written once at spawn
@@ -72,15 +81,45 @@ fn roster() -> Vec<PaneId> {
 /// The operator's `claude`, as the fleet orchestrator, in `cwd`.
 ///
 /// `CommandBuilder::new` already seeds the parent environment, so this is an
-/// inherit-then-override — their login, their config dir, their model, plus the
-/// five things that make it a pane.
-pub fn orch_command(cwd: &Path, socket: &Path, ctx: &PaneContext) -> CommandBuilder {
+/// inherit-then-override — their login, their `HOME`, their model, plus the
+/// things that make it a pane.
+///
+/// **`config_dir` is WP-14, and it is the one place `orch` is deliberately
+/// *unlike* the operator's daily `claude`.** It must already have been through
+/// [`seed_config_dir`] for this exact `cwd`: once `orch` stops using the
+/// operator's already-onboarded directory, L1 applies to it exactly as it applies
+/// to a worker — an unseeded dir lands on the theme picker and never reaches a
+/// prompt (`docs/notes/orch-config-dir-notes.md` §1). What this buys is that
+/// `orch`'s session transcript lands under `~/.fleetor`, where rotation archives
+/// it with the run instead of leaving the deciding pane's reasoning unreadable
+/// (D-059's named gap, closed by D-061).
+///
+/// **The two variables move together or `orch` is silently logged out.**
+/// `claude` namespaces its Keychain service name by a hash of `CLAUDE_CONFIG_DIR`,
+/// so setting that alone points it at an empty credential namespace: the pane
+/// still reaches its input box, every `fleet send` still reports `accepted`, and
+/// the first turn fails. `CLAUDE_SECURESTORAGE_CONFIG_DIR`, **defined and empty**,
+/// selects the unsuffixed service name — the entry the operator's own `/login`
+/// already wrote. Nothing is read out of the operator's config dir to achieve
+/// that; `claude` performs the identical keychain read it performs today.
+///
+/// What `orch` still does **not** get, and must not: a private `HOME`, a worker's
+/// PATH, `--permission-mode`, or any `ANTHROPIC_*` override. The asymmetry with
+/// [`worker_command`] is the product (D-030, D-052), not an oversight.
+pub fn orch_command(
+    cwd: &Path,
+    socket: &Path,
+    config_dir: &Path,
+    ctx: &PaneContext,
+) -> CommandBuilder {
     let mut cmd = base_command(&[
         "--system-prompt".to_string(),
         render_orch(&ctx.orch_template, &roster(), &cwd.display().to_string()),
     ]);
     cmd.cwd(cwd);
     apply_pane_env(&mut cmd, PaneId::Orch, socket, augmented_path());
+    cmd.env("CLAUDE_CONFIG_DIR", config_dir);
+    cmd.env(ENV_CC_SECURESTORAGE_DIR, "");
     cmd
 }
 
@@ -139,6 +178,11 @@ pub fn worker_command(
     cmd.env_remove("ANTHROPIC_API_KEY");
     cmd.env_remove("ANTHROPIC_DEFAULT_OPUS_MODEL");
     cmd.env_remove("ANTHROPIC_DEFAULT_SONNET_MODEL");
+    // The Fence again (WP-14): orch sets this to reach the operator's own Keychain
+    // entry, and a worker inherits the app's environment. Unset rather than
+    // not-set, so a worker can never be handed the key to the operator's login —
+    // it has `ANTHROPIC_AUTH_TOKEN` and needs nothing from the keychain.
+    cmd.env_remove(ENV_CC_SECURESTORAGE_DIR);
     cmd
 }
 
@@ -450,7 +494,7 @@ mod tests {
         let socket = PathBuf::from("/tmp/fleetor-test.sock");
         let cwd = PathBuf::from("/tmp");
         let ctx = PaneContext::baked();
-        let orch = orch_command(&cwd, &socket, &ctx);
+        let orch = orch_command(&cwd, &socket, Path::new("/tmp/orch-cfg"), &ctx);
         assert_eq!(orch.get_env("FLEETOR_PANE").unwrap(), "orch");
         assert_eq!(orch.get_env("FLEET_SOCKET").unwrap(), socket.as_os_str());
         assert!(orch.get_env("CLAUDE_CODE_CHILD_SESSION").is_none());
@@ -503,7 +547,8 @@ mod tests {
             worker.get_env("CLAUDE_CODE_MAX_CONTEXT_TOKENS").unwrap(),
             crate::context_gauge::WORKER_WINDOW_TOKENS.to_string().as_str(),
         );
-        let orch = orch_command(Path::new("/tmp"), Path::new("/tmp/s.sock"), &ctx);
+        let orch =
+            orch_command(Path::new("/tmp"), Path::new("/tmp/s.sock"), Path::new("/tmp/orch-cfg"), &ctx);
         assert!(orch.get_env("CLAUDE_CODE_MAX_CONTEXT_TOKENS").is_none());
     }
 
@@ -551,7 +596,7 @@ mod tests {
         let ctx = PaneContext::baked();
         let real_home = std::env::var_os("HOME");
 
-        let orch = orch_command(Path::new("/tmp"), &socket, &ctx);
+        let orch = orch_command(Path::new("/tmp"), &socket, Path::new("/tmp/orch-cfg"), &ctx);
         assert_eq!(
             orch.get_env("HOME").map(|s| s.to_os_string()),
             real_home,
@@ -612,6 +657,103 @@ mod tests {
         assert!(text.contains("worker-2@fleetor.local"), "{text}");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- WP-14: orch's own config dir ------------------------------------------
+
+    /// The whole of WP-14 at the spawn seam: `orch` gets a fleet-owned config
+    /// dir, and the variable that keeps its login travels with it.
+    ///
+    /// The pair is the test, not either half. `CLAUDE_CONFIG_DIR` alone points
+    /// `claude` at a Keychain namespace derived from that path, which has never
+    /// been logged into — the pane reaches its input box, every `fleet send`
+    /// reports `accepted`, and the first turn fails
+    /// (`docs/notes/orch-config-dir-notes.md` §1–2 measured both).
+    #[test]
+    fn orch_gets_its_own_config_dir_and_keeps_the_operators_login() {
+        let orch = orch_command(
+            Path::new("/tmp"),
+            Path::new("/tmp/s.sock"),
+            Path::new("/tmp/fleetor/pane-config/orch"),
+            &PaneContext::baked(),
+        );
+        assert_eq!(orch.get_env("CLAUDE_CONFIG_DIR").unwrap(), "/tmp/fleetor/pane-config/orch");
+        assert_eq!(
+            orch.get_env(ENV_CC_SECURESTORAGE_DIR).expect("without this orch is silently logged out"),
+            "",
+            "defined and EMPTY selects the operator's own keychain entry; any value is a namespace",
+        );
+    }
+
+    /// The asymmetry is the product (D-030, D-052). `orch` moving onto its own
+    /// config dir must not drag any of the worker posture along with it — a
+    /// private `HOME`, a DeepSeek endpoint or an auth-token override would each
+    /// take its login away by a different route.
+    #[test]
+    fn orch_takes_a_config_dir_and_none_of_the_worker_isolation() {
+        let ctx = PaneContext::baked();
+        let orch =
+            orch_command(Path::new("/tmp"), Path::new("/tmp/s.sock"), Path::new("/tmp/orch-cfg"), &ctx);
+
+        for key in [
+            "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_MODEL",
+            "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+        ] {
+            assert!(orch.get_env(key).is_none(), "orch must not carry the worker's {key}");
+        }
+        assert_eq!(
+            orch.get_env("HOME").map(|s| s.to_os_string()),
+            std::env::var_os("HOME"),
+            "the Fence is worker-only: orch keeps the operator's real HOME",
+        );
+
+        let args: Vec<String> =
+            orch.get_argv().iter().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert!(
+            !args.iter().any(|a| a == "--permission-mode"),
+            "orch keeps the operator's own permission posture: {args:?}",
+        );
+    }
+
+    /// The other direction of the same seam: a worker inherits the app's
+    /// environment, and the app is about to set the variable that unlocks the
+    /// operator's own login. Unset it, the way `ANTHROPIC_API_KEY` is unset.
+    #[test]
+    fn a_worker_never_inherits_the_key_to_the_operators_keychain_entry() {
+        let worker = worker_command(
+            1,
+            Path::new("/tmp"),
+            Path::new("/tmp/home"),
+            Path::new("/tmp/cfg"),
+            Path::new("/tmp/s.sock"),
+            "sk-test",
+            &PaneContext::baked(),
+        );
+        assert!(worker.get_env(ENV_CC_SECURESTORAGE_DIR).is_none());
+    }
+
+    /// L1 is not worker-only any more. `orch`'s dir is a fleet-owned directory
+    /// like any other, so it needs the same two keys for the same reason — an
+    /// unseeded one lands on the theme picker and never reaches a prompt
+    /// (`docs/notes/orch-config-dir-notes.md` §1, arm `virgin`).
+    #[test]
+    fn orchs_config_dir_needs_the_same_two_keys_a_workers_does() {
+        let dir = temp_dir("orch-cfg");
+        let cwd = temp_dir("orch-target");
+
+        seed_config_dir(&dir, &cwd).unwrap();
+
+        let config = read_config(&dir);
+        assert_eq!(config["hasCompletedOnboarding"], serde_json::json!(true));
+        assert_eq!(
+            config["projects"][project_key(&cwd)]["hasTrustDialogAccepted"],
+            serde_json::json!(true),
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&cwd);
     }
 
     /// Written once, left alone after that (unlike `seed_config_dir`'s

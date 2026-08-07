@@ -60,24 +60,27 @@ Two deliberately different postures.
 | Endpoint | operator's login | `https://api.deepseek.com/anthropic` |
 | Credential | whatever they use | `DEEPSEEK_API_KEY` → `ANTHROPIC_AUTH_TOKEN` |
 | Permission mode | operator's default | `--permission-mode auto` |
-| `CLAUDE_CONFIG_DIR` | **operator's own** | `~/.fleetor/_shell/pane-config/worker-N` |
+| `CLAUDE_CONFIG_DIR` | `~/.fleetor/_shell/pane-config/orch` (D-061) | `~/.fleetor/_shell/pane-config/worker-N` |
+| Credential lookup | `CLAUDE_SECURESTORAGE_CONFIG_DIR=""` → the operator's own Keychain entry | n/a — `ANTHROPIC_AUTH_TOKEN` |
 | cwd | the target repo | `~/.fleetor/_shell/worktrees/worker-N` (branch `fleet/worker-N`) |
 
 Both get `FLEETOR_PANE` (identity — there is no anonymous connection), `FLEET_SOCKET`, an augmented `PATH` that can find `claude` and `fleet`, and a truecolor `TERM`.
 
 Three of these are load-bearing in the "silently wedges the pane forever" sense, all bisected in Phase 0: `ANTHROPIC_API_KEY` must be **unset** (interactive `claude` blocks on an approval prompt it never gets past), `--permission-mode auto` (the default `manual` wedges on the first tool call), and the config-dir seed below.
 
+WP-14 added a fourth, and it is the quietest of them: **`CLAUDE_SECURESTORAGE_CONFIG_DIR` must be set to the empty string wherever `CLAUDE_CONFIG_DIR` is set for `orch`.** `claude` hashes the config dir into its macOS Keychain service name, so a fleet-owned directory is a fresh, empty login — the pane reaches its input box, every `fleet send` reports `accepted`, and only its turns fail. `docs/notes/orch-config-dir-notes.md` measures it at CC 2.1.224.
+
 ### Layer 3 — Filesystem context (the invisible layer)
 
 This is the one nobody wrote down, and it is where the biggest asymmetry lives.
 
-A worker's `CLAUDE_CONFIG_DIR` is a private directory that `seed_config_dir` creates and puts **exactly two things in**: `hasCompletedOnboarding`, and per-project `hasTrustDialogAccepted` / `hasCompletedProjectOnboarding`. That is all. Which means:
+Every pane's `CLAUDE_CONFIG_DIR` is a private directory that `seed_config_dir` creates and puts **exactly two things in**: `hasCompletedOnboarding`, and per-project `hasTrustDialogAccepted` / `hasCompletedProjectOnboarding`. That is all. Which means:
 
-> **Workers inherit none of the operator's Claude Code setup.** No user `CLAUDE.md`, no skills, no subagents, no MCP servers, no settings, no hooks, no permission allowlist. The orchestrator inherits *all* of it, because it runs on the operator's own config dir.
+> **No pane inherits the operator's Claude Code setup — `orch` included, since D-061.** No user `CLAUDE.md`, no skills, no subagents, no MCP servers, no settings, no hooks, no permission allowlist. `orch` inherited all of it until WP-14 moved it onto a fleet-owned config dir so its transcript could be archived with the run; that inheritance was the price.
 
-What workers *do* get is the **project** context, because their cwd is a git worktree of the target repo — so a `CLAUDE.md` committed in the repo loads normally, as does anything in the repo's `.claude/`.
+What every pane *does* get is the **project** context, because its cwd is the target repo or a git worktree of it — so a `CLAUDE.md` committed in the repo loads normally, as does anything in the repo's `.claude/`.
 
-So today the context ladder is: orch = operator's full environment + fleet brief; worker = bare Claude + repo's own files + fleet brief. That is a defensible default (isolation, reproducibility, no worker inheriting the operator's MCP credentials) but it is currently a *consequence* of the config-dir isolation rather than a decision anyone made, and there is no way to opt into anything in between.
+So the context ladder is now the same shape for both classes: bare Claude + repo's own files + fleet brief, with `orch` differing in its model, its login, its `HOME` and its permission posture rather than in what it reads off disk. The operator can populate `~/.fleetor/_shell/pane-config/orch/` themselves — nothing else writes there — which is the opt-in-to-something-in-between this section used to say did not exist.
 
 ### Layer 4 — Framed messages (`crates/fleetor-core/src/message.rs`)
 
