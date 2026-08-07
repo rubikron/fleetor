@@ -164,9 +164,9 @@ Every anchor below was read or run in the session that landed this.
 |---|---|
 | `crates/fleetor-core/src/pane.rs:50` | `PaneId::Evaluator` — sorts last, because it appears in no enumeration |
 | `crates/fleetor-core/src/pane.rs:89` | `is_fleet_member()` — **the whole veil in one predicate.** Deliberately not derived from `has_pty()` |
-| `crates/fleetor-core/src/pane.rs:98` | `ParsePaneIdError::fmt` — the fleet's complete name list, and the comment saying not to add to it |
-| `ui/src/fleet/types.ts:21` | `EVALUATOR`, the TS mirror, with the operator asymmetry stated |
-| `ui/src/fleet/types.ts:46` | `paneKey` — rewritten to derive from `paneSlot`, so it cannot drift from the Rust half |
+| `crates/fleetor-core/src/pane.rs:138` | `ParsePaneIdError::fmt` — the fleet's complete name list, and the comment saying not to add to it |
+| `ui/src/fleet/types.ts:28` | `EVALUATOR`, the TS mirror, with the operator asymmetry stated |
+| `ui/src/fleet/types.ts:60` | `paneKey` — rewritten to derive from `paneSlot`, so it cannot drift from the Rust half |
 
 **The pty**
 
@@ -174,7 +174,7 @@ Every anchor below was read or run in the session that landed this.
 |---|---|
 | `src-tauri/src/pty.rs:293` | `channel_key` — now exhaustive on the variant. It used to `match pane.slot()`, giving **every** slotless name `orch`'s channel; a second one would have rendered its bytes in the orchestrator's terminal with no error |
 | `src-tauri/src/pty.rs:244` | `roster()`'s one-line filter — the single place the fleet gets enumerated, feeding both `fleet roster`'s listing and a broadcast's legs |
-| `src-tauri/src/pty.rs:466` | `a_running_evaluator_is_not_on_the_fleets_roster` — driven through a real spawn, and asserts it is still `writable` |
+| `src-tauri/src/pty.rs:492` | `a_running_evaluator_is_not_on_the_fleets_roster` — driven through a real spawn, and asserts it is still `writable` |
 
 **Whether there is one, and what it is told**
 
