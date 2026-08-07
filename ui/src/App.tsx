@@ -22,7 +22,9 @@ import { EventFeed } from "./components/EventFeed";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { TerminalGrid } from "./components/TerminalGrid";
 import { StartGate } from "./components/StartGate";
+import { RunHistory } from "./components/RunHistory";
 import { useFleet } from "./fleet/useFleet";
+import { useRuns } from "./fleet/useRuns";
 import { useContextGauge } from "./fleet/useContextGauge";
 import { useZoom } from "./ui/useZoom";
 import { useSidebarCollapse } from "./ui/useSidebarCollapse";
@@ -48,6 +50,10 @@ export function App() {
   // for the focused-pane frame in TerminalPane.tsx — see item 1 there).
   const [unreadWorkers, setUnreadWorkers] = useState<Set<number>>(() => new Set());
   const fleet = useFleet();
+  // Past runs. Independent of `fleet` on purpose: History reads files, so it
+  // works on the start gate, before a fleet exists, which is exactly when the
+  // operator is deciding what to do next.
+  const runs = useRuns();
   // The WP-04 live gauge: polls only once the fleet is actually running —
   // before `started`, no pane exists to sample and every tick would just be
   // an empty roster.
@@ -186,6 +192,13 @@ export function App() {
 
             <div className={`stage-view ${view === "activity" ? "" : "is-hidden"}`}>
               <EventFeed feed={fleet.feed} />
+            </div>
+
+            {/* Past runs (WP-11). Its own copies of the three components, fed
+                from archived logs — so no live list can ever be handed a past
+                run's events, and no past run can be sent to. */}
+            <div className={`stage-view ${view === "history" ? "" : "is-hidden"}`}>
+              <RunHistory runs={runs} />
             </div>
 
             <div className={`stage-view ${view === "settings" ? "" : "is-hidden"}`}>

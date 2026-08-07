@@ -11,6 +11,7 @@ import {
   type FleetEvent,
   type PaneEntry,
   type PaneId,
+  type RunRecord,
 } from "./types";
 
 const FLEET_EVENT = "fleet://event";
@@ -93,6 +94,39 @@ export function resizePane(pane: PaneId, rows: number, cols: number): Promise<vo
 /// Stop one pane, leaving its tab in place — the escape hatch when a pane wedges.
 export function killPane(pane: PaneId): Promise<void> {
   return invoke("pty_kill", { pane });
+}
+
+// --- past runs (WP-11) --------------------------------------------------------
+//
+// Read-or-relabel only. There is deliberately no "resume this run" call: the
+// panes that made it are gone and their context went with them.
+
+/// Every archived run, newest first. Works before the fleet is started.
+export function listRuns(): Promise<RunRecord[]> {
+  return invoke<RunRecord[]>("runs_list");
+}
+
+/// One archived run's whole log. Takes the same `after` cursor the live replay
+/// does, so the History views can be fed by the identical splitting logic.
+export function runEvents(id: string, after = 0): Promise<FleetEvent[]> {
+  return invoke<FleetEvent[]>("run_events", { id, after });
+}
+
+/// Give a run a name that means something. The only mutable thing about an archive.
+export function renameRun(id: string, label: string): Promise<void> {
+  return invoke("run_rename", { id, label });
+}
+
+/// Delete a run and its directory. There is no undo — the caller confirms.
+export function deleteRun(id: string): Promise<void> {
+  return invoke("run_delete", { id });
+}
+
+/// Save a run's JSON export. Opens a native save dialog on the Rust side, so no
+/// dialog plugin is needed here. Resolves to `null` when the operator dismissed
+/// it — a cancel, not a failure, and it must not be shown as one.
+export function exportRun(id: string): Promise<string | null> {
+  return invoke<string | null>("run_export", { id });
 }
 
 // --- streams ------------------------------------------------------------------

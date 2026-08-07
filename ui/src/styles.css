@@ -1381,3 +1381,144 @@ body,
   transform: translateX(1rem);
 }
 
+
+/* history — past runs (WP-11). Reuses the .events-view card shell, so the
+   catalogue reads as one more view of the same app rather than a side panel.
+   Status is never colour alone here either: the delete confirmation says
+   "Delete for good?" in words, and --red only underlines it. */
+.run-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.25rem;
+  overflow-y: auto;
+  flex: 1 1 auto;
+}
+.run {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.5rem 0.625rem;
+  border-left: 2px solid transparent;
+  border-radius: var(--radius-sm);
+}
+.run:hover { background: var(--bg-2); border-left-color: var(--gold); }
+.run__main { flex: 1 1 auto; min-width: 0; }
+/* The label is the affordance: clicking the run's name opens it. A row-wide
+   click target would make Rename and Delete feel like they open it too. */
+.run__label {
+  display: block;
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  font-size: var(--t-body);
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+}
+.run__label:hover { color: var(--accent); }
+.run__rename {
+  width: 100%;
+  font: inherit;
+  font-size: var(--t-body);
+  color: var(--fg);
+  background: var(--bg-0);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 0.125rem 0.375rem;
+}
+.run__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+  font-size: var(--t-small);
+  color: var(--fg-mute);
+}
+.run__when { color: var(--fg-dim); }
+.run__chip {
+  font-family: var(--mono);
+  font-size: var(--t-label);
+  padding: 1px 0.375rem;
+  background: var(--bg-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+}
+.run__chip--quiet { color: var(--fg-mute); background: none; border-color: transparent; }
+.run__target {
+  margin-top: 0.1875rem;
+  font-family: var(--mono);
+  font-size: var(--t-label);
+  color: var(--fg-mute);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.run__actions { display: flex; align-items: center; gap: 0.375rem; flex: 0 0 auto; }
+.run__act {
+  font-size: var(--t-small);
+  padding: 0.125rem 0.5rem;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--fg-mute);
+  cursor: pointer;
+}
+.run__act:hover { color: var(--fg); border-color: var(--fg-mute); background: var(--bg-3); }
+.run__act--danger { color: var(--red); border-color: var(--red); }
+.run__act--danger:hover { color: var(--red); border-color: var(--red); background: var(--bg-3); }
+.run__warn { font-size: var(--t-small); color: var(--red); }
+.run-note {
+  padding: 1rem;
+  font-size: var(--t-small);
+  color: var(--fg-mute);
+  line-height: 1.6;
+}
+.run-note--warn { color: var(--red); }
+
+/* an opened run: banner + the three live components, fed archived arrays */
+.run-open { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+.run-open__banner {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-2);
+  /* Gold, not coral: this labels rather than demands (building.md §7). */
+  border: 1px solid var(--gold-dim, var(--border));
+  border-left: 3px solid var(--gold);
+  border-radius: var(--radius);
+}
+.run-open__back {
+  font-size: var(--t-small);
+  padding: 0.125rem 0.5rem;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--fg-dim);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.run-open__back:hover { color: var(--fg); border-color: var(--fg-mute); }
+.run-open__title { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
+.run-open__title strong { font-size: var(--t-body); color: var(--fg); font-weight: 600; }
+.run-open__sub { font-size: var(--t-label); color: var(--fg-mute); font-family: var(--mono); }
+.run-open__tabs { display: flex; gap: 0.25rem; flex: 0 0 auto; }
+.run-open__tab {
+  font-size: var(--t-small);
+  padding: 0.1875rem 0.625rem;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--fg-mute);
+  cursor: pointer;
+}
+.run-open__tab:hover { color: var(--fg); background: var(--bg-3); }
+.run-open__tab.is-active {
+  color: var(--fg);
+  background: var(--bg-0);
+  border-color: var(--border);
+}
+.run-open__stage { flex: 1 1 auto; min-height: 0; position: relative; display: flex; }
+.run-note--ok { color: var(--green); font-family: var(--mono); font-size: var(--t-label); }

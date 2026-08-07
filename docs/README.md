@@ -36,6 +36,7 @@ Each is stamped with the Claude Code version it measured; re-measure on a CC upd
 | [`peer-review-notes.md`](./notes/peer-review-notes.md) | Plain-git proof a peer can review a branch from its own worktree (D-048) | git only |
 | [`fence-notes.md`](./notes/fence-notes.md) | What a private worker HOME stops, and the breakage catalogue (D-052) | 2026-08-06 |
 | [`blackboard-shakedown.md`](./notes/blackboard-shakedown.md) | The WP-09 live-run findings | **live log** — CC 2.1.223, ongoing |
+| [`run-rotation-notes.md`](./notes/run-rotation-notes.md) | Which files an archived run has to take, measured against a crashed WAL (D-058) | 2026-08-07, SQLite/macOS 15 |
 
 ## Roadmap (`docs/roadmap/`)
 

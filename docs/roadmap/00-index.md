@@ -25,6 +25,7 @@ The Blackboard vision, split into nine session-sized work packages. The vision i
 | 08 | `08-the-fence.md` | The Fence — private worker HOME | 01 | S/M | **landed** |
 | 09 | `09-brief-budget-shakedown.md` | Prompt budget + live shakedown | all | S/M + live spend | **budget half landed** — shakedown half pending operator |
 | 10 | `10-ui-architecture-map.md` | The `ui/` architecture map (docs only) | — | S/M | not-started |
+| 11 | `11-run-history.md` | Run history — past runs as long-term memory | — | L | **landed** |
 
 ## Dependency graph
 
@@ -36,6 +37,7 @@ WP-01 ─┬─→ WP-02 ─→ WP-05 ─→ WP-06 ─┐
        └─→ WP-08 ───────────────────┘
 
 WP-10 (docs only, no dependencies — runnable any time)
+WP-11 (no dependencies — precedes the evaluation sandbox, which needs per-run isolation)
 ```
 
 - **Serial spine** (mirrors the session-cycle phases in the vision): 01 → 02 → 05 → 06 → 09.

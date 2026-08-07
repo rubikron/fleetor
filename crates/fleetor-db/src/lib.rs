@@ -8,6 +8,7 @@
 //! nothing else worth surviving a restart. Migration 0003 drops the five tables
 //! the headless supervisor owned.
 
+pub mod archive;
 mod migrations;
 
 use anyhow::{Context, Result};

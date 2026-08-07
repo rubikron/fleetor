@@ -36,7 +36,7 @@ use tokio::sync::{mpsc, oneshot, Notify};
 use crate::context_gauge::{self, GaugeSources, TranscriptSource};
 use crate::prompts::PaneContext;
 use crate::pty::PaneRegistry;
-use crate::{deliver, prompts, spawn, testbed};
+use crate::{deliver, prompts, runs, spawn, testbed};
 
 /// Emitted for every appended event, in `seq` order, the moment it persists.
 const EVENT_FLEET: &str = "fleet://event";
@@ -45,7 +45,7 @@ const EVENT_FLEET: &str = "fleet://event";
 /// [`FleetEvent`] (its `#[serde(tag = "type")]` discriminator carries through, so
 /// the UI matches on `type`).
 #[derive(Serialize, Clone)]
-struct WireEvent {
+pub struct WireEvent {
     seq: i64,
     #[serde(flatten)]
     event: FleetEvent,
@@ -232,6 +232,13 @@ pub fn fleet_bootstrap(
         .build()
         .map_err(|e| format!("start runtime: {e}"))?;
 
+    // Cut the run boundary before anything opens the log (WP-11, D-058). This is
+    // the whole of run isolation: the previous run becomes a frozen file under
+    // `runs/` and this one opens an empty database. Held rather than emitted —
+    // there is no store to append a notice to yet.
+    let started_ms = fleetor_core::time::now_ms();
+    let rotation = runs::rotate(&dir, &runs::runs_dir(&fleetor_dir()), started_ms);
+
     // The observability core: real store, wrapped once so every append publishes.
     let bcast = Arc::new(BroadcastStore::new(Arc::new(
         SqliteStore::open(&dir.join("state.db")).map_err(|e| format!("open store: {e}"))?,
@@ -240,8 +247,17 @@ pub fn fleet_bootstrap(
 
     spawn_follower(&rt, bcast.clone(), app);
 
+    for (level, text) in &rotation {
+        note(&store, *level, text);
+    }
+
     let target = resolve_target(&store)?;
     let config = fleet_config_for(&target);
+
+    // Stamp what this run is, for the History row it becomes at the next start.
+    // The target is only ever prose inside a notice in the log, so a run that
+    // ended without this marker lists with an unknown target rather than a guess.
+    runs::begin(&dir, started_ms, &target);
 
     // Prompts and launch settings, before any pane exists. Every notice the
     // resolver produced goes on the feed here — an override that silently did
@@ -761,6 +777,71 @@ pub fn fleet_set_target(path: String, state: State<'_, FleetState>) -> Result<St
         }
     }
     Ok(canonical.to_string_lossy().into_owned())
+}
+
+// --- past runs (WP-11) --------------------------------------------------------
+//
+// Four commands, all read-or-relabel. There is deliberately no command that
+// resumes, re-runs or replays a past run into a live one: the panes that made it
+// are gone and their context died with them, so anything shaped like "continue
+// this run" would be inventing a fleet that never existed (D-030's regrowth
+// warning). History is readable and nothing else.
+//
+// None of these touch `FleetState`, so they work before the fleet is started —
+// which is the case that matters, since the History view is most useful on the
+// start gate, deciding what to do next.
+
+/// Every archived run, newest first.
+#[tauri::command]
+pub fn runs_list() -> Result<Vec<runs::RunRecord>, String> {
+    Ok(runs::list(&runs::runs_dir(&fleetor_dir())))
+}
+
+/// Replay one archived run's log, for the read-only History views.
+#[tauri::command]
+pub fn run_events(id: String, after: i64) -> Result<Vec<WireEvent>, String> {
+    Ok(runs::events(&runs::runs_dir(&fleetor_dir()), &id, after)?
+        .into_iter()
+        .map(|(seq, event)| WireEvent { seq, event })
+        .collect())
+}
+
+/// Give a run a name that means something to the operator.
+#[tauri::command]
+pub fn run_rename(id: String, label: String) -> Result<(), String> {
+    runs::rename(&runs::runs_dir(&fleetor_dir()), &id, &label)
+}
+
+/// Delete a run and its directory. Nothing else in the app refers to a run by
+/// id, so this needs no cascade — the index is rebuilt from what is left.
+#[tauri::command]
+pub fn run_delete(id: String) -> Result<(), String> {
+    runs::delete(&runs::runs_dir(&fleetor_dir()), &id)
+}
+
+/// Save a run's JSON export wherever the operator points.
+///
+/// The dialog lives here rather than in the webview so no npm plugin has to be
+/// added for it — `fleet_pick_target` set the pattern. `Ok(None)` means the
+/// operator dismissed the dialog, which is not an error and must not be shown
+/// as one.
+#[tauri::command]
+pub fn run_export(app: AppHandle, id: String) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let suggested = format!("{id}-events.json");
+    let Some(chosen) = app
+        .dialog()
+        .file()
+        .set_file_name(&suggested)
+        .add_filter("JSON", &["json"])
+        .blocking_save_file()
+    else {
+        return Ok(None);
+    };
+    let path = chosen.into_path().map_err(|e| format!("that location has no usable path: {e}"))?;
+    runs::export(&runs::runs_dir(&fleetor_dir()), &id, &path)?;
+    Ok(Some(path.to_string_lossy().into_owned()))
 }
 
 /// `~` and `~/…` are what an operator types; `std::path` treats them as literal
