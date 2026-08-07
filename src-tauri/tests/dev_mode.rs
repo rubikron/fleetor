@@ -73,22 +73,71 @@ fn the_delivery_path_cannot_read_dev_mode() {
     );
 }
 
-/// The veil. `orch`'s whole world is its brief and what `fleet roster` answers;
-/// neither says the word.
+/// Every file that becomes words a pane is told. `orch`'s whole world is its
+/// brief and what `fleet roster` answers.
+const WHAT_A_PANE_IS_TOLD: [&str; 7] = [
+    "prompts/orch.md",
+    "prompts/worker.md",
+    "prompts/delivery-contract.md",
+    "prompts/broadcast-rule.md",
+    "prompts/vision-tenets.md",
+    "crates/fleetor-core/src/brief.rs",
+    "crates/fleetor-core/src/pane.rs",
+];
+
+/// The veil, half one: the mode itself.
 #[test]
 fn no_pane_is_briefed_about_dev_mode() {
     assert_never_mentions_dev_mode(
-        &[
-            "prompts/orch.md",
-            "prompts/worker.md",
-            "prompts/delivery-contract.md",
-            "prompts/broadcast-rule.md",
-            "prompts/vision-tenets.md",
-            "crates/fleetor-core/src/brief.rs",
-            "crates/fleetor-core/src/pane.rs",
-        ],
+        &WHAT_A_PANE_IS_TOLD,
         "WP-12 open question 4: dev mode is visible in the operator's UI and absent from \
          every word a pane is told. Teaching `orch` the mode exists invites it to infer the \
          evaluator behind it — and the veil is far cheaper to keep than to re-establish.",
+    );
+}
+
+/// **The veil, half two: the evaluator itself** (WP-13).
+///
+/// The mode was the indirect leak; this is the direct one. WP-13's `fleet
+/// handoff` is the first thing a pane is taught that something *else* will
+/// eventually react to, and the whole design of that reaction depends on `orch`
+/// not knowing it is coming: an orchestrator told its handoff will be read by an
+/// evaluator writes the handoff for the evaluator, and the run stops being
+/// evidence of how the fleet actually works.
+///
+/// The verb is taught as what it honestly is from the fleet's side — a report to
+/// the operator that the goal is met — so this checks the vocabulary of the
+/// thing on the other side of it never appears in any of those files. Note that
+/// `review` is deliberately **not** on this list: peer review is a real, taught,
+/// worker-facing thing (WP-06), and conflating the two words is how this test
+/// would start failing for the wrong reason.
+#[test]
+fn no_pane_is_briefed_about_the_evaluator() {
+    const EVALUATOR_WORDS: [&str; 6] =
+        ["evaluat", "the retro", "answer key", "rubric", "grader", "proposal ledger"];
+    let root = repo_root();
+    let hits: Vec<String> = WHAT_A_PANE_IS_TOLD
+        .iter()
+        .flat_map(|rel| {
+            let file = root.join(rel);
+            let text = std::fs::read_to_string(&file)
+                .unwrap_or_else(|e| panic!("{} must exist to be checked: {e}", file.display()));
+            text.lines()
+                .enumerate()
+                .filter(|(_, line)| {
+                    let lowered = line.to_lowercase();
+                    EVALUATOR_WORDS.iter().any(|needle| lowered.contains(needle))
+                })
+                .map(|(i, line)| format!("  {}:{} {}", file.display(), i + 1, line.trim()))
+                .collect::<Vec<String>>()
+        })
+        .collect();
+    assert!(
+        hits.is_empty(),
+        "WP-12's veil: `orch` does not learn that an evaluator exists until the retro starts, \
+         and `fleet handoff` is taught as a report to the operator and nothing more. A pane \
+         that knows its handoff will be assessed optimizes for the assessment instead of \
+         doing the work.\n{}",
+        hits.join("\n"),
     );
 }

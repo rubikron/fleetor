@@ -53,6 +53,12 @@ also the as-built record for dev mode: where the flag lives, the one function th
 it, and the two tests that keep the mode out of the delivery path (Tier 1.4) and out of
 every word a pane is told (WP-12's open question 4).
 
+[`13-done-verb.md`](./roadmap/13-done-verb.md) landed the ninth `fleet` verb (D-064):
+`fleet handoff`, by which `orch` declares the confirmed goal met. The message path's
+account of it is [`fleet-comms-map.md`](./fleet-comms-map.md) §3e; the package doc carries
+why the verb is not called `done`, why it answers `recorded`, and the nine places a verb
+list is written down.
+
 `roadmap/source/` is the raw upstream material — the operator's vision-tenets essay (`vision_tenets.md`; the shipped copy is `prompts/vision-tenets.md`, D-056) and the "Autonomy Designs" catalogue (`fleetor-autonomy.html` and `fleetor-autonomy-plain.html` — two renders of one document).
 
 ## Archive (`docs/archive/`)

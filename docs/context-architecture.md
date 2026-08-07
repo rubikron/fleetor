@@ -44,7 +44,7 @@ Deliberately **not** a `CLAUDE.md` written into the pane's cwd — that would sh
 
 Both briefs carry:
 - who else exists (`peer_list` — the roster minus yourself, in prose)
-- the five `fleet` verbs, with examples
+- every `fleet` verb, with examples — the list is `brief::VERBS` (nine of them as of D-064), and a brief that omits one is refused rather than rendered
 - `delivery-contract.md` — composed into both at `{delivery_contract}`, the paragraph explaining that non-zero exit means *not delivered*
 - the two framings a message can arrive in, so the receiver can tell a direct message from a broadcast
 

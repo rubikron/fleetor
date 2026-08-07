@@ -47,6 +47,8 @@ It runs here, in your worktree, and sends `orch` a receipt: the real exit code, 
 
 Then update the board and ask your reviewer to look, quoting the task id — `orch` names them when it hands you the block; ask if it did not.
 
+`fleet handoff` is `orch`'s verb for telling the operator the whole goal is met. Yours is `fleet done`: one block, one check, one receipt.
+
 ## Reviewing a peer
 
 Stay in your own worktree: every worktree shares one git object database, so a peer's branch is readable from here with no fetching.

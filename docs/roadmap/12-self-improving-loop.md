@@ -44,6 +44,7 @@ one of these has the word wrong, not the concept.
 | **the proposal ledger** | Where proposals accumulate across cycles. Approve now, or defer until there is data. |
 | **the fence** | Deny-paths stopping the fleet touching dev-mode code, the evaluator, or its brief. |
 | **the veil** | The property that `orch` does not know the evaluator exists until the retro starts. |
+| **the done verb** | Built as **`fleet handoff`** (WP-13, D-064) — `orch` declaring the goal met. Spelled `handoff` because `fleet done` was already the worker's block receipt. |
 | **improve run** | A second fleet, pointed at FLEETOR's own source, implementing approved proposals. |
 | **generation** | One promoted build of the platform. The boundary between generations is a relaunch. |
 

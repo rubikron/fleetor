@@ -49,15 +49,15 @@ Two things about that diagram are load-bearing.
 
 ## 2. `fleet` — the agent surface
 
-Eight verbs: `send`, `broadcast`, `reply`, `cmd`, `task`, `done`, `roster`, `whoami`. It is a Bash command, not an MCP server, and that is deliberate — a model that can run `ls` can run `fleet send`, and it reads its own exit code and stderr, so a refusal is self-correcting in a way a tool result is not.
+Nine verbs: `send`, `broadcast`, `reply`, `cmd`, `task`, `done`, `handoff`, `roster`, `whoami`. It is a Bash command, not an MCP server, and that is deliberate — a model that can run `ls` can run `fleet send`, and it reads its own exit code and stderr, so a refusal is self-correcting in a way a tool result is not.
 
-Three of them carry a message. **`cmd` reaches a terminal without being one** (§3a), **`task` never reaches a terminal at all** (§3b), and **`done` runs a check locally and then travels as an ordinary send** (§3d).
+Three of them carry a message. **`cmd` reaches a terminal without being one** (§3a), **`task` never reaches a terminal at all** (§3b), **`done` runs a check locally and then travels as an ordinary send** (§3d), and **`handoff` is the other one that only ever reaches the log** (§3e).
 
 Identity comes from `FLEETOR_PANE`, set by the spawn path. There is no anonymous connection: `Hello` carries a `PaneId`, not an `Option<PaneId>`, so a message from nobody cannot be constructed. `fleet reply` routes on who last got through, which is only meaningful because of that.
 
 Exit codes are a contract both briefs state verbatim: **non-zero means it did not arrive.** Zero means the bytes reached a live terminal, and explicitly not that anyone read them.
 
-The wire tag *is* the verb — `Op::Send` serializes as `"send"` — so there is no second spelling to keep in sync. A test pins the clap subcommand list to `brief::VERBS`, because a rename landing in only one place teaches every pane a command that exits 2. Two verbs never mint an op of their own, and that is the rule holding rather than an exception to it: `whoami` answers from the environment without dialing the socket, and `done` composes an ordinary `Op::Send` after its local half runs (§3d) — neither adds a wire tag because neither adds a kind of thing the hub can be asked to do.
+The wire tag *is* the verb — `Op::Send` serializes as `"send"` — so there is no second spelling to keep in sync. A test pins the clap subcommand list to `brief::VERBS`, because a rename landing in only one place teaches every pane a command that exits 2. Two verbs never mint an op of their own, and that is the rule holding rather than an exception to it: `whoami` answers from the environment without dialing the socket, and `done` composes an ordinary `Op::Send` after its local half runs (§3d) — neither adds a wire tag because neither adds a kind of thing the hub can be asked to do. `handoff` does add one (§3e), because declaring the goal met is a kind of thing nothing else could say.
 
 ---
 
@@ -96,7 +96,7 @@ The last two rows are the same fact from two directions. `docs/notes/command-cha
 
 `fleet task post|update|list` maintains the shared board: the decomposition the fleet agreed on, one block at a time, each with an outcome, technical criteria, a semantic link back to the vision, an owner and optional tree links.
 
-**It is the only op that does not reach the app.** `Hub::task` is not even `async`: it appends to the store, or folds the store back into a board, and stops. Everything else on this map ends at a pty; this ends at the log.
+**It reaches the store and never the app.** `Hub::task` is not even `async`: it appends to the store, or folds the store back into a board, and stops. Most of this map ends at a pty; this ends at the log, and `fleet handoff` (§3e) is the only other op that does.
 
 ```
 fleet task ──▶ hub ──▶ Store::append_event ──▶ (bus) ──▶ Tasks view
@@ -157,6 +157,25 @@ Two honesty rules carry the design:
 - **A dirty worktree is named on the receipt.** Review reads the *commit* the receipt cites, so a hash that does not contain what was checked would send the reviewer to the wrong code.
 
 Review then happens with plain git and zero FLEETOR code: every worktree shares one object database, so a peer reads `git diff HEAD...fleet/worker-N` from its own checkout — no fetch, no shared checkout (`docs/notes/peer-review-notes.md` is the measurement, D-048). After review, orch merges the branch to **`fleet/integration`, never trunk** (D-050): trunk is the operator's, per Tier 1.1.
+
+---
+
+## 3e. `fleet handoff` — the orchestrator saying the goal is met (WP-13, D-064)
+
+`fleet handoff --built "…" --evidence "…" [--evidence …] [--open "…"]` is how `orch` declares that the whole confirmed vision — not one block — has been reached. It is the **second op that reaches the store and never the app**, and the argument is `fleet task`'s: what happened is that a claim was written down.
+
+```
+orch ──▶ fleet handoff ──▶ hub ──▶ Store::append_event ──▶ (bus) ──▶ Activity
+                             └──▶ "recorded handoff-…"  (exit 0)
+```
+
+**It is not `fleet done`, and the distance between them is the point.** A receipt closes one block with the output of one check (§3d); this closes the mission. They are the two verbs a model could most plausibly confuse, so both briefs name the one that is not their pane's, and the CLI refuses a worker's `handoff` locally — before the socket, with `fleet done` named in the refusal — exactly where `done.rs` refuses `orch`.
+
+**`recorded`, for the reason a message to the operator is (§3c).** Nothing was typed anywhere, so `accepted` would be a word about a pty that was never opened (Tier 1.5). It reuses `OpResult::Recorded`, the one variant three things now share; `FleetEvent::Handoff` correspondingly has **no `accepted` field**, because there is no such fact to record.
+
+**Nothing reads it back.** No delivery, spawn or verb behaves differently once a handoff is in the log — that is `task.rs`'s tripwire list applied to a sixth event variant, and `crates/fleetor-server/tests/handoff.rs` counts it: zero `AppCommand`s, and a `fleet send` byte-identical either side of one. The day something branches on "has the goal been declared met", what has grown back is a delivery path that knows whether the mission is over.
+
+What it is deliberately not: a message to `operator` (a declaration rendered in the message record would put words in `orch`'s mouth — it said nothing to anybody), an inbox entry, or a state anything can query. There is no mission object, no open/closed, nothing to correlate. A handoff is a claim in a log, appearing on the Activity feed and in the archived run's `events.json`.
 
 ---
 
@@ -221,6 +240,8 @@ The two framings differ on purpose. A worker can only obey the do-not-answer-a-b
 | **`fleet cmd` lands on a non-empty input box** | **exits 0, `accepted`, and the command runs as prose instead** | **nothing on this side can see it.** Measured in `docs/notes/command-channel-notes.md` §3; the second residual, and the second reason `accepted` never means "executed" |
 | Worktree creation failed | `Warn` on Activity; that worker shares the target checkout | `fleet::worker_cwd` |
 | Message to `operator`, log write failed | exits 1, `nothing was recorded` | `Hub::record`. The one place a store error *fails* a send — for the human the log is the delivery, not a record of one |
+| `fleet handoff`, log write failed | exits 1, `nothing was recorded` | `Hub::handoff`. Same asymmetry, same reason: the log *is* the handoff, so `recorded` over a failed append would be a moment on the record that never happened |
+| **A handoff whose claim is wrong** | **exits 0, `recorded`, and the fleet has declared a goal met that is not** | **nothing in this app checks a word of it.** `--evidence` is required so the claim can be argued with; nothing verifies it, and no renderer may imply otherwise |
 | **Operator never reads their inbox** | **exits 0, `recorded`, and nobody answers** | **nothing on this side can see it** — the third residual, and the reason `recorded` promises the log and not a person |
 
 ---

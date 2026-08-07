@@ -10,7 +10,8 @@
 //! ([`message`]), one kind of thing to *do* to a terminal that is not saying
 //! anything to it ([`command`]), one kind of thing to be ([`pane`]), one thing to
 //! tell each pane at spawn ([`brief`]), one thing to write down together
-//! ([`task`]), and a log to write it all to ([`event`], [`store`]).
+//! ([`task`]), one thing to say about all of it when it is finished
+//! ([`handoff`]), and a log to write it all to ([`event`], [`store`]).
 //!
 //! [`task`] is the one that has to keep proving itself: a board of work is the
 //! shape the deleted ticket system had, and the only reason this one is not that
@@ -20,6 +21,7 @@
 pub mod brief;
 pub mod command;
 pub mod event;
+pub mod handoff;
 pub mod ids;
 pub mod message;
 pub mod pane;
@@ -31,6 +33,7 @@ pub mod wire;
 pub use brief::{orch_brief, worker_brief, VERBS};
 pub use command::{Command, ALLOWED_COMMANDS};
 pub use event::{FleetEvent, NoticeLevel};
+pub use handoff::Handoff;
 pub use message::{frame_broadcast_for_pane, frame_for_pane, Message};
 pub use pane::{ContextGauge, PaneEntry, PaneId, PaneState, ParsePaneIdError, WORKER_SLOTS};
 pub use store::Store;
