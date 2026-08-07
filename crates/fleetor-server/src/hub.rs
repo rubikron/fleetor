@@ -16,18 +16,22 @@
 //! ordering is the whole reason the app seam is request/response rather than
 //! fire-and-forget.
 //!
-//! **Two arms do not follow that pattern, and they are the interesting ones.**
+//! **Three arms do not follow that pattern, and they are the interesting ones.**
 //! [`Hub::task`] (WP-05) never asks the app anything: `fleet task` only appends
 //! to and replays the log. A board that reached a terminal would be a dispatcher,
 //! and a delivery that read the board would be the `Assign` op D-030 deleted.
-//! Neither happens, in either direction. [`Hub::record`] (WP-07) is the other:
-//! a message to the human, who has no pty to ask about. Both answer
-//! `OpResult::Recorded` — *entered the log, nothing was typed anywhere* — which
-//! is the one word `accepted` must never be stretched to cover (Tier 1.5).
+//! Neither happens, in either direction. [`Hub::record`] (WP-07) is the second:
+//! a message to the human, who has no pty to ask about. [`Hub::handoff`]
+//! (WP-13) is the third: `orch` declaring the goal met, which is a claim written
+//! down and nothing else — nothing in this file or below it reads one back. All
+//! three answer `OpResult::Recorded` — *entered the log, nothing was typed
+//! anywhere* — which is the one word `accepted` must never be stretched to
+//! cover (Tier 1.5).
 
 use anyhow::{Context, Result};
 use fleetor_core::command::Command;
 use fleetor_core::event::FleetEvent;
+use fleetor_core::handoff::Handoff;
 use fleetor_core::message::Message;
 use fleetor_core::pane::{PaneEntry, PaneId, PaneState};
 use fleetor_core::task::{self, TaskBlock, TaskUpdate};
@@ -166,7 +170,43 @@ impl Hub {
             Op::Reply { text } => self.reply(from, text).await,
             Op::Cmd { to, command, why } => self.cmd(from, to, command, why).await,
             Op::Task { action } => self.task(from, action),
+            Op::Handoff { built, evidence, open } => self.handoff(from, built, evidence, open),
             Op::Roster => self.roster().await,
+        }
+    }
+
+    /// `fleet handoff --built "…" --evidence "…"` — `orch` declaring the whole
+    /// goal met (WP-13).
+    ///
+    /// **Read the signature, as with [`Hub::task`] and [`Hub::record`]: not
+    /// `async`, never touches `self.app`.** That is the whole of what makes this
+    /// a report rather than an event the fleet reacts to. Nothing here reaches a
+    /// terminal, and nothing anywhere reads a handoff back — no delivery, spawn
+    /// or verb behaves differently once one is in the log.
+    ///
+    /// A failed append fails the op, for the reason a task post's does: the log
+    /// *is* the deliverable here, so telling `orch` its handoff landed when
+    /// nothing was written would be a record of a moment that does not exist.
+    fn handoff(
+        &self,
+        from: PaneId,
+        built: String,
+        evidence: Vec<String>,
+        open: Vec<String>,
+    ) -> OpResult {
+        let handoff = match Handoff::new(&built, &evidence, &open) {
+            Ok(handoff) => handoff,
+            Err(message) => return OpResult::Error { message },
+        };
+        let record_id = ids::new_id("handoff");
+        match self.store.append_event(&handoff.into_event(&record_id, from)) {
+            Ok(_) => OpResult::Recorded { record_id },
+            Err(e) => OpResult::Error {
+                message: format!(
+                    "the log could not be written to, and the log is the only place a \
+                     handoff exists — nothing was recorded: {e}"
+                ),
+            },
         }
     }
 

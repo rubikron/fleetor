@@ -48,8 +48,10 @@ pub struct Request {
     pub op: Op,
 }
 
-/// The whole fleet tool surface: five ops, one per `fleet` verb (`whoami` needs
-/// no round trip — a pane knows its own name from its environment).
+/// The whole fleet tool surface: six ops, one per `fleet` verb that needs the
+/// hub. `whoami` needs no round trip — a pane knows its own name from its
+/// environment — and `done` composes an ordinary [`Op::Send`] after its local
+/// half runs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Op {
@@ -83,6 +85,21 @@ pub enum Op {
     /// not a thing that makes anything happen. → [`OpResult::Recorded`] for a
     /// post or an update, [`OpResult::Board`] for a list.
     Task { action: TaskAction },
+    /// `fleet handoff --built "…" --evidence "…"` — `orch` declaring the whole
+    /// goal met (WP-13). → [`OpResult::Recorded`], carrying the handoff's id.
+    ///
+    /// **The second op that reaches the store and never the app**, and it is the
+    /// same argument [`Op::Task`] carries: what happened is that a claim was
+    /// written down. Nothing is typed anywhere, so `accepted` would be a word
+    /// about a pty that was never opened (Tier 1.5), and nothing reads a handoff
+    /// back to permit, order or refuse anything the fleet does afterwards.
+    ///
+    /// Deliberately not a flavour of [`Op::Send`] to `operator`. A receipt-style
+    /// message would be `orch` *saying* something to an addressee; this is a
+    /// declaration about the mission, at a different altitude from the
+    /// block-level `fleet done` and with fields of its own that a body of prose
+    /// would flatten.
+    Handoff { built: String, evidence: Vec<String>, open: Vec<String> },
     /// `fleet roster` — every pane and its state. → [`OpResult::Roster`].
     Roster,
 }
@@ -149,25 +166,26 @@ pub enum OpResult {
         detail: Option<String>,
     },
     /// **Something entered the log, and no pty was written to.** One variant,
-    /// one word, two callers: a task claim (`task post`, `task update`, WP-05)
-    /// and a message addressed to the operator (WP-07).
+    /// one word, three callers: a task claim (`task post`, `task update`,
+    /// WP-05), a message addressed to the operator (WP-07), and `orch`'s
+    /// handoff (WP-13).
     ///
     /// Deliberately not [`OpResult::Delivered`]: nothing was delivered to a pane
     /// and `accepted` would be a claim about a pty that was never written to.
     /// What happened is exactly that a record was appended, and the word says so.
     ///
-    /// It is equally deliberately **not two variants**. `recorded` is the
+    /// It is equally deliberately **not one variant per caller**. `recorded` is the
     /// requirement's outcome word for "entered the log, no pty exists", and a
     /// second variant meaning the same thing under a different name would be
     /// two spellings of one fact — the drift `PaneId`'s bare-string serde and
-    /// the wire-tag-is-the-verb rule exist to prevent. The two callers differ in
+    /// the wire-tag-is-the-verb rule exist to prevent. The callers differ in
     /// what the id names, not in what happened, so the field is `record_id` and
     /// its doc says which. (`record_id` rather than `id`, for the reason
     /// `Delivered` uses `msg_id`: [`Response`] flattens this enum next to its
     /// own `id`.)
     Recorded {
         /// The task block's id for a `fleet task`, the message's id for a
-        /// message to the operator.
+        /// message to the operator, the handoff's id for a `fleet handoff`.
         record_id: String,
     },
     /// The board, replayed from the event log (`task list`).
@@ -256,6 +274,16 @@ mod tests {
                 },
             },
             Op::Task { action: TaskAction::List },
+            Op::Handoff {
+                built: "the parser accepts nested groups".into(),
+                evidence: vec!["cargo test -p parser".into()],
+                open: vec!["the error messages are still the tokenizer's".into()],
+            },
+            Op::Handoff {
+                built: "the CLI ships".into(),
+                evidence: vec!["cargo test --workspace".into()],
+                open: vec![],
+            },
             Op::Roster,
         ];
         for op in requests {
@@ -315,15 +343,23 @@ mod tests {
             }),
             "task"
         );
+        assert_eq!(
+            tag(Op::Handoff {
+                built: "it is done".into(),
+                evidence: vec!["cargo test".into()],
+                open: vec![],
+            }),
+            "handoff"
+        );
         assert_eq!(tag(Op::Roster), "roster");
     }
 
-    /// The two callers of `recorded` are one variant, so the tag they both
+    /// The three callers of `recorded` are one variant, so the tag they all
     /// serialize under is the one word the requirement names — and a second
     /// variant added later under the same word would fail to deserialize
     /// rather than quietly shadow this one.
     #[test]
-    fn both_things_that_only_reach_the_log_answer_with_the_same_word() {
+    fn everything_that_only_reaches_the_log_answers_with_the_same_word() {
         let tag = |result: OpResult| {
             serde_json::to_value(Response::new("req-1", result)).unwrap()["result"]
                 .as_str()
@@ -332,6 +368,7 @@ mod tests {
         };
         assert_eq!(tag(OpResult::Recorded { record_id: "task-1-0".into() }), "recorded");
         assert_eq!(tag(OpResult::Recorded { record_id: "msg-9".into() }), "recorded");
+        assert_eq!(tag(OpResult::Recorded { record_id: "handoff-1".into() }), "recorded");
         assert_eq!(
             tag(OpResult::Delivered { msg_id: "msg-1".into(), accepted: true, detail: None }),
             "delivered",

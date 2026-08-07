@@ -10,13 +10,15 @@
 //! What is left is what the TUI fleet actually does: it messages, it moves panes
 //! through a lifecycle, and it tells the operator when something is wrong.
 //!
-//! Two have been added back since, and the warning above is the standard both
+//! Three have been added back since, and the warning above is the standard each
 //! had to clear. [`FleetEvent::Command`] (D-045) is something done *to* a
 //! terminal rather than said to it. [`FleetEvent::Task`] (WP-05) is the deleted
 //! `TicketMoved`'s nearest neighbour and the one to read carefully: it is a
 //! **claim an agent wrote down**, not a state a supervisor moved. Nothing reads
 //! it back to permit, order or refuse anything — the day something does, the
-//! ticket system is back.
+//! ticket system is back. [`FleetEvent::Handoff`] (WP-13) is the newest and is
+//! held to exactly that test: `orch` saying the goal is met is a claim in the
+//! log, and no delivery, spawn or verb behaves differently once one exists.
 
 use crate::pane::{PaneId, PaneState};
 use crate::task::TaskChange;
@@ -90,6 +92,33 @@ pub enum FleetEvent {
     /// ticket system D-030 deleted — see `task.rs`'s module doc for the full
     /// tripwire list.
     Task { task: String, from: PaneId, at: i64, change: TaskChange },
+    /// `orch` declaring the whole goal met (WP-13) — what the fleet built, how
+    /// anyone could check it, and what is still open.
+    ///
+    /// The third variant to clear the bar this module's header sets, and it
+    /// clears it the same way [`FleetEvent::Task`] does: **nothing reads it back
+    /// to permit, order or refuse anything.** It is a claim `orch` wrote down,
+    /// not a state the fleet entered — no delivery, no spawn and no other verb
+    /// behaves differently before or after one, and the day one does, what grew
+    /// back is a delivery path that knows whether the mission is over.
+    ///
+    /// A variant of its own rather than a [`FleetEvent::Message`] to the
+    /// operator, for the reason [`FleetEvent::Command`] is not one either: a
+    /// message is something a pane *said* to an addressee, and rendering this as
+    /// one would put words in `orch`'s mouth in the message record. It is also
+    /// the reason there is no `accepted` field — nothing was written to a pty,
+    /// so there is no such fact to carry (Tier 1.5).
+    Handoff {
+        id: String,
+        from: PaneId,
+        /// What the fleet built, in the operator's own terms.
+        built: String,
+        /// How anyone could check it. Never empty — `Handoff::new` refuses that.
+        evidence: Vec<String>,
+        /// What is unfinished or uncertain. Empty means nothing was named.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        open: Vec<String>,
+    },
     /// A pane moved through its lifecycle (spawning → live → dead).
     PaneState { pane: PaneId, from: PaneState, to: PaneState },
     /// Free-form operational note. The honest-failure channel: a target that
@@ -115,6 +144,7 @@ impl FleetEvent {
             FleetEvent::Message { .. } => "message",
             FleetEvent::Command { .. } => "command",
             FleetEvent::Task { .. } => "task",
+            FleetEvent::Handoff { .. } => "handoff",
             FleetEvent::PaneState { .. } => "pane-state",
             FleetEvent::Notice { .. } => "notice",
         }
@@ -157,6 +187,13 @@ mod tests {
                     note: Some("starting now".into()),
                 },
             },
+            FleetEvent::Handoff {
+                id: "handoff-1".into(),
+                from: PaneId::Orch,
+                built: "the parser accepts nested groups".into(),
+                evidence: vec!["cargo test -p parser".into()],
+                open: vec!["the error messages are still the tokenizer's".into()],
+            },
             FleetEvent::PaneState {
                 pane: PaneId::Worker(2),
                 from: PaneState::Spawning,
@@ -185,6 +222,28 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""from":"worker-1""#), "{json}");
         assert!(json.contains(r#""to":"worker-3""#), "{json}");
+        assert_eq!(serde_json::from_str::<FleetEvent>(&json).unwrap(), event);
+    }
+
+    /// A handoff is its own kind, carries no `accepted` field, and keeps every
+    /// line of its evidence. The absent field is the load-bearing part: nothing
+    /// was written to a pty, so there is no such fact to record, and a `false`
+    /// there would read in the feed as a delivery that failed.
+    #[test]
+    fn a_handoff_event_is_its_own_kind_and_claims_nothing_about_a_pty() {
+        let event = FleetEvent::Handoff {
+            id: "handoff-1".into(),
+            from: PaneId::Orch,
+            built: "the parser accepts nested groups".into(),
+            evidence: vec!["cargo test -p parser".into(), "fleet/integration @ a1b2c3d".into()],
+            open: vec![],
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""type":"handoff""#), "{json}");
+        assert!(json.contains(r#""from":"orch""#), "{json}");
+        assert!(!json.contains("accepted"), "no pty was written to, so nothing claims one: {json}");
+        assert!(!json.contains("open"), "an empty `open` is omitted rather than rendered: {json}");
+        assert!(json.contains("fleet/integration"), "every line of evidence survives: {json}");
         assert_eq!(serde_json::from_str::<FleetEvent>(&json).unwrap(), event);
     }
 

@@ -87,9 +87,9 @@ export type TaskChange =
 
 /// The append-only event, discriminated on `type`, each carrying its `seq`.
 ///
-/// Five variants. Three are what `fleetor_core::FleetEvent` had after Phase 5 —
+/// Six variants. Three are what `fleetor_core::FleetEvent` had after Phase 5 —
 /// the ten that described the headless supervisor went with it — `command` is
-/// D-045's and `task` is WP-05's. **The frontend renders an unknown `type` as
+/// D-045's, `task` is WP-05's and `handoff` is WP-13's. **The frontend renders an unknown `type` as
 /// nothing at all**, so a backend variant that is not mirrored here is invisible
 /// rather than broken, which is why this file moves in the same commit as
 /// `event.rs`.
@@ -143,6 +143,23 @@ export type FleetEvent =
       /// this UI replays the board from the event stream and never sees the row.
       at: number;
       change: TaskChange;
+    }
+  | {
+      seq: number;
+      type: "handoff";
+      id: string;
+      /// Who declared it. `orch` in practice — the CLI refuses the verb to
+      /// anyone else — but the field is the accountability, not a decoration,
+      /// so it is rendered rather than assumed.
+      from: PaneId;
+      /// What the fleet built, in the operator's own terms.
+      built: string;
+      /// How anyone could check it. Never empty, and never truncated: this is
+      /// the half of the claim the operator can actually act on.
+      evidence: string[];
+      /// What is unfinished or uncertain. Absent when nothing was named — which
+      /// means exactly that, never that nothing is open.
+      open?: string[];
     }
   | { seq: number; type: "pane-state"; pane: PaneId; from: string; to: string }
   | { seq: number; type: "notice"; level: NoticeLevel; text: string };

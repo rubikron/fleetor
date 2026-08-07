@@ -13,17 +13,20 @@ fleet reply "on it"
 fleet cmd self "/compact keep the parser design" --why "task block done; the rest is stale"
 fleet task post --to 2 --outcome "the parser accepts nested groups" --crit-t "cargo test -p parser" --crit-s "one grammar, end to end"
 fleet done task-3 "cargo test -p parser"
+fleet handoff --built "the parser accepts nested groups" --evidence "cargo test -p parser"
 fleet roster
 fleet whoami
 ```
 
-That's the whole agent-facing surface — eight verbs. A message is typed straight into the target terminal — you watch it land.
+That's the whole agent-facing surface — nine verbs. A message is typed straight into the target terminal — you watch it land.
 
 `fleet cmd` is the one verb that is not a message: it runs `/clear` or `/compact` — and nothing else — in a pane's own terminal, so a worker can prune its own context between tasks. `--why` is required, because the record of *why* the fleet cleared or compacted is the point of the verb (D-045).
 
 `fleet task` is the shared board: the decomposition the fleet agreed on, with each block's outcome and its performance criteria, visible to every pane and to you. It is **a diary, not a dispatcher** — posting a block assigns nobody, nothing is scheduled from it, and a `done` on it is a claim its author made. Assignment is still an ordinary `fleet send` (D-047).
 
 `fleet done` is the receipt: it runs the block's check in the worker's own worktree and sends the orchestrator the evidence — exit code, branch @ commit, output tail — as an ordinary message. A failing check is still a receipt; the judgement belongs to the peer who reviews the named commit, and reviewed work merges to `fleet/integration`, never your trunk (D-048..D-050).
+
+`fleet handoff` is the orchestrator's, and only the orchestrator's: it says the whole goal you confirmed is met, with what was built, how you could check it, and what it knows is still open. It reaches the log and nothing else — you read it on the Activity feed, and it stays in the archived run as the moment the fleet believed it was finished. Nothing verifies a word of it; the evidence is required so you can (D-064).
 
 Tauri 2 · Rust · React · macOS-first. Plugs in on top of your repo: `rm -rf ~/.fleetor` leaves it untouched.
 

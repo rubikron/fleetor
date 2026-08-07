@@ -72,6 +72,24 @@ function render(event: FleetEvent): Rendered {
               }${event.change.note ? ` — ${event.change.note}` : ""}`,
         rail: false,
       };
+    // The orchestrator saying the whole goal is met (WP-13). Coral and railed —
+    // the palette's rule is that the accent means *needs or has attention*, and
+    // this is the one line in the feed the operator must not scroll past. It is
+    // not an error, and the text says a claim was made rather than that anything
+    // was verified: nothing in this app checked a word of it.
+    //
+    // The evidence and the loose ends are printed in full, for the reason a
+    // command's `why` is: they are the whole of what makes the claim checkable,
+    // and a truncated handoff is a summary of a summary.
+    case "handoff":
+      return {
+        kind: "handoff",
+        tone: "accent",
+        text: `${event.from} says the goal is met · ${event.built} — evidence: ${event.evidence.join(
+          " · ",
+        )}${event.open?.length ? ` — still open: ${event.open.join(" · ")}` : ""}`,
+        rail: true,
+      };
     // Messages have their own view; `EventFeed` filters them out before it gets
     // here, so this arm exists only to keep the switch exhaustive.
     case "message":

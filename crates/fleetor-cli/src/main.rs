@@ -1,6 +1,6 @@
 //! `fleet` — the whole agent-facing surface of a FLEETOR fleet (D-030).
 //!
-//! Six verbs, one unix socket, no MCP server. A pane's `claude` runs this
+//! Nine verbs, one unix socket, no MCP server. A pane's `claude` runs this
 //! through its Bash tool; the hub writes the message straight into the target
 //! pane's terminal and answers with what actually happened.
 //!
@@ -126,6 +126,28 @@ enum Command {
         #[arg(trailing_var_arg = true, required = true, value_name = "CHECK")]
         check: Vec<String>,
     },
+    /// Say the whole goal is met, and hand the work back to the operator (WP-13).
+    ///
+    /// **`orch`'s verb, and a different altitude from `done`.** A receipt closes
+    /// one block; this closes the mission. It reaches the log and nothing else —
+    /// no terminal is written to, so it answers `recorded`.
+    ///
+    /// The fields are flat and repeatable for the reason `task post`'s are: a
+    /// weak model emits `--evidence "…" --evidence "…"` far more reliably than a
+    /// nested document, and `--evidence` is required at least once because a
+    /// claim with nothing checkable behind it cannot be argued with.
+    Handoff {
+        /// What the fleet built, in the operator's own terms.
+        #[arg(long, required = true)]
+        built: String,
+        /// How anyone could check it — a command, a branch, a file. Repeatable.
+        #[arg(long, required = true, action = clap::ArgAction::Append, value_name = "CHECK")]
+        evidence: Vec<String>,
+        /// What is unfinished or uncertain. Repeatable, and optional: a mission
+        /// with no loose ends must not have to invent one.
+        #[arg(long, action = clap::ArgAction::Append, value_name = "LOOSE-END")]
+        open: Vec<String>,
+    },
     /// Who exists and whether they are live.
     Roster,
     /// Your own pane name.
@@ -232,6 +254,7 @@ fn run() -> Result<ExitCode> {
         // something that already happened, and a socket held open for the length
         // of a test suite is a connection doing nothing but waiting.
         Command::Done { task, check } => done::op(me()?, &task, &join(check))?,
+        Command::Handoff { built, evidence, open } => handoff_op(me()?, built, evidence, open)?,
         Command::Roster => Op::Roster,
         Command::Whoami => unreachable!("handled above"),
     };
@@ -277,6 +300,24 @@ fn task_action(action: TaskCmd) -> Result<TaskAction> {
         },
         TaskCmd::List { .. } => TaskAction::List,
     })
+}
+
+/// The `fleet handoff` wire payload (WP-13).
+///
+/// **The one check here is who is asking.** A handoff is the orchestrator's
+/// declaration that the whole goal is met; a worker has one block, and the verb
+/// that closes one is `fleet done`. Refused locally rather than at the hub, for
+/// the reason `done.rs` refuses `orch` locally: the sender reads its own stderr
+/// and the refusal can say what to type instead. Everything about the *content*
+/// is checked once, in `fleetor_core::handoff`, where the hub can see it too.
+fn handoff_op(me: PaneId, built: String, evidence: Vec<String>, open: Vec<String>) -> Result<Op> {
+    if me != PaneId::Orch {
+        anyhow::bail!(
+            "`fleet handoff` is how `orch` tells the operator the whole goal is met, and you \
+             are {me}. To close your own block, run `fleet done <task-id> \"<check>\"`"
+        );
+    }
+    Ok(Op::Handoff { built, evidence, open })
 }
 
 /// Turn the hub's answer into stdout/stderr, and say whether it succeeded. This
@@ -891,6 +932,68 @@ mod tests {
             ),
             "an undelivered receipt exits non-zero however the check went",
         );
+    }
+
+    // --- the handoff (WP-13) ----------------------------------------------------
+
+    /// A handoff has to carry a claim and a way to check it. Both are `required`
+    /// in clap, not documented and hoped for — the same contract-on-the-sender
+    /// argument that made `fleet cmd --why` required (D-045) and a task block's
+    /// criteria required (WP-05). `--open` is not: a mission with no loose ends
+    /// must not have to invent one.
+    #[test]
+    fn a_handoff_without_a_claim_or_evidence_is_refused_by_the_parser() {
+        let complete = ["fleet", "handoff", "--built", "the parser lands", "--evidence", "cargo test"];
+        assert!(Cli::try_parse_from(complete).is_ok());
+        assert!(Cli::try_parse_from(["fleet", "handoff", "--evidence", "cargo test"]).is_err());
+        assert!(Cli::try_parse_from(["fleet", "handoff", "--built", "it is done"]).is_err());
+        assert!(Cli::try_parse_from(["fleet", "handoff"]).is_err());
+    }
+
+    /// Evidence and loose ends repeat and keep their order, for the reason the
+    /// criteria flags do: a mission worth handing over has more than one way in,
+    /// and joining them by hand is a step a model skips.
+    #[test]
+    fn the_handoff_flags_repeat_and_keep_their_order() {
+        let cli = Cli::try_parse_from([
+            "fleet", "handoff", "--built", "the parser accepts nested groups",
+            "--evidence", "cargo test -p parser", "--evidence", "fleet/integration @ a1b2c3d",
+            "--open", "the error messages are still the tokenizer's",
+        ])
+        .expect("a complete handoff");
+        let Command::Handoff { built, evidence, open } = cli.command else {
+            panic!("expected handoff")
+        };
+        assert_eq!(built, "the parser accepts nested groups");
+        assert_eq!(evidence, vec!["cargo test -p parser", "fleet/integration @ a1b2c3d"]);
+        assert_eq!(open, vec!["the error messages are still the tokenizer's"]);
+    }
+
+    /// The altitude rule, enforced where the sender can read it. `handoff` is
+    /// the orchestrator saying the *mission* is finished; a worker closing one
+    /// block has `fleet done`, and the refusal names it rather than leaving a
+    /// worker to guess which verb it wanted.
+    #[test]
+    fn only_orch_may_hand_the_work_back_and_a_worker_is_told_which_verb_it_wanted() {
+        let evidence = vec!["cargo test".to_string()];
+        assert!(handoff_op(PaneId::Orch, "it is done".into(), evidence.clone(), vec![]).is_ok());
+
+        let why = handoff_op(PaneId::Worker(2), "it is done".into(), evidence, vec![])
+            .expect_err("a worker must be refused")
+            .to_string();
+        assert!(why.contains("worker-2"), "{why}");
+        assert!(why.contains("fleet done"), "the refusal says what to run instead: {why}");
+    }
+
+    /// A handoff never becomes a message, and never claims a pty. It answers
+    /// `recorded` through the same renderer a task claim and a message to the
+    /// operator use — one word, one implementation, no room to drift.
+    #[test]
+    fn a_handoff_is_an_op_of_its_own_and_reports_recorded() {
+        let op = handoff_op(PaneId::Orch, "the CLI ships".into(), vec!["cargo test".into()], vec![])
+            .expect("orch may hand the work back");
+        assert!(matches!(op, Op::Handoff { .. }), "never a send, never a task: {op:?}");
+        assert!(report(OpResult::Recorded { record_id: "handoff-1".into() }, false));
     }
 
     /// One line per pane, in the order the roster arrived — the CLI must not

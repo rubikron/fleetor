@@ -39,8 +39,8 @@ use crate::pane::PaneId;
 
 /// Every `fleet` verb, in the order the briefs introduce them. The Phase-3 CLI
 /// asserts its clap subcommands match this list exactly.
-pub const VERBS: [&str; 8] =
-    ["send", "broadcast", "reply", "cmd", "task", "done", "roster", "whoami"];
+pub const VERBS: [&str; 9] =
+    ["send", "broadcast", "reply", "cmd", "task", "done", "handoff", "roster", "whoami"];
 
 /// The baked-in orchestrator template. Used when the operator has not put their
 /// own `orch.md` in `~/.fleetor/prompts/`, and as the fallback when the one they
@@ -210,7 +210,8 @@ mod tests {
     /// Asserted against literals, not `VERBS`, so this test is the tripwire.
     #[test]
     fn both_briefs_teach_every_cli_verb() {
-        let literals = ["send", "broadcast", "reply", "cmd", "task", "done", "roster", "whoami"];
+        let literals =
+            ["send", "broadcast", "reply", "cmd", "task", "done", "handoff", "roster", "whoami"];
         assert_eq!(literals.to_vec(), VERBS.to_vec(), "VERBS drifted from the verbs the briefs teach");
         for brief in [orch_brief(&roster(), CWD), worker_brief(PaneId::Worker(1), &roster(), CWD)] {
             for verb in literals {
@@ -508,8 +509,8 @@ mod tests {
     #[test]
     fn a_rewritten_template_keeps_the_clauses_it_cannot_afford_to_lose() {
         let rewritten = "# hi {me} in {cwd}\n\nyour peers: {peers}. use fleet send / fleet broadcast / \
-             fleet reply / fleet cmd / fleet task / fleet done / fleet roster / fleet whoami.\n\n\
-             {delivery_contract}\n\n{broadcast_rule}\n\n{scaffolding}\n";
+             fleet reply / fleet cmd / fleet task / fleet done / fleet handoff / fleet roster / \
+             fleet whoami.\n\n{delivery_contract}\n\n{broadcast_rule}\n\n{scaffolding}\n";
         validate_worker(rewritten).expect("a template with every placeholder is usable");
 
         let brief = render_worker(rewritten, PaneId::Worker(2), &roster(), CWD);
@@ -547,7 +548,7 @@ mod tests {
     #[test]
     fn a_template_that_forgets_a_verb_is_refused() {
         let missing_whoami = "# {me} in {cwd}\n\npeers: {peers}. fleet send / fleet broadcast / \
-             fleet reply / fleet cmd / fleet task / fleet done / fleet roster.\n\n\
+             fleet reply / fleet cmd / fleet task / fleet done / fleet handoff / fleet roster.\n\n\
              {delivery_contract}\n\n{broadcast_rule}\n\n{scaffolding}\n";
         let why = validate_worker(missing_whoami).expect_err("must not be usable");
         assert!(why.contains("fleet whoami"), "the refusal names the missing verb: {why}");
@@ -760,6 +761,50 @@ mod tests {
         assert!(
             brief.contains("Nothing in the code checks any of this"),
             "the merge rule is a prompt rule, and has to say so",
+        );
+    }
+
+    // --- the handoff (WP-13) ----------------------------------------------------
+
+    /// The sentence the whole package rests on: the finish line is the confirmed
+    /// vision, and saying it has been reached is `orch`'s own act. Pinned as a
+    /// literal for the reason the board's "the send is the assignment" is — a
+    /// rewrite that softened it into "when the blocks are done, wrap up" would
+    /// still render and still validate, and would teach the orchestrator to read
+    /// a full board as a met goal.
+    #[test]
+    fn the_orch_brief_hands_the_work_back_only_against_the_confirmed_vision() {
+        let brief = orch_brief(&roster(), CWD);
+        assert!(brief.contains("fleet handoff"), "the verb itself");
+        assert!(brief.contains("The finish line is the vision the operator confirmed"));
+        assert!(
+            brief.contains("not the last block on the board"),
+            "the counter-example is the teaching",
+        );
+        assert!(brief.contains("Claim only what you verified"));
+        assert!(
+            brief.contains("no way to check by reading it"),
+            "the rule needs its consequence, or `--open` reads as optional paperwork",
+        );
+    }
+
+    /// The two altitudes, said out loud in both briefs. `done` and `handoff` are
+    /// the two verbs a model could most plausibly confuse — they are the only
+    /// two that mean *finished* — so each brief names the one that is not
+    /// theirs. Without this the orchestrator reaches for `fleet done` (which
+    /// refuses it) and a worker reaches for `fleet handoff` (which refuses it),
+    /// and both spend a turn finding out.
+    #[test]
+    fn both_briefs_separate_closing_a_block_from_handing_the_work_back() {
+        let orch = orch_brief(&roster(), CWD);
+        assert!(orch.contains("**This is not `fleet done`**"));
+        assert!(orch.contains("the mission is over"), "what the verb actually claims");
+
+        let worker = worker_brief(PaneId::Worker(2), &roster(), CWD);
+        assert!(worker.contains("`fleet handoff` is `orch`'s verb"));
+        assert!(
+            worker.contains("Yours is `fleet done`"),
+            "naming the wrong verb without the right one leaves the worker nowhere",
         );
     }
 
