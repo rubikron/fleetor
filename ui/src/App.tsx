@@ -23,6 +23,7 @@ import { SettingsPanel } from "./components/SettingsPanel";
 import { TerminalGrid } from "./components/TerminalGrid";
 import { StartGate } from "./components/StartGate";
 import { RunHistory } from "./components/RunHistory";
+import { DevModeBanner } from "./components/DevModeBanner";
 import { useFleet } from "./fleet/useFleet";
 import { useRuns } from "./fleet/useRuns";
 import { useContextGauge } from "./fleet/useContextGauge";
@@ -32,6 +33,7 @@ import { usePersistedNav } from "./ui/usePersistedNav";
 import { usePaneJump } from "./ui/usePaneJump";
 import { useWindowState } from "./ui/useWindowState";
 import { useTheme } from "./ui/useTheme";
+import { useDevMode } from "./ui/useDevMode";
 import { killPane } from "./fleet/api";
 import { ORCH, paneSlot, type PaneId, type PaneStatus } from "./fleet/types";
 
@@ -61,6 +63,10 @@ export function App() {
   const zoom = useZoom();
   const sidebar = useSidebarCollapse();
   const themeControls = useTheme();
+  // WP-16. Read from ~/.fleetor/config.json rather than localStorage, because
+  // later packages branch on the same flag from the Rust side. While the mode is
+  // off, the settings row below is the only trace of it in the whole app.
+  const devMode = useDevMode();
   // Restores the window's saved size/position, then keeps them current. Pure
   // side effect on the OS window — see useWindowState.ts for why a saved
   // position is re-validated against the connected monitors before use.
@@ -151,6 +157,7 @@ export function App() {
         config={fleet.config}
         zoom={zoom.zoom}
       />
+      {devMode.enabled === true && <DevModeBanner />}
       <div className="body">
         <Sidebar
           view={view}
@@ -202,7 +209,11 @@ export function App() {
             </div>
 
             <div className={`stage-view ${view === "settings" ? "" : "is-hidden"}`}>
-              <SettingsPanel theme={themeControls.theme} onToggleTheme={themeControls.toggle} />
+              <SettingsPanel
+                theme={themeControls.theme}
+                onToggleTheme={themeControls.toggle}
+                devMode={devMode}
+              />
             </div>
 
 

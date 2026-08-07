@@ -74,6 +74,24 @@ export function sendAsOperator(target: PaneId | "all" | "reply", text: string): 
   return invoke<OperatorSend>("fleet_send", { target, text });
 }
 
+// --- dev mode (WP-16) ---------------------------------------------------------
+//
+// The mode is stored on the Rust side (`dev_mode` in ~/.fleetor/config.json),
+// not in localStorage where the theme and the nav selection live: later packages
+// branch on it from code that has no webview, and two copies of a mode is one
+// copy too many. Both calls work before the fleet is bootstrapped.
+
+/// Whether the app is in dev mode.
+export function fetchDevMode(): Promise<boolean> {
+  return invoke<boolean>("dev_mode_get");
+}
+
+/// Turn dev mode on or off, persistently. Resolves with what is now *stored* —
+/// render that, not the value that was asked for.
+export function setDevMode(enabled: boolean): Promise<boolean> {
+  return invoke<boolean>("dev_mode_set", { enabled });
+}
+
 // --- panes --------------------------------------------------------------------
 
 /// Spawn one pane's `claude` under a pty. Spends tokens — every caller is behind

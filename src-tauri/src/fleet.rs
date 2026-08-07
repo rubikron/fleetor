@@ -138,8 +138,10 @@ fn testbed_dir() -> PathBuf {
     fleetor_dir().join("testbed")
 }
 
-/// Where the operator names the repo the fleet should work on.
-fn config_path() -> PathBuf {
+/// Where the operator names the repo the fleet should work on — and, since
+/// WP-16, whether the app is in dev mode. One file, so there is one place an
+/// operator looks and one place `rm -rf ~/.fleetor` removes (Tier 1.1).
+pub(crate) fn config_path() -> PathBuf {
     fleetor_dir().join("config.json")
 }
 
@@ -858,27 +860,46 @@ fn expand_home(input: &str) -> Result<PathBuf, String> {
 /// Set `target` in the config without disturbing anything else the operator has
 /// put there. Merge-not-clobber for the same reason the config seed is.
 fn write_target(target: &Path) -> Result<(), String> {
-    let file = config_path();
+    write_config_key("target", target.to_string_lossy().into_owned().into())
+}
+
+/// Set one key in `~/.fleetor/config.json`, leaving every other key alone.
+///
+/// The one writer of that file, so a second setting (WP-16's `dev_mode`) cannot
+/// grow a second spelling of "merge, don't clobber" that drops the first one.
+pub(crate) fn write_config_key(key: &str, value: serde_json::Value) -> Result<(), String> {
+    write_config_key_at(&config_path(), key, value)
+}
+
+/// [`write_config_key`] against a named file, so the read-write round trip is
+/// exercisable in a temp directory instead of in the operator's real home.
+pub(crate) fn write_config_key_at(
+    file: &Path,
+    key: &str,
+    value: serde_json::Value,
+) -> Result<(), String> {
     if let Some(parent) = file.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     }
-    let existing = std::fs::read_to_string(&file).ok();
-    let text = merge_target(existing.as_deref(), target)?;
-    std::fs::write(&file, text).map_err(|e| format!("write {}: {e}", file.display()))
+    let existing = std::fs::read_to_string(file).ok();
+    let text = merge_config_key(existing.as_deref(), key, value)?;
+    std::fs::write(file, text).map_err(|e| format!("write {}: {e}", file.display()))
 }
 
-/// The merge itself, kept pure so it is tested without writing to the operator's
-/// real home directory. Unreadable or non-object config text is replaced rather
-/// than treated as fatal — refusing to record a target the operator just picked
-/// would leave the picker looking broken.
-fn merge_target(existing: Option<&str>, target: &Path) -> Result<String, String> {
+/// The merge, kept pure so it is tested without writing to the operator's real
+/// home directory. Unreadable or non-object config text is replaced rather than
+/// treated as fatal — refusing to record a target the operator just picked would
+/// leave the picker looking broken.
+pub(crate) fn merge_config_key(
+    existing: Option<&str>,
+    key: &str,
+    value: serde_json::Value,
+) -> Result<String, String> {
     let mut root = existing
         .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
         .filter(|v| v.is_object())
         .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
-    root.as_object_mut()
-        .expect("just filtered to an object")
-        .insert("target".into(), target.to_string_lossy().into_owned().into());
+    root.as_object_mut().expect("just filtered to an object").insert(key.into(), value);
     serde_json::to_string_pretty(&root).map_err(|e| format!("encode config: {e}"))
 }
 
@@ -991,6 +1012,13 @@ mod tests {
     use fleetor_core::wire::{Hello, Op, OpResult};
     use fleetor_ipc::Client;
     use std::time::Duration;
+
+    /// The target-shaped view of [`merge_config_key`], so these tests read as
+    /// what they are about. `write_target` calls the generic writer directly —
+    /// there is one merge, and WP-16's `dev_mode` goes through the same one.
+    fn merge_target(existing: Option<&str>, target: &Path) -> Result<String, String> {
+        merge_config_key(existing, "target", target.to_string_lossy().into_owned().into())
+    }
 
     /// The wiring end to end over a **real unix socket**: bootstrap's hub and the
     /// real delivery loop over a real (empty) pane registry, dialled by a real

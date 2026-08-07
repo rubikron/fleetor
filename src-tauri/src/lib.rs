@@ -12,6 +12,9 @@
 
 pub mod context_gauge;
 pub mod deliver;
+/// Dev mode (WP-16) — read by the UI and by later packages, never by the
+/// delivery path (Tier 1.4; `tests/dev_mode.rs` is the tripwire).
+pub mod dev;
 pub mod fleet;
 mod orphans;
 pub mod prompts;
@@ -92,6 +95,8 @@ pub fn run() {
             fleet::run_rename,
             fleet::run_delete,
             fleet::run_export,
+            dev::dev_mode_get,
+            dev::dev_mode_set,
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { .. } = event {
