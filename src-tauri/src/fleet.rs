@@ -174,6 +174,25 @@ fn worker_home_dir(slot: u8) -> PathBuf {
     shell_dir().join("home").join(format!("worker-{slot}"))
 }
 
+/// The fleet's own `CARGO_HOME` and `RUSTUP_HOME` (D-069, the Fence's reversal
+/// condition exercised as written).
+///
+/// **One pair, shared by every worker**, not one per slot: a build's registry
+/// cache is the same cache for all of them, two concurrent builds serialize on
+/// cargo's own package lock rather than corrupting anything, and the per-worker
+/// state that does need separating — `target/` — already lives in each worktree.
+///
+/// Under `_shell` for the reason everything else here is: whatever a build
+/// downloads, however large, `rm -rf ~/.fleetor` reaches it (Tier 1.1). Pointing
+/// either of these at the operator's real `~/.cargo` or `~/.rustup` would make
+/// that sentence false — measured in `docs/notes/fence-notes.md`, arms 6b and 7b.
+fn fleet_toolchain_dirs() -> spawn::FleetToolchain {
+    spawn::FleetToolchain {
+        cargo_home: shell_dir().join("cargo"),
+        rustup_home: shell_dir().join("rustup"),
+    }
+}
+
 fn target_slug(target: &Path) -> String {
     let canonical = target.canonicalize().unwrap_or_else(|_| target.to_path_buf());
     let name = canonical
@@ -355,6 +374,20 @@ pub(crate) fn spawn_pane(
         );
     }
 
+    // Same shape, same reason (D-069): a worker with no toolchain reachable
+    // looks perfectly healthy right up until the first `cargo build`, and then
+    // fails with `command not found` — a message that points at the worker's own
+    // PATH rather than at the machine. Said once, here, instead.
+    if matches!(pane, PaneId::Worker(_)) && spawn::operator_toolchain().is_none() {
+        note(
+            &store,
+            NoticeLevel::Warn,
+            "no rustup was found — workers will spawn but cannot build Rust. \
+             Install it from https://rustup.rs, or set RUSTUP_HOME/CARGO_HOME \
+             before launching if your toolchain lives somewhere unusual.",
+        );
+    }
+
     let socket = socket_path();
     let command = match pane {
         // Never spawnable, and refused here rather than left to fail somewhere
@@ -424,6 +457,18 @@ pub(crate) fn spawn_pane(
             // than at the target picker (see this function's doc comment).
             let home = worker_home_dir(slot);
             spawn::seed_worker_home(&home, slot)?;
+            // The Fence learns about rustup (D-069): seeded here, beside the
+            // private HOME, and for the same reason — before the process exists.
+            // `None` when this machine has no rustup at all, which the warning
+            // above has already said out loud.
+            let toolchain = match spawn::operator_toolchain() {
+                Some(operator) => {
+                    let fleet = fleet_toolchain_dirs();
+                    spawn::seed_fleet_toolchain(&fleet, &operator)?;
+                    Some(fleet)
+                }
+                None => None,
+            };
             install_guardrail(&store, pane, &config_dir, &cwd, &context)?;
             note_spawn_estimate(&store, &context, pane, &cwd, Some(context_gauge::WORKER_WINDOW_TOKENS));
             // The WP-04 live gauge's source of truth: where to find this
@@ -432,7 +477,9 @@ pub(crate) fn spawn_pane(
             // first turn samples the (not-yet-there) file as absent, never a
             // stale or wrong pane's numbers.
             gauges.record(pane, TranscriptSource { config_dir: config_dir.clone(), cwd: cwd.clone() });
-            spawn::worker_command(slot, &cwd, &home, &config_dir, &socket, &key, &context)
+            spawn::worker_command(
+                slot, &cwd, &home, &config_dir, &socket, &key, toolchain.as_ref(), &context,
+            )
         }
     };
 

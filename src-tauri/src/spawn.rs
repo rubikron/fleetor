@@ -184,6 +184,12 @@ pub fn evaluator_command(
 /// reports success (L1). `home` must already have been through
 /// [`seed_worker_home`] — see this module's doc comment for what an unseeded one
 /// costs.
+/// `toolchain` is `Some` only when this machine actually has a rustup
+/// ([`operator_toolchain`]) and both fleet directories have been through
+/// [`seed_fleet_toolchain`]. When it is `None` the three settings are **absent
+/// rather than pointing at nothing**: a `RUSTUP_HOME` naming a directory that
+/// does not exist makes rustup try to *install* there, which is a worse failure
+/// than the `command not found` a worker gets today.
 pub fn worker_command(
     slot: u8,
     cwd: &Path,
@@ -191,6 +197,7 @@ pub fn worker_command(
     config_dir: &Path,
     socket: &Path,
     api_key: &str,
+    toolchain: Option<&FleetToolchain>,
     ctx: &PaneContext,
 ) -> CommandBuilder {
     let pane = PaneId::Worker(slot);
@@ -201,7 +208,20 @@ pub fn worker_command(
         render_worker(&ctx.worker_template, pane, &roster(), &cwd.display().to_string()),
     ]);
     cmd.cwd(cwd);
-    apply_pane_env(&mut cmd, pane, socket, worker_augmented_path());
+    let cargo_bin = toolchain.map(|t| t.cargo_home.join("bin"));
+    apply_pane_env(&mut cmd, pane, socket, worker_augmented_path(cargo_bin.as_deref()));
+
+    // The Fence learns about rustup (D-069). Both homes are the fleet's own, not
+    // the operator's, and that is the whole decision: a `cargo install` a worker
+    // decides to run would otherwise plant a binary in `~/.cargo/bin`, which is
+    // on the *operator's* login PATH, and a `rust-toolchain.toml` naming an
+    // uninstalled channel would download 1.2 GB into `~/.rustup`. Both measured
+    // in `docs/notes/fence-notes.md` (arms 7b and 6b); neither is something the
+    // write guardrail can refuse, because neither command names a path.
+    if let Some(t) = toolchain {
+        cmd.env("CARGO_HOME", &t.cargo_home);
+        cmd.env("RUSTUP_HOME", &t.rustup_home);
+    }
 
     // The Fence (WP-08): a private HOME so `~/.ssh`, the operator's real Claude
     // config and shell profiles stop being reachable *by name*. Set after the
@@ -300,10 +320,25 @@ pub fn augmented_path() -> String {
 /// It is not an operator-HOME rung by construction (it is whatever launched the
 /// app), and stripping it is a sandboxing decision this package's spec rules
 /// out; see `docs/notes/fence-notes.md` for what that leaves reachable.
-pub fn worker_augmented_path() -> String {
+///
+/// `cargo_bin` is the fleet's own `_shell/cargo/bin` (D-069), or `None` when this
+/// machine has no rustup — in which case the result is byte-for-byte what it was
+/// before that decision. It is a rung and not merely two env vars because
+/// **neither `/opt/homebrew/bin` nor `/usr/local/bin` holds a `cargo`**: the only
+/// cargo on this machine is `~/.cargo/bin/cargo`, inside the operator's HOME, so
+/// a worker launched with anything but the operator's login PATH inherited gets
+/// `cargo: command not found` before rustup is ever reached (`fence-notes.md`,
+/// arms 1 and 2). Seeded shims are a rung whose contents the fleet enumerated;
+/// `~/.cargo/bin` is a rung whose contents change whenever the operator installs
+/// anything, and it holds real binaries, not only shims.
+pub fn worker_augmented_path(cargo_bin: Option<&Path>) -> String {
     let existing = std::env::var("PATH").unwrap_or_default();
     let mut prefix = String::new();
     if let Some(dir) = fleet_bin_path().and_then(|p| p.parent().map(Path::to_path_buf)) {
+        prefix.push_str(&dir.to_string_lossy());
+        prefix.push(':');
+    }
+    if let Some(dir) = cargo_bin {
         prefix.push_str(&dir.to_string_lossy());
         prefix.push(':');
     }
@@ -433,6 +468,168 @@ pub fn seed_worker_home(dir: &Path, slot: u8) -> Result<(), String> {
     std::fs::rename(&tmp, &file).map_err(|e| format!("install {}: {e}", file.display()))
 }
 
+// --- the Rust toolchain (D-069) -----------------------------------------------
+
+/// Where the operator's Rust toolchain lives. Read, never written to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperatorToolchain {
+    /// The real `rustup` binary. Every name in `~/.cargo/bin` — `cargo`,
+    /// `rustc`, `rustfmt` and the rest — is a **symlink to this one file**;
+    /// rustup dispatches on `argv[0]`. Measured in `docs/notes/fence-notes.md`.
+    pub rustup_bin: PathBuf,
+    /// The operator's `RUSTUP_HOME`: its `settings.toml` and its installed
+    /// toolchains are what the fleet's mirror points at.
+    pub rustup_home: PathBuf,
+}
+
+/// The fleet's own toolchain directories, both under `_shell/` so `rm -rf
+/// ~/.fleetor` reaches everything a build made (Tier 1.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FleetToolchain {
+    pub cargo_home: PathBuf,
+    pub rustup_home: PathBuf,
+}
+
+/// The names a worker's PATH has to resolve, all symlinked to the same `rustup`
+/// binary exactly as `~/.cargo/bin` does it.
+///
+/// **All or nothing, and that is measured.** Seeding `cargo` alone fails at
+/// `could not execute process 'rustc -vV' (never executed)` — cargo resolves,
+/// then looks for `rustc` by name and finds none (`fence-notes.md`, arm 5a).
+pub const TOOLCHAIN_SHIMS: [&str; 8] = [
+    "cargo",
+    "rustc",
+    "rustup",
+    "rustdoc",
+    "rustfmt",
+    "cargo-fmt",
+    "cargo-clippy",
+    "clippy-driver",
+];
+
+/// The operator's toolchain, if this machine has one — an explicit ladder,
+/// existence-checked at every rung, `None` rather than a guess.
+///
+/// Same shape and same reasoning as [`fleet_bin_path`]: a caller that can tell
+/// the operator the answer is "nowhere" beats a path that looks plausible and
+/// resolves to nothing. rustup's own documented overrides are honoured first,
+/// because an operator who moved their toolchain said where it went.
+pub fn operator_toolchain() -> Option<OperatorToolchain> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let rustup_home = std::env::var_os("RUSTUP_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
+        .or_else(|| Some(PathBuf::from(&home).join(".rustup")).filter(|p| p.is_dir()))?;
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(cargo_home) = std::env::var_os("CARGO_HOME").map(PathBuf::from) {
+        candidates.push(cargo_home.join("bin").join("rustup"));
+    }
+    candidates.push(PathBuf::from(&home).join(".cargo").join("bin").join("rustup"));
+    candidates.push(PathBuf::from("/opt/homebrew/bin/rustup"));
+    candidates.push(PathBuf::from("/usr/local/bin/rustup"));
+    let rustup_bin = candidates.into_iter().find(|p| p.is_file())?;
+
+    Some(OperatorToolchain { rustup_bin, rustup_home })
+}
+
+/// Seed both fleet-owned toolchain directories. They are seeded together for the
+/// same reason they are set together: a `CARGO_HOME` with no shims on PATH is a
+/// worker that cannot find cargo, and shims with no `RUSTUP_HOME` mirror is a
+/// worker whose first toolchain download lands in the operator's home.
+pub fn seed_fleet_toolchain(
+    fleet: &FleetToolchain,
+    operator: &OperatorToolchain,
+) -> Result<(), String> {
+    seed_fleet_cargo_home(&fleet.cargo_home, operator)?;
+    seed_fleet_rustup_home(&fleet.rustup_home, operator)
+}
+
+/// The fleet's `CARGO_HOME`: one `bin/` of shims, and nothing else. Everything
+/// after that — the registry, `.crates.toml`, anything `cargo install` puts
+/// there — cargo writes itself.
+///
+/// A **shared** directory rather than one per worker, and that is measured: two
+/// workers building concurrently against one cargo home both succeed, serializing
+/// on cargo's own package-cache lock (`fence-notes.md`, arm 8). Per-worker
+/// `target/` directories already live in each worktree, so the only thing a split
+/// would buy is a duplicated registry.
+pub fn seed_fleet_cargo_home(dir: &Path, operator: &OperatorToolchain) -> Result<(), String> {
+    let bin = dir.join("bin");
+    std::fs::create_dir_all(&bin).map_err(|e| format!("create fleet cargo bin {}: {e}", bin.display()))?;
+    for shim in TOOLCHAIN_SHIMS {
+        link(&operator.rustup_bin, &bin.join(shim))?;
+    }
+    Ok(())
+}
+
+/// The fleet's `RUSTUP_HOME`: a **mirror**, not a copy. `settings.toml` is
+/// copied (98 bytes); each of the operator's installed toolchains becomes one
+/// symlink into their real `~/.rustup/toolchains/`. Seeded, it is 4 KB against
+/// the 1.9 GB it points at.
+///
+/// This exists because "the operator's `~/.rustup` is read-only in practice" is
+/// **false**: a `rust-toolchain.toml` naming an uninstalled channel — an
+/// ordinary thing for a repository to carry — silently downloads and installs
+/// it, 35,981 files and ~1.2 GB, with no prompt (`fence-notes.md`, arm 6b).
+/// Against the mirror the identical download lands under `_shell/` instead
+/// (arm 9b), which is the difference between Tier 1.1 holding and not.
+pub fn seed_fleet_rustup_home(dir: &Path, operator: &OperatorToolchain) -> Result<(), String> {
+    let toolchains = dir.join("toolchains");
+    std::fs::create_dir_all(&toolchains)
+        .map_err(|e| format!("create fleet rustup toolchains {}: {e}", toolchains.display()))?;
+
+    // Copied once, then left alone — same reasoning as the seeded `.gitconfig`.
+    // Re-copying every spawn would clobber a `rustup default` a worker set for
+    // itself, which is a legitimate thing for it to have done.
+    let settings = dir.join("settings.toml");
+    if !settings.exists() {
+        let source = operator.rustup_home.join("settings.toml");
+        if source.is_file() {
+            std::fs::copy(&source, &settings)
+                .map_err(|e| format!("copy {}: {e}", source.display()))?;
+        }
+    }
+
+    // Re-linked on every spawn, unlike `settings.toml`: a toolchain the operator
+    // installed since the last run should become visible, and a link left
+    // dangling by one they removed should not stay broken. A real directory here
+    // is a toolchain a *worker* downloaded into the mirror — left alone, because
+    // clobbering it would throw away a 1.2 GB download.
+    let entries = match std::fs::read_dir(operator.rustup_home.join("toolchains")) {
+        Ok(entries) => entries,
+        Err(_) => return Ok(()),
+    };
+    for entry in entries.flatten() {
+        let mirrored = toolchains.join(entry.file_name());
+        if mirrored.exists() && !mirrored.is_symlink() {
+            continue;
+        }
+        link(&entry.path(), &mirrored)?;
+    }
+    Ok(())
+}
+
+/// One symlink, idempotent, and **replaced when it is dangling or points
+/// somewhere else**.
+///
+/// The deliberate difference from [`seed_worker_home`]'s write-once rule: there
+/// is no operator edit worth preserving in a symlink FLEETOR made, and a
+/// dangling `cargo` is a `command not found` whose cause — the operator moved
+/// their toolchain three weeks ago — is invisible from inside the pane.
+fn link(target: &Path, at: &Path) -> Result<(), String> {
+    if let Ok(existing) = std::fs::read_link(at) {
+        if existing == target {
+            return Ok(());
+        }
+    }
+    if at.is_symlink() || at.exists() {
+        std::fs::remove_file(at).map_err(|e| format!("replace {}: {e}", at.display()))?;
+    }
+    std::os::unix::fs::symlink(target, at)
+        .map_err(|e| format!("link {} -> {}: {e}", at.display(), target.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -550,7 +747,8 @@ mod tests {
         assert!(orch.get_env("CLAUDE_CODE_CHILD_SESSION").is_none());
 
         let worker =
-            worker_command(3, &cwd, Path::new("/tmp/home"), Path::new("/tmp/cfg"), &socket, "sk-test", &ctx);
+            worker_command(3, &cwd, Path::new("/tmp/home"), Path::new("/tmp/cfg"), &socket, "sk-test", None,
+            &ctx);
         assert_eq!(worker.get_env("FLEETOR_PANE").unwrap(), "worker-3");
         assert_eq!(worker.get_env("FLEET_SOCKET").unwrap(), socket.as_os_str());
         assert!(worker.get_env("CLAUDE_CODE_CHILD_SESSION").is_none());
@@ -567,6 +765,7 @@ mod tests {
             Path::new("/tmp/cfg"),
             Path::new("/tmp/s.sock"),
             "sk-secret",
+            None,
             &PaneContext::baked(),
         );
         assert_eq!(worker.get_env("ANTHROPIC_AUTH_TOKEN").unwrap(), "sk-secret");
@@ -591,6 +790,7 @@ mod tests {
             Path::new("/tmp/cfg"),
             Path::new("/tmp/s.sock"),
             "sk-test",
+            None,
             &ctx,
         );
         assert_eq!(
@@ -615,6 +815,7 @@ mod tests {
             Path::new("/tmp/cfg"),
             Path::new("/tmp/s.sock"),
             "k",
+            None,
             &PaneContext::baked(),
         );
         let args: Vec<String> =
@@ -660,6 +861,7 @@ mod tests {
             Path::new("/tmp/cfg"),
             &socket,
             "k",
+            None,
             &ctx,
         );
         assert_eq!(worker.get_env("HOME").unwrap(), "/tmp/private-home");
@@ -670,23 +872,56 @@ mod tests {
     /// operator's real HOME (`~/.local/bin`, `~/.bun/bin`) — otherwise a fenced
     /// `HOME` still leaves the operator's own tooling reachable by name through
     /// PATH instead. Orch keeps today's PATH unchanged.
+    ///
+    /// **This pin changed letter in D-069, and the change is argued there rather
+    /// than slipped in.** It used to assert `!worker_path.contains("/Users/operator")`
+    /// — a substring sweep that happened to hold. D-069 adds one rung that *is*
+    /// under the operator's HOME (`~/.fleetor/_shell/cargo/bin`), because that is
+    /// where `~/.fleetor` lives, so the sweep can no longer be the test. What
+    /// replaces it is **stricter, not looser**: every operator tool rung is
+    /// forbidden *by name* — including `.cargo/bin`, which the old test never
+    /// named — and at most one rung may sit under the operator's HOME, which must
+    /// be the fleet's own.
     #[test]
-    fn worker_path_drops_the_operator_home_rungs_orch_keeps_them() {
+    fn worker_path_drops_every_operator_tool_rung_and_adds_only_the_fleets_own_cargo_bin() {
         let previous = std::env::var("HOME").ok();
         std::env::set_var("HOME", "/Users/operator");
 
+        // Orch's half, byte-identical to before.
         let orch_path = augmented_path();
         assert!(orch_path.contains("/Users/operator/.local/bin"), "{orch_path}");
         assert!(orch_path.contains("/Users/operator/.bun/bin"), "{orch_path}");
         assert!(orch_path.contains("/opt/homebrew/bin"), "{orch_path}");
 
-        let worker_path = worker_augmented_path();
-        assert!(
-            !worker_path.contains("/Users/operator"),
-            "the operator's HOME must not appear anywhere in a worker's PATH: {worker_path}"
+        let fleet_cargo_bin = PathBuf::from("/Users/operator/.fleetor/_shell/cargo/bin");
+        let worker_path = worker_augmented_path(Some(&fleet_cargo_bin));
+        let rungs: Vec<&str> = worker_path.split(':').collect();
+
+        for forbidden in ["/Users/operator/.local/bin", "/Users/operator/.bun/bin",
+                          "/Users/operator/.cargo/bin", "/Users/operator/.rustup"] {
+            assert!(
+                !rungs.contains(&forbidden),
+                "a worker's PATH must not reach the operator's own tooling: {forbidden} in {worker_path}"
+            );
+        }
+
+        let under_operator_home: Vec<&&str> =
+            rungs.iter().filter(|r| r.starts_with("/Users/operator/")).collect();
+        assert_eq!(
+            under_operator_home,
+            vec![&"/Users/operator/.fleetor/_shell/cargo/bin"],
+            "exactly one rung may sit under the operator's HOME, and it is the fleet's own: {worker_path}"
         );
-        assert!(worker_path.contains("/opt/homebrew/bin"), "{worker_path}");
-        assert!(worker_path.contains("/usr/local/bin"), "{worker_path}");
+
+        assert!(rungs.contains(&"/opt/homebrew/bin"), "{worker_path}");
+        assert!(rungs.contains(&"/usr/local/bin"), "{worker_path}");
+
+        // And with no toolchain on the machine, the string is what it always was.
+        assert_eq!(
+            worker_augmented_path(None).split(':').filter(|r| r.starts_with("/Users/operator/")).count(),
+            0,
+            "no rustup means no new rung at all",
+        );
 
         match previous {
             Some(v) => std::env::set_var("HOME", v),
@@ -779,6 +1014,7 @@ mod tests {
             Path::new("/tmp/cfg"),
             Path::new("/tmp/s.sock"),
             "sk-test",
+            None,
             &PaneContext::baked(),
         );
         assert!(worker.get_env(ENV_CC_SECURESTORAGE_DIR).is_none());
@@ -821,5 +1057,225 @@ mod tests {
         assert_eq!(text, "[user]\n\tname = hand-edited\n", "an existing gitconfig must survive re-seeding");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- D-069: the Fence learns about rustup ---------------------------------
+
+    /// A helper standing in for a real rustup install: a `rustup` binary and a
+    /// `RUSTUP_HOME` with two toolchains in it.
+    fn fake_operator_toolchain(tag: &str) -> (PathBuf, OperatorToolchain) {
+        let root = temp_dir(tag);
+        let rustup_bin = root.join("cargo").join("bin").join("rustup");
+        std::fs::create_dir_all(rustup_bin.parent().unwrap()).unwrap();
+        std::fs::write(&rustup_bin, "#!/bin/sh\n").unwrap();
+        let rustup_home = root.join("rustup");
+        std::fs::create_dir_all(rustup_home.join("toolchains").join("stable-aarch64-apple-darwin")).unwrap();
+        std::fs::create_dir_all(rustup_home.join("toolchains").join("1.95.0-aarch64-apple-darwin")).unwrap();
+        std::fs::write(rustup_home.join("settings.toml"), "default_toolchain = \"stable\"\n").unwrap();
+        (root.clone(), OperatorToolchain { rustup_bin, rustup_home })
+    }
+
+    fn fleet_dirs(root: &Path) -> FleetToolchain {
+        FleetToolchain { cargo_home: root.join("_shell/cargo"), rustup_home: root.join("_shell/rustup") }
+    }
+
+    /// The decision itself: a worker is handed *the fleet's* two toolchain homes,
+    /// and a PATH rung that can resolve `cargo` without the operator's own.
+    #[test]
+    fn a_worker_is_pointed_at_the_fleets_own_toolchain_homes_and_can_find_cargo() {
+        let fleet = FleetToolchain {
+            cargo_home: PathBuf::from("/tmp/fleetor/_shell/cargo"),
+            rustup_home: PathBuf::from("/tmp/fleetor/_shell/rustup"),
+        };
+        let worker = worker_command(
+            1,
+            Path::new("/tmp"),
+            Path::new("/tmp/home"),
+            Path::new("/tmp/cfg"),
+            Path::new("/tmp/s.sock"),
+            "k",
+            Some(&fleet),
+            &PaneContext::baked(),
+        );
+        assert_eq!(worker.get_env("CARGO_HOME").unwrap(), "/tmp/fleetor/_shell/cargo");
+        assert_eq!(worker.get_env("RUSTUP_HOME").unwrap(), "/tmp/fleetor/_shell/rustup");
+        let path = worker.get_env("PATH").unwrap().to_string_lossy().into_owned();
+        assert!(
+            path.split(':').any(|r| r == "/tmp/fleetor/_shell/cargo/bin"),
+            "the two env vars are useless without a rung that resolves cargo: {path}",
+        );
+    }
+
+    /// The security argument, as a test. Measured in `fence-notes.md` arm 7b: with
+    /// `CARGO_HOME` pointed at the operator's own, `cargo install` — which names
+    /// no path, so the write guardrail passes it — plants a binary in
+    /// `~/.cargo/bin`, on the operator's login PATH. Fleet-owned, the same install
+    /// lands somewhere `rm -rf ~/.fleetor` reaches (Tier 1.1).
+    #[test]
+    fn a_workers_cargo_home_is_never_the_operators_own_so_a_cargo_install_lands_where_rm_rf_reaches() {
+        let previous = std::env::var("HOME").ok();
+        std::env::set_var("HOME", "/Users/operator");
+        let fleet = FleetToolchain {
+            cargo_home: PathBuf::from("/Users/operator/.fleetor/_shell/cargo"),
+            rustup_home: PathBuf::from("/Users/operator/.fleetor/_shell/rustup"),
+        };
+        let worker = worker_command(
+            1, Path::new("/tmp"), Path::new("/tmp/home"), Path::new("/tmp/cfg"),
+            Path::new("/tmp/s.sock"), "k", Some(&fleet), &PaneContext::baked(),
+        );
+        for key in ["CARGO_HOME", "RUSTUP_HOME"] {
+            let value = worker.get_env(key).unwrap().to_string_lossy().into_owned();
+            assert!(
+                value.starts_with("/Users/operator/.fleetor/"),
+                "{key} must be inside ~/.fleetor or Tier 1.1 is false by construction: {value}",
+            );
+            assert_ne!(value, "/Users/operator/.cargo");
+            assert_ne!(value, "/Users/operator/.rustup");
+        }
+        match previous {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    /// Orch is the operator's own `claude` (D-030), so it already has their
+    /// toolchain — overriding either variable for it would move its builds into
+    /// the fleet's cache for no reason and break the asymmetry D-052 exists for.
+    #[test]
+    fn orch_is_told_nothing_about_cargo_or_rustup_because_it_already_has_the_operators_environment() {
+        let orch = orch_command(
+            Path::new("/tmp"), Path::new("/tmp/s.sock"), Path::new("/tmp/orch-cfg"), &PaneContext::baked(),
+        );
+        // `CommandBuilder` seeds the parent env, so "not overridden" means equal to
+        // this process's own — absent here, since the test runner has neither set.
+        assert_eq!(orch.get_env("CARGO_HOME").map(|s| s.to_os_string()), std::env::var_os("CARGO_HOME"));
+        assert_eq!(orch.get_env("RUSTUP_HOME").map(|s| s.to_os_string()), std::env::var_os("RUSTUP_HOME"));
+    }
+
+    /// Absent, not pointing at nothing. A `RUSTUP_HOME` naming a directory that
+    /// does not exist makes rustup try to *install* there — a worse failure than
+    /// the `command not found` a worker gets with no toolchain at all.
+    #[test]
+    fn the_toolchain_vars_are_absent_rather_than_pointing_at_nothing_when_the_operator_has_no_rustup() {
+        let worker = worker_command(
+            1, Path::new("/tmp"), Path::new("/tmp/home"), Path::new("/tmp/cfg"),
+            Path::new("/tmp/s.sock"), "k", None, &PaneContext::baked(),
+        );
+        assert_eq!(worker.get_env("CARGO_HOME").map(|s| s.to_os_string()), std::env::var_os("CARGO_HOME"));
+        assert_eq!(worker.get_env("RUSTUP_HOME").map(|s| s.to_os_string()), std::env::var_os("RUSTUP_HOME"));
+    }
+
+    /// rustup's own documented overrides come first: an operator who moved their
+    /// toolchain said where it went, and this must not out-guess them.
+    #[test]
+    fn an_operator_who_moved_their_rustup_is_honoured_over_the_default_location() {
+        let (root, expected) = fake_operator_toolchain("moved-rustup");
+        let previous = (std::env::var("RUSTUP_HOME").ok(), std::env::var("CARGO_HOME").ok());
+        std::env::set_var("RUSTUP_HOME", &expected.rustup_home);
+        std::env::set_var("CARGO_HOME", root.join("cargo"));
+
+        let found = operator_toolchain().expect("a moved toolchain is still a toolchain");
+        assert_eq!(found, expected);
+
+        match previous.0 { Some(v) => std::env::set_var("RUSTUP_HOME", v), None => std::env::remove_var("RUSTUP_HOME") }
+        match previous.1 { Some(v) => std::env::set_var("CARGO_HOME", v), None => std::env::remove_var("CARGO_HOME") }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The seed's whole job: every shim a build needs, all pointing at the one
+    /// `rustup` binary. All eight, because seeding `cargo` alone fails at
+    /// `could not execute process 'rustc -vV'` (`fence-notes.md`, arm 5a).
+    #[test]
+    fn seeding_the_fleets_cargo_home_puts_a_whole_shim_set_on_the_workers_path() {
+        let (root, operator) = fake_operator_toolchain("seed-cargo");
+        let fleet = fleet_dirs(&root);
+        seed_fleet_toolchain(&fleet, &operator).unwrap();
+
+        for shim in TOOLCHAIN_SHIMS {
+            let at = fleet.cargo_home.join("bin").join(shim);
+            assert_eq!(
+                std::fs::read_link(&at).unwrap(),
+                operator.rustup_bin,
+                "{shim} must be the operator's rustup, which dispatches on argv[0]",
+            );
+        }
+        assert!(TOOLCHAIN_SHIMS.contains(&"cargo") && TOOLCHAIN_SHIMS.contains(&"rustc"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The mirror: settings copied, toolchains symlinked, kilobytes not gigabytes.
+    /// This is what keeps a `rust-toolchain.toml` download inside `~/.fleetor`
+    /// (`fence-notes.md`, arm 9b).
+    #[test]
+    fn the_fleets_rustup_home_mirrors_the_operators_toolchains_without_copying_them() {
+        let (root, operator) = fake_operator_toolchain("seed-rustup");
+        let fleet = fleet_dirs(&root);
+        seed_fleet_toolchain(&fleet, &operator).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(fleet.rustup_home.join("settings.toml")).unwrap(),
+            "default_toolchain = \"stable\"\n",
+        );
+        for name in ["stable-aarch64-apple-darwin", "1.95.0-aarch64-apple-darwin"] {
+            let at = fleet.rustup_home.join("toolchains").join(name);
+            assert_eq!(
+                std::fs::read_link(&at).unwrap(),
+                operator.rustup_home.join("toolchains").join(name),
+                "a mirrored toolchain is a link, never a copy",
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Idempotent, and one working link either way — the seed runs on every spawn.
+    #[test]
+    fn seeding_the_fleets_toolchain_a_second_time_leaves_one_working_link() {
+        let (root, operator) = fake_operator_toolchain("seed-twice");
+        let fleet = fleet_dirs(&root);
+        seed_fleet_toolchain(&fleet, &operator).unwrap();
+        seed_fleet_toolchain(&fleet, &operator).unwrap();
+
+        let cargo = fleet.cargo_home.join("bin").join("cargo");
+        assert_eq!(std::fs::read_link(&cargo).unwrap(), operator.rustup_bin);
+        assert_eq!(std::fs::read_dir(fleet.cargo_home.join("bin")).unwrap().count(), TOOLCHAIN_SHIMS.len());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The one deliberate difference from the write-once `.gitconfig` seed: a
+    /// link the operator broke by moving their rustup is *replaced*. There is no
+    /// operator edit to preserve in a symlink FLEETOR made, and a dangling `cargo`
+    /// is a `command not found` whose cause is invisible from inside the pane.
+    #[test]
+    fn a_toolchain_link_left_dangling_by_a_moved_rustup_is_replaced_rather_than_left_broken() {
+        let (root, operator) = fake_operator_toolchain("dangling");
+        let fleet = fleet_dirs(&root);
+        let bin = fleet.cargo_home.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::os::unix::fs::symlink(root.join("gone/rustup"), bin.join("cargo")).unwrap();
+        assert!(std::fs::metadata(bin.join("cargo")).is_err(), "arranged: the link is dangling");
+
+        seed_fleet_toolchain(&fleet, &operator).unwrap();
+
+        assert_eq!(std::fs::read_link(bin.join("cargo")).unwrap(), operator.rustup_bin);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A toolchain a *worker* downloaded into the mirror is a real directory, not
+    /// a link — 1.2 GB of it (`fence-notes.md`, arm 9b). Re-seeding must not
+    /// clobber it the way it happily replaces a stale link.
+    #[test]
+    fn a_toolchain_a_worker_downloaded_into_the_mirror_survives_the_next_seed() {
+        let (root, operator) = fake_operator_toolchain("worker-downloaded");
+        let fleet = fleet_dirs(&root);
+        seed_fleet_toolchain(&fleet, &operator).unwrap();
+        let downloaded = fleet.rustup_home.join("toolchains").join("1.74.0-aarch64-apple-darwin");
+        std::fs::create_dir_all(downloaded.join("bin")).unwrap();
+        std::fs::write(downloaded.join("bin/cargo"), "real").unwrap();
+
+        seed_fleet_toolchain(&fleet, &operator).unwrap();
+
+        assert_eq!(std::fs::read_to_string(downloaded.join("bin/cargo")).unwrap(), "real");
+        assert!(!downloaded.is_symlink());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -145,16 +145,29 @@ for a threat that is accident rather than adversary, and is why `cargo build` an
 
 Three questions left open on purpose.
 
-1. **A worker cannot build Rust, and it is not this package's doing.** The Fence
-   redirects `HOME`, rustup resolves `$HOME/.rustup`, and a worker's private home
-   has no toolchains — measured in `write-guardrail-notes.md` §3.4, with the
-   guardrail entirely uninvolved. `fence-notes.md`'s catalogue checked `gh` and
-   reasoned about `nvm`; it never checked rustup. This is precisely the "live
-   evidence that a worker legitimately needs a tool" D-052 reserved as its own
-   reversal condition, and the fix is a Fence decision with its own D-entry
-   (seeding or scoping `RUSTUP_HOME`/`CARGO_HOME`), not a root on this allowlist.
-   **Recommended:** file it against D-052 before the first improve run, because an
-   improve run is a Rust build.
+1. **A worker cannot build Rust, and it is not this package's doing.**
+   ~~The Fence redirects `HOME`, rustup resolves `$HOME/.rustup`, and a worker's
+   private home has no toolchains.~~ **Closed by D-069.** Both toolchain homes are
+   now the fleet's own under `_shell/`, with a seeded shim rung on the worker
+   PATH; `docs/notes/fence-notes.md` carries the thirteen arms and the 8th
+   catalogue row.
+
+   **No root on this allowlist moved**, which was this question's instruction and
+   turned out to be structural rather than restraint: `_shell` is already every
+   pane's second root, so `_shell/cargo` and `_shell/rustup` were never refused.
+   `guardrail.rs::the_fleets_toolchain_homes_are_inside_a_pane_root_so_a_build_cache_write_is_never_refused`
+   asserts `roots.len() == 2` so a later reader who reaches for `[fence] allow`
+   to fix a Rust build finds out here that the directory was never the problem.
+
+   Two things this package recorded turned out to be understated, and the
+   correction belongs here rather than only in D-069. The failure §3.4 measured is
+   not the only one: that arm ran with the operator's *login* PATH, and with any
+   other one a worker fails earlier with `cargo: command not found`, because
+   neither `/opt/homebrew/bin` nor `/usr/local/bin` holds a cargo. And a worker's
+   builds were never only reading the operator's `~/.rustup` — a
+   `rust-toolchain.toml` pinning an uninstalled channel downloads 35,981 files
+   into it, which is why the fix is two fleet-owned directories and not two
+   pointers at the operator's.
 2. **Is writes-only enough?** Asked and answered by the operator, recorded here so
    the answer is not re-derived: no, and deliberately. A pane can still read the
    ledger, past retros and anything else on the disk; WP-12's "Hiding" section is

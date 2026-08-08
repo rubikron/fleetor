@@ -34,7 +34,7 @@ Each is stamped with the Claude Code version it measured; re-measure on a CC upd
 | [`command-channel-notes.md`](./notes/command-channel-notes.md) | What a pasted `/clear` / `/compact` actually does — empty box, queued text, mid-turn (D-045) | CC 2.1.223 |
 | [`context-gauge-notes.md`](./notes/context-gauge-notes.md) | The worker transcript path and usage schema the gauge reads (D-046) | CC 2.1.223 |
 | [`peer-review-notes.md`](./notes/peer-review-notes.md) | Plain-git proof a peer can review a branch from its own worktree (D-048) | git only |
-| [`fence-notes.md`](./notes/fence-notes.md) | What a private worker HOME stops, and the breakage catalogue (D-052) | 2026-08-06 |
+| [`fence-notes.md`](./notes/fence-notes.md) | What a private worker HOME stops, and the breakage catalogue (D-052); the Rust toolchain arms (D-069) | 2026-08-06; toolchain arms 2026-08-08 |
 | [`blackboard-shakedown.md`](./notes/blackboard-shakedown.md) | The WP-09 live-run findings | **live log** — CC 2.1.223, ongoing |
 | [`run-rotation-notes.md`](./notes/run-rotation-notes.md) | Which files an archived run has to take, measured against a crashed WAL (D-058) | 2026-08-07, SQLite/macOS 15 |
 | [`orch-config-dir-notes.md`](./notes/orch-config-dir-notes.md) | Why a fleet-owned `CLAUDE_CONFIG_DIR` silently logs `orch` out, and the variable that keeps its login (D-062) | CC 2.1.224 |

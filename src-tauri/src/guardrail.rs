@@ -575,4 +575,32 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// D-069, pinned here rather than only in `spawn.rs`: the fleet's toolchain
+    /// homes are inside `_shell`, so a build's cache writes are already allowed
+    /// and **no root was added for them**.
+    ///
+    /// WP-17's open question 1 came with an instruction — do not widen this
+    /// allowlist to make a worker's `cargo build` work — and the reason it was
+    /// never in danger of being needed is structural: `_shell` is the second root
+    /// every pane gets. This test exists so that if someone later reaches for
+    /// `[fence] allow` to "fix" a Rust build, they find out here that the
+    /// directory was never refused and the problem is somewhere else.
+    #[test]
+    fn the_fleets_toolchain_homes_are_inside_a_pane_root_so_a_build_cache_write_is_never_refused() {
+        let shell = PathBuf::from("/Users/operator/.fleetor/_shell");
+        let roots = roots_for(Path::new("/Users/operator/.fleetor/_shell/worktrees/x/worker-1"), &shell, &[]);
+
+        for dir in ["cargo", "rustup"] {
+            let home = shell.join(dir);
+            assert!(
+                roots.iter().any(|r| home.starts_with(r)),
+                "the fleet's {dir} home must already be under a root: {roots:?}",
+            );
+        }
+        assert_eq!(roots.len(), 2, "D-069 added no root of its own: {roots:?}");
+
+        // And the one carve-out still applies to config, not to the toolchain.
+        assert_eq!(policy_dir(&shell), shell.join("pane-config"));
+    }
 }

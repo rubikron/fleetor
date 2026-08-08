@@ -75,6 +75,21 @@ Everything FLEETOR writes at runtime lives here, and nowhere else — that is Ti
                        name; exactly one file seeded — .gitconfig, because
                        receipts made worker commits load-bearing
                        (docs/notes/fence-notes.md)
+    cargo/             the fleet's CARGO_HOME (D-069). ONE directory, shared by
+      bin/             all four workers — two concurrent builds serialize on
+                       cargo's own package lock, and the per-worker state that
+                       does need splitting (target/) already lives in each
+                       worktree. bin/ holds eight shims symlinked to the
+                       operator's real rustup, and is a rung on the worker PATH:
+                       without it a worker gets `cargo: command not found`,
+                       because no cargo exists outside the operator's HOME
+    rustup/            the fleet's RUSTUP_HOME (D-069) — a MIRROR, not a copy:
+      settings.toml    settings copied, one symlink per toolchain into the
+      toolchains/      operator's real ~/.rustup/toolchains. 4 KB seeded against
+                       the 1.9 GB it points at. It exists because a
+                       rust-toolchain.toml naming an uninstalled channel silently
+                       downloads one — 35,981 files, measured — and this is what
+                       decides whether that lands here or in the operator's home
 ```
 
 Points that bite:
@@ -84,6 +99,7 @@ Points that bite:
 - **`prompts/` overrides take effect at the next fleet start**, not live — they are read once at bootstrap (D-042). **There is exactly one brief with no override here, and it is not in this directory:** the evaluator's (D-066). It is compiled into the binary from a separate repo behind the `devmode` cargo feature, because an override path would put the rubric on disk where every pane can read it by absolute path and a worker's auto-approve could write to it. `prompts/README.md` §"The one brief with no override" is the account.
 - **`dev/` is the only thing under `~/.fleetor` a fleet pane cannot write into** (D-066). Every other directory here is inside some pane's guardrail roots — the evaluator's are its own working directory alone, and nobody else's include `dev/`.
 - **The Fence is a fence, not a sandbox** (D-052): name resolution stops; absolute paths, `SSH_AUTH_SOCK` and inherited PATH entries do not. `docs/notes/fence-notes.md` carries the breakage catalogue.
+- **A worker's Rust toolchain is the fleet's, not the operator's** (D-069). `CARGO_HOME` and `RUSTUP_HOME` both point under `_shell/`, so a `cargo install` a worker decides to run cannot plant a binary in `~/.cargo/bin` — which is on the *operator's* login PATH — and a toolchain download lands where `rm -rf ~/.fleetor` reaches it. Both measured; neither is something the write guardrail could refuse, because neither command names a path. `orch` gets neither variable: it is the operator's own `claude` and already has their toolchain. With no rustup on the machine both are **absent rather than pointing at nothing**, and the Activity feed says so once — a `RUSTUP_HOME` naming a missing directory makes rustup try to *install* there.
 - **The write guardrail is about writes only, and about paths a command *names*** (D-065). Each pane may write under its own cwd and `_shell/`, and nowhere else; reads are not restricted at all. What it cannot see is a write no command states — `cargo build` into `~/.cargo`, and a worker's `git commit` into the target repo's `.git`, both measured in `docs/notes/write-guardrail-notes.md` and both of which a pane cannot work without. `pane-config/` is inside a root and still refused, because a pane that edits its own `settings.json` switches the guardrail off.
 - **Nothing under `_shell/` is precious — but `runs/` is** (D-058). `_shell` holds only the live run and the machinery around it, and a deleted `~/.fleetor` costs history, never correctness of the target repo. `runs/` is where that history now accumulates, so it is the one directory here worth backing up.
 - **`orch`'s transcript is archived with the run** (D-062, closing the gap D-059 named). It used to sit in the operator's own `CLAUDE_CONFIG_DIR` outside `~/.fleetor`, and this app still does not reach in there — instead `orch` was given a directory of its own at `pane-config/orch/`. **Two environment variables make that safe and they move together:** `CLAUDE_CONFIG_DIR` alone would log `orch` out, because `claude` hashes the config dir into its Keychain service name, and the pane would reach its input box with no credential while every `fleet send` reported `accepted`. `CLAUDE_SECURESTORAGE_CONFIG_DIR` set to the *empty string* selects the operator's own entry. `docs/notes/orch-config-dir-notes.md` measures both, at CC 2.1.224.

@@ -136,6 +136,7 @@ fn fleet_with_registry_path() -> (Arc<PaneRegistry>, Arc<Transcript>, PathBuf) {
             &cwd.join("unused-cfg"),
             &socket,
             "sk-test",
+            None,
             &PaneContext::baked(),
         );
         registry.spawn(PaneId::Worker(slot), command, 24, 80).unwrap();
@@ -326,6 +327,7 @@ fn a_killed_pane_can_be_spawned_again() {
         &cwd.join("unused-cfg"),
         &socket,
         "sk-test",
+        None,
         &PaneContext::baked(),
     );
     registry.spawn(target, command, 24, 80).expect("a dead pane respawns");
