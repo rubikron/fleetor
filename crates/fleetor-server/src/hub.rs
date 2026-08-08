@@ -181,8 +181,19 @@ impl Hub {
     /// **Read the signature, as with [`Hub::task`] and [`Hub::record`]: not
     /// `async`, never touches `self.app`.** That is the whole of what makes this
     /// a report rather than an event the fleet reacts to. Nothing here reaches a
-    /// terminal, and nothing anywhere reads a handoff back — no delivery, spawn
-    /// or verb behaves differently once one is in the log.
+    /// terminal, and **nothing on the message path reads a handoff back** — no
+    /// delivery, no send, no verb behaves differently once one is in the log.
+    ///
+    /// **That sentence was narrowed by WP-15 and the narrowing is the point.**
+    /// It used to say *nothing anywhere* read one back, which was true until
+    /// something downstream started listening. What listens now is a task in
+    /// `src-tauri` subscribed to the event bus D-020 built for downstream
+    /// readers — after the append, off this thread, sending no [`AppCommand`],
+    /// and answering nothing. It does not permit, order or refuse anything,
+    /// which is what `task.rs`'s tripwire list actually bars; it changes what
+    /// *exists*, which is the shape WP-16 named as allowed and WP-19 is held to.
+    /// `tests/handoff.rs` still counts zero asks, and a `fleet send` is still
+    /// byte-identical either side of a handoff.
     ///
     /// A failed append fails the op, for the reason a task post's does: the log
     /// *is* the deliverable here, so telling `orch` its handoff landed when

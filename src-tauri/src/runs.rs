@@ -251,6 +251,123 @@ fn harvest_transcripts(shell: &Path, dest: &Path) -> u32 {
     moved
 }
 
+// --- the live run, laid out for a reader (WP-15) --------------------------------
+
+/// Lay the run that is **still being written** out in the archive's own shape,
+/// somewhere a reader can be pointed at.
+///
+/// Rotation (above) archives the *previous* run at bootstrap, so at the moment
+/// `orch` hands back, the run worth reading is the live one: `_shell/state.db`
+/// in WAL mode with this process's own writer holding it open, and transcripts
+/// still being appended to inside `pane-config/`. This produces the same three
+/// things an archived run holds — `events.json`, `manifest.json`, `transcripts/`
+/// — without disturbing any of it.
+///
+/// **Three decisions, all measured rather than reasoned
+/// (`docs/notes/live-run-snapshot-notes.md`):**
+///
+///  - **The log is read in place, read-only.** `archive::to_json` opens
+///    `SQLITE_OPEN_READ_ONLY` and sees every committed row while the writer is
+///    live; the spike confirmed the writer is undisturbed by it. So this is the
+///    *same function* rotation calls, and the `events.json` an agent reads
+///    mid-run cannot drift from the one it reads afterwards (D-059's rule).
+///  - **`archive::freeze` is never called here.** It flips the database out of
+///    WAL mode, which against a live writer fails by design — and reusing
+///    rotation's file-moving path wholesale would try it.
+///  - **Transcripts are copied, not moved.** [`harvest_transcripts`] moves them,
+///    which is right at rotation because no pane exists then. Here every pane is
+///    alive and Claude Code still has those files open; moving one is a
+///    data-loss bug in the very run being judged. Kept as a separate walk rather
+///    than a `copy: bool` on that function, because its move-not-copy contract
+///    is load-bearing and a flag would invite the accumulation bug back.
+///
+/// The directory is rebuilt from scratch on every call, so a second handoff in
+/// one run gets a snapshot of the run at *that* moment rather than a merge of
+/// two.
+pub fn snapshot_live_run(shell: &Path, dest: &Path, run_id: &str) -> Result<u32, String> {
+    let live = live_db(shell);
+    if !live.is_file() {
+        return Err(format!("there is no live run at {}", live.display()));
+    }
+    let _ = std::fs::remove_dir_all(dest);
+    std::fs::create_dir_all(dest).map_err(|e| format!("create {}: {e}", dest.display()))?;
+
+    let json = fleetor_db::archive::to_json(&live)
+        .map_err(|e| format!("reading the live run at {}: {e}", live.display()))?;
+    std::fs::write(dest.join(EVENTS_JSON), json)
+        .map_err(|e| format!("writing {}: {e}", dest.join(EVENTS_JSON).display()))?;
+
+    let transcripts = copy_transcripts(shell, dest);
+    let meta = read_live_meta(shell);
+    let manifest = serde_json::json!({
+        "run": {
+            "id": run_id,
+            "state": "live",
+            "started_ms": meta.started_ms,
+            "target": meta.target,
+            "transcripts": transcripts,
+        },
+        "layout": {
+            "events.json": "the whole event log so far, one JSON array, oldest first; `seq` and `ts` are the row's own columns",
+            "transcripts/": "one directory per pane — orch and each worker — holding that pane's Claude Code session .jsonl files, copied at the moment below",
+        },
+        "reading_this": "The event log is what the panes said to each other. The transcripts are what each pane did between saying things. Neither records terminal output.",
+        "this_is_a_snapshot": format!(
+            "Taken when the mission was handed back, while the run was still open. It holds \
+             the run up to that moment and nothing after it. There is no state.db here — the \
+             live database belongs to the running app. The final archive at runs/{run_id}/ \
+             supersedes this after the next fleet start."
+        ),
+    });
+    std::fs::write(
+        dest.join(MANIFEST_JSON),
+        serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| format!("writing {}: {e}", dest.join(MANIFEST_JSON).display()))?;
+    Ok(transcripts)
+}
+
+/// [`harvest_transcripts`]'s non-destructive twin — see [`snapshot_live_run`]
+/// for why the two are not one function with a flag.
+fn copy_transcripts(shell: &Path, dest: &Path) -> u32 {
+    let Ok(panes) = std::fs::read_dir(shell.join("pane-config")) else { return 0 };
+    let mut copied = 0;
+
+    for pane in panes.flatten() {
+        let name = pane.file_name();
+        let Ok(slugs) = std::fs::read_dir(pane.path().join("projects")) else { continue };
+        let into = dest.join("transcripts").join(&name);
+
+        for slug in slugs.flatten() {
+            let Ok(files) = std::fs::read_dir(slug.path()) else { continue };
+            for file in files.flatten() {
+                let from = file.path();
+                if from.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                    continue;
+                }
+                if std::fs::create_dir_all(&into).is_err() {
+                    continue;
+                }
+                if std::fs::copy(&from, into.join(file.file_name())).is_ok() {
+                    copied += 1;
+                }
+            }
+        }
+    }
+    copied
+}
+
+/// The directory name the live run *will* be archived under, computed from the
+/// same `started_ms` rotation will use. Naming the snapshot after it means an
+/// operator holding a retro in one hand and a `runs/` entry in the other does
+/// not have to work out which is which.
+pub fn live_run_id(shell: &Path, fallback_ms: i64) -> String {
+    let meta = read_live_meta(shell);
+    let started =
+        meta.started_ms.or_else(|| file_started_ms(&live_db(shell))).unwrap_or(fallback_ms);
+    timestamp_id(started)
+}
+
 /// Write the two files an agent reads: the log as JSON, and a manifest saying
 /// what is in the directory.
 ///
@@ -573,6 +690,102 @@ mod tests {
                 })
                 .unwrap();
         }
+    }
+
+    /// **The snapshot's whole reason for existing** (WP-15): the run the
+    /// evaluator has to read is the *live* one, because rotation archives the
+    /// previous run at bootstrap. The writer here is deliberately still open
+    /// across the snapshot — that is the situation, and a version of this test
+    /// that dropped the store first would pass while proving nothing.
+    ///
+    /// `docs/notes/live-run-snapshot-notes.md` measured the shell-level version
+    /// of this; this is the same claim through the code that actually runs.
+    #[test]
+    fn a_live_run_is_readable_while_its_writer_still_holds_it() {
+        let root = scratch("snapshot");
+        let shell = root.join("_shell");
+        begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"));
+
+        // The live writer, held open for the whole test.
+        let store = SqliteStore::open(&shell.join("state.db")).unwrap();
+        let say = |body: &str| {
+            store
+                .append_event(&FleetEvent::Message {
+                    id: fleetor_core::ids::new_id("msg"),
+                    from: PaneId::Orch,
+                    to: PaneId::Worker(1),
+                    body: body.into(),
+                    group: None,
+                    accepted: true,
+                    detail: None,
+                })
+                .unwrap();
+        };
+        say("take the parser");
+        say("on it");
+
+        // A transcript, where a pane's config dir really puts one.
+        let sessions = shell.join("pane-config/orch/projects/-tmp-logstat");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(sessions.join("a1b2.jsonl"), "{\"role\":\"assistant\"}\n").unwrap();
+
+        let dest = root.join("dev/retro/2026-08-07T14-32-05Z");
+        let copied = snapshot_live_run(&shell, &dest, "2026-08-07T14-32-05Z").unwrap();
+
+        let rows: Vec<serde_json::Value> =
+            serde_json::from_str(&std::fs::read_to_string(dest.join(EVENTS_JSON)).unwrap()).unwrap();
+        assert_eq!(rows.len(), 2, "every committed row, uncheckpointed WAL and all");
+        assert_eq!(rows[0]["body"], "take the parser");
+
+        assert_eq!(copied, 1);
+        assert!(dest.join("transcripts/orch/a1b2.jsonl").is_file());
+        // **Copied, never moved.** Claude Code still has this file open; moving
+        // it would be a data-loss bug in the very run being judged.
+        assert!(sessions.join("a1b2.jsonl").is_file(), "the live transcript stayed where it was");
+
+        // No `state.db`: the live database belongs to the running app, and a
+        // copy of it here would be the stale-prefix failure the notes measured.
+        assert!(!dest.join("state.db").exists());
+        let manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dest.join(MANIFEST_JSON)).unwrap())
+                .unwrap();
+        assert_eq!(manifest["run"]["state"], "live");
+        assert!(manifest["this_is_a_snapshot"].as_str().unwrap().contains("still open"));
+
+        // And the writer is undisturbed: the run goes on after the retro starts.
+        say("one more thing");
+        assert_eq!(store.events_since(0).unwrap().len(), 3);
+    }
+
+    /// A second `fleet handoff` is a real sequence (D-064 refuses to argue with
+    /// it), so the snapshot is rebuilt rather than merged — otherwise the
+    /// evaluator reads a directory that is two runs' worth of one run.
+    #[test]
+    fn a_second_snapshot_replaces_the_first_rather_than_merging_into_it() {
+        let root = scratch("resnapshot");
+        let shell = root.join("_shell");
+        begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"));
+        let store = SqliteStore::open(&shell.join("state.db")).unwrap();
+        store.append_event(&FleetEvent::Notice { level: NoticeLevel::Info, text: "up".into() }).unwrap();
+
+        let dest = root.join("dev/retro/run");
+        snapshot_live_run(&shell, &dest, "run").unwrap();
+        std::fs::write(dest.join("stale.txt"), "from the first handoff").unwrap();
+        snapshot_live_run(&shell, &dest, "run").unwrap();
+
+        assert!(!dest.join("stale.txt").exists(), "the directory is rebuilt, not added to");
+        assert!(dest.join(EVENTS_JSON).is_file());
+    }
+
+    /// The retro directory is outside `_shell`, which is the only reason the
+    /// fleet being judged cannot write into it: every pane's write guardrail
+    /// has `_shell` as a root (D-065).
+    #[test]
+    fn the_snapshot_refuses_when_there_is_no_live_run() {
+        let root = scratch("norun");
+        let err = snapshot_live_run(&root.join("_shell"), &root.join("dev/retro/x"), "x")
+            .expect_err("no database, no snapshot");
+        assert!(err.contains("no live run"), "{err}");
     }
 
     #[test]

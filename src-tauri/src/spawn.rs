@@ -123,6 +123,56 @@ pub fn orch_command(
     cmd
 }
 
+// --- the evaluator ------------------------------------------------------------
+
+/// The evaluator's `claude` (WP-15), in the directory the run was laid out in.
+///
+/// **Shaped like `orch`, not like a worker, and for the same reason `orch` is:**
+/// it is a judge, so it runs on the operator's own account and model with a full
+/// environment inherit. It gets no private `HOME` — the Fence is worker-only
+/// (D-052) and this pane has to reach a real `git` and a real toolchain to check
+/// the fleet's claims — and no `ANTHROPIC_*` override.
+///
+/// Two things it does **not** share with `orch`:
+///
+///  - **Its brief is not from `prompts/`.** It is `brief` here, compiled in from
+///    a separate repo under the `devmode` feature (`crate::evaluator`), and
+///    there is no `~/.fleetor/prompts/` override for it.
+///  - **`--permission-mode auto`, which `orch` does not get.** `orch` is watched
+///    by an operator who approves its calls; this pane is expected to read a few
+///    hundred archived files and run the target's own test suite unattended, and
+///    a `manual` posture would park it on its first `Read` while looking exactly
+///    like a healthy pane — the risk register's worst entry. This is **not** a
+///    widening of Tier 1.7: its write guardrail is narrower than any worker's
+///    (`fleet::install_guardrail` gives it its own directory and not `_shell`),
+///    so what auto-approve can actually change here is a strict subset of what a
+///    worker's already could. Said plainly so it is not re-litigated, exactly as
+///    WP-17 said the inverse.
+///
+/// `config_dir` must already have been through [`seed_config_dir`] for this
+/// exact `cwd` (L1), and the `CLAUDE_SECURESTORAGE_CONFIG_DIR` pairing is
+/// `orch`'s (D-062): set and empty, so the operator's own login is found rather
+/// than an empty namespace keyed by a hash of the config dir.
+pub fn evaluator_command(
+    cwd: &Path,
+    socket: &Path,
+    config_dir: &Path,
+    brief: &str,
+    permission_mode: &str,
+) -> CommandBuilder {
+    let mut cmd = base_command(&[
+        "--permission-mode".to_string(),
+        permission_mode.to_string(),
+        "--system-prompt".to_string(),
+        brief.to_string(),
+    ]);
+    cmd.cwd(cwd);
+    apply_pane_env(&mut cmd, PaneId::Evaluator, socket, augmented_path());
+    cmd.env("CLAUDE_CONFIG_DIR", config_dir);
+    cmd.env(ENV_CC_SECURESTORAGE_DIR, "");
+    cmd
+}
+
 // --- the workers --------------------------------------------------------------
 
 /// One worker pane: isolated config dir, its own worktree, its own private

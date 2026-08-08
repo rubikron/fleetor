@@ -66,6 +66,14 @@ $ $EDITOR ~/.fleetor/prompts/worker.md
 
 To go back to the built-in, delete the file.
 
+## The one brief with no override, and why
+
+Every file in the table above can be replaced from `~/.fleetor/prompts/`. **There is exactly one brief in this application that cannot be, and it is not in this directory: the evaluator's** (WP-15). It is not a fleet brief — the evaluator is not a pane in the fleet — and it lives in a separate repo, compiled into the binary at build time behind the `devmode` cargo feature. This repo's source carries none of its prose, and in a dev build no file on disk holds it either.
+
+That is not an omission to be tidied up later. The evaluator grades the fleet, and the override mechanism above is a directory every pane can read by absolute path and a worker's auto-approve could write into. An override path for that one brief would hand the fleet both the rubric it is judged against and the ability to edit it — and the second is worse than the first, because a grader softened by the generation it judges makes "did the fleet improve" permanently unanswerable rather than merely unfair. **Changing the grader means editing the file in the other repo and rebuilding, deliberately, with a version bump.**
+
+`src-tauri/src/prompts.rs` — the resolver this whole directory goes through — therefore has no evaluator arm, and `src-tauri/tests/evaluator.rs` fails if one appears.
+
 ## Editing notes
 
 **Keep each paragraph on one line.** These files are rendered into a system prompt, where a hard wrap becomes a real newline. Prose reads the same either way, but the briefs are checked by tests that read a paragraph as a line — and a peer list split across two lines is harder for a model to parse, not easier. Turn on soft wrap in your editor.

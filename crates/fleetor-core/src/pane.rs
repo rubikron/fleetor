@@ -17,30 +17,44 @@ use std::str::FromStr;
 /// The worker slots a default fleet runs. The orchestrator is not a slot.
 pub const WORKER_SLOTS: [u8; 4] = [1, 2, 3, 4];
 
-/// One participant in the fleet. `Orch` is the operator's own orchestrator TUI;
-/// `Worker(n)` is worker pane `n`; `Operator` is the human, who has no terminal
-/// of their own (WP-07).
+/// One name the fleet's record can carry. `Orch` is the operator's own
+/// orchestrator TUI; `Worker(n)` is worker pane `n`; `Operator` is the human,
+/// who has no terminal of their own (WP-07); `Evaluator` is a terminal that is
+/// not part of the fleet (WP-15).
 ///
 /// Ordering is declaration order — the operator first, then orch, then every
-/// worker — which is the order the roster wants.
+/// worker — which is the order the roster wants. `Evaluator` sorts last on
+/// purpose: it appears in no enumeration, so there is no position it should
+/// occupy inside one.
 ///
-/// **`Operator` is the one variant with no pty behind it**, and every asymmetry
-/// in this package falls out of that single fact rather than out of a flag:
-/// nothing spawns it, nothing kills it, and a message addressed to it is
-/// `recorded` rather than `accepted`. See [`PaneId::has_pty`].
+/// **Two variants are exceptions, in opposite directions, and every asymmetry
+/// around them falls out of one fact each rather than out of a flag:**
+///
+///  - **`Operator` is the one variant with no pty behind it.** Nothing spawns
+///    it, nothing kills it, and a message addressed to it is `recorded` rather
+///    than `accepted`. See [`PaneId::has_pty`].
+///  - **`Evaluator` has a pty and is not a member of the fleet** (WP-15). It is
+///    the mirror image of the operator: the human joins the `fleet roster`
+///    *listing* and never the app's roster, and this joins the app's roster —
+///    it is a real terminal, so a message to it is honestly `accepted` — and
+///    never the listing. See [`PaneId::is_fleet_member`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum PaneId {
     /// The human at the keyboard. A name in the record, never a terminal.
     Operator,
     Orch,
     Worker(u8),
+    /// A terminal that is not in the fleet (WP-15). Addressable by name in both
+    /// directions and enumerated by nothing — see [`PaneId::is_fleet_member`]
+    /// for the one predicate every consequence of that is derived from.
+    Evaluator,
 }
 
 impl PaneId {
-    /// The worker slot number, or `None` for the orchestrator and the operator.
+    /// The worker slot number, or `None` for every name that is not a worker.
     pub fn slot(self) -> Option<u8> {
         match self {
-            PaneId::Operator | PaneId::Orch => None,
+            PaneId::Operator | PaneId::Orch | PaneId::Evaluator => None,
             PaneId::Worker(n) => Some(n),
         }
     }
@@ -51,6 +65,29 @@ impl PaneId {
 
     pub fn is_operator(self) -> bool {
         matches!(self, PaneId::Operator)
+    }
+
+    pub fn is_evaluator(self) -> bool {
+        matches!(self, PaneId::Evaluator)
+    }
+
+    /// Whether this name is part of the fleet — the predicate every enumeration
+    /// of the fleet filters on, and the whole of WP-15's veil in one function.
+    ///
+    /// A member is enumerable: it appears in `fleet roster`'s answer, it is a
+    /// leg of a `fleet broadcast`, and its name is in the peer list a brief is
+    /// rendered with. `Evaluator` is none of those things, and that is not a
+    /// property of how the app was started or of what happens to be spawned —
+    /// it is a property of the name, answered once here so no caller re-derives
+    /// it and gets a different answer.
+    ///
+    /// **Not the same question as [`PaneId::has_pty`], and the two disagree in
+    /// both directions.** The operator has no terminal and *is* a name the
+    /// fleet is taught. The evaluator has a real terminal and is not. Deriving
+    /// one from the other is how a fan-out ends up reaching something no pane
+    /// has ever heard of, which is the leak this package exists to prevent.
+    pub fn is_fleet_member(self) -> bool {
+        !matches!(self, PaneId::Evaluator)
     }
 
     /// Whether there is a terminal behind this name.
@@ -71,10 +108,12 @@ impl PaneId {
     /// The full roster of **panes** for a fleet with these worker slots: orch
     /// first, then the workers in the order given.
     ///
-    /// The operator is deliberately not in it. This list is what spawns, what a
-    /// broadcast fans out to, and whose names a brief's peer list is built from
-    /// — three things the human is not. The one place the operator joins a
-    /// roster is the `fleet roster` *listing*, which the hub assembles.
+    /// Neither the operator nor the evaluator is in it, for opposite reasons.
+    /// This list is what spawns, what a broadcast fans out to, and whose names a
+    /// brief's peer list is built from — three things the human is not, and
+    /// three things the evaluator must not be. The one place the operator joins
+    /// a roster is the `fleet roster` *listing*, which the hub assembles; the
+    /// evaluator joins no listing at all.
     pub fn roster(workers: &[u8]) -> Vec<PaneId> {
         std::iter::once(PaneId::Orch).chain(workers.iter().copied().map(PaneId::Worker)).collect()
     }
@@ -86,6 +125,7 @@ impl fmt::Display for PaneId {
             PaneId::Operator => f.write_str("operator"),
             PaneId::Orch => f.write_str("orch"),
             PaneId::Worker(n) => write!(f, "worker-{n}"),
+            PaneId::Evaluator => f.write_str("evaluator"),
         }
     }
 }
@@ -96,6 +136,13 @@ impl fmt::Display for PaneId {
 pub struct ParsePaneIdError(pub String);
 
 impl fmt::Display for ParsePaneIdError {
+    /// **This sentence lists the fleet's names, and it is the complete list of
+    /// them — do not add to it.** It is read by a model that mistyped a pane
+    /// name, so it is the one place a name nobody was briefed on would leak by
+    /// accident (WP-15's veil). Every name that belongs in the fleet is here;
+    /// the one that is missing is missing because it is not in the fleet, and
+    /// `the_parse_error_never_names_a_pane_that_is_not_in_the_fleet` fails if
+    /// that changes.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -121,6 +168,14 @@ impl FromStr for PaneId {
     /// *pane* name constantly; the operator is addressed rarely and by one
     /// name that both briefs spell out, so a short alias would only buy a way
     /// to reach the human by accident.
+    ///
+    /// **`evaluator` is exact for the same reason and one more (WP-15).** It is
+    /// a name no pane is briefed on, so the only pane that types it is one that
+    /// has already been messaged by it — and it will type back exactly what it
+    /// was shown. An alias would buy nothing and would put the name one typo
+    /// away from a pane that has never heard of it. Parsing it is deliberately
+    /// **not** a claim that it exists: the hub holds the roster, and a name with
+    /// no terminal behind it is refused with the same sentence `worker-9` gets.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let t = s.trim().to_ascii_lowercase();
         if matches!(t.as_str(), "orch" | "orchestrator" | "lead" | "o") {
@@ -128,6 +183,9 @@ impl FromStr for PaneId {
         }
         if t == "operator" {
             return Ok(PaneId::Operator);
+        }
+        if t == "evaluator" {
+            return Ok(PaneId::Evaluator);
         }
         let digits = t
             .strip_prefix("worker-")
@@ -324,6 +382,59 @@ mod tests {
     #[test]
     fn the_pane_roster_never_contains_the_operator() {
         assert!(!PaneId::roster(&WORKER_SLOTS).contains(&PaneId::Operator));
+    }
+
+    /// The two exceptions, side by side — which is the only way either reads
+    /// clearly. They are mirror images and neither predicate implies the other.
+    #[test]
+    fn membership_and_having_a_terminal_are_different_questions() {
+        // The human: in the fleet's vocabulary, with no terminal.
+        assert!(PaneId::Operator.is_fleet_member());
+        assert!(!PaneId::Operator.has_pty());
+        // The other one: a real terminal, in no enumeration.
+        assert!(!PaneId::Evaluator.is_fleet_member());
+        assert!(PaneId::Evaluator.has_pty(), "so a message to it is honestly `accepted`");
+
+        assert!(PaneId::Orch.is_fleet_member() && PaneId::Orch.has_pty());
+        assert!(PaneId::Worker(3).is_fleet_member() && PaneId::Worker(3).has_pty());
+        assert_eq!(PaneId::Evaluator.slot(), None);
+        assert!(!PaneId::Evaluator.is_orch() && !PaneId::Evaluator.is_operator());
+    }
+
+    /// Not enumerated is not the same as not addressable: exact, no aliases,
+    /// and it round-trips like every other name — because a pane that has been
+    /// messaged has to be able to answer.
+    #[test]
+    fn the_name_outside_the_fleet_parses_exactly_and_has_no_aliases() {
+        for s in ["evaluator", "Evaluator", " EVALUATOR "] {
+            assert_eq!(s.parse::<PaneId>().unwrap(), PaneId::Evaluator, "{s}");
+        }
+        for near_miss in ["e", "eval", "evaluator-1", "evaluators", "judge"] {
+            assert!(near_miss.parse::<PaneId>().is_err(), "{near_miss} must not parse");
+        }
+        let json = serde_json::to_string(&PaneId::Evaluator).unwrap();
+        assert_eq!(json, "\"evaluator\"");
+        assert_eq!(serde_json::from_str::<PaneId>(&json).unwrap(), PaneId::Evaluator);
+    }
+
+    /// **The one place a name nobody was briefed on leaks by accident.** A model
+    /// that mistypes a pane name reads this sentence off its own stderr and acts
+    /// on what it finds, so the list has to be the fleet and only the fleet.
+    /// `nothing_a_pane_can_read_ever_names_the_evaluator` is the other half.
+    #[test]
+    fn the_parse_error_never_names_a_pane_that_is_not_in_the_fleet() {
+        let message = ParsePaneIdError("sidebar".to_string()).to_string().to_lowercase();
+        for name in PaneId::roster(&WORKER_SLOTS).iter().chain([&PaneId::Operator]) {
+            let shown = match name.slot() {
+                Some(_) => "worker-".to_string(), // the list gives the shape, not four rows
+                None => name.to_string(),
+            };
+            assert!(message.contains(&shown), "the fleet's own names must all be offered: {name}");
+        }
+        assert!(
+            !message.contains(&PaneId::Evaluator.to_string()),
+            "a typo must not teach a name the sender was never briefed on: {message}",
+        );
     }
 
     #[test]

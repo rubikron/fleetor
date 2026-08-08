@@ -18,6 +18,15 @@ export const ORCH: PaneId = "orch";
 /// `accepted`. See `hasPty`.
 export const OPERATOR: PaneId = "operator";
 
+/// A terminal that is not part of the fleet (WP-15), mirroring
+/// `fleetor_core::pane::PaneId::Evaluator`.
+///
+/// **The mirror image of `OPERATOR`.** The human is in the `fleet roster`
+/// listing and has no terminal; this has a real terminal and is in no listing at
+/// all — not `ROSTER`, not a broadcast's legs, not any brief's peer list. It is
+/// addressable by name in both directions and enumerated by nothing.
+export const EVALUATOR: PaneId = "evaluator";
+
 export const WORKER_SLOTS = [1, 2, 3, 4] as const;
 
 export function workerPane(slot: number): PaneId {
@@ -41,10 +50,16 @@ export function hasPty(pane: PaneId): boolean {
 }
 
 /// The suffix in a pane's event channel names (`pty://output/orch`,
-/// `pty://output/2`). Single-sourced here because listening on the wrong name
-/// renders nothing and reports no error — there is no failure signal for it.
+/// `pty://output/2`, `pty://output/evaluator`). Single-sourced here because
+/// listening on the wrong name renders nothing and reports no error — there is
+/// no failure signal for it.
+///
+/// The Rust half is `pty.rs::channel_key`, and the two are pinned against each
+/// other by `pty.rs`'s own uniqueness test. A worker's key is its bare slot
+/// number; every other name is itself.
 export function paneKey(pane: PaneId): string {
-  return pane === ORCH ? "orch" : pane.replace(/^worker-/, "");
+  const slot = paneSlot(pane);
+  return slot === null ? pane : String(slot);
 }
 
 export function paneSlot(pane: PaneId): number | null {

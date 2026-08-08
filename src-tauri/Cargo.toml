@@ -21,6 +21,19 @@ path = "src/lib.rs"
 name = "fleetor-shell"
 path = "src/main.rs"
 
+# WP-15. `devmode` is a **build-time** switch and is not the same thing as
+# WP-16's runtime dev mode — that one is a key in `~/.fleetor/config.json` the
+# operator flips without a rebuild (D-061 says so outright). This feature does
+# exactly one thing: compile the evaluator's brief into the binary from a
+# separate repo (`build.rs`). Both must be on for an evaluator to exist, and
+# they are on for different reasons: the feature says "this build has a grader",
+# the mode says "the operator wants one now".
+#
+# Off by default, so a release build carries no evaluator prose at all.
+[features]
+default = []
+devmode = []
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

@@ -15,6 +15,10 @@ pub mod deliver;
 /// Dev mode (WP-16) — read by the UI and by later packages, never by the
 /// delivery path (Tier 1.4; `tests/dev_mode.rs` is the tripwire).
 pub mod dev;
+/// The evaluator (WP-15) — whether one may exist, what it is told, and where it
+/// works. Its brief is compiled in from a separate repo behind the `devmode`
+/// feature and has no `~/.fleetor/prompts/` override; a default build has none.
+pub mod evaluator;
 pub mod fleet;
 /// The write guardrail (WP-17) — a `PreToolUse` hook per pane, never anything
 /// the delivery path can read (Tier 1.4; `tests/write_guardrail.rs` is the
@@ -103,9 +107,23 @@ pub fn run() {
             dev::dev_mode_set,
         ])
         .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { .. } = event {
-                teardown_fleet(window);
+            let WindowEvent::CloseRequested { api, .. } = event else { return };
+            // **Which window closed decides what happens, and before WP-15 it
+            // did not have to.** This handler used to tear the whole fleet down
+            // on any `CloseRequested`, which was correct while there was exactly
+            // one window and is a six-pty kill the moment there are two.
+            if window.label() == evaluator::WINDOW_LABEL {
+                // §7 rule 5, at the window level. Destroying the webview
+                // destroys its xterm and the buffer with it, and there is no
+                // screen replay on this side of the pty — a reopened window
+                // would come back blank over a terminal that is still alive.
+                // So the close is refused and the window hidden; the wake shows
+                // it again. Its pane dies with the fleet, like every other.
+                api.prevent_close();
+                let _ = window.hide();
+                return;
             }
+            teardown_fleet(window);
         })
         .build(tauri::generate_context!())
         .expect("error while building the fleetor shell")

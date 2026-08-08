@@ -39,6 +39,7 @@ Each is stamped with the Claude Code version it measured; re-measure on a CC upd
 | [`run-rotation-notes.md`](./notes/run-rotation-notes.md) | Which files an archived run has to take, measured against a crashed WAL (D-058) | 2026-08-07, SQLite/macOS 15 |
 | [`orch-config-dir-notes.md`](./notes/orch-config-dir-notes.md) | Why a fleet-owned `CLAUDE_CONFIG_DIR` silently logs `orch` out, and the variable that keeps its login (D-062) | CC 2.1.224 |
 | [`write-guardrail-notes.md`](./notes/write-guardrail-notes.md) | That a `PreToolUse` deny really stops `Bash`, and where a real build and a real commit actually write (D-065) | CC 2.1.224 |
+| [`live-run-snapshot-notes.md`](./notes/live-run-snapshot-notes.md) | That a run still being written reads whole through a read-only connection, and that copying `state.db` alone loses it (D-066) | 2026-08-07, sqlite3 3.43.2 |
 
 ## Roadmap (`docs/roadmap/`)
 
@@ -65,6 +66,15 @@ evaluator's own code, so it blocks any improve run.
 account of it is [`fleet-comms-map.md`](./fleet-comms-map.md) §3e; the package doc carries
 why the verb is not called `done`, why it answers `recorded`, and the nine places a verb
 list is written down.
+
+[`15-evaluator-window.md`](./roadmap/15-evaluator-window.md) landed the evaluator (D-066)
+and is the as-built record for it: the `PaneId` that is in no enumeration, the wake that
+rides the event bus rather than the message path, how a run that is still being written
+gets read, and the `devmode` cargo feature that compiles the grader's brief in from a
+separate repo. Read its section **"The one test whose letter changed"** before touching
+`tests/dev_mode.rs` — it is the one existing tripwire this arc rewrote, and why the
+replacement is stricter. The message path's account is
+[`fleet-comms-map.md`](./fleet-comms-map.md) §3f, which is written to be read beside §3c.
 
 `roadmap/source/` is the raw upstream material — the operator's vision-tenets essay (`vision_tenets.md`; the shipped copy is `prompts/vision-tenets.md`, D-056) and the "Autonomy Designs" catalogue (`fleetor-autonomy.html` and `fleetor-autonomy-plain.html` — two renders of one document).
 
