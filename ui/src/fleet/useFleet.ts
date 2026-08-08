@@ -12,7 +12,7 @@
 // the target — so subscribing afterwards loses exactly the events that explain
 // where the fleet is working.
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { bootstrap, fetchConfig, onFleetEvent } from "./api";
 import {
   isCommand,
@@ -34,9 +34,9 @@ export interface FleetView {
   tasks: TaskEvent[];
   config: FleetConfig | null;
   refreshConfig: () => void;
+  start: () => Promise<void>;
 }
 
-/// The activity log's tail. Messages are exempt — see the module comment.
 const MAX_FEED = 300;
 
 export function useFleet(): FleetView {
@@ -48,7 +48,10 @@ export function useFleet(): FleetView {
   const [tasks, setTasks] = useState<TaskEvent[]>([]);
   const [config, setConfig] = useState<FleetConfig | null>(null);
   const [configNonce, setConfigNonce] = useState(0);
+  const listenerReady = useRef(false);
 
+  // Attach the event listener on mount — before any bootstrap, so events
+  // emitted during bootstrap are captured.
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
@@ -58,23 +61,14 @@ export function useFleet(): FleetView {
         unlisten = await onFleetEvent((event) => {
           setFeed((f) => [event, ...f].slice(0, MAX_FEED));
           if (isMessage(event)) setMessages((m) => [event, ...m]);
-          // Unbounded for the same reason messages are: a command's `why` is the
-          // reasoning chain the log exists to keep, and dropping the oldest ones
-          // would quietly delete the earliest reasoning first.
           if (isCommand(event)) setCommands((c) => [event, ...c]);
-          // Unbounded, and here for a harder reason than the other two: the
-          // board is a *fold* over these events, so dropping the oldest would
-          // silently delete blocks from the board rather than trimming a log.
           if (isTask(event)) setTasks((t) => [event, ...t]);
         });
         if (cancelled) {
           unlisten();
           return;
         }
-
-        await bootstrap();
-        if (cancelled) return;
-        setReady(true);
+        listenerReady.current = true;
       } catch (e) {
         if (!cancelled) setError(String(e));
       }
@@ -86,9 +80,9 @@ export function useFleet(): FleetView {
     };
   }, []);
 
-  // Config is a snapshot of the live posture; refetched when the operator
-  // changes the target. A failure here must not sink the whole shell — the gate
-  // falls back to saying it does not know.
+  // Config works before bootstrap (fleet_config reads config.json directly
+  // when the fleet isn't bootstrapped yet), so the start gate can show what
+  // a click will launch.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -104,6 +98,15 @@ export function useFleet(): FleetView {
     };
   }, [ready, configNonce]);
 
+  const start = useCallback(async () => {
+    try {
+      await bootstrap();
+      setReady(true);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+
   return {
     ready,
     error,
@@ -113,5 +116,6 @@ export function useFleet(): FleetView {
     tasks,
     config,
     refreshConfig: () => setConfigNonce((n) => n + 1),
+    start,
   };
 }

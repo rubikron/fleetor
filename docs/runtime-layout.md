@@ -65,7 +65,10 @@ Everything FLEETOR writes at runtime lives here, and nowhere else — that is Ti
         settings.json    the PreToolUse hook, merged into whatever the operator
                          has already put there
         write-guardrail.py  the decision, rewritten from the binary every spawn
-    worktrees/         one git worktree per worker slot, branches fleet/worker-N;
+    worktrees/         namespaced by target: <repo-name>-<hash>/worker-N
+      <target-slug>/   one subdirectory per target repo (dirname + 4-char path hash)
+        worker-N/      git worktree on branch fleet/worker-N; switching targets
+                       reuses the existing worktrees for that target, not teardown/recreate
                        reviewed work merges to fleet/integration, never trunk (D-050)
     home/              the Fence (D-052): a private HOME per worker
       worker-N/        so ~/.ssh and the operator's dotfiles stop resolving by

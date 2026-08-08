@@ -168,8 +168,9 @@ export function App() {
         />
         <main className="workspace">
           <div className="workspace__stage">
-            {/* Terminals. Kept mounted; see L7. */}
-            <div className={`stage-view ${view === "fleet" ? "" : "is-hidden"}`}>
+            {/* Terminals. Kept mounted; see L7. Hidden before start so empty
+                frames don't bleed through the gate's backdrop. */}
+            <div className={`stage-view ${view === "fleet" && started ? "" : "is-hidden"}`}>
               <TerminalGrid
                 started={started}
                 selected={selectedWorker}
@@ -222,7 +223,8 @@ export function App() {
                 config={fleet.config}
                 onStart={() => {
                   setStatuses({ [ORCH]: "idle" });
-                  setStarted(true);
+                  setView("fleet");
+                  void fleet.start().then(() => setStarted(true));
                 }}
                 onTargetChanged={fleet.refreshConfig}
               />

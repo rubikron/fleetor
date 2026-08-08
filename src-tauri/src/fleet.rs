@@ -86,9 +86,10 @@ struct Fleet {
     /// Fired on window close so the hub stops serving and unlinks its socket.
     shutdown: Arc<Notify>,
     config: FleetConfig,
-    /// Resolved once at bootstrap. Panes spawn against *this*, not a re-read of
-    /// config.json — a target that changed mid-session would otherwise put half
-    /// the fleet in one repo and half in another.
+    /// Resolved at bootstrap, updated in place by `fleet_set_target` /
+    /// `fleet_pick_target`. Panes spawn against *this*, not a re-read of
+    /// config.json. Safe to update before panes exist (the start gate);
+    /// once panes are running the UI hides the target input.
     target: PathBuf,
     /// The briefs and launch settings every pane spawns with, from `prompts/`
     /// and the operator's `~/.fleetor/prompts/`. Resolved once for the same
@@ -173,9 +174,26 @@ fn worker_home_dir(slot: u8) -> PathBuf {
     shell_dir().join("home").join(format!("worker-{slot}"))
 }
 
-/// A worker's own checkout of the target.
-fn worktree_dir(slot: u8) -> PathBuf {
-    shell_dir().join("worktrees").join(format!("worker-{slot}"))
+fn target_slug(target: &Path) -> String {
+    let canonical = target.canonicalize().unwrap_or_else(|_| target.to_path_buf());
+    let name = canonical
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("repo");
+    let mut hash = 0u32;
+    for byte in canonical.to_string_lossy().bytes() {
+        hash = hash.wrapping_mul(31).wrapping_add(byte as u32);
+    }
+    format!("{name}-{:04x}", hash & 0xFFFF)
+}
+
+/// A worker's own checkout of the target, namespaced by target repo so
+/// switching targets neither clobbers existing worktrees nor reuses stale ones.
+fn worktree_dir(target: &Path, slot: u8) -> PathBuf {
+    shell_dir()
+        .join("worktrees")
+        .join(target_slug(target))
+        .join(format!("worker-{slot}"))
 }
 
 /// The target named in `~/.fleetor/config.json`, if there is a usable one.
@@ -741,7 +759,7 @@ fn shared_checkout_warning(slot: u8, why: &str, target: &Path) -> String {
 }
 
 fn ensure_worktree(target: &Path, slot: u8) -> Result<PathBuf, String> {
-    let dir = worktree_dir(slot);
+    let dir = worktree_dir(target, slot);
     if dir.join(".git").exists() {
         return Ok(dir);
     }
@@ -751,7 +769,8 @@ fn ensure_worktree(target: &Path, slot: u8) -> Result<PathBuf, String> {
     // without this, `worktree add` refuses the path it already knows about.
     let _ = git(target, &["worktree", "prune"]);
 
-    let branch = format!("fleet/worker-{slot}");
+    let slug = target_slug(target);
+    let branch = format!("fleet/{slug}/worker-{slot}");
     let dir_str = dir.to_string_lossy().into_owned();
     let output = std::process::Command::new("git")
         .arg("-C")
@@ -869,12 +888,19 @@ fn spawn_hub(
 
 // --- commands -----------------------------------------------------------------
 
-/// The live fleet configuration for the top bar and the spend gate.
+/// The fleet configuration for the top bar and the spend gate. Works before
+/// bootstrap (reads config.json directly) so the start gate can show what a
+/// click will launch without actually launching it.
 #[tauri::command]
 pub fn fleet_config(state: State<'_, FleetState>) -> Result<FleetConfig, String> {
     let guard = state.0.lock().map_err(|e| e.to_string())?;
-    let fleet = guard.as_ref().ok_or("fleet not bootstrapped")?;
-    Ok(fleet.config.clone())
+    if let Some(fleet) = guard.as_ref() {
+        return Ok(fleet.config.clone());
+    }
+    drop(guard);
+    let target = configured_target()?
+        .unwrap_or_else(testbed_dir);
+    Ok(fleet_config_for(&target))
 }
 
 /// The full path of the repo the running fleet is working in.
@@ -1007,12 +1033,37 @@ fn operator_result(result: OpResult) -> Result<OperatorSend, String> {
     }
 }
 
+fn apply_target(state: &FleetState, target: &Path) {
+    let is_git = git(target, &["rev-parse", "--git-dir"]);
+    if let Ok(mut guard) = state.0.lock() {
+        if let Some(fleet) = guard.as_mut() {
+            fleet.target = target.to_path_buf();
+            fleet.config = fleet_config_for(target);
+            note(
+                &fleet.store,
+                NoticeLevel::Info,
+                &format!("target set to {}", target.display()),
+            );
+            if !is_git {
+                note(
+                    &fleet.store,
+                    NoticeLevel::Warn,
+                    &format!(
+                        "{} is not a git repository — workers will share a single \
+                         checkout with no worktrees and no per-worker branches.",
+                        target.display()
+                    ),
+                );
+            }
+        }
+    }
+}
+
 /// Ask the operator for a repo and record it in `~/.fleetor/config.json`.
 ///
-/// Deliberately does **not** move a running fleet: panes already have a cwd, and
-/// four workers silently relocated mid-session would be reporting on files they
-/// no longer hold. The new target is announced and takes effect on next launch.
-/// Returns `Ok(None)` when the picker was dismissed.
+/// Updates `Fleet.target` and `Fleet.config` in place so the change takes
+/// effect immediately — the start gate is the only caller, and no panes exist
+/// yet. Returns `Ok(None)` when the picker was dismissed.
 #[tauri::command]
 pub fn fleet_pick_target(
     app: AppHandle,
@@ -1029,26 +1080,14 @@ pub fn fleet_pick_target(
     }
 
     write_target(&path)?;
-
-    if let Ok(guard) = state.0.lock() {
-        if let Some(fleet) = guard.as_ref() {
-            note(
-                &fleet.store,
-                NoticeLevel::Info,
-                &format!(
-                    "target set to {} — it takes effect the next time the fleet starts.",
-                    path.display()
-                ),
-            );
-        }
-    }
+    apply_target(&state, &path);
     Ok(Some(path.to_string_lossy().into_owned()))
 }
 
 /// Record a target the operator **typed** rather than picked.
 ///
-/// Same contract as `fleet_pick_target`: it writes the config and announces the
-/// change, and deliberately does not move a running fleet.
+/// Same contract as `fleet_pick_target`: writes the config and updates
+/// `Fleet.target` in place so the change takes effect immediately.
 ///
 /// A typed path is untrusted in a way a picked one is not — the folder picker
 /// can only hand back a directory that exists, whereas this accepts whatever
@@ -1076,19 +1115,7 @@ pub fn fleet_set_target(path: String, state: State<'_, FleetState>) -> Result<St
         .map_err(|e| format!("resolve {}: {e}", expanded.display()))?;
 
     write_target(&canonical)?;
-
-    if let Ok(guard) = state.0.lock() {
-        if let Some(fleet) = guard.as_ref() {
-            note(
-                &fleet.store,
-                NoticeLevel::Info,
-                &format!(
-                    "target set to {} — it takes effect the next time the fleet starts.",
-                    canonical.display()
-                ),
-            );
-        }
-    }
+    apply_target(&state, &canonical);
     Ok(canonical.to_string_lossy().into_owned())
 }
 

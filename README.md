@@ -61,7 +61,7 @@ npm install
 npm run tauri dev
 ```
 
-Then **Start fleet**. Five processes spawn: your Opus in the target repo, four Flash workers in per-slot worktrees under `~/.fleetor/_shell/worktrees/`. Ask the orchestrator to run `fleet send 2 "say hello back with fleet reply"` and watch worker-2's tab.
+Then **Start fleet**. Five processes spawn: your Opus in the target repo, four Flash workers in per-slot worktrees under `~/.fleetor/_shell/worktrees/<target-slug>/`. Ask the orchestrator to run `fleet send 2 "say hello back with fleet reply"` and watch worker-2's tab.
 
 Without a configured target it works in a seeded testbed at `~/.fleetor/testbed` — a small Python project with a passing test suite, embedded in the binary so it can't fail to materialize. Point it at your own repo with **Choose folder…** on the start gate, or by setting `target` in `~/.fleetor/config.json`.
 

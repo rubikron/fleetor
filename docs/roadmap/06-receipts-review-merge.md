@@ -35,7 +35,7 @@ The execution phase closes its loop. A worker finishing a task block runs `fleet
 
 ## Current state (verified 2026-08-06 — do not re-explore)
 
-- Worktrees: `~/.fleetor/_shell/worktrees/worker-N` on branches `fleet/worker-1..4` (`src-tauri/src/fleet.rs` — `worktree_dir` `:133`, `ensure_worktree` `:298`, `worker_cwd` fallback `:284`). Created with `git worktree add -B` from the target; object DB is shared by construction.
+- Worktrees: `~/.fleetor/_shell/worktrees/<target-slug>/worker-N` on branches `fleet/worker-1..4` (`src-tauri/src/fleet.rs` — `worktree_dir` `:191`, `ensure_worktree` `:760`, `worker_cwd` fallback `:735`). Namespaced by target (dirname + 4-char path hash), so switching targets preserves existing worktrees and creates fresh ones for the new target. Created with `git worktree add -B` from the target; object DB is shared by construction.
 - CLI: `crates/fleetor-cli/src/main.rs` — one connection, one op, exit; reads `FLEETOR_PANE`/`FLEET_SOCKET`; `report()` prints `accepted <msg_id>` / `fleet: not delivered — <detail>`. `fleet done` composes a body and reuses `Op::Send { to: orch }`.
 - Delivery contract text: post-WP-01 in `prompts/delivery-contract.md`; the verb/prompt validation coupling applies — `done` must be taught in both prompt files, `VERBS`, clap, and pinned tests in one commit.
 - Interaction with WP-08: a private HOME removes global `user.name`/`user.email` — worker commits fail. Whichever of 06/08 lands second re-validates worker commits (08 seeds a gitconfig).

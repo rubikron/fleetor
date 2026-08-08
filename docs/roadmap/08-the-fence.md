@@ -30,7 +30,7 @@ Each worker gets a private `HOME` at `~/.fleetor/_shell/home/worker-N`, and the 
 ## Current state (verified 2026-08-06 — do not re-explore)
 
 - `spawn.rs` never sets `HOME` today; workers inherit the operator's entire HOME. `augmented_path()` at `spawn.rs:137-145` reads `$HOME` at app runtime. Worker env assembly: `worker_command` `:77-105` (isolated `CLAUDE_CONFIG_DIR`, DeepSeek base URL/model/token, `env_remove`s at `:101-103`), `apply_pane_env` `:123-133`.
-- Directory conventions: `~/.fleetor/_shell/{pane-config,worktrees}/worker-N` (`fleet.rs:129,133`) — `home/worker-N` is the natural sibling.
+- Directory conventions: `~/.fleetor/_shell/{pane-config,home}/worker-N`, `~/.fleetor/_shell/worktrees/<target-slug>/worker-N` (`fleet.rs:162,172,191`) — worktrees are namespaced by target repo.
 - Setting surface: post-WP-01, `prompts/launch.conf` exists for launch-time knobs; the posture default (`open`) belongs there.
 - Sequencing: whichever of WP-06/WP-08 lands second re-validates worker commits (the gitconfig seed is why).
 

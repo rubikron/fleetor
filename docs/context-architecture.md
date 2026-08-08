@@ -62,7 +62,7 @@ Two deliberately different postures.
 | Permission mode | operator's default | `--permission-mode auto` |
 | `CLAUDE_CONFIG_DIR` | `~/.fleetor/_shell/pane-config/orch` (D-062) | `~/.fleetor/_shell/pane-config/worker-N` |
 | Credential lookup | `CLAUDE_SECURESTORAGE_CONFIG_DIR=""` → the operator's own Keychain entry | n/a — `ANTHROPIC_AUTH_TOKEN` |
-| cwd | the target repo | `~/.fleetor/_shell/worktrees/worker-N` (branch `fleet/worker-N`) |
+| cwd | the target repo | `~/.fleetor/_shell/worktrees/<target-slug>/worker-N` (branch `fleet/worker-N`) |
 
 Both get `FLEETOR_PANE` (identity — there is no anonymous connection), `FLEET_SOCKET`, an augmented `PATH` that can find `claude` and `fleet`, and a truecolor `TERM`.
 

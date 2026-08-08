@@ -105,7 +105,7 @@ The implementation, since this doc is written after it landed:
 What it builds on:
 
 - `src-tauri/src/fleet.rs:132` `shell_dir`, `:162` `pane_config_dir`,
-  `:177` `worktree_dir`, `:509` `worker_cwd` (and its shared-checkout fallback).
+  `:191` `worktree_dir`, `:736` `worker_cwd` (and its shared-checkout fallback).
 - `src-tauri/tests/dev_mode.rs:57` — the tripwire this package's own test is
   modelled on.
 
