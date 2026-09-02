@@ -12,7 +12,30 @@ import { WORKER_SLOTS } from "../fleet/types";
 const VIEW_STORAGE_KEY = "fleetor:view";
 const WORKER_STORAGE_KEY = "fleetor:selected-worker";
 
-const VIEWS: readonly View[] = ["fleet", "messages", "tasks", "activity", "settings"];
+// **Every view the rail declares, and the omission this list is famous for.**
+// `history` was missing here from the day it shipped: selecting History and
+// relaunching parsed `"history"` back out of localStorage, failed `isValidView`,
+// and silently landed on Terminals with nothing said. The failure is quiet by
+// construction — the fallback below is the same one a genuinely corrupt value
+// gets — which is why it survived a release.
+//
+// So this list is now pinned to `Sidebar.tsx`'s `View` union by
+// `src-tauri/tests/views.rs`, which reads both files and fails if they stop
+// naming the same views. Add a view there, add it here, or that test says so.
+//
+// `evaluator` is on the list even though its rail row is dev-only: restoring it
+// is what `App.tsx` corrects, once the backend has answered on the mode. A view
+// absent from *this* list could not be corrected, because it would never be
+// restored in the first place.
+const VIEWS: readonly View[] = [
+  "fleet",
+  "messages",
+  "tasks",
+  "activity",
+  "history",
+  "evaluator",
+  "settings",
+];
 const DEFAULT_VIEW: View = "fleet";
 const DEFAULT_WORKER: number = WORKER_SLOTS[0];
 

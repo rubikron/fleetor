@@ -620,18 +620,50 @@ body,
   min-height: 0;
   display: flex;
 }
-/* The evaluator's window (WP-15). One terminal, filling the window, and no
-   chrome of its own: the pane's own head already names it, and a second window
-   with a top bar and a sidebar would read as a second app rather than as one
-   conversation. Flat, like everything else (§7 rule 1). */
-.evaluator-window {
-  position: fixed;
-  inset: 0;
-  padding: 10px;
-  background: var(--bg-0);
+/* The evaluator's view (D-073, replacing WP-15's second window). One terminal
+   filling the stage and no chrome of its own: the pane's own head already names
+   it. Both children are always in the DOM — `.is-hidden` swaps which one is
+   shown, because unmounting the terminal would destroy its xterm buffer with no
+   screen replay behind it (§7 rule 5). */
+.evaluator-view {
   display: flex;
   min-height: 0;
   min-width: 0;
+  flex: 1;
+}
+.evaluator-view__terminal {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+/* The pre-handoff state. Prose, centred, and deliberately without a control:
+   the evaluator wakes on a handoff and there is nothing here to press. */
+.evaluator-view__waiting {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 32px;
+  text-align: center;
+}
+.evaluator-view__lede {
+  font-size: var(--t-body);
+  color: var(--text-primary);
+  margin: 0;
+}
+.evaluator-view__note {
+  font-size: var(--t-small);
+  color: var(--text-muted);
+  line-height: 1.6;
+  max-width: 46ch;
+  margin: 0;
+}
+.evaluator-view__note code {
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
 }
 .terminal-pane {
   background: var(--term-bg);

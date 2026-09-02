@@ -71,11 +71,6 @@ const DEFAULT_ANSWERS: &str = ".fleetor-eval-answers";
 /// The script that puts the answer key on disk, run once at wake.
 const REVEAL_SCRIPT: &str = "reveal-answer-key.sh";
 
-/// The window this pane is rendered in. Not in `tauri.conf.json`'s `windows`
-/// array on purpose: a config-declared window exists at every launch, which is
-/// precisely what "outside dev mode the evaluator does not exist" forbids.
-pub const WINDOW_LABEL: &str = "evaluator";
-
 // --- may there be one? ---------------------------------------------------------
 
 /// Why there is or is not an evaluator for this run. Every arm but

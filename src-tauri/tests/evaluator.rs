@@ -10,8 +10,10 @@
 //! 2. **No override path for the evaluator's brief.** The asymmetry that makes
 //!    "the fleet cannot influence the grader" structural rather than policed.
 //! 3. **The brief is not in this repo**, in any form, including in a test.
-//! 4. **§7 rule 5** — the second window's terminal stays mounted, and closing
-//!    the window hides it rather than destroying its buffer.
+//! 4. **§7 rule 5** — the evaluator's terminal stays mounted, hidden with
+//!    `.is-hidden` when its view is not selected. D-073 moved this from a second
+//!    OS window to a view in the rail; the rule did not move, only the level it
+//!    is enforced at.
 
 use std::path::{Path, PathBuf};
 
@@ -193,60 +195,166 @@ fn find_brief(dir: &Path) -> Option<PathBuf> {
     None
 }
 
-// --- 4. §7 rule 5, at the window level -----------------------------------------
+// --- 4. §7 rule 5, at the view level -------------------------------------------
+//
+// **These two tests changed their letter in D-073 and are stricter for it.**
+// They used to pin the second window's mechanism: that `EvaluatorWindow.tsx`
+// rendered its terminal unconditionally, and that closing that window was
+// intercepted and turned into a hide. Both described machinery this ticket
+// deleted, so both now assert the property those mechanisms were bought for —
+// the terminal is never unmounted, and closing the app reaps exactly the fleet —
+// at the place it now lives, plus the new claim that the machinery is *gone*.
+// Neither property lost an assertion; the second gained four.
 
-/// **The second window's terminal stays mounted.** Unmounting an xterm destroys
-/// its buffer and there is no screen replay behind a pty (L7), so the evaluator
-/// window renders its one terminal unconditionally — no ternary, no `&&`, no
-/// gate — for the life of the window.
+/// **The evaluator's terminal stays mounted.** Unmounting an xterm destroys its
+/// buffer and there is no screen replay behind a pty (L7), so the evaluator's
+/// view holds its terminal the way every other view holds its content: always in
+/// the tree, toggled with `.is-hidden`.
+///
+/// Read on the evaluator's stage-view block alone. `App.tsx` is full of
+/// legitimate `&&` elsewhere — the start gate genuinely unmounts, because it is
+/// stateless chrome and has no buffer to lose.
 #[test]
-fn the_evaluator_windows_terminal_is_never_conditionally_rendered() {
-    let window = read("ui/src/EvaluatorWindow.tsx");
-    let render = window.split("return (").nth(1).expect("the component returns markup");
-    assert!(render.contains("<TerminalPane"), "the window is a terminal");
-    for tell in ["&&", "? <", "?.(", "isHidden"] {
+fn the_evaluators_terminal_is_never_conditionally_rendered() {
+    let app = read("ui/src/App.tsx");
+    // The evaluator's own stage-view, up to where the next one begins.
+    let block = app
+        .split("stage-view ${view === \"evaluator\"")
+        .nth(1)
+        .and_then(|rest| rest.split("stage-view ${view === \"settings\"").next())
+        .expect("App.tsx has an evaluator stage-view, followed by the settings one");
+
+    assert!(block.contains("<TerminalPane"), "the evaluator view holds a terminal");
+    assert!(
+        block.contains("pane={EVALUATOR}"),
+        "and it is the evaluator's pane, not something that merely looks like one",
+    );
+    // Three hides, and every one of them is CSS. The view's own — the tail of
+    // the `stage-view` class this block was split on — plus the two children
+    // that swap: the pre-handoff prose and the terminal. Nothing in here leaves
+    // the tree, which is §7 rule 5 stated as a count rather than as a hope.
+    assert_eq!(
+        block.matches("is-hidden").count(),
+        3,
+        "the evaluator view hides three things with `.is-hidden` and unmounts none: itself \
+         when another view is selected, its pre-handoff prose once the evaluator wakes, and \
+         its terminal until then. A different count means one of them started being \
+         conditionally rendered instead:\n{block}",
+    );
+    for tell in ["&&", "? <", "?.("] {
         assert!(
-            !render.contains(tell),
-            "`{tell}` in the evaluator window's markup: §7 rule 5 says a terminal is hidden \
-             with `.is-hidden`, never unmounted — and this window has nothing to hide it for",
+            !block.contains(tell),
+            "`{tell}` in the evaluator view's markup: §7 rule 5 says a terminal is hidden with \
+             `.is-hidden`, never unmounted. A pty that is still alive behind an xterm that was \
+             torn down comes back blank, and nothing on this side can repaint it:\n{block}",
         );
     }
+
+    // **No start control** (WP-20 story 25). The evaluator wakes on a handoff and
+    // the absence of a button is the design showing through, so a button here is
+    // a regression even though nothing would fail at runtime.
+    assert!(
+        !block.contains("<button") && !block.contains("onClick"),
+        "the evaluator view offers no control to start the evaluator — the sequencing is \
+         deliberate, and a run that could be started ahead of its handoff would not be \
+         evidence of anything:\n{block}",
+    );
+
+    // **The `review` label is retired** (D7). It collides with peer review, which
+    // is the one convention about review the briefs actually teach.
+    assert!(
+        !block.contains("label=\"review\""),
+        "the terminal's stale `review` label collides with the peer review a worker's brief \
+         teaches (D7); it is retired:\n{block}",
+    );
 }
 
-/// And the window itself: closing it is intercepted and turned into a hide, so
-/// the webview — and the xterm buffer inside it — survives to be shown again.
-/// The same rule one level up.
+/// **Closing the application is unambiguous, because there is one window.**
 ///
-/// This also pins the fix for a bug the second window created: the close handler
-/// used to tear the whole fleet down for *any* window, which with two windows is
-/// a six-pty kill on closing the wrong one.
+/// The close handler used to have to ask *which* window closed before it could
+/// act — a question it only had because WP-15 added a second one, and which it
+/// answered wrongly for a while (any `CloseRequested` tore down all six ptys).
+/// With the evaluator in a view, the only close that can arrive is the
+/// application's, so the branch is gone and there is nothing left to get wrong.
 #[test]
-fn closing_the_evaluator_window_hides_it_and_does_not_kill_the_fleet() {
+fn closing_the_application_reaps_the_fleet_and_nothing_asks_which_window() {
     let lib = read("src-tauri/src/lib.rs");
     let handler = lib
         .split(".on_window_event(")
         .nth(1)
         .and_then(|rest| rest.split("teardown_fleet(window)").next())
-        .expect("the close handler still tears the fleet down for the main window");
-    assert!(
-        handler.contains("window.label() == evaluator::WINDOW_LABEL"),
-        "the close handler must branch on which window closed before tearing anything down",
-    );
-    assert!(
-        handler.contains("api.prevent_close()") && handler.contains("window.hide()"),
-        "the evaluator window's close is refused and turned into a hide (§7 rule 5)",
-    );
+        .expect("the close handler still tears the fleet down");
 
-    // The window is created at wake, never declared in tauri.conf.json — a
-    // config-declared window exists at every launch, which is exactly what
-    // "outside dev mode the evaluator does not exist" forbids.
-    let conf = read("src-tauri/tauri.conf.json");
-    assert!(!conf.contains("evaluator"), "the evaluator window must not be declared in the config");
-    // …but its label must be in the capability file, or it silently gets no
-    // `invoke` and no `listen` and renders a terminal that can never spawn.
+    for gone in ["window.label()", "prevent_close", "window.hide()", "WINDOW_LABEL"] {
+        assert!(
+            !handler.contains(gone),
+            "`{gone}` is back in the close handler. One window means one meaning for a close \
+             (D-073); a handler that branches on a label is a handler that can reap more than \
+             it meant to, which is the bug WP-15 shipped:\n{handler}",
+        );
+    }
+
+    // The second window is gone from the source, not merely unused. `building.md`
+    // §6: delete rather than deprecate — a builder left behind is a builder the
+    // obvious next move re-points at something live.
+    let fleet = read("src-tauri/src/fleet.rs");
+    for gone in ["WebviewWindowBuilder", "get_webview_window", "index.html?window="] {
+        assert!(
+            !fleet.contains(gone),
+            "`{gone}` in fleet.rs: the evaluator is a view, and nothing there creates a window",
+        );
+    }
     assert!(
-        read("src-tauri/capabilities/default.json").contains("\"evaluator\""),
-        "capabilities are scoped by window label; a missing label fails silently",
+        !read("src-tauri/src/evaluator.rs").contains("WINDOW_LABEL"),
+        "the window label is deleted, not kept for a window that no longer exists",
+    );
+    let main_tsx = read("ui/src/main.tsx");
+    for gone in ["URLSearchParams", "EvaluatorWindow"] {
+        assert!(
+            !main_tsx.contains(gone),
+            "`{gone}` in main.tsx: one window means one root, mounted with no branch on which \
+             window this is (D-073). The second root was the only true half of WP-15's \
+             argument, and it stopped being needed when the window did",
+        );
+    }
+
+    // Still not declared in tauri.conf.json — a config-declared window exists at
+    // every launch, which "outside dev mode the evaluator does not exist"
+    // forbids. It was true when the window was built at wake and it is true now
+    // that there is no window at all.
+    assert!(
+        !read("src-tauri/tauri.conf.json").contains("evaluator"),
+        "no evaluator window is declared in the config",
+    );
+    // And the per-window capability scoping is gone with the window it scoped.
+    // Its absence is the assertion: a stale `evaluator` label here would grant
+    // `invoke` and `listen` to a window nothing creates.
+    let capabilities = read("src-tauri/capabilities/default.json");
+    assert!(
+        !capabilities.contains("\"evaluator\""),
+        "capabilities are scoped by window label; the evaluator's label is scoped to a window \
+         that no longer exists",
+    );
+    assert!(
+        capabilities.contains("\"main\""),
+        "the one window still needs its capability, or it gets no `invoke` and no `listen` at \
+         all, silently",
+    );
+}
+
+/// The wake is an event to the one webview, and the two spellings of its name
+/// have to match — a listener on the wrong name renders nothing and reports no
+/// error, which is the failure mode `ui/src/fleet/types.ts` already warns about.
+#[test]
+fn the_wake_reaches_the_webview_by_a_name_both_sides_spell_the_same() {
+    const NAME: &str = "evaluator://wake";
+    assert!(
+        read("src-tauri/src/fleet.rs").contains(NAME),
+        "the Rust side emits the wake on `{NAME}`",
+    );
+    assert!(
+        read("ui/src/fleet/api.ts").contains(NAME),
+        "and the webview listens on the same string — a mismatch is silent on both sides",
     );
 }
 

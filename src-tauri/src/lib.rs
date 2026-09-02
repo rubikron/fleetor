@@ -107,22 +107,21 @@ pub fn run() {
             dev::dev_mode_set,
         ])
         .on_window_event(|window, event| {
-            let WindowEvent::CloseRequested { api, .. } = event else { return };
-            // **Which window closed decides what happens, and before WP-15 it
-            // did not have to.** This handler used to tear the whole fleet down
-            // on any `CloseRequested`, which was correct while there was exactly
-            // one window and is a six-pty kill the moment there are two.
-            if window.label() == evaluator::WINDOW_LABEL {
-                // §7 rule 5, at the window level. Destroying the webview
-                // destroys its xterm and the buffer with it, and there is no
-                // screen replay on this side of the pty — a reopened window
-                // would come back blank over a terminal that is still alive.
-                // So the close is refused and the window hidden; the wake shows
-                // it again. Its pane dies with the fleet, like every other.
-                api.prevent_close();
-                let _ = window.hide();
-                return;
-            }
+            let WindowEvent::CloseRequested { .. } = event else { return };
+            // **Closing is unambiguous because there is exactly one window**
+            // (D-073). WP-15's second window made this handler ambiguous — it
+            // tore the whole fleet down on any `CloseRequested`, which is a
+            // six-pty kill on closing the wrong one — and the label branch that
+            // fixed it was a fix for a hazard the second window had introduced.
+            // The evaluator is now a view inside this window, so the only close
+            // that can arrive is the close of the whole application, and
+            // tearing the fleet down is the only thing it can mean.
+            //
+            // §7 rule 5 has not gone anywhere; it moved to where it belongs. The
+            // evaluator's terminal survives being switched away from because its
+            // view is hidden with `.is-hidden` rather than unmounted, which is
+            // the mechanism every other view already used — not because a close
+            // was intercepted and turned into a hide.
             teardown_fleet(window);
         })
         .build(tauri::generate_context!())

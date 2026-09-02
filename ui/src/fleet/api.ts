@@ -15,6 +15,9 @@ import {
 } from "./types";
 
 const FLEET_EVENT = "fleet://event";
+// Must match `EVENT_EVALUATOR_WAKE` in src-tauri/src/fleet.rs. Listening on the
+// wrong name renders nothing and reports no error (see types.ts:54).
+const EVALUATOR_WAKE = "evaluator://wake";
 
 /// Start (idempotent) the embedded fleet: store, event bus, hub socket.
 export function bootstrap(): Promise<BootSnapshot> {
@@ -164,4 +167,13 @@ export function onPaneOutput(pane: PaneId, handler: (base64: string) => void): P
 /// Subscribe to one pane's exit.
 export function onPaneExit(pane: PaneId, handler: () => void): Promise<UnlistenFn> {
   return listen(`pty://exit/${paneKey(pane)}`, () => handler());
+}
+
+/// The evaluator woke (D-073). Fires once per handoff that cleared the Rust
+/// side's readiness check — dev mode on, a grader compiled in, and a prepared
+/// mission — which is why this is its own event rather than something derived
+/// from the `FleetEvent::Handoff` the feed already carries: most handoffs must
+/// wake nothing at all, and only Rust knows which ones.
+export function onEvaluatorWake(handler: () => void): Promise<UnlistenFn> {
+  return listen(EVALUATOR_WAKE, () => handler());
 }
