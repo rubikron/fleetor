@@ -40,6 +40,7 @@ Each is stamped with the Claude Code version it measured; re-measure on a CC upd
 | [`orch-config-dir-notes.md`](./notes/orch-config-dir-notes.md) | Why a fleet-owned `CLAUDE_CONFIG_DIR` silently logs `orch` out, and the variable that keeps its login (D-062) | CC 2.1.224 |
 | [`write-guardrail-notes.md`](./notes/write-guardrail-notes.md) | That a `PreToolUse` deny really stops `Bash`, and where a real build and a real commit actually write (D-065) | CC 2.1.224 |
 | [`live-run-snapshot-notes.md`](./notes/live-run-snapshot-notes.md) | That a run still being written reads whole through a read-only connection, and that copying `state.db` alone loses it (D-066) | 2026-08-07, sqlite3 3.43.2 |
+| [`critic-spike-notes.md`](./notes/critic-spike-notes.md) | Whether a judge with no answer key finds anything worth reading, and the prompt that became the Critic's brief (WP-20 D15) | 2026-09-02, archives CC 2.1.224 |
 
 ## Roadmap (`docs/roadmap/`)
 
