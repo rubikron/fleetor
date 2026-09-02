@@ -89,8 +89,10 @@ struct Fleet {
     config: FleetConfig,
     /// Resolved at bootstrap, updated in place by `fleet_set_target` /
     /// `fleet_pick_target`. Panes spawn against *this*, not a re-read of
-    /// config.json. Safe to update before panes exist (the start gate);
-    /// once panes are running the UI hides the target input.
+    /// config.json. Safe to update before panes exist (the start gate); once any
+    /// pane exists both commands refuse (see [`ensure_target_settable`]). The UI
+    /// also stops offering the control at that point, which is now belt and
+    /// braces rather than the only guard (D-071).
     target: PathBuf,
     /// The briefs and launch settings every pane spawns with, from `prompts/`
     /// and the operator's `~/.fleetor/prompts/`. Resolved once for the same
@@ -1015,6 +1017,51 @@ fn operator_result(result: OpResult) -> Result<OperatorSend, String> {
     }
 }
 
+/// What the operator is told when they try to move the target under a fleet
+/// that is already up.
+///
+/// A constant rather than an inline literal because the test asserts on the
+/// remedy, and a refusal whose remedy drifts out of the sentence is a refusal
+/// the operator cannot act on.
+const TARGET_FIXED: &str = "the target is fixed for a running fleet — every pane was configured \
+                            against the current one when it spawned. Stop the fleet (close the \
+                            window) and set the target again at the start gate.";
+
+/// The rule: the target may be set until the first pane exists, and not after.
+///
+/// It was already written down and already true in practice — the start gate is
+/// the only screen that offers the control, and it is gone the moment the fleet
+/// starts. But it lived entirely in the interface, and the two commands behind
+/// it were exposed unconditionally, so the thing that owns the state did not
+/// enforce the one rule about changing it. Half a fleet in one repository and
+/// half in another is incoherent, which is the same reasoning that makes the
+/// target resolved once at bootstrap rather than re-read.
+fn ensure_target_settable(registry: &PaneRegistry) -> Result<(), String> {
+    if registry.any_pane() {
+        return Err(TARGET_FIXED.into());
+    }
+    Ok(())
+}
+
+/// Record `target` as the fleet's, or refuse because a pane already exists.
+///
+/// **The one funnel both target-setting commands pass through.** Writing the
+/// guard twice would make the picker and the typed box two independent chances
+/// to get it right, and a rule enforced in two places is a rule that will
+/// eventually hold in one of them. The refusal comes before [`write_target`] on
+/// purpose: a config file recording a target no pane will ever be spawned
+/// against is worse than no change at all.
+fn adopt_target(
+    registry: &PaneRegistry,
+    state: &FleetState,
+    target: &Path,
+) -> Result<(), String> {
+    ensure_target_settable(registry)?;
+    write_target(target)?;
+    apply_target(state, target);
+    Ok(())
+}
+
 fn apply_target(state: &FleetState, target: &Path) {
     let is_git = git(target, &["rev-parse", "--git-dir"]);
     if let Ok(mut guard) = state.0.lock() {
@@ -1045,13 +1092,21 @@ fn apply_target(state: &FleetState, target: &Path) {
 ///
 /// Updates `Fleet.target` and `Fleet.config` in place so the change takes
 /// effect immediately — the start gate is the only caller, and no panes exist
-/// yet. Returns `Ok(None)` when the picker was dismissed.
+/// yet. Refused by [`adopt_target`] once one does. Returns `Ok(None)` when the
+/// picker was dismissed.
+///
+/// The guard is checked *before* the dialog opens: making the operator browse
+/// to a folder and only then telling them it cannot be used is a worse way to
+/// deliver the same refusal.
 #[tauri::command]
 pub fn fleet_pick_target(
     app: AppHandle,
     state: State<'_, FleetState>,
+    registry: State<'_, Arc<PaneRegistry>>,
 ) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
+
+    ensure_target_settable(&registry)?;
 
     let Some(picked) = app.dialog().file().blocking_pick_folder() else { return Ok(None) };
     let path = picked
@@ -1061,8 +1116,7 @@ pub fn fleet_pick_target(
         return Err(format!("{} is not a directory", path.display()));
     }
 
-    write_target(&path)?;
-    apply_target(&state, &path);
+    adopt_target(&registry, &state, &path)?;
     Ok(Some(path.to_string_lossy().into_owned()))
 }
 
@@ -1078,7 +1132,11 @@ pub fn fleet_pick_target(
 /// matters: the operator should see what was actually recorded, not the
 /// shorthand they typed, or they cannot tell a typo from a working path.
 #[tauri::command]
-pub fn fleet_set_target(path: String, state: State<'_, FleetState>) -> Result<String, String> {
+pub fn fleet_set_target(
+    path: String,
+    state: State<'_, FleetState>,
+    registry: State<'_, Arc<PaneRegistry>>,
+) -> Result<String, String> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
         return Err("enter a folder path".into());
@@ -1096,8 +1154,7 @@ pub fn fleet_set_target(path: String, state: State<'_, FleetState>) -> Result<St
         .canonicalize()
         .map_err(|e| format!("resolve {}: {e}", expanded.display()))?;
 
-    write_target(&canonical)?;
-    apply_target(&state, &canonical);
+    adopt_target(&registry, &state, &canonical)?;
     Ok(canonical.to_string_lossy().into_owned())
 }
 
@@ -1397,6 +1454,56 @@ mod tests {
         assert!(logged, "a refused send must still reach the feed with its body");
 
         shutdown.notify_one();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Both sides of the one rule the target has (D-071): settable until a pane
+    /// exists, refused after — and refused with a sentence naming the remedy,
+    /// because a refusal an operator cannot act on is a dead end rather than a
+    /// guard.
+    ///
+    /// Driven against a **real** [`PaneRegistry`] with a **real** pty on the far
+    /// end, for the same reason `tests/panes.rs` does: the guard's whole job is
+    /// to read the registry's actual state, so a stub of that state would only
+    /// prove the stub. `sleep` stands in for `claude` — this asks whether a pane
+    /// exists, and nothing about what it is.
+    #[test]
+    fn the_target_is_settable_until_a_pane_exists() {
+        let dir = std::env::temp_dir().join(format!("fleetor-target-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let registry = PaneRegistry::new(Arc::new(|_, _| {}), dir.join("panes.pids"));
+
+        // Before the first spawn — the start gate. Unchanged behaviour.
+        assert!(
+            ensure_target_settable(&registry).is_ok(),
+            "an empty registry is the start gate, where setting the target is the whole point"
+        );
+
+        let mut cmd = portable_pty::CommandBuilder::new("sleep");
+        cmd.arg("30");
+        registry.spawn(PaneId::Orch, cmd, 24, 80).expect("a pty for sleep");
+
+        // After it. One pane is enough — the fleet is now committed to a repo.
+        let refusal = ensure_target_settable(&registry)
+            .expect_err("a running fleet must not have its target moved under it");
+        assert!(
+            refusal.contains("fixed for a running fleet"),
+            "the refusal has to say the target is fixed, not merely fail: {refusal}"
+        );
+        assert!(
+            refusal.contains("Stop the fleet"),
+            "and it has to name the remedy, or the operator is stuck: {refusal}"
+        );
+
+        // Killing the last pane puts the operator back at the start gate: nothing
+        // is holding the old target any more, so nothing has a claim on it.
+        registry.kill_all();
+        assert!(
+            ensure_target_settable(&registry).is_ok(),
+            "with every pane reaped the refusal has nothing left to protect"
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

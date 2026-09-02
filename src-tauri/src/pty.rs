@@ -210,6 +210,25 @@ impl PaneRegistry {
         Ok(())
     }
 
+    /// Whether this session has brought any pane up at all.
+    ///
+    /// **Existence, not membership and not liveness.** [`Self::roster`] filters
+    /// to fleet members, and `writable` asks whether a pane accepts input; both
+    /// are the wrong question here. A pane that has exited still had its
+    /// `CLAUDE_CONFIG_DIR`, its worktree and its brief seeded against whatever
+    /// the target was when it spawned, and [`Self::spawn`] respawns it in place
+    /// — so an exited pane is every bit as committed to the old target as a live
+    /// one, and the evaluator being no member of the fleet does not make it
+    /// indifferent to which repository it is reading. The map is emptied only by
+    /// [`Self::kill`] and [`Self::kill_all`], which is exactly the point at
+    /// which nothing is holding the old target any more.
+    ///
+    /// A poisoned registry answers `true`: the one caller is a guard that must
+    /// fail closed, and "I cannot tell" is not "there are none."
+    pub fn any_pane(&self) -> bool {
+        self.panes.lock().map(|panes| !panes.is_empty()).unwrap_or(true)
+    }
+
     /// Reap every pane. Called on window close — best-effort and deliberately
     /// silent, because there is nowhere left to report to.
     pub fn kill_all(&self) {
