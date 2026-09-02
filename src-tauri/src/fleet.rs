@@ -29,7 +29,7 @@ use fleetor_db::SqliteStore;
 use fleetor_ipc::UnixTransport;
 use fleetor_server::{AppCommand, BroadcastStore, Hub};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, oneshot, Notify};
 
@@ -41,6 +41,14 @@ use crate::{deliver, dev, evaluator, guardrail, prompts, runs, spawn, testbed};
 
 /// Emitted for every appended event, in `seq` order, the moment it persists.
 const EVENT_FLEET: &str = "fleet://event";
+
+/// Emitted once per handoff that clears [`evaluator::readiness`] — the signal
+/// that replaced creating a second window (D-073).
+///
+/// It carries the Rust-side readiness decision and nothing else, which is why the
+/// webview cannot derive it from the `FleetEvent::Handoff` it already receives: a
+/// handoff with no mission, or with the mode off, must wake nothing at all.
+const EVENT_EVALUATOR_WAKE: &str = "evaluator://wake";
 
 /// One event as the webview sees it: the `seq` cursor plus the flattened
 /// [`FleetEvent`] (its `#[serde(tag = "type")]` discriminator carries through, so
@@ -637,40 +645,21 @@ fn wake_evaluator(app: &AppHandle, target: &Path) -> Vec<(NoticeLevel, String)> 
             }
         }
     }
-    match open_evaluator_window(app) {
+    // **The wake is an event, not a window** (D-073). Creating a second OS window
+    // was never what made the evaluator exist — the pane is spawned by the React
+    // root's own `pty_spawn`, exactly like every other terminal, and the window
+    // was only how that root got mounted. So the wake says *the evaluator is
+    // awake* and the one webview turns its always-mounted view on. Idempotent for
+    // a second handoff for the same reason `PaneRegistry::spawn` is: the view is
+    // already showing a pane that is already running.
+    match app.emit(EVENT_EVALUATOR_WAKE, ()) {
         Ok(()) => notices.push((
             NoticeLevel::Info,
-            "the mission was handed back — a review window has opened".to_string(),
+            "the mission was handed back — the review view is live".to_string(),
         )),
-        Err(why) => notices.push((NoticeLevel::Warn, format!("the review window: {why}"))),
+        Err(why) => notices.push((NoticeLevel::Warn, format!("the review view: {why}"))),
     }
     notices
-}
-
-/// Create the evaluator's window, or show it if it is already there.
-///
-/// **Not declared in `tauri.conf.json`.** A window in that array exists at every
-/// launch, which is exactly what "outside dev mode the evaluator does not exist"
-/// forbids; this one is built here or not at all. Its pty is spawned by the
-/// window's own React root, through the same `pty_spawn` every terminal uses.
-fn open_evaluator_window(app: &AppHandle) -> Result<(), String> {
-    if let Some(existing) = app.get_webview_window(evaluator::WINDOW_LABEL) {
-        // A second handoff, or a window the operator closed. §7 rule 5 applies at
-        // the window level too — closing hides rather than destroys, so this is
-        // the same webview with the same xterm and the same scrollback.
-        return existing.show().map_err(|e| e.to_string());
-    }
-    tauri::WebviewWindowBuilder::new(
-        app,
-        evaluator::WINDOW_LABEL,
-        tauri::WebviewUrl::App(format!("index.html?window={}", evaluator::WINDOW_LABEL).into()),
-    )
-    .title("FLEETOR — review")
-    .inner_size(1100.0, 800.0)
-    .min_inner_size(520.0, 360.0)
-    .build()
-    .map(|_| ())
-    .map_err(|e| e.to_string())
 }
 
 /// One Activity line per pane launch (WP-04's spawn-time "Loadout" counter):

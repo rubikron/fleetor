@@ -1,10 +1,9 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Core events, the pane commands, the folder picker the target chooser needs, the two window writes that restore a saved size/position on launch, and the drag the overlay title bar needs to move the window. The `evaluator` label is WP-15's second window: capabilities are scoped by label, so a window missing from this list gets no `invoke` and no `listen` at all — it would render a terminal that can never spawn or receive a byte, with no error to say why.",
+  "description": "Core events, the pane commands, the folder picker the target chooser needs, the two window writes that restore a saved size/position on launch, and the drag the overlay title bar needs to move the window. One window, so one label. WP-15's second window was also listed here, because capabilities are scoped by label and a window missing from this list gets no `invoke` and no `listen` at all — a terminal that can never spawn or receive a byte, with no error to say why. D-073 removed that window: the evaluator is a view inside `main` and inherits this capability rather than needing its own.",
   "windows": [
-    "main",
-    "evaluator"
+    "main"
   ],
   "permissions": [
     "core:default",

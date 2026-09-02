@@ -36,7 +36,20 @@
 
 import type { ReactNode } from "react";
 
-export type View = "fleet" | "messages" | "tasks" | "activity" | "history" | "settings";
+// **This union is one half of a pair.** `ui/src/ui/usePersistedNav.ts` carries
+// the other — the list of views it will restore on relaunch — and a view added
+// here and forgotten there is a view the operator can select and never return
+// to, silently, with no error. That had already happened to `history` before
+// D-073 found it. `src-tauri/tests/views.rs` reads both lists and fails if they
+// stop naming the same things.
+export type View =
+  | "fleet"
+  | "messages"
+  | "tasks"
+  | "activity"
+  | "history"
+  | "evaluator"
+  | "settings";
 
 interface SidebarProps {
   view: View;
@@ -44,6 +57,10 @@ interface SidebarProps {
   messageCount: number;
   collapsed: boolean;
   onToggleCollapse: () => void;
+  /// WP-16's mode, straight from `useDevMode`. `null` means the backend has not
+  /// answered yet — the dev-only row stays absent until it says `true`, so it
+  /// never flashes into the rail and back out on launch.
+  devMode: boolean | null;
 }
 
 /// 16×16, stroke-only, `currentColor`. Distinct silhouettes matter more than
@@ -100,6 +117,17 @@ const ICONS: Record<View, ReactNode> = {
       <polyline points="8,4.9 8,8 10.3,9.4" />
     </svg>
   ),
+  // a magnifier over a rule: reading the run back. Deliberately not a clipboard
+  // or a tick — this pane grades a finished mission, and both of those shapes
+  // read as the task board next door.
+  evaluator: (
+    <svg {...ICON_PROPS}>
+      <circle cx="6.8" cy="6.8" r="4.2" />
+      <line x1="9.9" y1="9.9" x2="13.8" y2="13.8" />
+      <line x1="5" y1="6.2" x2="8.6" y2="6.2" />
+      <line x1="5" y1="8.4" x2="7.4" y2="8.4" />
+    </svg>
+  ),
   // a gear: preferences
   settings: (
     <svg {...ICON_PROPS}>
@@ -117,16 +145,22 @@ const ICONS: Record<View, ReactNode> = {
   ),
 };
 
-const WORKSPACE: { view: View; label: string }[] = [
+const WORKSPACE: { view: View; label: string; devOnly?: true }[] = [
   { view: "fleet", label: "Terminals" },
   { view: "messages", label: "Messages" },
   // Next to Messages on purpose: the board is what the fleet agreed on and the
   // record is what it then said about it, and they get read together.
   { view: "tasks", label: "Tasks" },
   { view: "activity", label: "Activity" },
-  // Last, and after the live views on purpose: everything above is this run,
-  // this one is every run before it.
+  // Last of the always-present rows, and after the live views on purpose:
+  // everything above is this run, this one is every run before it.
   { view: "history", label: "History" },
+  // **Last, and dev-only, and that ordering is the point** (D-073). A row that
+  // appears and disappears with the mode has to sit at the end, or turning dev
+  // mode on shifts every row below it and the rail the operator has learned
+  // moves under them. It carries no start control: the evaluator wakes when
+  // `orch` hands off, and the view says so — see App.tsx.
+  { view: "evaluator", label: "Evaluator", devOnly: true },
 ];
 
 export function Sidebar({
@@ -135,11 +169,15 @@ export function Sidebar({
   messageCount,
   collapsed,
   onToggleCollapse,
+  devMode,
 }: SidebarProps) {
+  // `=== true`, not truthy: `null` is "the backend has not answered yet", and it
+  // must read as absent rather than as present-but-off.
+  const rows = WORKSPACE.filter((item) => !item.devOnly || devMode === true);
   return (
     <nav className={`sidebar ${collapsed ? "sidebar--collapsed" : ""}`}>
       <div className="sidebar__nav" role="tablist" aria-label="Workspace views">
-        {WORKSPACE.map((item) => {
+        {rows.map((item) => {
           const unread = item.view === "messages" && messageCount > 0;
           return (
             <button

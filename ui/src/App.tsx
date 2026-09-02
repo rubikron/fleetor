@@ -34,8 +34,14 @@ import { usePaneJump } from "./ui/usePaneJump";
 import { useWindowState } from "./ui/useWindowState";
 import { useTheme } from "./ui/useTheme";
 import { useDevMode } from "./ui/useDevMode";
-import { killPane } from "./fleet/api";
-import { ORCH, paneSlot, type PaneId, type PaneStatus } from "./fleet/types";
+import { TerminalPane } from "./components/TerminalPane";
+import { killPane, onEvaluatorWake } from "./fleet/api";
+import { EVALUATOR, ORCH, paneSlot, type PaneId, type PaneStatus } from "./fleet/types";
+
+// Deeper than a worker's 2,000 and deeper than orch's 10,000: this pane reads a
+// whole run's archive and prints a retro at the end of it, and the operator
+// scrolls back through the reasoning rather than through the last few turns.
+const EVALUATOR_SCROLLBACK = 20000;
 
 function statusText(ready: boolean, error: string | null, count: number): string {
   if (error) return error;
@@ -143,6 +149,35 @@ export function App() {
     return () => window.clearTimeout(id);
   }, [view, selectedWorker, sidebar.collapsed]);
 
+  // **The evaluator's wake** (D-073). Latched, and it only ever goes true: the
+  // terminal below is mounted for the life of the app either way, and this flag
+  // decides whether it may spawn a pty (TerminalPane's `started`, the same gate
+  // the start gate uses) and whether the operator sees the terminal or the
+  // sentence explaining what it is waiting for. Nothing here can start the
+  // evaluator — only Rust decides a handoff cleared readiness, and it says so
+  // with this event.
+  const [evaluatorAwake, setEvaluatorAwake] = useState(false);
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void onEvaluatorWake(() => setEvaluatorAwake(true)).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  // Dev mode can be turned off while `evaluator` is the persisted view, which
+  // would leave the operator on a view with no row in the rail to leave by.
+  // `=== false` and not `!== true`: while the backend has not answered, the
+  // right move is to do nothing rather than to bounce off the view.
+  useEffect(() => {
+    if (devMode.enabled === false && view === "evaluator") setView("fleet");
+  }, [devMode.enabled, view, setView]);
+
   const restart = useCallback((pane: PaneId) => {
     // Kill only. The pane's own spawn effect is keyed on `started`, so the tab
     // brings itself back with a fitted size rather than one guessed here.
@@ -165,6 +200,7 @@ export function App() {
           messageCount={fleet.messages.length}
           collapsed={sidebar.collapsed}
           onToggleCollapse={sidebar.toggle}
+          devMode={devMode.enabled}
         />
         <main className="workspace">
           <div className="workspace__stage">
@@ -207,6 +243,46 @@ export function App() {
                 run's events, and no past run can be sent to. */}
             <div className={`stage-view ${view === "history" ? "" : "is-hidden"}`}>
               <RunHistory runs={runs} />
+            </div>
+
+            {/* The evaluator (D-073), which used to be a second OS window. It is
+                a view like every other: always mounted, toggled with
+                `.is-hidden`, never unmounted (§7 rule 5). What the window bought
+                — a root that does not race the main one for the fleet — was
+                never a reason for a *window*, only for that root not being a
+                second `App`, and one view inside one root has no race at all.
+
+                The terminal is mounted from launch and hidden until the wake,
+                rather than mounted at the wake. Both survive a view switch, but
+                only this one is impossible to get wrong later: there is no
+                mount-once latch to reason about, and `started` — TerminalPane's
+                own spawn gate — is what keeps a pty from existing before the
+                handoff. Note the absence of a button. The evaluator wakes when
+                `orch` hands off; the sentence below is the whole control
+                surface, on purpose. */}
+            <div className={`stage-view ${view === "evaluator" ? "" : "is-hidden"}`}>
+              <div className="evaluator-view">
+                <div className={`evaluator-view__waiting ${evaluatorAwake ? "is-hidden" : ""}`}>
+                  <p className="evaluator-view__lede">The evaluator wakes on a handoff.</p>
+                  <p className="evaluator-view__note">
+                    When <code>orch</code> reports the mission met, this becomes a terminal and
+                    the retro starts here. There is no button — the sequencing is the design,
+                    and a run it could be started ahead of would not be evidence of anything.
+                  </p>
+                </div>
+                <div className={`evaluator-view__terminal ${evaluatorAwake ? "" : "is-hidden"}`}>
+                  <TerminalPane
+                    pane={EVALUATOR}
+                    label="evaluator"
+                    scrollback={EVALUATOR_SCROLLBACK}
+                    started={evaluatorAwake}
+                    status={statuses[EVALUATOR] ?? "idle"}
+                    fontSize={zoom.terminalFontSize}
+                    theme={themeControls.theme}
+                    onStatus={onStatus}
+                  />
+                </div>
+              </div>
             </div>
 
             <div className={`stage-view ${view === "settings" ? "" : "is-hidden"}`}>
