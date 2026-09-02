@@ -34,6 +34,7 @@ use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, oneshot, Notify};
 
 use crate::context_gauge::{self, GaugeSources, TranscriptSource};
+use crate::placement::{self, Host, Layout, PaneSpec};
 use crate::prompts::PaneContext;
 use crate::pty::PaneRegistry;
 use crate::{deliver, dev, evaluator, guardrail, prompts, runs, spawn, testbed};
@@ -121,98 +122,67 @@ struct Fleet {
 pub struct FleetState(Mutex<Option<Fleet>>);
 
 // --- locations ----------------------------------------------------------------
+//
+// **The tree itself is [`Layout`], not these functions (WP-21, D1).** Each one is
+// now the operator's layout plus one accessor — one definition of where the fleet
+// lives, with two constructors behind it, instead of a family of functions that
+// could only ever answer for the operator's real `$HOME`. They stay as names
+// because a hundred call sites read better saying `socket_path()` than
+// `Layout::for_operator().socket()`, and because the arms of `spawn_pane` that
+// have not yet moved to placement still call them.
+
+/// The operator's own layout: `~/.fleetor` and everything under it.
+pub(crate) fn layout() -> Layout {
+    Layout::for_operator()
+}
 
 /// The operator-facing root: holds `config.json` and the seeded testbed.
 pub(crate) fn fleetor_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".fleetor")
+    layout().root().to_path_buf()
 }
 
 /// State root, out of the user's repo so `rm -rf ~/.fleetor/_shell` fully undoes
 /// it (Tier-1 boundary).
 pub(crate) fn shell_dir() -> PathBuf {
-    fleetor_dir().join("_shell")
+    layout().shell()
 }
 
 /// The seeded project the fleet falls back to when no target is configured.
 fn testbed_dir() -> PathBuf {
-    fleetor_dir().join("testbed")
+    layout().testbed()
 }
 
 /// Where the operator names the repo the fleet should work on — and, since
 /// WP-16, whether the app is in dev mode. One file, so there is one place an
 /// operator looks and one place `rm -rf ~/.fleetor` removes (Tier 1.1).
 pub(crate) fn config_path() -> PathBuf {
-    fleetor_dir().join("config.json")
+    layout().config_file()
 }
 
 /// The fleet unix socket the `fleet` CLI dials.
 pub(crate) fn socket_path() -> PathBuf {
-    shell_dir().join("fleet.sock")
+    layout().socket()
 }
 
 /// One pane's `CLAUDE_CONFIG_DIR`, by pane name.
-///
-/// Deliberately *not* the Phase-2 `cc-config/worker-*` dirs: those were built by
-/// headless `-p` runs and carry no onboarding keys at all, which is precisely L1
-/// (`docs/notes/tui-spawn-notes.md` §1).
-///
-/// Every pane with a config dir lives under this one root, `orch` included since
-/// WP-14 — which is what makes `runs::harvest_transcripts` archive `orch`'s
-/// transcript with no code of its own: it already walks `pane-config/*`.
 fn pane_config_dir(pane: PaneId) -> PathBuf {
-    shell_dir().join("pane-config").join(pane.to_string())
+    layout().pane_config(pane)
 }
 
-/// A worker's private `HOME` (WP-08, the Fence): `~/.ssh`, the operator's real
-/// Claude config and shell profiles stop being reachable *by name* once this is
-/// what `HOME` resolves to instead. A natural sibling of `pane-config` and
-/// `worktrees` — same `_shell` root, same per-slot layout — and, like both of
-/// those, still under `~/.fleetor`, so `rm -rf ~/.fleetor` still removes
-/// everything FLEETOR made (Tier 1.1).
+/// A worker's private `HOME` (WP-08, the Fence).
 fn worker_home_dir(slot: u8) -> PathBuf {
-    shell_dir().join("home").join(format!("worker-{slot}"))
+    layout().worker_home(slot)
 }
 
-/// The fleet's own `CARGO_HOME` and `RUSTUP_HOME` (D-069, the Fence's reversal
-/// condition exercised as written).
-///
-/// **One pair, shared by every worker**, not one per slot: a build's registry
-/// cache is the same cache for all of them, two concurrent builds serialize on
-/// cargo's own package lock rather than corrupting anything, and the per-worker
-/// state that does need separating — `target/` — already lives in each worktree.
-///
-/// Under `_shell` for the reason everything else here is: whatever a build
-/// downloads, however large, `rm -rf ~/.fleetor` reaches it (Tier 1.1). Pointing
-/// either of these at the operator's real `~/.cargo` or `~/.rustup` would make
-/// that sentence false — measured in `docs/notes/fence-notes.md`, arms 6b and 7b.
+/// The fleet's own `CARGO_HOME` and `RUSTUP_HOME` (D-069).
 fn fleet_toolchain_dirs() -> spawn::FleetToolchain {
-    spawn::FleetToolchain {
-        cargo_home: shell_dir().join("cargo"),
-        rustup_home: shell_dir().join("rustup"),
-    }
-}
-
-fn target_slug(target: &Path) -> String {
-    let canonical = target.canonicalize().unwrap_or_else(|_| target.to_path_buf());
-    let name = canonical
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("repo");
-    let mut hash = 0u32;
-    for byte in canonical.to_string_lossy().bytes() {
-        hash = hash.wrapping_mul(31).wrapping_add(byte as u32);
-    }
-    format!("{name}-{:04x}", hash & 0xFFFF)
+    layout().fleet_toolchain()
 }
 
 /// A worker's own checkout of the target, namespaced by target repo so
 /// switching targets neither clobbers existing worktrees nor reuses stale ones.
 fn worktree_dir(target: &Path, slot: u8) -> PathBuf {
-    shell_dir()
-        .join("worktrees")
-        .join(target_slug(target))
-        .join(format!("worker-{slot}"))
+    layout().worktree(target, slot)
 }
 
 /// The target named in `~/.fleetor/config.json`, if there is a usable one.
@@ -340,15 +310,21 @@ pub fn fleet_bootstrap(
 
 // --- panes --------------------------------------------------------------------
 
-/// Bring one pane up: resolve its cwd, seed its config for that exact cwd, build
-/// its command, and hand it to the registry.
+/// Bring one pane up and hand it to the registry.
 ///
-/// **The L1 re-seed requirement lives here, structurally.**
-/// `hasTrustDialogAccepted` is keyed by absolute project path, so a fleet pointed
-/// at a new target needs its seed re-applied for every pane cwd — otherwise all
-/// four workers sit on a trust dialog while every `fleet send` reports success.
-/// Seeding at the spawn site rather than at the target picker means that can only
-/// be got wrong by deleting this line, not by forgetting a code path.
+/// **`orch` comes up through [`crate::placement`]; the rest still come up here**
+/// (WP-21, ticket 02). That module owns the order — cwd, config seed, guardrail,
+/// notices, command — against a [`Layout`] and a [`Host`] handed to it, so the
+/// identical code path runs in a test against a scratch directory. Workers and the
+/// evaluator keep the arms below until the tickets that move them; ticket 05
+/// deletes what is left.
+///
+/// **The L1 re-seed requirement lives at the spawn site, structurally**, in both
+/// halves. `hasTrustDialogAccepted` is keyed by absolute project path, so a fleet
+/// pointed at a new target needs its seed re-applied for every pane cwd —
+/// otherwise all four workers sit on a trust dialog while every `fleet send`
+/// reports success. Seeding here rather than at the target picker means that can
+/// only be got wrong by deleting a line, not by forgetting a code path.
 pub(crate) fn spawn_pane(
     fleet: &FleetState,
     registry: &Arc<PaneRegistry>,
@@ -362,16 +338,29 @@ pub(crate) fn spawn_pane(
         (f.target.clone(), f.store.clone(), f.context.clone(), f.gauges.clone())
     };
 
+    // The seam. The layout and the host are built *here*, at the one production
+    // call site, which is what leaves placement itself with nothing to read from
+    // the process. The host is discovered per spawn rather than held on `Fleet`
+    // (D13): that is what the code did before this module existed, so a toolchain
+    // installed mid-session still takes effect on the next pane restart.
+    if matches!(pane, PaneId::Orch) {
+        let placed =
+            placement::place(PaneSpec::Orch, &layout(), &Host::discover(), &target, &context)?;
+        for (level, text) in &placed.notices {
+            note(&store, *level, text);
+        }
+        if let Some(source) = placed.gauge {
+            gauges.record(pane, source);
+        }
+        return registry.spawn(pane, placed.command, rows, cols);
+    }
+
     // A pane with no `fleet` on its PATH is a pane that looks alive and cannot
     // talk. Say so once, loudly, rather than letting the model discover it as
-    // `command not found` mid-turn (L4).
+    // `command not found` mid-turn (L4). `orch` gets the identical sentence from
+    // `placement::MISSING_FLEET_BIN`, which is the constant this reads.
     if spawn::fleet_bin_path().is_none() {
-        note(
-            &store,
-            NoticeLevel::Warn,
-            "the `fleet` binary was not found — panes will spawn but cannot message each other. \
-             Build it with `cargo build -p fleetor-cli --bin fleet`.",
-        );
+        note(&store, NoticeLevel::Warn, placement::MISSING_FLEET_BIN);
     }
 
     // Same shape, same reason (D-069): a worker with no toolchain reachable
@@ -400,26 +389,10 @@ pub(crate) fn spawn_pane(
             return Err("the operator is a participant, not a pane — there is nothing to spawn"
                 .to_string())
         }
-        // The operator's own `claude` — their login, their model, their HOME — in
-        // the target itself. Since WP-14 it has one thing of its own: a
-        // fleet-owned `CLAUDE_CONFIG_DIR`, so its session transcript lands under
-        // `~/.fleetor` where rotation archives it with the run (D-062 closes
-        // D-059's named gap). That makes L1 apply to `orch` too — an unseeded
-        // config dir never reaches a prompt — so it is seeded here, at the spawn
-        // site, for exactly the reason a worker's is.
-        //
-        // Nothing here reaches into the operator's own config dir. `orch` gets a
-        // new directory going forward, and keeps its login through the keychain
-        // read `claude` already performs (see `spawn::orch_command`).
-        PaneId::Orch => {
-            std::fs::create_dir_all(&target).map_err(|e| format!("create orchestrator cwd: {e}"))?;
-            let config_dir = pane_config_dir(pane);
-            spawn::seed_config_dir(&config_dir, &target)?;
-            install_guardrail(&store, pane, &config_dir, &target, &context)?;
-            note_spawn_estimate(&store, &context, pane, &target, None);
-            note(&store, NoticeLevel::Info, &orch_config_dir_notice(&config_dir));
-            spawn::orch_command(&target, &socket, &config_dir, &context)
-        }
+        // Placed by `crate::placement`, which this function returned through
+        // above. Unreachable, and refused rather than duplicated: two ways to
+        // bring `orch` up is the exact drift WP-21 exists to end.
+        PaneId::Orch => return Err("orch is placed, not spawned here".to_string()),
         // WP-15. Reached only through `wake_evaluator`, which has already
         // checked the three conditions in `evaluator::readiness` — this arm
         // re-checks the brief anyway, because "unreachable outside dev mode"
@@ -495,6 +468,10 @@ pub(crate) fn spawn_pane(
 /// the shared-checkout fallback) the target, which degrades the guardrail
 /// exactly the way `shared_checkout_warning` says peer review degrades rather
 /// than inventing a directory that is not there.
+/// The rule itself — including the evaluator's deliberately narrower roots — lives
+/// in [`placement::guardrail_notices`]. This is the emitting wrapper for the arms
+/// that have not moved to placement yet, so there is one implementation and not a
+/// second copy to drift.
 fn install_guardrail(
     store: &Arc<dyn Store>,
     pane: PaneId,
@@ -502,29 +479,9 @@ fn install_guardrail(
     cwd: &Path,
     context: &PaneContext,
 ) -> Result<(), String> {
-    let shell = shell_dir();
-    // **The evaluator's roots are narrower than any pane's, deliberately.** It
-    // must read everything the run produced and change almost nothing — its own
-    // stated boundary is that running a test suite is fine and editing a tracked
-    // file, committing or touching a branch is not. So it gets its working
-    // directory and nothing else: not `_shell` (which would let it write the
-    // live event log it is reading), and not the operator's `[fence] allow`
-    // extras, which exist for panes that are doing the work. Reads are untouched
-    // for every pane alike — the hook is not registered for `Read` at all
-    // (D-065), which is what makes "read everything" true without a rule.
-    let roots = if pane.is_evaluator() {
-        vec![cwd.to_path_buf()]
-    } else {
-        guardrail::roots_for(cwd, &shell, &context.launch.fence_allow)
-    };
-    let notices = guardrail::install(
-        config_dir,
-        pane,
-        &roots,
-        &guardrail::policy_dir(&shell),
-        &guardrail::journal_path(&shell),
-    )?;
-    for (level, text) in notices {
+    for (level, text) in
+        placement::guardrail_notices(&layout(), pane, config_dir, cwd, context)?
+    {
         note(store, level, &text);
     }
     Ok(())
@@ -714,28 +671,6 @@ fn open_evaluator_window(app: &AppHandle) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
-/// What the operator is told when `orch` spawns on its own config dir (WP-14).
-///
-/// Kept separate from [`spawn_pane`] so the wording is pinned by a test, for the
-/// same reason [`shared_checkout_warning`] is: this is the one notice standing
-/// between the operator and a pane that looks perfectly healthy while being
-/// logged out. `orch` keeps its login through `CLAUDE_SECURESTORAGE_CONFIG_DIR`,
-/// which is an internal of Claude Code and version-stamped at 2.1.224 in
-/// `docs/notes/orch-config-dir-notes.md`. If a future release stops honouring it,
-/// `orch` boots into an empty credential namespace, reaches its input box, and
-/// fails on its first turn while every `fleet send` reports `accepted`. The fix
-/// is one `/login` inside the pane, and it sticks — so the operator needs the
-/// sentence more than they need the machinery to detect it.
-fn orch_config_dir_notice(config_dir: &Path) -> String {
-    format!(
-        "orch is running on the fleet's own config dir at {}, so its transcript is \
-         archived with the run. It keeps your login. If the orch pane says \
-         “Not logged in · Run /login”, run `/login` inside that pane once — it \
-         persists, and it cannot disturb your own `claude`.",
-        config_dir.display()
-    )
-}
-
 /// One Activity line per pane launch (WP-04's spawn-time "Loadout" counter):
 /// the size of the brief this pane was just handed, estimated from text
 /// already in memory — never a file read, never a tokenizer call.
@@ -816,7 +751,7 @@ fn ensure_worktree(target: &Path, slot: u8) -> Result<PathBuf, String> {
     // without this, `worktree add` refuses the path it already knows about.
     let _ = git(target, &["worktree", "prune"]);
 
-    let slug = target_slug(target);
+    let slug = placement::target_slug(target);
     let branch = format!("fleet/{slug}/worker-{slot}");
     let dir_str = dir.to_string_lossy().into_owned();
     let output = std::process::Command::new("git")
@@ -1312,6 +1247,13 @@ fn snapshot(store: &Arc<dyn Store>) -> Result<BootSnapshot, String> {
 /// This is what a worker pane sets `ANTHROPIC_AUTH_TOKEN` from — and only that.
 /// Never `ANTHROPIC_API_KEY`: with it set, the interactive TUI blocks on api-key
 /// approval and never reaches its prompt (L2).
+/// The worker API key, or `None` — a [`Host`] field (D12). The orchestrator runs
+/// without one; worker panes cannot, which is why the failing path keeps the
+/// sentence in [`load_api_key`] rather than losing it to an `Option`.
+pub(crate) fn deepseek_api_key() -> Option<String> {
+    load_api_key().ok()
+}
+
 fn load_api_key() -> Result<String, String> {
     if let Ok(k) = std::env::var("DEEPSEEK_API_KEY") {
         if !k.is_empty() {
@@ -1474,25 +1416,6 @@ mod tests {
         assert!(
             text.contains("treat a reviewed `done` as unreviewed"),
             "the operator needs what to do about it, not only what happened: {text}",
-        );
-    }
-
-    /// WP-14's one operator-facing consequence. `orch` now runs on a fleet-owned
-    /// config dir, and the variable that keeps its login is a Claude Code
-    /// internal. If a release stops honouring it the pane still looks healthy —
-    /// input box, `accepted` on every send — and only its turns fail. So the
-    /// notice has to name the string the pane will show and the move that fixes
-    /// it, not merely announce that a directory changed.
-    #[test]
-    fn the_orch_config_dir_notice_says_what_to_do_if_the_login_did_not_carry() {
-        let text = orch_config_dir_notice(Path::new("/Users/me/.fleetor/_shell/pane-config/orch"));
-        assert!(text.contains("/Users/me/.fleetor/_shell/pane-config/orch"), "{text}");
-        assert!(text.contains("archived with the run"), "why it moved at all: {text}");
-        assert!(text.contains("Not logged in"), "the exact string the pane would show: {text}");
-        assert!(text.contains("/login"), "the move that fixes it: {text}");
-        assert!(
-            text.contains("cannot disturb your own"),
-            "and that the fix is safe to run — this is the operator's own claude: {text}",
         );
     }
 

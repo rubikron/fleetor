@@ -112,12 +112,34 @@ pub fn orch_command(
     config_dir: &Path,
     ctx: &PaneContext,
 ) -> CommandBuilder {
-    let mut cmd = base_command(&[
-        "--system-prompt".to_string(),
-        render_orch(&ctx.orch_template, &roster(), &cwd.display().to_string()),
-    ]);
+    orch_command_with(cwd, socket, config_dir, ctx, pane_program().as_deref(), &augmented_path())
+}
+
+/// [`orch_command`] with the two process-derived inputs handed in instead of read
+/// (WP-21).
+///
+/// This is the whole of the difference: the stand-in program and the `PATH` are
+/// the only things `orch_command` reached into the process for, and
+/// [`crate::placement`] may not do that. One implementation, two entry points —
+/// the reading one stays until the last caller that wants it is gone, so there is
+/// never a second copy of how `orch` is shaped.
+pub fn orch_command_with(
+    cwd: &Path,
+    socket: &Path,
+    config_dir: &Path,
+    ctx: &PaneContext,
+    program: Option<&str>,
+    path: &str,
+) -> CommandBuilder {
+    let mut cmd = base_command_with(
+        program,
+        &[
+            "--system-prompt".to_string(),
+            render_orch(&ctx.orch_template, &roster(), &cwd.display().to_string()),
+        ],
+    );
     cmd.cwd(cwd);
-    apply_pane_env(&mut cmd, PaneId::Orch, socket, augmented_path());
+    apply_pane_env(&mut cmd, PaneId::Orch, socket, path.to_string());
     cmd.env("CLAUDE_CONFIG_DIR", config_dir);
     cmd.env(ENV_CC_SECURESTORAGE_DIR, "");
     cmd
@@ -260,7 +282,13 @@ pub fn worker_command(
 
 /// The program plus its arguments, honoring the test override.
 fn base_command(args: &[String]) -> CommandBuilder {
-    if let Some(stand_in) = std::env::var(ENV_PANE_CMD).ok().filter(|s| !s.trim().is_empty()) {
+    base_command_with(pane_program().as_deref(), args)
+}
+
+/// [`base_command`] with the override handed in rather than read from the process,
+/// so [`crate::placement`] can build a command without touching it (WP-21).
+fn base_command_with(program: Option<&str>, args: &[String]) -> CommandBuilder {
+    if let Some(stand_in) = program.map(str::trim).filter(|s| !s.is_empty()) {
         return CommandBuilder::new(stand_in);
     }
     let mut cmd = CommandBuilder::new("claude");
@@ -268,6 +296,15 @@ fn base_command(args: &[String]) -> CommandBuilder {
         cmd.arg(arg);
     }
     cmd
+}
+
+/// The stand-in program every pane runs instead of `claude`, when one is set
+/// (`FLEETOR_PANE_CMD`). `None` is the ordinary case.
+///
+/// A [`Host`](crate::placement::Host) field in disguise: this is the one read that
+/// discovers it, and placement receives the answer rather than performing it.
+pub fn pane_program() -> Option<String> {
+    std::env::var(ENV_PANE_CMD).ok().filter(|s| !s.trim().is_empty())
 }
 
 /// What makes any process a pane: a truecolor terminal, a PATH that can find both
@@ -299,10 +336,20 @@ fn apply_pane_env(cmd: &mut CommandBuilder, pane: PaneId, socket: &Path, path: S
 /// worker's PATH, which is the other half of the fix this module's doc comment
 /// promises alongside the private `HOME` itself.
 pub fn augmented_path() -> String {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let existing = std::env::var("PATH").unwrap_or_default();
+    augmented_path_from(
+        fleet_bin_path().as_deref(),
+        &std::env::var("HOME").unwrap_or_default(),
+        &std::env::var("PATH").unwrap_or_default(),
+    )
+}
+
+/// [`augmented_path`] with its three process reads handed in (WP-21), so
+/// [`crate::placement`] can compute `orch`'s PATH from a
+/// [`Host`](crate::placement::Host) rather than from the process. One
+/// implementation; [`augmented_path`] is the reading entry point onto it.
+pub fn augmented_path_from(fleet_bin: Option<&Path>, home: &str, existing: &str) -> String {
     let mut prefix = String::new();
-    if let Some(dir) = fleet_bin_path().and_then(|p| p.parent().map(Path::to_path_buf)) {
+    if let Some(dir) = fleet_bin.and_then(Path::parent) {
         prefix.push_str(&dir.to_string_lossy());
         prefix.push(':');
     }

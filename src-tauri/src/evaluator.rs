@@ -267,6 +267,35 @@ pub fn reveal_answer_key(mission: &Mission) -> Result<Option<String>, String> {
 
 // --- roots ---------------------------------------------------------------------
 
+/// Where the mission harness, the prepared workspaces and the answer keys live —
+/// the three roots that are *not* under `~/.fleetor` and therefore are not the
+/// [`Layout`](crate::placement::Layout)'s to name.
+///
+/// A [`Host`](crate::placement::Host) field (D12): these are facts about what this
+/// machine has, discovered once per spawn (D13) and handed to placement rather
+/// than read inside it. [`MissionRoots::discover`] performs the reads;
+/// `MissionRoots::default` describes a machine with none of it, which is what
+/// [`Host::bare`](crate::placement::Host::bare) hands out.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MissionRoots {
+    /// The evaluation harness repo — holds `missions/<name>.md` and the reveal
+    /// script.
+    pub harness: PathBuf,
+    /// The root the prepared mission workspaces sit under. A target is a mission
+    /// only if its parent's parent is this.
+    pub workspaces: PathBuf,
+    /// Where an answer key is revealed to, per mission.
+    pub answers: PathBuf,
+}
+
+impl MissionRoots {
+    /// Read this machine: rustup-style, each root's own environment override
+    /// first, then the conventional sibling of the operator's home.
+    pub fn discover() -> Self {
+        Self { harness: harness_root(), workspaces: workspaces_root(), answers: answers_root() }
+    }
+}
+
 fn home() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string()))
 }
