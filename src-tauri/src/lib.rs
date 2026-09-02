@@ -25,6 +25,7 @@ pub mod fleet;
 /// tripwire).
 pub mod guardrail;
 mod orphans;
+pub mod placement;
 pub mod prompts;
 pub mod pty;
 pub mod runs;
