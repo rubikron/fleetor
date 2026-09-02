@@ -68,10 +68,94 @@ impl Scratch {
     }
 }
 
+impl Scratch {
+    /// A second target beside the first, for the target-switch case.
+    fn other_target(&self, name: &str) -> PathBuf {
+        let dir = self.root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+}
+
 impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.root);
     }
+}
+
+/// Make `dir` a real repository with one commit — what `git worktree add` needs
+/// before it will succeed.
+///
+/// **Shelling out to git is in keeping**: this suite already spawns real ptys and
+/// runs the real guardrail hook through a real shell, and the worker's successful
+/// path *is* a `git worktree add`. Faking it would prove nothing about the branch
+/// that actually runs. Identity and signing are pinned per-command so the result
+/// does not depend on the machine's own git configuration.
+fn init_repo(dir: &Path) {
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join("README.md"), "scratch\n").unwrap();
+    run_git(dir, &["init", "-q", "-b", "main"]);
+    run_git(dir, &["add", "-A"]);
+    run_git(dir, &["commit", "-q", "-m", "first"]);
+}
+
+/// One git command that must succeed, with the machine's own identity, signing and
+/// hooks deliberately out of the way.
+fn run_git(dir: &Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["-c", "user.email=scratch@fleetor.test"])
+        .args(["-c", "user.name=Scratch"])
+        .args(["-c", "commit.gpgsign=false"])
+        .args(["-c", "core.hooksPath=/dev/null"])
+        .args(args)
+        .output()
+        .expect("git must be on PATH for the worktree tests");
+    assert!(
+        output.status.success(),
+        "git {args:?} in {} failed: {}",
+        dir.display(),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+/// Every branch in `repo`, by short name.
+fn branches(repo: &Path) -> Vec<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["branch", "--list", "--format=%(refname:short)"])
+        .output()
+        .expect("git must be on PATH for the worktree tests");
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// A host a worker can actually be placed against: a `fleet` binary and a key.
+///
+/// Everything else stays bare — **no toolchain**, which is the machine the
+/// absent-settings test is about, and no stand-in program, so the command really is
+/// the `claude` one production builds.
+fn host_for_worker(fleet_bin: &Path) -> Host {
+    Host {
+        fleet_bin: Some(fleet_bin.to_path_buf()),
+        api_key: Some(WORKER_KEY.to_string()),
+        ..Host::bare()
+    }
+}
+
+/// The worker credential these tests hand the host, distinctive enough that finding
+/// it on the command proves it travelled rather than coincided.
+const WORKER_KEY: &str = "sk-fleetor-scratch-worker-key";
+
+/// What `place` put in the command's environment, as an owned string.
+fn env_on(command: &portable_pty::CommandBuilder, key: &str) -> Option<String> {
+    command.get_env(key).map(|v| v.to_string_lossy().to_string())
 }
 
 /// Every file and directory under `dir`, as paths relative to it.
@@ -264,9 +348,14 @@ fn a_machine_with_no_fleet_binary_is_warned_about_first() {
 ///     command — is under that layout. A placement that wrote nothing but pointed
 ///     the pane at the operator's real directory would pass the first check and
 ///     fail this one.
+///
+/// **Extended to the worker path** when workers moved onto the seam: a worker
+/// writes more than `orch` does — a worktree, a private `HOME`, a second config
+/// dir — and all of it must land under the same two arguments.
 #[test]
 fn placing_against_a_scratch_layout_writes_inside_it_and_nowhere_else() {
     let scratch = Scratch::new("containment");
+    init_repo(&scratch.target);
 
     // A sibling of both, created up front, so an escape into the scratch root
     // itself is visible as a new entry beside it rather than as an absence.
@@ -281,6 +370,15 @@ fn placing_against_a_scratch_layout_writes_inside_it_and_nowhere_else() {
         &PaneContext::baked(),
     )
     .expect("placing orch against a scratch layout");
+
+    placement::place(
+        PaneSpec::Worker(1),
+        &scratch.layout,
+        &host_for_worker(&scratch.root.join("fleet")),
+        &scratch.target,
+        &PaneContext::baked(),
+    )
+    .expect("placing a worker against the same scratch layout");
 
     for path in walk(&scratch.root) {
         assert!(
@@ -298,6 +396,20 @@ fn placing_against_a_scratch_layout_writes_inside_it_and_nowhere_else() {
     assert!(config_dir.join("settings.json").is_file(), "the guardrail policy");
     assert!(config_dir.join("write-guardrail.py").is_file(), "the guardrail hook itself");
 
+    // The worker's own three, so its half of the walk above is not passing by
+    // virtue of the worker having done nothing either.
+    let worker_config = scratch.layout.pane_config(PaneId::Worker(1));
+    assert!(worker_config.join(".claude.json").is_file(), "the worker's L1 config seed");
+    assert!(worker_config.join("settings.json").is_file(), "the worker's guardrail policy");
+    assert!(
+        scratch.layout.worker_home(1).join(".gitconfig").is_file(),
+        "the Fence's seeded git identity",
+    );
+    assert!(
+        scratch.layout.worktree(&scratch.target, 1).join(".git").exists(),
+        "the worker's own checkout",
+    );
+
     // And every path it pointed the pane at is the scratch layout's.
     let command = scratch.hook_command(PaneId::Orch);
     for named in [scratch.layout.shell().join("pane-config"), scratch.layout.shell().join("guardrail.jsonl")]
@@ -308,6 +420,293 @@ fn placing_against_a_scratch_layout_writes_inside_it_and_nowhere_else() {
             named.display(),
         );
     }
+}
+
+// --- the worker ------------------------------------------------------------------
+
+/// **Re-seeding after a target switch — the rule with no test until now.**
+///
+/// `hasTrustDialogAccepted` is keyed by *absolute project path*, so pointing the
+/// fleet at a second repository means every pane's seed must be re-applied for its
+/// new working directory. A pane that misses it still opens, still shows a
+/// terminal, and still reports `accepted` for every message — into a trust dialog
+/// it will never leave. That is the failure this asserts against, and the code
+/// calls it the single most likely way to reintroduce it.
+///
+/// Both targets are real repositories, so both placements resolve to real and
+/// *different* worktrees (D-067 namespaces them by target) — which is what makes
+/// the two project keys distinct and the assertion worth making.
+#[test]
+fn switching_targets_re_seeds_the_worker_and_keeps_the_first_targets_trust() {
+    let scratch = Scratch::new("re-seed");
+    let first = &scratch.target;
+    let second = scratch.other_target("second-repo");
+    init_repo(first);
+    init_repo(&second);
+    let host = host_for_worker(&scratch.root.join("fleet"));
+
+    let one = placement::place(
+        PaneSpec::Worker(1),
+        &scratch.layout,
+        &host,
+        first,
+        &PaneContext::baked(),
+    )
+    .expect("placing worker-1 against the first target");
+
+    let two = placement::place(
+        PaneSpec::Worker(1),
+        &scratch.layout,
+        &host,
+        &second,
+        &PaneContext::baked(),
+    )
+    .expect("placing worker-1 again after the target switched");
+
+    // The two placements really did land in different directories — otherwise
+    // there is only one key and this test proves nothing.
+    let first_cwd = one.gauge.expect("a worker records a gauge source").cwd;
+    let second_cwd = two.gauge.expect("a worker records a gauge source").cwd;
+    assert_ne!(first_cwd, second_cwd, "a target switch must move the worker's checkout");
+
+    let seed = scratch.layout.pane_config(PaneId::Worker(1)).join(".claude.json");
+    let value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&seed).unwrap()).unwrap();
+
+    for (which, cwd) in [("the first target's", &first_cwd), ("the second target's", &second_cwd)] {
+        let key = std::fs::canonicalize(cwd).unwrap().display().to_string();
+        assert_eq!(
+            value["projects"][&key]["hasTrustDialogAccepted"],
+            serde_json::json!(true),
+            "{which} project entry must survive the switch, or that pane opens onto a \
+             trust dialog and accepts every message into it: {value:#}",
+        );
+    }
+}
+
+/// **The Fence, at the command** (WP-08, D-052).
+///
+/// Seeding the private `HOME` has a test; the command that will actually run has
+/// not had one. Both halves are asserted here, and the second is the one that
+/// needed care: `CommandBuilder::new` seeds itself from the *parent* environment,
+/// so an `ANTHROPIC_API_KEY` sitting in the operator's shell is genuinely inherited
+/// and must be genuinely removed. Asserting it is absent without first putting it
+/// there would pass on a machine that never had one — a test passing for the wrong
+/// reason. So this test puts one there.
+///
+/// **The one place in this file that touches the process environment**, and it is
+/// simulating the parent the app is launched from, never supplying an input to
+/// `place` — every one of those still arrives as a value. The same precedent the
+/// `spawn` unit tests set for `HOME`.
+#[test]
+fn a_workers_command_carries_the_private_home_and_no_inherited_api_key() {
+    let scratch = Scratch::new("fence");
+    init_repo(&scratch.target);
+
+    let restore = std::env::var("ANTHROPIC_API_KEY").ok();
+    std::env::set_var("ANTHROPIC_API_KEY", "sk-the-operators-own-key");
+
+    let placed = placement::place(
+        PaneSpec::Worker(3),
+        &scratch.layout,
+        &host_for_worker(&scratch.root.join("fleet")),
+        &scratch.target,
+        &PaneContext::baked(),
+    )
+    .expect("placing worker-3");
+
+    match restore {
+        Some(value) => std::env::set_var("ANTHROPIC_API_KEY", value),
+        None => std::env::remove_var("ANTHROPIC_API_KEY"),
+    }
+
+    assert_eq!(
+        env_on(&placed.command, "HOME").as_deref(),
+        Some(scratch.layout.worker_home(3).display().to_string().as_str()),
+        "a worker's HOME is the fleet's own private one, not the operator's",
+    );
+    assert_eq!(
+        env_on(&placed.command, "ANTHROPIC_API_KEY"),
+        None,
+        "L2: an inherited api key parks the pane on an approval prompt forever, so it \
+         must be *removed* from the command and not merely left unset",
+    );
+    // The positive control: this really is a worker's command, carrying the key it
+    // was handed on the host — so the assertion above is about removal and not
+    // about having built something else entirely.
+    assert_eq!(
+        env_on(&placed.command, "ANTHROPIC_AUTH_TOKEN").as_deref(),
+        Some(WORKER_KEY),
+        "the worker authenticates with the token from the host",
+    );
+}
+
+/// **A bare machine: the toolchain settings are absent, not empty** (D-069).
+///
+/// A `RUSTUP_HOME` naming a directory that does not exist makes rustup try to
+/// *install* there — measured, and worse than the `command not found` a worker gets
+/// without it. So the claim is specifically that the command does not point at the
+/// fleet's own toolchain homes, which on this host were never seeded.
+///
+/// Note what is *not* asserted: that these variables are absent outright.
+/// `CommandBuilder` inherits the parent environment, so a bare `is_none()` would be
+/// a claim about the machine running the test rather than about placement — it
+/// would pass or fail depending on whether the developer has `CARGO_HOME` exported.
+#[test]
+fn a_machine_with_no_toolchain_gets_no_toolchain_settings_at_all() {
+    let scratch = Scratch::new("bare-toolchain");
+    init_repo(&scratch.target);
+    let host = host_for_worker(&scratch.root.join("fleet"));
+    assert!(host.toolchain.is_none(), "the host under test has no rustup");
+
+    let placed = placement::place(
+        PaneSpec::Worker(2),
+        &scratch.layout,
+        &host,
+        &scratch.target,
+        &PaneContext::baked(),
+    )
+    .expect("a machine with no rustup still places a worker");
+
+    let fleet_toolchain = scratch.layout.fleet_toolchain();
+    assert_ne!(
+        env_on(&placed.command, "CARGO_HOME"),
+        Some(fleet_toolchain.cargo_home.display().to_string()),
+        "the fleet's CARGO_HOME must not be set when nothing seeded it",
+    );
+    assert_ne!(
+        env_on(&placed.command, "RUSTUP_HOME"),
+        Some(fleet_toolchain.rustup_home.display().to_string()),
+        "a RUSTUP_HOME naming a directory that does not exist makes rustup install there",
+    );
+
+    // And the directories really were never made, which is what makes the two
+    // assertions above matter rather than being about a path that happens to exist.
+    assert!(!fleet_toolchain.cargo_home.exists(), "nothing was seeded");
+    assert!(!fleet_toolchain.rustup_home.exists(), "nothing was seeded");
+
+    // The PATH rung goes with them: without shims to point at, adding the rung
+    // would put a directory that does not exist on every worker's PATH.
+    let path = env_on(&placed.command, "PATH").expect("a worker is given a PATH");
+    assert!(
+        !path.contains(&fleet_toolchain.cargo_home.display().to_string()),
+        "no cargo/bin rung on a machine with no toolchain: {path}",
+    );
+}
+
+/// **A target that is not a repository degrades to the shared checkout, loudly.**
+///
+/// The wording has had a test; the trigger has not. A fleet that fell back silently
+/// would look identical to a working one right up until an operator trusted a
+/// reviewed `done` that nobody could have reviewed.
+#[test]
+fn a_target_that_is_not_a_repository_falls_back_and_says_what_review_loses() {
+    let scratch = Scratch::new("fallback");
+    // Deliberately *not* `init_repo` — an ordinary directory, which is exactly the
+    // case the fallback exists for.
+
+    let placed = placement::place(
+        PaneSpec::Worker(4),
+        &scratch.layout,
+        &host_for_worker(&scratch.root.join("fleet")),
+        &scratch.target,
+        &PaneContext::baked(),
+    )
+    .expect("a target that is not a repository still places a worker");
+
+    let warning = placed
+        .notices
+        .iter()
+        .find(|(level, _)| *level == NoticeLevel::Warn)
+        .map(|(_, text)| text.as_str())
+        .expect("the fallback is announced, never silent");
+    assert!(warning.contains("worker-4"), "which worker: {warning}");
+    assert!(warning.contains("share the checkout"), "what happened: {warning}");
+    assert!(
+        warning.contains("Peer review is degraded"),
+        "what is degraded — the point of the notice: {warning}",
+    );
+    assert!(
+        warning.contains("git diff fleet/worker-N"),
+        "the move that stops working: {warning}",
+    );
+    assert!(
+        warning.contains("treat a reviewed `done` as unreviewed"),
+        "and what the operator should do about it: {warning}",
+    );
+
+    // The worker really did land in the shared checkout, and no worktree was
+    // invented beside it.
+    assert_eq!(
+        placed.gauge.expect("a worker records a gauge source").cwd,
+        scratch.target,
+        "the fallback cwd is the target itself",
+    );
+    assert!(
+        !scratch.layout.worktree(&scratch.target, 4).exists(),
+        "no worktree is created when git could not oblige",
+    );
+    assert_eq!(
+        scratch.guardrail_roots(PaneId::Worker(4)).first().map(String::as_str),
+        Some(scratch.target.display().to_string().as_str()),
+        "the guardrail follows the cwd the pane will really run in",
+    );
+}
+
+/// **The successful worktree path, against a real repository.**
+///
+/// Four workers editing at once must not fight over one index, and peer review is
+/// `git diff` between their branches (D-048), so both the directory and the branch
+/// are the claim — a worktree without its branch would give a reviewer nothing to
+/// compare.
+#[test]
+fn a_worker_gets_its_own_worktree_and_branch_in_a_real_repository() {
+    let scratch = Scratch::new("worktree");
+    init_repo(&scratch.target);
+
+    let placed = placement::place(
+        PaneSpec::Worker(1),
+        &scratch.layout,
+        &host_for_worker(&scratch.root.join("fleet")),
+        &scratch.target,
+        &PaneContext::baked(),
+    )
+    .expect("placing worker-1 in a real repository");
+
+    let worktree = scratch.layout.worktree(&scratch.target, 1);
+    assert!(worktree.join(".git").exists(), "a real checkout at {}", worktree.display());
+    assert!(
+        placed.notices.iter().all(|(level, _)| *level != NoticeLevel::Warn),
+        "nothing is degraded when git obliged: {:#?}",
+        placed.notices,
+    );
+
+    // The branch peer review will diff against. Asserted by shape rather than by
+    // recomputing the target slug, so this pins what a reviewer needs — a branch of
+    // this worker's own, namespaced under the target — and not the hash function.
+    let found = branches(&scratch.target);
+    assert_eq!(
+        found.iter().filter(|b| b.starts_with("fleet/") && b.ends_with("/worker-1")).count(),
+        1,
+        "worker-1 needs exactly one branch of its own to be reviewed against: {found:?}",
+    );
+
+    // The gauge source is recorded before the process exists — it is returned from
+    // placement, which is strictly earlier than the pty the caller has yet to spawn.
+    let gauge = placed.gauge.expect("a worker records a gauge source");
+    assert_eq!(gauge.cwd, worktree, "the gauge samples the worker's own checkout");
+    assert_eq!(gauge.config_dir, scratch.layout.pane_config(PaneId::Worker(1)));
+
+    // Everything downstream followed the worktree rather than the target.
+    assert_eq!(
+        scratch.guardrail_roots(PaneId::Worker(1)).first().map(String::as_str),
+        Some(worktree.display().to_string().as_str()),
+        "the guardrail's first root is the worker's own checkout",
+    );
+    assert_eq!(
+        env_on(&placed.command, "CLAUDE_CONFIG_DIR").as_deref(),
+        Some(scratch.layout.pane_config(PaneId::Worker(1)).display().to_string().as_str()),
+    );
 }
 
 /// The config seed is keyed by the exact working directory the pane will run in

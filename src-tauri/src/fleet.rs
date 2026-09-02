@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use fleetor_core::event::{FleetEvent, NoticeLevel};
-use fleetor_core::pane::{PaneEntry, PaneId, WORKER_SLOTS};
+use fleetor_core::pane::{PaneEntry, PaneId};
 use fleetor_core::wire::{Op, OpResult};
 use fleetor_core::Store;
 use fleetor_db::SqliteStore;
@@ -33,7 +33,7 @@ use tauri::{AppHandle, Emitter, State};
 use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, oneshot, Notify};
 
-use crate::context_gauge::{self, GaugeSources, TranscriptSource};
+use crate::context_gauge::GaugeSources;
 use crate::placement::{self, Host, Layout, PaneSpec};
 use crate::prompts::PaneContext;
 use crate::pty::PaneRegistry;
@@ -172,27 +172,6 @@ pub(crate) fn config_path() -> PathBuf {
 /// The fleet unix socket the `fleet` CLI dials.
 pub(crate) fn socket_path() -> PathBuf {
     layout().socket()
-}
-
-/// One pane's `CLAUDE_CONFIG_DIR`, by pane name.
-fn pane_config_dir(pane: PaneId) -> PathBuf {
-    layout().pane_config(pane)
-}
-
-/// A worker's private `HOME` (WP-08, the Fence).
-fn worker_home_dir(slot: u8) -> PathBuf {
-    layout().worker_home(slot)
-}
-
-/// The fleet's own `CARGO_HOME` and `RUSTUP_HOME` (D-069).
-fn fleet_toolchain_dirs() -> spawn::FleetToolchain {
-    layout().fleet_toolchain()
-}
-
-/// A worker's own checkout of the target, namespaced by target repo so
-/// switching targets neither clobbers existing worktrees nor reuses stale ones.
-fn worktree_dir(target: &Path, slot: u8) -> PathBuf {
-    layout().worktree(target, slot)
 }
 
 /// The target named in `~/.fleetor/config.json`, if there is a usable one.
@@ -353,9 +332,28 @@ pub(crate) fn spawn_pane(
     // the process. The host is discovered per spawn rather than held on `Fleet`
     // (D13): that is what the code did before this module existed, so a toolchain
     // installed mid-session still takes effect on the next pane restart.
-    if matches!(pane, PaneId::Orch) {
-        let placed =
-            placement::place(PaneSpec::Orch, &layout(), &Host::discover(), &target, &context)?;
+    //
+    // `orch` and every worker are placed. The evaluator is not, yet — ticket 04
+    // moves it, and until then the arm below is the whole of what is left of the
+    // old sequence. Matched exhaustively rather than with a wildcard, so a new pane
+    // kind has to say which of the two it is instead of silently getting the old
+    // one.
+    let spec = match pane {
+        PaneId::Orch => Some(PaneSpec::Orch),
+        PaneId::Worker(slot) => Some(PaneSpec::Worker(slot)),
+        PaneId::Operator | PaneId::Evaluator => None,
+    };
+    if let Some(spec) = spec {
+        // The machine-level warnings stay here rather than moving inside
+        // `place_worker`, and deliberately: they are emitted *before* placement can
+        // fail, so a machine with no worker key still tells the operator what else
+        // is missing instead of only naming the key. Ticket 05 converges them when
+        // the old sequence goes. `orch` gets its own from placement, so it is
+        // excluded here or it would be warned twice.
+        if matches!(pane, PaneId::Worker(_)) {
+            warn_about_the_machine(&store, pane);
+        }
+        let placed = placement::place(spec, &layout(), &Host::discover(), &target, &context)?;
         for (level, text) in &placed.notices {
             note(&store, *level, text);
         }
@@ -365,27 +363,7 @@ pub(crate) fn spawn_pane(
         return registry.spawn(pane, placed.command, rows, cols);
     }
 
-    // A pane with no `fleet` on its PATH is a pane that looks alive and cannot
-    // talk. Say so once, loudly, rather than letting the model discover it as
-    // `command not found` mid-turn (L4). `orch` gets the identical sentence from
-    // `placement::MISSING_FLEET_BIN`, which is the constant this reads.
-    if spawn::fleet_bin_path().is_none() {
-        note(&store, NoticeLevel::Warn, placement::MISSING_FLEET_BIN);
-    }
-
-    // Same shape, same reason (D-069): a worker with no toolchain reachable
-    // looks perfectly healthy right up until the first `cargo build`, and then
-    // fails with `command not found` — a message that points at the worker's own
-    // PATH rather than at the machine. Said once, here, instead.
-    if matches!(pane, PaneId::Worker(_)) && spawn::operator_toolchain().is_none() {
-        note(
-            &store,
-            NoticeLevel::Warn,
-            "no rustup was found — workers will spawn but cannot build Rust. \
-             Install it from https://rustup.rs, or set RUSTUP_HOME/CARGO_HOME \
-             before launching if your toolchain lives somewhere unusual.",
-        );
-    }
+    warn_about_the_machine(&store, pane);
 
     let socket = socket_path();
     let command = match pane {
@@ -399,10 +377,11 @@ pub(crate) fn spawn_pane(
             return Err("the operator is a participant, not a pane — there is nothing to spawn"
                 .to_string())
         }
-        // Placed by `crate::placement`, which this function returned through
+        // Both placed by `crate::placement`, which this function returned through
         // above. Unreachable, and refused rather than duplicated: two ways to
-        // bring `orch` up is the exact drift WP-21 exists to end.
+        // bring a pane up is the exact drift WP-21 exists to end.
         PaneId::Orch => return Err("orch is placed, not spawned here".to_string()),
+        PaneId::Worker(_) => return Err("workers are placed, not spawned here".to_string()),
         // WP-15. Reached only through `wake_evaluator`, which has already
         // checked the three conditions in `evaluator::readiness` — this arm
         // re-checks the brief anyway, because "unreachable outside dev mode"
@@ -430,43 +409,39 @@ pub(crate) fn spawn_pane(
                 &context.launch.worker_permission_mode,
             )
         }
-        PaneId::Worker(slot) => {
-            let key = load_api_key()?;
-            let cwd = worker_cwd(&store, &target, slot);
-            let config_dir = pane_config_dir(pane);
-            spawn::seed_config_dir(&config_dir, &cwd)?;
-            // The Fence (WP-08): a private HOME, created and seeded before the
-            // process exists — same reason the config dir is seeded here rather
-            // than at the target picker (see this function's doc comment).
-            let home = worker_home_dir(slot);
-            spawn::seed_worker_home(&home, slot)?;
-            // The Fence learns about rustup (D-069): seeded here, beside the
-            // private HOME, and for the same reason — before the process exists.
-            // `None` when this machine has no rustup at all, which the warning
-            // above has already said out loud.
-            let toolchain = match spawn::operator_toolchain() {
-                Some(operator) => {
-                    let fleet = fleet_toolchain_dirs();
-                    spawn::seed_fleet_toolchain(&fleet, &operator)?;
-                    Some(fleet)
-                }
-                None => None,
-            };
-            install_guardrail(&store, pane, &config_dir, &cwd, &context)?;
-            note_spawn_estimate(&store, &context, pane, &cwd, Some(context_gauge::WORKER_WINDOW_TOKENS));
-            // The WP-04 live gauge's source of truth: where to find this
-            // worker's own transcript once it has one. Recorded before the
-            // process exists — a `fleet roster` that lands before the pane's
-            // first turn samples the (not-yet-there) file as absent, never a
-            // stale or wrong pane's numbers.
-            gauges.record(pane, TranscriptSource { config_dir: config_dir.clone(), cwd: cwd.clone() });
-            spawn::worker_command(
-                slot, &cwd, &home, &config_dir, &socket, &key, toolchain.as_ref(), &context,
-            )
-        }
     };
 
     registry.spawn(pane, command, rows, cols)
+}
+
+/// What this machine is missing, said once at spawn time rather than discovered
+/// by the model mid-turn (L4).
+///
+/// Emitted here rather than from inside [`placement::place_worker`] on purpose:
+/// these land *before* placement can fail, so a machine with no worker key still
+/// tells the operator what else is wrong instead of only naming the key. `orch`
+/// gets the `fleet`-binary sentence from placement itself, out of the same
+/// [`placement::MISSING_FLEET_BIN`] constant this reads.
+fn warn_about_the_machine(store: &Arc<dyn Store>, pane: PaneId) {
+    // A pane with no `fleet` on its PATH is a pane that looks alive and cannot
+    // talk.
+    if spawn::fleet_bin_path().is_none() {
+        note(store, NoticeLevel::Warn, placement::MISSING_FLEET_BIN);
+    }
+
+    // Same shape, same reason (D-069): a worker with no toolchain reachable looks
+    // perfectly healthy right up until the first `cargo build`, and then fails with
+    // `command not found` — a message that points at the worker's own PATH rather
+    // than at the machine.
+    if matches!(pane, PaneId::Worker(_)) && spawn::operator_toolchain().is_none() {
+        note(
+            store,
+            NoticeLevel::Warn,
+            "no rustup was found — workers will spawn but cannot build Rust. \
+             Install it from https://rustup.rs, or set RUSTUP_HOME/CARGO_HOME \
+             before launching if your toolchain lives somewhere unusual.",
+        );
+    }
 }
 
 /// Install this pane's write guardrail (WP-17), at the spawn site for the same
@@ -660,112 +635,6 @@ fn wake_evaluator(app: &AppHandle, target: &Path) -> Vec<(NoticeLevel, String)> 
         Err(why) => notices.push((NoticeLevel::Warn, format!("the review view: {why}"))),
     }
     notices
-}
-
-/// One Activity line per pane launch (WP-04's spawn-time "Loadout" counter):
-/// the size of the brief this pane was just handed, estimated from text
-/// already in memory — never a file read, never a tokenizer call.
-fn note_spawn_estimate(
-    store: &Arc<dyn Store>,
-    context: &PaneContext,
-    pane: PaneId,
-    cwd: &Path,
-    window_tokens: Option<u32>,
-) {
-    let roster = PaneId::roster(&WORKER_SLOTS);
-    let cwd_str = cwd.display().to_string();
-    let rendered = match pane {
-        // Unreachable — `spawn_pane` refuses the operator before it gets here —
-        // but a brief for somebody with no terminal is nothing, not an empty
-        // string dressed as one.
-        PaneId::Operator => return,
-        // Its brief is not rendered from `context` and its size is not the
-        // fleet's business — the Loadout counter is a per-run budget line for
-        // the panes doing the work, and the evaluator is not one of them.
-        PaneId::Evaluator => return,
-        PaneId::Orch => fleetor_core::brief::render_orch(&context.orch_template, &roster, &cwd_str),
-        PaneId::Worker(_) => {
-            fleetor_core::brief::render_worker(&context.worker_template, pane, &roster, &cwd_str)
-        }
-    };
-    note(store, NoticeLevel::Info, &context_gauge::spawn_estimate_notice_text(pane, &rendered, window_tokens));
-}
-
-/// A worker's checkout: its own git worktree, so four workers editing at once do
-/// not fight over one index.
-///
-/// Falls back to the target itself when git cannot oblige — the target may not be
-/// a repo at all, and a fleet that refuses to start because of a worktree is worse
-/// than one sharing a checkout. The fallback is announced, because "who else is
-/// editing this file" is a very different question in the two arrangements.
-///
-/// **WP-06 raised what the fallback costs, so it raised the notice with it.** The
-/// worktrees are not only an editing convenience: peer review is `git diff
-/// fleet/worker-N` from a reviewer's *own* worktree, over the object database all
-/// of them share (D-048). In the shared checkout there are no per-worker branches
-/// and there is one working tree, so a reviewer asked to look at a peer's branch
-/// is looking at the same files it is editing itself — one checkout reported five
-/// times. The receipts still work; the review step does not, and the operator has
-/// to know that before they trust a `done`.
-fn worker_cwd(store: &Arc<dyn Store>, target: &Path, slot: u8) -> PathBuf {
-    match ensure_worktree(target, slot) {
-        Ok(dir) => dir,
-        Err(e) => {
-            note(store, NoticeLevel::Warn, &shared_checkout_warning(slot, &e, target));
-            target.to_path_buf()
-        }
-    }
-}
-
-/// What the operator is told when a worker ends up in the shared checkout. Kept
-/// separate from [`worker_cwd`] so the wording is pinned by a test — this is the
-/// one notice whose absence would let a fleet look like it is reviewing itself.
-fn shared_checkout_warning(slot: u8, why: &str, target: &Path) -> String {
-    format!(
-        "worker-{slot}: {why} — it will share the checkout at {}. \
-         Peer review is degraded there: the workers have no branches of their own, \
-         so `git diff fleet/worker-N` has nothing to compare and a reviewer sees the \
-         same working tree it is editing. Receipts still report honestly; treat a \
-         reviewed `done` as unreviewed until the target is a git repository.",
-        target.display()
-    )
-}
-
-fn ensure_worktree(target: &Path, slot: u8) -> Result<PathBuf, String> {
-    let dir = worktree_dir(target, slot);
-    if dir.join(".git").exists() {
-        return Ok(dir);
-    }
-    let parent = dir.parent().ok_or("worktree path has no parent")?;
-    std::fs::create_dir_all(parent).map_err(|e| format!("create worktree root: {e}"))?;
-    // Clear registrations left by a worktree directory someone deleted by hand;
-    // without this, `worktree add` refuses the path it already knows about.
-    let _ = git(target, &["worktree", "prune"]);
-
-    let slug = placement::target_slug(target);
-    let branch = format!("fleet/{slug}/worker-{slot}");
-    let dir_str = dir.to_string_lossy().into_owned();
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(target)
-        .args(["worktree", "add", "-B", &branch, &dir_str])
-        .output()
-        .map_err(|e| format!("could not run git: {e}"))?;
-    if !output.status.success() {
-        let why = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("git worktree add failed: {}", why.trim().replace('\n', "; ")));
-    }
-    Ok(dir)
-}
-
-fn git(repo: &Path, args: &[&str]) -> bool {
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(args)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
 }
 
 /// Decide where the fleet works, announcing the choice on the feed so it is never
@@ -1052,7 +921,7 @@ fn adopt_target(
 }
 
 fn apply_target(state: &FleetState, target: &Path) {
-    let is_git = git(target, &["rev-parse", "--git-dir"]);
+    let is_git = placement::git(target, &["rev-parse", "--git-dir"]);
     if let Ok(mut guard) = state.0.lock() {
         if let Some(fleet) = guard.as_mut() {
             fleet.target = target.to_path_buf();
@@ -1496,33 +1365,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The shared-checkout fallback is the one arrangement where a `done` can be
-    /// reviewed by somebody looking at their own edits (WP-06). The notice has to
-    /// say that in words, not only that a worktree failed — an operator reading
-    /// "sharing the target checkout instead" has no way to know the review step
-    /// stopped meaning anything.
-    #[test]
-    fn the_shared_checkout_warning_says_review_is_what_breaks() {
-        let text = shared_checkout_warning(2, "git worktree add failed: not a repository", Path::new("/tmp/target"));
-        assert!(text.contains("worker-2"), "{text}");
-        assert!(text.contains("not a repository"), "the cause survives: {text}");
-        assert!(text.contains("/tmp/target"), "and where it landed: {text}");
-        assert!(text.contains("Peer review is degraded"), "{text}");
-        assert!(text.contains("git diff fleet/worker-N"), "names the move that stops working: {text}");
-        assert!(
-            text.contains("treat a reviewed `done` as unreviewed"),
-            "the operator needs what to do about it, not only what happened: {text}",
-        );
-    }
-
     /// Every pane's config dir hangs off one root under `_shell`, `orch`
     /// included since WP-14 — which is the whole reason rotation archives its
     /// transcript without an arm of its own. A worker's path must not have moved
     /// while that was arranged, or four panes lose their trust flags at once.
     #[test]
     fn every_panes_config_dir_is_a_sibling_under_one_root() {
-        let orch = pane_config_dir(PaneId::Orch);
-        let worker = pane_config_dir(PaneId::Worker(2));
+        let orch = layout().pane_config(PaneId::Orch);
+        let worker = layout().pane_config(PaneId::Worker(2));
         assert!(orch.ends_with("pane-config/orch"), "{}", orch.display());
         assert!(worker.ends_with("pane-config/worker-2"), "{}", worker.display());
         assert_eq!(orch.parent(), worker.parent(), "harvest_transcripts walks the parent");

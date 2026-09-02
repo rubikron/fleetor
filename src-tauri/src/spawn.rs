@@ -222,16 +222,54 @@ pub fn worker_command(
     toolchain: Option<&FleetToolchain>,
     ctx: &PaneContext,
 ) -> CommandBuilder {
-    let pane = PaneId::Worker(slot);
-    let mut cmd = base_command(&[
-        "--permission-mode".to_string(),
-        ctx.launch.worker_permission_mode.clone(),
-        "--system-prompt".to_string(),
-        render_worker(&ctx.worker_template, pane, &roster(), &cwd.display().to_string()),
-    ]);
-    cmd.cwd(cwd);
     let cargo_bin = toolchain.map(|t| t.cargo_home.join("bin"));
-    apply_pane_env(&mut cmd, pane, socket, worker_augmented_path(cargo_bin.as_deref()));
+    worker_command_with(
+        slot,
+        cwd,
+        home,
+        config_dir,
+        socket,
+        api_key,
+        toolchain,
+        ctx,
+        pane_program().as_deref(),
+        &worker_augmented_path(cargo_bin.as_deref()),
+    )
+}
+
+/// [`worker_command`] with its two process reads — the stand-in override and the
+/// worker's PATH — handed in (WP-21), so [`crate::placement`] can build a worker's
+/// command without touching the process. One implementation; [`worker_command`] is
+/// the reading entry point onto it.
+///
+/// The sibling of [`orch_command_with`], and everything the two do differently is
+/// the Fence: a private `HOME`, a PATH with no operator rung, the fleet's own
+/// toolchain homes, and four variables removed rather than merely not set.
+#[allow(clippy::too_many_arguments)]
+pub fn worker_command_with(
+    slot: u8,
+    cwd: &Path,
+    home: &Path,
+    config_dir: &Path,
+    socket: &Path,
+    api_key: &str,
+    toolchain: Option<&FleetToolchain>,
+    ctx: &PaneContext,
+    program: Option<&str>,
+    path: &str,
+) -> CommandBuilder {
+    let pane = PaneId::Worker(slot);
+    let mut cmd = base_command_with(
+        program,
+        &[
+            "--permission-mode".to_string(),
+            ctx.launch.worker_permission_mode.clone(),
+            "--system-prompt".to_string(),
+            render_worker(&ctx.worker_template, pane, &roster(), &cwd.display().to_string()),
+        ],
+    );
+    cmd.cwd(cwd);
+    apply_pane_env(&mut cmd, pane, socket, path.to_string());
 
     // The Fence learns about rustup (D-069). Both homes are the fleet's own, not
     // the operator's, and that is the whole decision: a `cargo install` a worker
@@ -379,9 +417,28 @@ pub fn augmented_path_from(fleet_bin: Option<&Path>, home: &str, existing: &str)
 /// `~/.cargo/bin` is a rung whose contents change whenever the operator installs
 /// anything, and it holds real binaries, not only shims.
 pub fn worker_augmented_path(cargo_bin: Option<&Path>) -> String {
-    let existing = std::env::var("PATH").unwrap_or_default();
+    worker_augmented_path_from(
+        fleet_bin_path().as_deref(),
+        cargo_bin,
+        &std::env::var("PATH").unwrap_or_default(),
+    )
+}
+
+/// [`worker_augmented_path`] with its two process reads handed in (WP-21), so
+/// [`crate::placement`] can compute a worker's PATH from a
+/// [`Host`](crate::placement::Host) rather than from the process. One
+/// implementation; [`worker_augmented_path`] is the reading entry point onto it.
+///
+/// The sibling of [`augmented_path_from`], and the difference between them is the
+/// whole of the Fence's PATH half: this one is handed no `home` at all, so there
+/// is no operator-HOME rung it *could* add.
+pub fn worker_augmented_path_from(
+    fleet_bin: Option<&Path>,
+    cargo_bin: Option<&Path>,
+    existing: &str,
+) -> String {
     let mut prefix = String::new();
-    if let Some(dir) = fleet_bin_path().and_then(|p| p.parent().map(Path::to_path_buf)) {
+    if let Some(dir) = fleet_bin.and_then(Path::parent) {
         prefix.push_str(&dir.to_string_lossy());
         prefix.push(':');
     }
