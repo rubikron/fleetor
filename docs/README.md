@@ -37,6 +37,7 @@ Each is stamped with the Claude Code version it measured; re-measure on a CC upd
 | [`fence-notes.md`](./notes/fence-notes.md) | What a private worker HOME stops, and the breakage catalogue (D-052) | 2026-08-06 |
 | [`blackboard-shakedown.md`](./notes/blackboard-shakedown.md) | The WP-09 live-run findings | **live log** — CC 2.1.223, ongoing |
 | [`run-rotation-notes.md`](./notes/run-rotation-notes.md) | Which files an archived run has to take, measured against a crashed WAL (D-058) | 2026-08-07, SQLite/macOS 15 |
+| [`critic-spike-notes.md`](./notes/critic-spike-notes.md) | Whether a judge with no answer key finds anything worth reading, and the prompt that became the Critic's brief (WP-20 D15) | 2026-09-02, archives CC 2.1.224 |
 
 ## Roadmap (`docs/roadmap/`)
 
