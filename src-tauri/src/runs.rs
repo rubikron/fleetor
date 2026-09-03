@@ -224,7 +224,7 @@ fn archive_files(live: &Path, dest: &Path) -> std::io::Result<()> {
 /// `pane-config/` root a worker's lives in, so the scan below finds it by the
 /// name it already walks and files it under `transcripts/orch/`.
 fn harvest_transcripts(shell: &Path, dest: &Path) -> u32 {
-    let Ok(panes) = std::fs::read_dir(shell.join("pane-config")) else { return 0 };
+    let Ok(panes) = std::fs::read_dir(crate::placement::pane_config_root(shell)) else { return 0 };
     let mut moved = 0;
 
     for pane in panes.flatten() {
@@ -330,7 +330,7 @@ pub fn snapshot_live_run(shell: &Path, dest: &Path, run_id: &str) -> Result<u32,
 /// [`harvest_transcripts`]'s non-destructive twin — see [`snapshot_live_run`]
 /// for why the two are not one function with a flag.
 fn copy_transcripts(shell: &Path, dest: &Path) -> u32 {
-    let Ok(panes) = std::fs::read_dir(shell.join("pane-config")) else { return 0 };
+    let Ok(panes) = std::fs::read_dir(crate::placement::pane_config_root(shell)) else { return 0 };
     let mut copied = 0;
 
     for pane in panes.flatten() {

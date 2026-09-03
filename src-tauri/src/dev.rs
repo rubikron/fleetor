@@ -48,14 +48,14 @@ pub const CONFIG_KEY: &str = "dev_mode";
 /// operator one click and failing open would silently put a fleet in a posture
 /// nobody chose.
 pub fn is_enabled() -> bool {
-    read_at(&fleet::config_path())
+    read_at(&fleet::layout().config_file())
 }
 
 /// Turn dev mode on or off, persistently. Returns what is now stored, which is
 /// what the caller should render — never the value it asked for. Writing and
 /// then reading back is what makes "it persisted" a fact rather than a hope.
 pub fn set_enabled(enabled: bool) -> Result<bool, String> {
-    write_at(&fleet::config_path(), enabled)
+    write_at(&fleet::layout().config_file(), enabled)
 }
 
 /// [`is_enabled`] against a named config file.

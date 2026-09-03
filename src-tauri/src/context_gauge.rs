@@ -43,7 +43,7 @@ use fleetor_core::pane::{ContextGauge, PaneId};
 /// live as a premature auto-compact warning.
 ///
 /// One number, two consumers: this gauge's denominator, and the
-/// `CLAUDE_CODE_MAX_CONTEXT_TOKENS` env `spawn::worker_command` exports so
+/// `CLAUDE_CODE_MAX_CONTEXT_TOKENS` env `placement::spawn::worker_command_with` exports so
 /// CC's own auto-compact bookkeeping works to the same window. They must
 /// never diverge — a gauge reading 100% while CC believes 40% (or the
 /// reverse) is exactly the quiet lie this product exists to avoid.
@@ -103,12 +103,12 @@ impl GaugeSources {
 /// `<config_dir>/projects/<slug>/`, where `<slug>` is the cwd's canonical
 /// absolute path with every `/` and `.` replaced by `-` — empirically
 /// verified character-for-character in `docs/notes/context-gauge-notes.md` §1. The
-/// canonicalization is `crate::spawn::project_key`'s, reused rather than
+/// canonicalization is `crate::placement::spawn::project_key`'s, reused rather than
 /// re-derived: it is the same resolved path Claude Code itself sees as its
 /// cwd (macOS resolves `/tmp`/`/var` symlinks on `getcwd`), and it is already
 /// the key `seed_config_dir` writes the pane's trust flag under.
 fn project_dir(source: &TranscriptSource) -> PathBuf {
-    let resolved = crate::spawn::project_key(&source.cwd);
+    let resolved = crate::placement::spawn::project_key(&source.cwd);
     let slug: String =
         resolved.chars().map(|c| if c == '/' || c == '.' { '-' } else { c }).collect();
     source.config_dir.join("projects").join(slug)
@@ -279,7 +279,7 @@ mod tests {
         let config_dir = temp_dir("slug-config");
         let source = TranscriptSource { config_dir: config_dir.clone(), cwd: cwd.clone() };
 
-        let resolved = crate::spawn::project_key(&cwd);
+        let resolved = crate::placement::spawn::project_key(&cwd);
         let expected_slug: String =
             resolved.chars().map(|c| if c == '/' || c == '.' { '-' } else { c }).collect();
 

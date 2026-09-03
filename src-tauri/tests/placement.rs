@@ -189,6 +189,96 @@ fn host_with_fleet_bin(at: &Path) -> Host {
     Host { fleet_bin: Some(at.to_path_buf()), ..Host::bare() }
 }
 
+// --- what the machine is missing ------------------------------------------------
+
+/// The refusal a worker gets on a machine with no key **names the directory the
+/// `.env` walk started from** (D-075).
+///
+/// It is the operator-actionable half of the sentence and it was lost when the
+/// message became a constant: under `tauri dev` the working directory is
+/// `src-tauri/`, so a key at the repo root *is* found by the walk, and an operator
+/// whose key is somewhere else can only tell which case they are in if the message
+/// says where it looked. Asserted through the refusal `place` actually returns, so
+/// it cannot pass while the path is dropped between the constant and the caller.
+#[test]
+fn a_worker_with_no_key_is_told_where_the_key_was_looked_for() {
+    let scratch = Scratch::new("no-key");
+    let host = Host {
+        api_key: None,
+        api_key_searched_from: Some(scratch.root.join("app-cwd")),
+        ..host_with_fleet_bin(&scratch.root.join("fleet"))
+    };
+
+    let why = placement::place(
+        PaneSpec::Worker(1),
+        &scratch.layout,
+        &host,
+        &scratch.target,
+        &PaneContext::baked(),
+    )
+    .expect_err("a machine with no key cannot place a worker");
+
+    assert!(why.contains("DEEPSEEK_API_KEY"), "{why}");
+    assert!(
+        why.contains(&scratch.root.join("app-cwd").display().to_string()),
+        "the refusal must say where it looked: {why}",
+    );
+    assert!(why.contains("worker panes cannot"), "{why}");
+
+    // And a host nobody discovered degrades to the general sentence rather than
+    // naming a path it invented.
+    let bare = placement::place(
+        PaneSpec::Worker(1),
+        &scratch.layout,
+        &Host::bare(),
+        &scratch.target,
+        &PaneContext::baked(),
+    )
+    .expect_err("a bare machine cannot place a worker either");
+    assert!(bare.contains("the application's working directory"), "{bare}");
+}
+
+/// The two machine-level warnings are placement's decision, and `orch` is excluded
+/// from them because its own arm emits the `fleet`-binary line (D-075).
+///
+/// They are the one part of bringing a pane up that the caller performs rather than
+/// `place`, because they have to land *before* a placement that may fail — so what
+/// is asserted here is the decision, off a [`Host`], with no fleet to run.
+#[test]
+fn a_bare_machine_warns_about_the_fleet_binary_and_the_toolchain_but_never_for_orch() {
+    let bare = Host::bare();
+
+    let worker: Vec<String> =
+        placement::machine_notices(&bare, PaneId::Worker(2)).into_iter().map(|(_, t)| t).collect();
+    assert_eq!(worker.len(), 2, "a worker hears about both: {worker:?}");
+    assert!(worker[0].contains("`fleet` binary was not found"), "{worker:?}");
+    assert!(worker[1].contains("no rustup was found"), "{worker:?}");
+
+    // The evaluator is not a worker and does not build Rust for the fleet, so it
+    // hears about the binary and not the toolchain.
+    let evaluator: Vec<String> =
+        placement::machine_notices(&bare, PaneId::Evaluator).into_iter().map(|(_, t)| t).collect();
+    assert_eq!(evaluator, vec![placement::MISSING_FLEET_BIN.to_string()], "{evaluator:?}");
+
+    // `orch` hears nothing here — `place_orch` says it, and saying it twice is how
+    // the operator learns to stop reading the feed.
+    assert!(
+        placement::machine_notices(&bare, PaneId::Orch).is_empty(),
+        "orch's copy comes from its own placement arm",
+    );
+
+    // A machine that has everything says nothing at all.
+    let stocked = Host {
+        fleet_bin: Some(PathBuf::from("/somewhere/fleet")),
+        toolchain: Some(placement::spawn::OperatorToolchain {
+            rustup_bin: PathBuf::from("/somewhere/rustup"),
+            rustup_home: PathBuf::from("/somewhere/.rustup"),
+        }),
+        ..Host::bare()
+    };
+    assert!(placement::machine_notices(&stocked, PaneId::Worker(1)).is_empty());
+}
+
 // --- the guardrail roots --------------------------------------------------------
 
 /// **The orchestrator writes in its target and in the fleet's own state root, and

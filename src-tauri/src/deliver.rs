@@ -558,9 +558,9 @@ mod tests {
         let source = TranscriptSource { config_dir: config_dir.clone(), cwd: cwd.clone() };
 
         // Seed a transcript with usage well under the notice threshold —
-        // `crate::spawn::project_key` canonicalizes the same way
+        // `crate::placement::spawn::project_key` canonicalizes the same way
         // `context_gauge::project_dir` does, so this mirrors a real spawn.
-        let resolved = crate::spawn::project_key(&cwd);
+        let resolved = crate::placement::spawn::project_key(&cwd);
         let slug: String = resolved.chars().map(|c| if c == '/' || c == '.' { '-' } else { c }).collect();
         let project_dir = config_dir.join("projects").join(slug);
         std::fs::create_dir_all(&project_dir).unwrap();
@@ -610,7 +610,7 @@ mod tests {
     fn crossing_the_notice_threshold_appends_exactly_one_notice_across_repeated_asks() {
         let cwd = temp_dir("hot-cwd");
         let config_dir = temp_dir("hot-cfg");
-        let resolved = crate::spawn::project_key(&cwd);
+        let resolved = crate::placement::spawn::project_key(&cwd);
         let slug: String = resolved.chars().map(|c| if c == '/' || c == '.' { '-' } else { c }).collect();
         let project_dir = config_dir.join("projects").join(slug);
         std::fs::create_dir_all(&project_dir).unwrap();

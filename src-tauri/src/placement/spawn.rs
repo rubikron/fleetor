@@ -2,12 +2,12 @@
 //!
 //! Two commands, deliberately different postures:
 //!
-//!  - [`orch_command`] — the operator's **own** `claude`. Full environment
+//!  - [`orch_command_with`] — the operator's **own** `claude`. Full environment
 //!    inherit, their login, their Opus, their `HOME`. We override only what
 //!    the fleet needs, and ours must win, so every override lands *after* the
 //!    inherit. Since WP-14 that list includes a fleet-owned `CLAUDE_CONFIG_DIR`
-//!    — see [`orch_command`] for the pair of variables that keeps the login.
-//!  - [`worker_command`] — an isolated Flash worker: its own `CLAUDE_CONFIG_DIR`,
+//!    — see [`orch_command_with`] for the pair of variables that keeps the login.
+//!  - [`worker_command_with`] — an isolated Flash worker: its own `CLAUDE_CONFIG_DIR`,
 //!    its own worktree, its own private `HOME` (WP-08), `--permission-mode
 //!    auto`, and the DeepSeek endpoint.
 //!
@@ -105,25 +105,15 @@ fn roster() -> Vec<PaneId> {
 ///
 /// What `orch` still does **not** get, and must not: a private `HOME`, a worker's
 /// PATH, `--permission-mode`, or any `ANTHROPIC_*` override. The asymmetry with
-/// [`worker_command`] is the product (D-030, D-052), not an oversight.
-pub fn orch_command(
-    cwd: &Path,
-    socket: &Path,
-    config_dir: &Path,
-    ctx: &PaneContext,
-) -> CommandBuilder {
-    orch_command_with(cwd, socket, config_dir, ctx, pane_program().as_deref(), &augmented_path())
-}
-
-/// [`orch_command`] with the two process-derived inputs handed in instead of read
-/// (WP-21).
+/// [`worker_command_with`] is the product (D-030, D-052), not an oversight.
 ///
-/// This is the whole of the difference: the stand-in program and the `PATH` are
-/// the only things `orch_command` reached into the process for, and
-/// [`crate::placement`] may not do that. One implementation, two entry points —
-/// the reading one stays until the last caller that wants it is gone, so there is
-/// never a second copy of how `orch` is shaped.
-pub fn orch_command_with(
+/// **`program` and `path` are handed in, never read here (WP-21, D-075).** They
+/// were the only two things this function reached into the process for; a reading
+/// wrapper carried them until every pane kind came up through
+/// [`crate::placement`], and it went with the last caller that wanted it. What is
+/// left is one implementation with one entry point, and the two process reads
+/// live on [`Host`](crate::placement::Host) where a test can supply them.
+pub(super) fn orch_command_with(
     cwd: &Path,
     socket: &Path,
     config_dir: &Path,
@@ -177,32 +167,11 @@ pub fn orch_command_with(
 /// exact `cwd` (L1), and the `CLAUDE_SECURESTORAGE_CONFIG_DIR` pairing is
 /// `orch`'s (D-062): set and empty, so the operator's own login is found rather
 /// than an empty namespace keyed by a hash of the config dir.
-pub fn evaluator_command(
-    cwd: &Path,
-    socket: &Path,
-    config_dir: &Path,
-    brief: &str,
-    permission_mode: &str,
-) -> CommandBuilder {
-    evaluator_command_with(
-        cwd,
-        socket,
-        config_dir,
-        brief,
-        permission_mode,
-        pane_program().as_deref(),
-        &augmented_path(),
-    )
-}
-
-/// [`evaluator_command`] with the two process-derived inputs handed in instead of
-/// read (WP-21), exactly as [`orch_command_with`] is to [`orch_command`].
-///
-/// The stand-in program and the `PATH` are the only things this pane's command
-/// reached into the process for, and [`crate::placement`] may not do that. The
-/// `PATH` it is given is `orch`'s — this pane is the operator's own `claude` and
-/// gets their tool rungs — never a worker's fenced one.
-pub fn evaluator_command_with(
+/// **`program` and `path` are handed in, never read here (WP-21, D-075)**, exactly
+/// as for [`orch_command_with`]. The `PATH` it is given is `orch`'s — this pane is
+/// the operator's own `claude` and gets their tool rungs — never a worker's fenced
+/// one.
+pub(super) fn evaluator_command_with(
     cwd: &Path,
     socket: &Path,
     config_dir: &Path,
@@ -239,46 +208,20 @@ pub fn evaluator_command_with(
 /// [`seed_worker_home`] — see this module's doc comment for what an unseeded one
 /// costs.
 /// `toolchain` is `Some` only when this machine actually has a rustup
-/// ([`operator_toolchain`]) and both fleet directories have been through
+/// ([`operator_toolchain`], read into [`Host`](crate::placement::Host)) and both
+/// fleet directories have been through
 /// [`seed_fleet_toolchain`]. When it is `None` the three settings are **absent
 /// rather than pointing at nothing**: a `RUSTUP_HOME` naming a directory that
 /// does not exist makes rustup try to *install* there, which is a worse failure
 /// than the `command not found` a worker gets today.
-pub fn worker_command(
-    slot: u8,
-    cwd: &Path,
-    home: &Path,
-    config_dir: &Path,
-    socket: &Path,
-    api_key: &str,
-    toolchain: Option<&FleetToolchain>,
-    ctx: &PaneContext,
-) -> CommandBuilder {
-    let cargo_bin = toolchain.map(|t| t.cargo_home.join("bin"));
-    worker_command_with(
-        slot,
-        cwd,
-        home,
-        config_dir,
-        socket,
-        api_key,
-        toolchain,
-        ctx,
-        pane_program().as_deref(),
-        &worker_augmented_path(cargo_bin.as_deref()),
-    )
-}
-
-/// [`worker_command`] with its two process reads — the stand-in override and the
-/// worker's PATH — handed in (WP-21), so [`crate::placement`] can build a worker's
-/// command without touching the process. One implementation; [`worker_command`] is
-/// the reading entry point onto it.
+/// **`program` and `path` are handed in, never read here (WP-21, D-075)**, so
+/// [`crate::placement`] can build a worker's command without touching the process.
 ///
 /// The sibling of [`orch_command_with`], and everything the two do differently is
 /// the Fence: a private `HOME`, a PATH with no operator rung, the fleet's own
 /// toolchain homes, and four variables removed rather than merely not set.
 #[allow(clippy::too_many_arguments)]
-pub fn worker_command_with(
+pub(super) fn worker_command_with(
     slot: u8,
     cwd: &Path,
     home: &Path,
@@ -354,10 +297,11 @@ pub fn worker_command_with(
 /// than read from the process, so [`crate::placement`] can build a command without
 /// touching it (WP-21).
 ///
-/// There was a reading sibling of this until every pane kind moved onto the
-/// placement seam; the last caller of it was `evaluator_command`, and it went with
-/// that move. The public `*_command` entry points that still read are the reading
-/// layer now, and there is exactly one of them per pane kind.
+/// There was a reading sibling of this, and there were reading siblings of all
+/// three `*_command_with` functions, until every pane kind moved onto the placement
+/// seam. They are gone (D-075): nothing in this module reads the process to build a
+/// command any more, and there is one implementation per pane kind with one entry
+/// point each.
 fn base_command_with(program: Option<&str>, args: &[String]) -> CommandBuilder {
     if let Some(stand_in) = program.map(str::trim).filter(|s| !s.is_empty()) {
         return CommandBuilder::new(stand_in);
@@ -373,18 +317,20 @@ fn base_command_with(program: Option<&str>, args: &[String]) -> CommandBuilder {
 /// (`FLEETOR_PANE_CMD`). `None` is the ordinary case.
 ///
 /// A [`Host`](crate::placement::Host) field in disguise: this is the one read that
-/// discovers it, and placement receives the answer rather than performing it.
-pub fn pane_program() -> Option<String> {
+/// discovers it, and placement receives the answer rather than performing it. It is
+/// called from [`Host::discover`](crate::placement::Host::discover) and nowhere
+/// else.
+pub(super) fn pane_program() -> Option<String> {
     std::env::var(ENV_PANE_CMD).ok().filter(|s| !s.trim().is_empty())
 }
 
 /// What makes any process a pane: a truecolor terminal, a PATH that can find both
 /// `claude` and `fleet`, its own name, and the socket to reach the fleet on.
 ///
-/// `path` is the caller's to choose (WP-08, the Fence): [`augmented_path`] for
-/// orch, [`worker_augmented_path`] for a worker. Both resolve `fleet`'s location
-/// the identical way; they differ only in whether the operator's own HOME
-/// contributes rungs.
+/// `path` is the caller's to choose (WP-08, the Fence):
+/// [`Host::orch_path`](crate::placement::Host) for orch and the evaluator,
+/// `Host::worker_path` for a worker. Both resolve `fleet`'s location the identical
+/// way; they differ only in whether the operator's own HOME contributes rungs.
 fn apply_pane_env(cmd: &mut CommandBuilder, pane: PaneId, socket: &Path, path: String) {
     cmd.env("PATH", path);
     cmd.env("TERM", "xterm-256color");
@@ -400,25 +346,16 @@ fn apply_pane_env(cmd: &mut CommandBuilder, pane: PaneId, socket: &Path, path: S
 /// A PATH that finds `claude` and `fleet` even when the app was launched from a
 /// GUI context whose environment never saw the login shell's additions.
 ///
-/// **Orch only.** This reads `$HOME` from the *app's own* environment — the
-/// operator's real HOME, since orch is their own `claude` (D-030's "orch is
-/// untouched"). [`worker_augmented_path`] is the worker's version and
-/// deliberately does not call this: it must not bake the operator's HOME into a
-/// worker's PATH, which is the other half of the fix this module's doc comment
-/// promises alongside the private `HOME` itself.
-pub fn augmented_path() -> String {
-    augmented_path_from(
-        fleet_bin_path().as_deref(),
-        &std::env::var("HOME").unwrap_or_default(),
-        &std::env::var("PATH").unwrap_or_default(),
-    )
-}
-
-/// [`augmented_path`] with its three process reads handed in (WP-21), so
-/// [`crate::placement`] can compute `orch`'s PATH from a
-/// [`Host`](crate::placement::Host) rather than from the process. One
-/// implementation; [`augmented_path`] is the reading entry point onto it.
-pub fn augmented_path_from(fleet_bin: Option<&Path>, home: &str, existing: &str) -> String {
+/// **Orch only.** `home` is the operator's real HOME, since orch is their own
+/// `claude` (D-030's "orch is untouched"). [`worker_augmented_path_from`] is the
+/// worker's version and deliberately is handed no `home` at all: it must not bake
+/// the operator's HOME into a worker's PATH, which is the other half of the fix
+/// this module's doc comment promises alongside the private `HOME` itself.
+/// **Its three inputs are handed in, never read here (WP-21, D-075)** — the
+/// `fleet` binary, the operator's `HOME` and the inherited `PATH` all arrive on
+/// the [`Host`](crate::placement::Host), so `orch`'s PATH can be computed against
+/// a machine a test describes rather than the one the test is running on.
+pub(super) fn augmented_path_from(fleet_bin: Option<&Path>, home: &str, existing: &str) -> String {
     let mut prefix = String::new();
     if let Some(dir) = fleet_bin.and_then(Path::parent) {
         prefix.push_str(&dir.to_string_lossy());
@@ -428,7 +365,7 @@ pub fn augmented_path_from(fleet_bin: Option<&Path>, home: &str, existing: &str)
 }
 
 /// The worker's PATH (WP-08, the Fence): the fleet-bin rung and the system
-/// dirs, none of the operator-HOME rungs `augmented_path` adds. Before this fix,
+/// dirs, none of the operator-HOME rungs [`augmented_path_from`] adds. Before this fix,
 /// every worker's PATH carried `{operator's real $HOME}/.local/bin` and
 /// `.../.bun/bin` regardless of the worker's own (now private) `HOME` — a name
 /// pointed straight at the operator's tooling, defeating the point of fencing
@@ -449,23 +386,14 @@ pub fn augmented_path_from(fleet_bin: Option<&Path>, home: &str, existing: &str)
 /// arms 1 and 2). Seeded shims are a rung whose contents the fleet enumerated;
 /// `~/.cargo/bin` is a rung whose contents change whenever the operator installs
 /// anything, and it holds real binaries, not only shims.
-pub fn worker_augmented_path(cargo_bin: Option<&Path>) -> String {
-    worker_augmented_path_from(
-        fleet_bin_path().as_deref(),
-        cargo_bin,
-        &std::env::var("PATH").unwrap_or_default(),
-    )
-}
-
-/// [`worker_augmented_path`] with its two process reads handed in (WP-21), so
-/// [`crate::placement`] can compute a worker's PATH from a
-/// [`Host`](crate::placement::Host) rather than from the process. One
-/// implementation; [`worker_augmented_path`] is the reading entry point onto it.
+/// **Its two remaining inputs are handed in, never read here (WP-21, D-075)**, so
+/// a worker's PATH is computed from a [`Host`](crate::placement::Host) rather than
+/// from the process.
 ///
 /// The sibling of [`augmented_path_from`], and the difference between them is the
 /// whole of the Fence's PATH half: this one is handed no `home` at all, so there
 /// is no operator-HOME rung it *could* add.
-pub fn worker_augmented_path_from(
+pub(super) fn worker_augmented_path_from(
     fleet_bin: Option<&Path>,
     cargo_bin: Option<&Path>,
     existing: &str,
@@ -490,7 +418,7 @@ pub fn worker_augmented_path_from(
 /// comment claiming cargo put it there. It did not: these are two separate cargo
 /// workspaces with two target directories (L4). So: no symlinks, no guessing, and
 /// a caller that can tell the operator when the answer is "nowhere".
-pub fn fleet_bin_path() -> Option<PathBuf> {
+pub(super) fn fleet_bin_path() -> Option<PathBuf> {
     if let Some(explicit) = std::env::var_os(ENV_FLEET_BIN).map(PathBuf::from) {
         return explicit.is_file().then_some(explicit);
     }
@@ -524,7 +452,7 @@ pub fn fleet_bin_path() -> Option<PathBuf> {
 /// `hasTrustDialogAccepted` is keyed by absolute project path, not global; Phase 0
 /// bisected this. It is the single most likely way to reintroduce L1 immediately
 /// after fixing it.
-pub fn seed_config_dir(dir: &Path, cwd: &Path) -> Result<(), String> {
+pub(super) fn seed_config_dir(dir: &Path, cwd: &Path) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("create config dir {}: {e}", dir.display()))?;
     let file = dir.join(".claude.json");
 
@@ -593,7 +521,7 @@ fn json_object() -> serde_json::Value {
 /// touching an existing file on every relaunch would only risk clobbering
 /// something a future breakage-catalogue entry seeded on purpose. Written once,
 /// left alone after that.
-pub fn seed_worker_home(dir: &Path, slot: u8) -> Result<(), String> {
+pub(super) fn seed_worker_home(dir: &Path, slot: u8) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("create worker home {}: {e}", dir.display()))?;
     let file = dir.join(".gitconfig");
     if file.exists() {
@@ -633,7 +561,7 @@ pub struct FleetToolchain {
 /// **All or nothing, and that is measured.** Seeding `cargo` alone fails at
 /// `could not execute process 'rustc -vV' (never executed)` — cargo resolves,
 /// then looks for `rustc` by name and finds none (`fence-notes.md`, arm 5a).
-pub const TOOLCHAIN_SHIMS: [&str; 8] = [
+const TOOLCHAIN_SHIMS: [&str; 8] = [
     "cargo",
     "rustc",
     "rustup",
@@ -651,7 +579,7 @@ pub const TOOLCHAIN_SHIMS: [&str; 8] = [
 /// the operator the answer is "nowhere" beats a path that looks plausible and
 /// resolves to nothing. rustup's own documented overrides are honoured first,
 /// because an operator who moved their toolchain said where it went.
-pub fn operator_toolchain() -> Option<OperatorToolchain> {
+pub(super) fn operator_toolchain() -> Option<OperatorToolchain> {
     let home = std::env::var("HOME").unwrap_or_default();
     let rustup_home = std::env::var_os("RUSTUP_HOME")
         .map(PathBuf::from)
@@ -674,7 +602,7 @@ pub fn operator_toolchain() -> Option<OperatorToolchain> {
 /// same reason they are set together: a `CARGO_HOME` with no shims on PATH is a
 /// worker that cannot find cargo, and shims with no `RUSTUP_HOME` mirror is a
 /// worker whose first toolchain download lands in the operator's home.
-pub fn seed_fleet_toolchain(
+pub(super) fn seed_fleet_toolchain(
     fleet: &FleetToolchain,
     operator: &OperatorToolchain,
 ) -> Result<(), String> {
@@ -691,7 +619,7 @@ pub fn seed_fleet_toolchain(
 /// on cargo's own package-cache lock (`fence-notes.md`, arm 8). Per-worker
 /// `target/` directories already live in each worktree, so the only thing a split
 /// would buy is a duplicated registry.
-pub fn seed_fleet_cargo_home(dir: &Path, operator: &OperatorToolchain) -> Result<(), String> {
+fn seed_fleet_cargo_home(dir: &Path, operator: &OperatorToolchain) -> Result<(), String> {
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin).map_err(|e| format!("create fleet cargo bin {}: {e}", bin.display()))?;
     for shim in TOOLCHAIN_SHIMS {
@@ -711,7 +639,7 @@ pub fn seed_fleet_cargo_home(dir: &Path, operator: &OperatorToolchain) -> Result
 /// it, 35,981 files and ~1.2 GB, with no prompt (`fence-notes.md`, arm 6b).
 /// Against the mirror the identical download lands under `_shell/` instead
 /// (arm 9b), which is the difference between Tier 1.1 holding and not.
-pub fn seed_fleet_rustup_home(dir: &Path, operator: &OperatorToolchain) -> Result<(), String> {
+fn seed_fleet_rustup_home(dir: &Path, operator: &OperatorToolchain) -> Result<(), String> {
     let toolchains = dir.join("toolchains");
     std::fs::create_dir_all(&toolchains)
         .map_err(|e| format!("create fleet rustup toolchains {}: {e}", toolchains.display()))?;
@@ -770,6 +698,69 @@ fn link(target: &Path, at: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- the process reads, spelled in the tests that want them ------------------
+    //
+    // These four were `pub fn` in this module until D-075. Each was one line: the
+    // `*_with` implementation below, plus the process reads that
+    // [`Host`](crate::placement::Host) now performs once, at
+    // [`Host::discover`](crate::placement::Host::discover). Production has no
+    // caller for them — `placement` hands every one of those values in — so what
+    // was left was scaffolding for the tests in this file, and scaffolding belongs
+    // in the test module. The tests below keep their letter; what moved is where
+    // the environment is read, and it is read here rather than in the shipped
+    // module.
+
+    fn augmented_path() -> String {
+        augmented_path_from(
+            fleet_bin_path().as_deref(),
+            &std::env::var("HOME").unwrap_or_default(),
+            &std::env::var("PATH").unwrap_or_default(),
+        )
+    }
+
+    fn worker_augmented_path(cargo_bin: Option<&Path>) -> String {
+        worker_augmented_path_from(
+            fleet_bin_path().as_deref(),
+            cargo_bin,
+            &std::env::var("PATH").unwrap_or_default(),
+        )
+    }
+
+    fn orch_command(
+        cwd: &Path,
+        socket: &Path,
+        config_dir: &Path,
+        ctx: &PaneContext,
+    ) -> CommandBuilder {
+        orch_command_with(cwd, socket, config_dir, ctx, pane_program().as_deref(), &augmented_path())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn worker_command(
+        slot: u8,
+        cwd: &Path,
+        home: &Path,
+        config_dir: &Path,
+        socket: &Path,
+        api_key: &str,
+        toolchain: Option<&FleetToolchain>,
+        ctx: &PaneContext,
+    ) -> CommandBuilder {
+        let cargo_bin = toolchain.map(|t| t.cargo_home.join("bin"));
+        worker_command_with(
+            slot,
+            cwd,
+            home,
+            config_dir,
+            socket,
+            api_key,
+            toolchain,
+            ctx,
+            pane_program().as_deref(),
+            &worker_augmented_path(cargo_bin.as_deref()),
+        )
+    }
 
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir()
