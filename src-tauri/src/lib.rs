@@ -25,11 +25,13 @@ pub mod fleet;
 /// tripwire).
 pub mod guardrail;
 mod orphans;
+/// Where a pane is placed (WP-21) — the one module that owns the order a pane
+/// is brought up in. `placement::spawn`, which shapes the process itself, is its
+/// child rather than its sibling since D-075.
 pub mod placement;
 pub mod prompts;
 pub mod pty;
 pub mod runs;
-pub mod spawn;
 pub mod testbed;
 
 use std::sync::Arc;

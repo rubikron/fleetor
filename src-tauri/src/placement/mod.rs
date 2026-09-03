@@ -50,12 +50,14 @@
 //! all — and because the mode is documented as read fresh at every wake rather
 //! than snapshotted. Taking a `bool` argument would have lost the first of those.
 //!
-//! One thing a worker needs is still emitted by the caller rather than returned
-//! from here: the two machine-level warnings about a missing `fleet` binary and a
-//! missing rustup. They are emitted *before* [`place`] is called so that a machine
-//! with no worker key still tells the operator what else is wrong, rather than
-//! losing those lines to an early `Err`. Ticket 05 converges them when the old
-//! sequence goes.
+//! ## The one thing this module decides and does not do
+//!
+//! [`machine_notices`] says what a machine is missing — a `fleet` binary, a rustup
+//! — and the caller emits it *before* calling [`place`]. That split is ordering,
+//! not an exception to the rules above: those lines have to reach the operator even
+//! when the placement that follows returns `Err`, and a machine with no worker key
+//! would otherwise be told only about the key. The sentences and the conditions are
+//! here; only the emit is out there.
 
 use std::path::{Path, PathBuf};
 
@@ -65,7 +67,24 @@ use portable_pty::CommandBuilder;
 
 use crate::context_gauge::{self, TranscriptSource};
 use crate::prompts::PaneContext;
-use crate::{dev, evaluator, guardrail, runs, spawn};
+use crate::{dev, evaluator, guardrail, runs};
+
+/// How a pane's `claude` process is shaped — **an internal of this module** since
+/// D-075.
+///
+/// It was a sibling of `placement` while the improvised bring-up sequence still
+/// existed and could call it. Every seeding and command-building function in it
+/// has exactly one caller, which is `placement`, so the seam it presented was
+/// hypothetical rather than real: those items are `pub(super)` and the module is a
+/// child, which together mean nothing outside this file can call them at all — let
+/// alone call them in the wrong order.
+///
+/// The one item that is still `pub` is [`spawn::project_key`], which is neither
+/// seeding nor command-building: it is Claude Code's own project-key
+/// canonicalization, and [`crate::deliver`] and [`crate::context_gauge`] read it
+/// so that the trust flag, the delivery path and the gauge all agree on one
+/// spelling of a cwd.
+pub mod spawn;
 
 // --- the layout ---------------------------------------------------------------
 
@@ -161,7 +180,7 @@ impl Layout {
     /// `orch`'s transcript with no code of its own: it already walks
     /// `pane-config/*`.
     pub fn pane_config(&self, pane: PaneId) -> PathBuf {
-        self.shell().join("pane-config").join(pane.to_string())
+        pane_config_root(&self.shell()).join(pane.to_string())
     }
 
     /// A worker's private `HOME` (WP-08, the Fence): `~/.ssh`, the operator's real
@@ -200,6 +219,25 @@ impl Layout {
     pub fn worktree(&self, target: &Path, slot: u8) -> PathBuf {
         self.shell().join("worktrees").join(target_slug(target)).join(format!("worker-{slot}"))
     }
+}
+
+/// The root every pane's `CLAUDE_CONFIG_DIR` lives under — **the one spelling of
+/// it in the whole shell** (D1, D-075).
+///
+/// There were four before this ticket, each `shell.join("pane-config")` written
+/// out again: [`Layout::pane_config`], [`crate::guardrail::policy_dir`], and the
+/// two transcript scans in [`crate::runs`]. That is not a style complaint. The
+/// four are not independent facts — the guardrail denies writes to exactly the
+/// directory the layout puts configs in, and rotation archives a transcript by
+/// walking exactly that directory — so a rename that reached three of them would
+/// leave a fleet whose panes can write their own hook policy, or whose
+/// orchestrator's transcript stops being archived, and no test would notice.
+///
+/// Takes the `_shell` path rather than the whole [`Layout`], because the two
+/// callers outside this module hold one and not the other; every one of them now
+/// derives the name from here instead of restating it.
+pub(crate) fn pane_config_root(shell: &Path) -> PathBuf {
+    shell.join("pane-config")
 }
 
 /// The directory name a target's worktrees live under: its own name plus a short
@@ -251,6 +289,19 @@ pub struct Host {
     /// The worker API key, or `None` — the orchestrator runs without one, worker
     /// panes cannot.
     pub api_key: Option<String>,
+    /// Where the search for that key began: the application's own working
+    /// directory, which is the head of the `.env` walk
+    /// (`crate::fleet::api_key_search_start`). `None` on a machine nobody looked
+    /// at.
+    ///
+    /// **A field only so a refusal can name a path (D-075).** The sentence a
+    /// worker fails with used to say where the key was looked for and lost that
+    /// clause when it became a constant here (D-072); "no key found" and "no key
+    /// found under `/Users/me/code/api`" are the same fact and only the second one
+    /// tells an operator whose `.env` is one directory up what to do. It is on the
+    /// [`Host`] rather than read in [`place`] for the reason everything else here
+    /// is.
+    pub api_key_searched_from: Option<PathBuf>,
     /// Where prepared mission workspaces, the harness and the answer keys live.
     pub missions: evaluator::MissionRoots,
 }
@@ -266,6 +317,7 @@ impl Host {
             inherited_path: std::env::var("PATH").unwrap_or_default(),
             toolchain: spawn::operator_toolchain(),
             api_key: crate::fleet::deepseek_api_key(),
+            api_key_searched_from: Some(crate::fleet::api_key_search_start()),
             missions: evaluator::MissionRoots::discover(),
         }
     }
@@ -468,7 +520,10 @@ fn place_worker(
     // Before anything is written: a worker with no key cannot authenticate at all,
     // and failing here costs nothing, where failing after four filesystem seeds
     // would leave them behind. This is the old arm's first line too.
-    let key = host.api_key.as_deref().ok_or(MISSING_API_KEY)?;
+    let key = host
+        .api_key
+        .as_deref()
+        .ok_or_else(|| missing_api_key(host.api_key_searched_from.as_deref()))?;
 
     // Its own git worktree, or the announced fallback to the shared checkout. The
     // notice is returned rather than logged, which is what makes the degraded case
@@ -625,12 +680,26 @@ pub const NO_EVALUATOR: &str =
 
 /// What placing a worker fails with when this machine has no key at all.
 ///
-/// A constant rather than an interpolated sentence, because it is now the value a
-/// [`Host`] with no `api_key` produces and the one a test can pin. The orchestrator
-/// runs without a key; worker panes cannot.
-pub const MISSING_API_KEY: &str =
-    "no DEEPSEEK_API_KEY in the environment or any .env from the application's \
-     working directory upward — the orchestrator runs without one, worker panes cannot";
+/// **It names the directory the `.env` walk started from (D-075).** That clause
+/// was in the sentence the old bring-up sequence emitted, and it was lost when the
+/// message became a constant here. It is the operator-actionable half: under
+/// `tauri dev` the working directory is `src-tauri/`, so a key sitting one level
+/// up at the repo root *is* found by the walk — and an operator whose key is
+/// somewhere else entirely can only tell which case they are in if the message
+/// says where it looked.
+///
+/// `searched_from` is `None` on a [`Host`] nobody discovered, and then the
+/// sentence degrades to the general one rather than naming a made-up path.
+pub fn missing_api_key(searched_from: Option<&Path>) -> String {
+    let where_ = match searched_from {
+        Some(dir) => format!("any .env from {} upward", dir.display()),
+        None => "any .env from the application's working directory upward".to_string(),
+    };
+    format!(
+        "no DEEPSEEK_API_KEY in the environment or {where_} — \
+         the orchestrator runs without one, worker panes cannot"
+    )
+}
 
 /// What the operator is told when a worker ends up in the shared checkout.
 ///
@@ -709,6 +778,48 @@ pub(crate) fn git(repo: &Path, args: &[&str]) -> bool {
 pub const MISSING_FLEET_BIN: &str =
     "the `fleet` binary was not found — panes will spawn but cannot message each other. \
      Build it with `cargo build -p fleetor-cli --bin fleet`.";
+
+/// What a worker's operator is told when this machine has no rustup at all
+/// (D-069).
+///
+/// Same shape and same reason as [`MISSING_FLEET_BIN`]: a worker with no toolchain
+/// reachable looks perfectly healthy right up until its first `cargo build`, and
+/// then fails with `command not found` — a message that points at the worker's own
+/// PATH rather than at the machine.
+pub const MISSING_RUSTUP: &str =
+    "no rustup was found — workers will spawn but cannot build Rust. \
+     Install it from https://rustup.rs, or set RUSTUP_HOME/CARGO_HOME \
+     before launching if your toolchain lives somewhere unusual.";
+
+/// What this machine is missing, for the caller to emit **before** it asks for a
+/// placement (D-075).
+///
+/// The one part of bringing a pane up that is deliberately not inside [`place`],
+/// and the reason is ordering rather than tidiness: these lines have to reach the
+/// operator even when the placement that follows returns `Err`. A machine with no
+/// worker key would otherwise be told only about the key, and a run that gets no
+/// evaluator would never hear that the `fleet` binary is absent — the two cases
+/// where the operator most needs the whole list.
+///
+/// What moved here in this ticket is the *decision*: which sentences, under which
+/// conditions, off which [`Host`]. The caller had its own copy of both, reading
+/// the machine a second time to evaluate them; now it holds neither and reads it
+/// once. `orch` is excluded because [`place_orch`] emits the `fleet`-binary line
+/// itself, from this same constant — it is the one pane kind whose placement
+/// cannot fail before that line is reached.
+pub fn machine_notices(host: &Host, pane: PaneId) -> Vec<(NoticeLevel, String)> {
+    let mut notices = Vec::new();
+    if matches!(pane, PaneId::Orch) {
+        return notices;
+    }
+    if host.fleet_bin.is_none() {
+        notices.push((NoticeLevel::Warn, MISSING_FLEET_BIN.to_string()));
+    }
+    if matches!(pane, PaneId::Worker(_)) && host.toolchain.is_none() {
+        notices.push((NoticeLevel::Warn, MISSING_RUSTUP.to_string()));
+    }
+    notices
+}
 
 /// Install this pane's write guardrail (WP-17), inside the sequence for the same
 /// reason the config seed is: the roots are derived from the cwd this pane is

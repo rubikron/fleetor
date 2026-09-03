@@ -14,9 +14,17 @@
 //!    served by [`crate::deliver`] out of the real pty registry;
 //!  - the **target** the fleet works on: the operator's repo if
 //!    `~/.fleetor/config.json` names one, else a seeded [`testbed`];
-//!  - [`spawn_pane`] — the one place a pane's cwd, config seed and command come
-//!    together, which is why the L1 re-seed requirement is met structurally
-//!    rather than by remembering to do it.
+//!  - [`spawn_pane`] — the one place the app asks [`crate::placement`] to bring a
+//!    pane up, and hands what came back to the registry, the feed and the gauge.
+//!
+//! **What is deliberately not here any more (WP-21, D-075):** how a pane is
+//! brought up, and where anything lives on disk. The bring-up was a long untested
+//! match in this file with three shapes in it, beside a guardrail helper and a
+//! brief helper only one of those shapes used; the locations were six free
+//! functions each deriving the `~/.fleetor` tree from `$HOME` on its own. The first
+//! is `placement::place`, reached once; the second is a [`Layout`] resolved at
+//! bootstrap and held on [`Fleet`]. This module keeps the store, the bus, the hub,
+//! the target, the operator's composer and the run commands.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -37,7 +45,7 @@ use crate::context_gauge::GaugeSources;
 use crate::placement::{self, Host, Layout, PaneSpec};
 use crate::prompts::PaneContext;
 use crate::pty::PaneRegistry;
-use crate::{deliver, dev, evaluator, guardrail, prompts, runs, spawn, testbed};
+use crate::{deliver, dev, evaluator, guardrail, prompts, runs, testbed};
 
 /// Emitted for every appended event, in `seq` order, the moment it persists.
 const EVENT_FLEET: &str = "fleet://event";
@@ -119,6 +127,19 @@ struct Fleet {
     /// converge on the one place ([`deliver::spawn_delivery`]'s `Roster` arm)
     /// that samples gauges and guards the once-per-session Notice.
     app: mpsc::UnboundedSender<AppCommand>,
+    /// Where this fleet lives on disk (D1, D-075). **Resolved once, at bootstrap,
+    /// and held**: the state root cannot move under a running fleet, and every
+    /// command that reaches for a path while the fleet is up now reads the value
+    /// the panes were placed against rather than re-deriving one from `$HOME`.
+    ///
+    /// **[`Host`] is deliberately not here beside it (D13).** The layout is where
+    /// this installation writes and that is fixed for the session; the host is what
+    /// the machine has, and that changes while the session runs — a rustup
+    /// installed mid-session, an `.env` saved, a `fleet` binary built. Caching it
+    /// would make those invisible until relaunch, which is the exact staleness D13
+    /// exists to avoid, and it would do so silently. [`spawn_pane`] discovers it per
+    /// spawn instead: a handful of filesystem checks, six times a session.
+    layout: Layout,
     /// The routing hub, held so the operator's composer can call it (WP-07).
     ///
     /// The human has no pane and therefore no socket to dial, but their
@@ -175,54 +196,28 @@ impl Target {
 }
 
 // --- locations ----------------------------------------------------------------
-//
-// **The tree itself is [`Layout`], not these functions (WP-21, D1).** Each one is
-// now the operator's layout plus one accessor — one definition of where the fleet
-// lives, with two constructors behind it, instead of a family of functions that
-// could only ever answer for the operator's real `$HOME`. They stay as names
-// because a hundred call sites read better saying `socket_path()` than
-// `Layout::for_operator().socket()`, and because the arms of `spawn_pane` that
-// have not yet moved to placement still call them.
 
 /// The operator's own layout: `~/.fleetor` and everything under it.
+///
+/// **The tree itself is [`Layout`], and since D-075 this is the only free function
+/// left that names it.** There were six — `fleetor_dir`, `shell_dir`,
+/// `testbed_dir`, `config_path`, `socket_path` and this one — each an accessor on
+/// `Layout::for_operator()` wearing a different name, kept while the improvised
+/// bring-up sequence still called them. The sequence is gone, so they are: a
+/// running fleet reads [`Fleet::layout`], and the handful of commands that run
+/// before bootstrap (the start gate's configuration, the History list, the dev-mode
+/// flag, the orphan sweep) call this and then one accessor, which is one spelling
+/// of where a thing lives rather than six.
 pub(crate) fn layout() -> Layout {
     Layout::for_operator()
-}
-
-/// The operator-facing root: holds `config.json` and the seeded testbed.
-pub(crate) fn fleetor_dir() -> PathBuf {
-    layout().root().to_path_buf()
-}
-
-/// State root, out of the user's repo so `rm -rf ~/.fleetor/_shell` fully undoes
-/// it (Tier-1 boundary).
-pub(crate) fn shell_dir() -> PathBuf {
-    layout().shell()
-}
-
-/// The seeded project the fleet falls back to when no target is configured.
-fn testbed_dir() -> PathBuf {
-    layout().testbed()
-}
-
-/// Where the operator names the repo the fleet should work on — and, since
-/// WP-16, whether the app is in dev mode. One file, so there is one place an
-/// operator looks and one place `rm -rf ~/.fleetor` removes (Tier 1.1).
-pub(crate) fn config_path() -> PathBuf {
-    layout().config_file()
-}
-
-/// The fleet unix socket the `fleet` CLI dials.
-pub(crate) fn socket_path() -> PathBuf {
-    layout().socket()
 }
 
 /// The target named in `~/.fleetor/config.json`, if there is a usable one.
 /// `Ok(None)` means nothing is configured (the ordinary first-run case); `Err`
 /// means something *is* configured and can't be used, which the operator has to
 /// be told about rather than silently working somewhere else.
-fn configured_target() -> Result<Option<PathBuf>, String> {
-    let path = config_path();
+fn configured_target(layout: &Layout) -> Result<Option<PathBuf>, String> {
+    let path = layout.config_file();
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -271,7 +266,10 @@ pub fn fleet_bootstrap(
         return snapshot(&fleet.store);
     }
 
-    let dir = shell_dir();
+    // Where this installation lives, resolved once and then held on `Fleet` — the
+    // one process-global read the whole spawn path performs (D1, D-075).
+    let layout = Layout::for_operator();
+    let dir = layout.shell();
     std::fs::create_dir_all(&dir).map_err(|e| format!("create shell dir: {e}"))?;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -284,7 +282,7 @@ pub fn fleet_bootstrap(
     // `runs/` and this one opens an empty database. Held rather than emitted —
     // there is no store to append a notice to yet.
     let started_ms = fleetor_core::time::now_ms();
-    let rotation = runs::rotate(&dir, &runs::runs_dir(&fleetor_dir()), started_ms);
+    let rotation = runs::rotate(&dir, &runs::runs_dir(layout.root()), started_ms);
 
     // The observability core: real store, wrapped once so every append publishes.
     let bcast = Arc::new(BroadcastStore::new(Arc::new(
@@ -298,7 +296,7 @@ pub fn fleet_bootstrap(
         note(&store, *level, text);
     }
 
-    let target = Target::new(resolve_target(&store)?);
+    let target = Target::new(resolve_target(&layout, &store)?);
     let config = fleet_config_for(&target.get());
 
     // Stamp what this run is, for the History row it becomes at the next start.
@@ -309,7 +307,7 @@ pub fn fleet_bootstrap(
     // Prompts and launch settings, before any pane exists. Every notice the
     // resolver produced goes on the feed here — an override that silently did
     // nothing is the one failure the whole override path is built to avoid.
-    let context = PaneContext::resolve(&prompts::override_dir(&fleetor_dir()));
+    let context = PaneContext::resolve(&prompts::override_dir(layout.root()));
     for (level, text) in &context.notices {
         note(&store, *level, text);
     }
@@ -322,7 +320,7 @@ pub fn fleet_bootstrap(
     // The hub takes its own clone; `fleet_roster` sends into the original so
     // the UI's poll reaches the identical `AppCommand::Roster` arm the CLI's
     // `fleet roster` does over the socket (see the `Fleet::app` doc).
-    let (hub, shutdown) = spawn_hub(&rt, store.clone(), app_tx.clone(), socket_path());
+    let (hub, shutdown) = spawn_hub(&rt, store.clone(), app_tx.clone(), layout.socket());
 
     // The write guardrail's own feed (WP-17). Started with the run and emptied
     // by it, so what the operator reads is this run's refusals and not the last
@@ -335,8 +333,18 @@ pub fn fleet_bootstrap(
     spawn_evaluator_wake(&rt, bcast.clone(), store.clone(), app, target.clone());
 
     let snap = snapshot(&store)?;
-    *guard =
-        Some(Fleet { rt, store, shutdown, config, target, context, gauges, app: app_tx, hub });
+    *guard = Some(Fleet {
+        rt,
+        store,
+        shutdown,
+        config,
+        target,
+        context,
+        gauges,
+        app: app_tx,
+        layout,
+        hub,
+    });
     Ok(snap)
 }
 
@@ -345,19 +353,24 @@ pub fn fleet_bootstrap(
 /// Bring one pane up and hand it to the registry.
 ///
 /// **Every pane kind that can exist comes up through [`crate::placement`]**
-/// (WP-21, ticket 04). That module owns the order — cwd, config seed, guardrail,
-/// notices, command — against a [`Layout`] and a [`Host`] handed to it, so the
-/// identical code path runs in a test against a scratch directory. What is left
-/// here is the refusal for the one name with nothing to spawn, the machine-level
-/// warnings that have to land before placement can fail, and putting what
-/// placement returned where it goes; ticket 05 takes the rest.
+/// (WP-21). That module owns the order — cwd, config seed, guardrail, notices,
+/// command — against a [`Layout`] and a [`Host`] handed to it, so the identical
+/// code path runs in a test against a scratch directory.
 ///
-/// **The L1 re-seed requirement lives at the spawn site, structurally**, in both
-/// halves. `hasTrustDialogAccepted` is keyed by absolute project path, so a fleet
-/// pointed at a new target needs its seed re-applied for every pane cwd —
-/// otherwise all four workers sit on a trust dialog while every `fleet send`
-/// reports success. Seeding here rather than at the target picker means that can
-/// only be got wrong by deleting a line, not by forgetting a code path.
+/// **What is left here is four lines of wiring and one refusal (D-075):** the
+/// `PaneId` this pane's `PaneSpec` is, the name with nothing to spawn, and putting
+/// what placement returned where it goes — the notices on the feed, the gauge
+/// source in the map, the command in the registry. It knows no step of the
+/// sequence and no path under `~/.fleetor`. Adding a pane kind is a variant in
+/// `PaneSpec` and an arm in `place`, not a new branch here.
+///
+/// **The L1 re-seed requirement is met structurally, and now entirely inside
+/// [`placement::place`].** `hasTrustDialogAccepted` is keyed by absolute project
+/// path, so a fleet pointed at a new target needs its seed re-applied for every
+/// pane cwd — otherwise all four workers sit on a trust dialog while every `fleet
+/// send` reports success. Seeding inside the placement that also chooses the cwd,
+/// rather than at the target picker, means that can only be got wrong by deleting
+/// a line, not by forgetting a code path.
 pub(crate) fn spawn_pane(
     fleet: &FleetState,
     registry: &Arc<PaneRegistry>,
@@ -365,17 +378,18 @@ pub(crate) fn spawn_pane(
     rows: u16,
     cols: u16,
 ) -> Result<(), String> {
-    let (target, store, context, gauges) = {
+    let (target, layout, store, context, gauges) = {
         let guard = fleet.0.lock().map_err(|e| e.to_string())?;
         let f = guard.as_ref().ok_or("fleet not bootstrapped")?;
-        (f.target.get(), f.store.clone(), f.context.clone(), f.gauges.clone())
+        (f.target.get(), f.layout.clone(), f.store.clone(), f.context.clone(), f.gauges.clone())
     };
 
-    // The seam. The layout and the host are built *here*, at the one production
-    // call site, which is what leaves placement itself with nothing to read from
-    // the process. The host is discovered per spawn rather than held on `Fleet`
-    // (D13): that is what the code did before this module existed, so a toolchain
-    // installed mid-session still takes effect on the next pane restart.
+    // The seam. The layout comes off `Fleet`, resolved once at bootstrap; the host
+    // is discovered *here*, at every spawn, and is deliberately not held beside it
+    // (D13). That is what the code did before placement existed, so a toolchain
+    // installed mid-session still takes effect on the next pane restart. Between
+    // them they are the whole of what placement would otherwise have had to read
+    // from the process.
     //
     // Every kind but one is placed. Matched exhaustively rather than with a
     // wildcard, so a new pane kind has to say what places it instead of silently
@@ -397,16 +411,21 @@ pub(crate) fn spawn_pane(
         }
     };
 
-    // The machine-level warnings stay here rather than moving inside placement,
-    // and deliberately: they are emitted *before* placement can fail, so a machine
-    // with no worker key still tells the operator what else is missing instead of
-    // only naming the key — and a run with no evaluator still says the `fleet`
-    // binary is absent. Ticket 05 converges them. `orch` gets its own from
-    // placement, so it is excluded here or it would be warned twice.
-    if !matches!(pane, PaneId::Orch) {
-        warn_about_the_machine(&store, pane);
+    // One discovery, read twice: the warnings below and the placement itself see
+    // the same machine (D-075). They were two independent reads of `fleet_bin_path`
+    // and `operator_toolchain` — a third and fourth spelling of "what does this
+    // machine have" beside `Host`'s, which is what `Host` exists to end.
+    let host = Host::discover();
+
+    // What this machine is missing, said before placement is asked to do anything:
+    // these have to land even when the placement that follows fails, so a machine
+    // with no worker key still tells the operator what *else* is wrong instead of
+    // only naming the key. The sentences and the conditions are placement's
+    // (D-075) — this is the emit, and nothing more.
+    for (level, text) in placement::machine_notices(&host, pane) {
+        note(&store, level, &text);
     }
-    let placed = placement::place(spec, &layout(), &Host::discover(), &target, &context)?;
+    let placed = placement::place(spec, &layout, &host, &target, &context)?;
     for (level, text) in &placed.notices {
         note(&store, *level, text);
     }
@@ -414,36 +433,6 @@ pub(crate) fn spawn_pane(
         gauges.record(pane, source);
     }
     registry.spawn(pane, placed.command, rows, cols)
-}
-
-/// What this machine is missing, said once at spawn time rather than discovered
-/// by the model mid-turn (L4).
-///
-/// Emitted here rather than from inside [`placement::place_worker`] on purpose:
-/// these land *before* placement can fail, so a machine with no worker key still
-/// tells the operator what else is wrong instead of only naming the key. `orch`
-/// gets the `fleet`-binary sentence from placement itself, out of the same
-/// [`placement::MISSING_FLEET_BIN`] constant this reads.
-fn warn_about_the_machine(store: &Arc<dyn Store>, pane: PaneId) {
-    // A pane with no `fleet` on its PATH is a pane that looks alive and cannot
-    // talk.
-    if spawn::fleet_bin_path().is_none() {
-        note(store, NoticeLevel::Warn, placement::MISSING_FLEET_BIN);
-    }
-
-    // Same shape, same reason (D-069): a worker with no toolchain reachable looks
-    // perfectly healthy right up until the first `cargo build`, and then fails with
-    // `command not found` — a message that points at the worker's own PATH rather
-    // than at the machine.
-    if matches!(pane, PaneId::Worker(_)) && spawn::operator_toolchain().is_none() {
-        note(
-            store,
-            NoticeLevel::Warn,
-            "no rustup was found — workers will spawn but cannot build Rust. \
-             Install it from https://rustup.rs, or set RUSTUP_HOME/CARGO_HOME \
-             before launching if your toolchain lives somewhere unusual.",
-        );
-    }
 }
 
 /// Poll the guardrail's refusal journal onto the Activity feed.
@@ -593,19 +582,23 @@ fn wake_evaluator(app: &AppHandle, target: &Path) -> Vec<(NoticeLevel, String)> 
 /// Decide where the fleet works, announcing the choice on the feed so it is never
 /// a silent surprise. A configured target wins; anything else falls back to the
 /// seeded testbed, which is the only case that has to create anything.
-fn resolve_target(store: &Arc<dyn Store>) -> Result<PathBuf, String> {
-    match configured_target() {
+fn resolve_target(layout: &Layout, store: &Arc<dyn Store>) -> Result<PathBuf, String> {
+    match configured_target(layout) {
         Ok(Some(target)) => {
             note(store, NoticeLevel::Info, &format!("target: {}", target.display()));
             Ok(target)
         }
-        Ok(None) => fall_back_to_testbed(store, None),
-        Err(e) => fall_back_to_testbed(store, Some(e)),
+        Ok(None) => fall_back_to_testbed(layout, store, None),
+        Err(e) => fall_back_to_testbed(layout, store, Some(e)),
     }
 }
 
-fn fall_back_to_testbed(store: &Arc<dyn Store>, problem: Option<String>) -> Result<PathBuf, String> {
-    let testbed = testbed::ensure(&testbed_dir())?;
+fn fall_back_to_testbed(
+    layout: &Layout,
+    store: &Arc<dyn Store>,
+    problem: Option<String>,
+) -> Result<PathBuf, String> {
+    let testbed = testbed::ensure(&layout.testbed())?;
     let (level, why) = match problem {
         Some(e) => (NoticeLevel::Warn, format!("{e} — ")),
         None => (NoticeLevel::Info, String::new()),
@@ -616,7 +609,7 @@ fn fall_back_to_testbed(store: &Arc<dyn Store>, problem: Option<String>) -> Resu
         &format!(
             "{why}working in the seeded testbed at {}. Set \"target\" in {} to point the fleet at your own repo.",
             testbed.display(),
-            config_path().display()
+            layout.config_file().display()
         ),
     );
     Ok(testbed)
@@ -693,8 +686,15 @@ pub fn fleet_config(state: State<'_, FleetState>) -> Result<FleetConfig, String>
         return Ok(fleet.config.clone());
     }
     drop(guard);
-    let target = configured_target()?
-        .unwrap_or_else(testbed_dir);
+    // The same layout, the same accessor, the same question the bootstrap path
+    // asks — one spelling of "what is the target", not a third (D-075). This path
+    // still *propagates* a broken `target` where `resolve_target` falls back to the
+    // testbed with a warning, and that difference is deliberate: the start gate is
+    // showing the operator what a click will launch, and showing them the testbed
+    // when their config names a directory that is not there would be a lie the
+    // click then makes true.
+    let layout = layout();
+    let target = configured_target(&layout)?.unwrap_or_else(|| layout.testbed());
     Ok(fleet_config_for(&target))
 }
 
@@ -986,13 +986,13 @@ pub fn fleet_set_target(
 /// Every archived run, newest first.
 #[tauri::command]
 pub fn runs_list() -> Result<Vec<runs::RunRecord>, String> {
-    Ok(runs::list(&runs::runs_dir(&fleetor_dir())))
+    Ok(runs::list(&runs::runs_dir(layout().root())))
 }
 
 /// Replay one archived run's log, for the read-only History views.
 #[tauri::command]
 pub fn run_events(id: String, after: i64) -> Result<Vec<WireEvent>, String> {
-    Ok(runs::events(&runs::runs_dir(&fleetor_dir()), &id, after)?
+    Ok(runs::events(&runs::runs_dir(layout().root()), &id, after)?
         .into_iter()
         .map(|(seq, event)| WireEvent { seq, event })
         .collect())
@@ -1001,14 +1001,14 @@ pub fn run_events(id: String, after: i64) -> Result<Vec<WireEvent>, String> {
 /// Give a run a name that means something to the operator.
 #[tauri::command]
 pub fn run_rename(id: String, label: String) -> Result<(), String> {
-    runs::rename(&runs::runs_dir(&fleetor_dir()), &id, &label)
+    runs::rename(&runs::runs_dir(layout().root()), &id, &label)
 }
 
 /// Delete a run and its directory. Nothing else in the app refers to a run by
 /// id, so this needs no cascade — the index is rebuilt from what is left.
 #[tauri::command]
 pub fn run_delete(id: String) -> Result<(), String> {
-    runs::delete(&runs::runs_dir(&fleetor_dir()), &id)
+    runs::delete(&runs::runs_dir(layout().root()), &id)
 }
 
 /// Save a run's JSON export wherever the operator points.
@@ -1032,7 +1032,7 @@ pub fn run_export(app: AppHandle, id: String) -> Result<Option<String>, String> 
         return Ok(None);
     };
     let path = chosen.into_path().map_err(|e| format!("that location has no usable path: {e}"))?;
-    runs::export(&runs::runs_dir(&fleetor_dir()), &id, &path)?;
+    runs::export(&runs::runs_dir(layout().root()), &id, &path)?;
     Ok(Some(path.to_string_lossy().into_owned()))
 }
 
@@ -1058,7 +1058,7 @@ fn write_target(target: &Path) -> Result<(), String> {
 /// The one writer of that file, so a second setting (WP-16's `dev_mode`) cannot
 /// grow a second spelling of "merge, don't clobber" that drops the first one.
 pub(crate) fn write_config_key(key: &str, value: serde_json::Value) -> Result<(), String> {
-    write_config_key_at(&config_path(), key, value)
+    write_config_key_at(&layout().config_file(), key, value)
 }
 
 /// [`write_config_key`] against a named file, so the read-write round trip is
@@ -1124,24 +1124,32 @@ pub(crate) fn deepseek_api_key() -> Option<String> {
     load_api_key().ok()
 }
 
+/// Where the `.env` walk begins: the application's own working directory.
+///
+/// Named once, read by both the walk below and by
+/// [`Host::discover`](crate::placement::Host::discover), so the sentence a worker
+/// fails with names the directory that was actually searched rather than a second
+/// guess at it (D-075).
+pub(crate) fn api_key_search_start() -> PathBuf {
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
 fn load_api_key() -> Result<String, String> {
     if let Ok(k) = std::env::var("DEEPSEEK_API_KEY") {
         if !k.is_empty() {
             return Ok(k);
         }
     }
-    let start = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let start = api_key_search_start();
     for dir in start.ancestors() {
         let Ok(text) = std::fs::read_to_string(dir.join(".env")) else { continue };
         if let Some(key) = parse_deepseek_key(&text) {
             return Ok(key);
         }
     }
-    Err(format!(
-        "no DEEPSEEK_API_KEY in the environment or any .env from {} upward — \
-         the orchestrator runs without one, worker panes cannot",
-        start.display()
-    ))
+    // One sentence for this failure, and it lives with the pane kind that cannot
+    // start without a key (D-075).
+    Err(placement::missing_api_key(Some(&start)))
 }
 
 /// Pull the `DEEPSEEK_API_KEY` value out of `.env` text, tolerating surrounding
@@ -1331,7 +1339,7 @@ mod tests {
         assert!(orch.ends_with("pane-config/orch"), "{}", orch.display());
         assert!(worker.ends_with("pane-config/worker-2"), "{}", worker.display());
         assert_eq!(orch.parent(), worker.parent(), "harvest_transcripts walks the parent");
-        assert_eq!(worker.parent().unwrap(), shell_dir().join("pane-config"));
+        assert_eq!(worker.parent().unwrap(), layout().shell().join("pane-config"));
     }
 
     /// A picked target must land in the config without costing the operator

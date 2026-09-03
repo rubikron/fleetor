@@ -77,8 +77,13 @@ pub fn journal_path(shell: &Path) -> PathBuf {
 
 /// The one directory inside the roots that is still off limits: every pane's
 /// config dir, because that is where this guardrail's own rules live.
+///
+/// The name is [`crate::placement::pane_config_root`]'s, not a second spelling of
+/// it (D-075): the directory this refuses writes to and the directory the layout
+/// puts pane configs in are the same fact, and a rename that reached one and not
+/// the other would leave every pane able to rewrite its own hook policy.
 pub fn policy_dir(shell: &Path) -> PathBuf {
-    shell.join("pane-config")
+    crate::placement::pane_config_root(shell)
 }
 
 /// The roots this pane may write under.
@@ -182,7 +187,7 @@ fn quote(raw: &str) -> String {
 /// Put our hook into `settings.json`, keeping everything else the operator has
 /// put there.
 ///
-/// Merge, never clobber — the same rule `spawn::seed_config_dir` follows, and it
+/// Merge, never clobber — the same rule `placement::spawn::seed_config_dir` follows, and it
 /// matters more here: D-062 explicitly invites the operator to populate
 /// `pane-config/orch/` themselves, and their own hooks living in this file is the
 /// obvious way to do it. Our own entry is replaced rather than appended to, so a
@@ -576,7 +581,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// D-069, pinned here rather than only in `spawn.rs`: the fleet's toolchain
+    /// D-069, pinned here rather than only in `placement::spawn`: the fleet's toolchain
     /// homes are inside `_shell`, so a build's cache writes are already allowed
     /// and **no root was added for them**.
     ///

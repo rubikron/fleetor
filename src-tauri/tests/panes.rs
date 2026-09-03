@@ -25,8 +25,9 @@ use fleetor_db::SqliteStore;
 use fleetor_shell::context_gauge::GaugeSources;
 use fleetor_shell::deliver::spawn_delivery;
 use fleetor_shell::pty::{exit_channel, out_channel, Emit, PaneRegistry};
+use fleetor_shell::placement::spawn;
+use fleetor_shell::placement::{self, Host, Layout, PaneSpec};
 use fleetor_shell::prompts::PaneContext;
-use fleetor_shell::spawn;
 use fleetor_server::AppCommand;
 use portable_pty::CommandBuilder;
 use tokio::sync::{mpsc, oneshot};
@@ -106,8 +107,48 @@ fn scratch_registry_path() -> PathBuf {
     ))
 }
 
-/// Bring up a registry with every pane running the stand-in, through the real
-/// `spawn.rs` command builders so their environment work is exercised too.
+/// A scratch `~/.fleetor` and the repo this binary points a fleet at — one pair
+/// per test thread, so tests running in parallel never seed each other's
+/// directories.
+///
+/// The target is deliberately **not** a git repository: a worker placed against it
+/// takes the announced fallback to the shared checkout, which is exactly what this
+/// file wants — a real cwd, nothing branched, and no side effect on the repository
+/// the tests are running inside.
+fn scratch_installation() -> (Layout, PathBuf) {
+    let root = std::env::temp_dir().join(format!(
+        "fleetor-panes-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let layout = Layout::under(root.join("state"));
+    let target = root.join("target");
+    std::fs::create_dir_all(&target).unwrap();
+    (layout, target)
+}
+
+/// The machine this binary describes: the stand-in pane program, a worker key,
+/// and the real inherited `PATH` — the fake pane's `#!/usr/bin/env bash` has to
+/// find a `bash`, so that one field must be the truth rather than a scratch value.
+fn stand_in_host() -> Host {
+    Host {
+        pane_program: Some(fake_pane_script().display().to_string()),
+        api_key: Some("sk-test".to_string()),
+        inherited_path: std::env::var("PATH").unwrap_or_default(),
+        ..Host::bare()
+    }
+}
+
+/// Bring up a registry with every pane running the stand-in, **through
+/// `placement::place`** — the identical call `fleet::spawn_pane` makes, so the
+/// seeding, the guardrail install and the command's environment work are all
+/// exercised on the way to a real pty (WP-21, D-075).
+///
+/// It used to call `spawn.rs`'s command builders directly, and it was the last
+/// thing outside `placement` that knew how a pane is shaped. Those builders are
+/// internals of that module now, so the stand-in arrives as a [`Host`] field
+/// rather than through `FLEETOR_PANE_CMD` — the same override, handed in instead
+/// of read.
 fn fleet() -> (Arc<PaneRegistry>, Arc<Transcript>) {
     let (registry, transcript, _registry_path) = fleet_with_registry_path();
     (registry, transcript)
@@ -116,30 +157,21 @@ fn fleet() -> (Arc<PaneRegistry>, Arc<Transcript>) {
 /// [`fleet`], plus the scratch pid-registry path it used — for the one test
 /// that needs to read that file back and check what landed in it.
 fn fleet_with_registry_path() -> (Arc<PaneRegistry>, Arc<Transcript>, PathBuf) {
-    // Process-global, but every test in this binary sets it to the same value,
-    // so the parallel writes are all identical.
-    std::env::set_var("FLEETOR_PANE_CMD", fake_pane_script());
-
     let transcript = Arc::new(Transcript::default());
     let registry_path = scratch_registry_path();
     let registry = Arc::new(PaneRegistry::new(transcript.emitter(), registry_path.clone()));
 
-    let cwd = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let socket = PathBuf::from("/tmp/fleetor-panes-test.sock");
-    let orch = spawn::orch_command(&cwd, &socket, &cwd.join("unused-orch-cfg"), &PaneContext::baked());
-    registry.spawn(PaneId::Orch, orch, 24, 80).unwrap();
-    for slot in WORKER_SLOTS {
-        let command = spawn::worker_command(
-            slot,
-            &cwd,
-            &cwd.join("unused-home"),
-            &cwd.join("unused-cfg"),
-            &socket,
-            "sk-test",
-            None,
-            &PaneContext::baked(),
-        );
-        registry.spawn(PaneId::Worker(slot), command, 24, 80).unwrap();
+    let (layout, target) = scratch_installation();
+    let host = stand_in_host();
+    let ctx = PaneContext::baked();
+
+    let mut specs = vec![PaneSpec::Orch];
+    specs.extend(WORKER_SLOTS.iter().map(|slot| PaneSpec::Worker(*slot)));
+    for spec in specs {
+        let pane = spec.pane();
+        let placed = placement::place(spec, &layout, &host, &target, &ctx)
+            .unwrap_or_else(|e| panic!("placing {pane}: {e}"));
+        registry.spawn(pane, placed.command, 24, 80).unwrap();
     }
     (registry, transcript, registry_path)
 }
@@ -318,19 +350,16 @@ fn a_killed_pane_can_be_spawned_again() {
     transcript.wait_for(&out_channel(target), "ready");
     registry.kill(target).unwrap();
 
-    let cwd = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let socket = PathBuf::from("/tmp/fleetor-panes-test.sock");
-    let command = spawn::worker_command(
-        4,
-        &cwd,
-        &cwd.join("unused-home"),
-        &cwd.join("unused-cfg"),
-        &socket,
-        "sk-test",
-        None,
+    let (layout, repo) = scratch_installation();
+    let placed = placement::place(
+        PaneSpec::Worker(4),
+        &layout,
+        &stand_in_host(),
+        &repo,
         &PaneContext::baked(),
-    );
-    registry.spawn(target, command, 24, 80).expect("a dead pane respawns");
+    )
+    .expect("worker-4 places");
+    registry.spawn(target, placed.command, 24, 80).expect("a dead pane respawns");
 
     registry.write_paste(target, "still here?").unwrap();
     transcript.wait_for(&out_channel(target), "echo:");
@@ -537,7 +566,10 @@ fn a_roster_ask_surfaces_a_workers_sampled_context_gauge() {
     // `context_gauge::project_dir` will look for it — the same cwd
     // `fleet_with_registry_path` spawned worker-1 in, under a config dir this
     // test owns outright.
-    let cwd = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    // The cwd `fleet_with_registry_path` placed worker-1 in: this thread's scratch
+    // target, reached by the shared-checkout fallback since that target is no
+    // repository.
+    let (_, cwd) = scratch_installation();
     let config_dir = std::env::temp_dir().join(format!(
         "fleetor-panes-gauge-cfg-{}-{:?}",
         std::process::id(),

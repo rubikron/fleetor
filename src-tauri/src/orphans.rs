@@ -11,14 +11,14 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::fleet::shell_dir;
+use crate::fleet;
 
 /// The real registry location. `pub(crate)` so [`crate::pty::PaneRegistry`] can
 /// hand it to a live app's registry as its default, while a test builds its own
 /// `PaneRegistry` around a scratch path instead — nothing in this crate's test
 /// suite should be writing into the operator's real `~/.fleetor`.
 pub(crate) fn registry_path() -> PathBuf {
-    shell_dir().join("panes.pids")
+    fleet::layout().shell().join("panes.pids")
 }
 
 /// A snapshot, not a delta — always the full set of pids that should still be
@@ -31,7 +31,7 @@ pub(crate) fn write_registry(path: &Path, pids: &[u32]) {
         return;
     }
     let text = pids.iter().map(u32::to_string).collect::<Vec<_>>().join("\n");
-    // Sibling temp file + rename, same as `spawn::seed_config_dir`: a
+    // Sibling temp file + rename, same as `placement::spawn::seed_config_dir`: a
     // half-written registry must never be read back as "these pids are live"
     // when it is actually truncated.
     let tmp = path.with_extension("pids.tmp");
