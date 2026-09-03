@@ -32,12 +32,23 @@
 //!
 //! ## What is here yet
 //!
-//! [`PaneSpec`] has two variants: `orch` and a worker. The evaluator and the Critic
-//! still come up through the old sequence, and each gains its variant in the ticket
-//! that moves it. A variant that existed but errored would be a trap of exactly the
+//! [`PaneSpec`] has three variants: `orch`, a worker, and the evaluator — every
+//! pane kind that can exist today. The Critic gains its variant in the ticket that
+//! builds it. A variant that existed but errored would be a trap of exactly the
 //! kind `building.md` §6 names: the obvious next move on finding one is to point
-//! it at something live, and the live path for those kinds is elsewhere. Every
+//! it at something live, and the live path for that kind is elsewhere. Every
 //! variant that exists, works.
+//!
+//! ## The one read that is not from the process, and is not an argument either
+//!
+//! [`Layout::dev_enabled`] opens a file. That is not a hole in the rule above, it
+//! is the rule applied: the file is `config.json` **inside the layout placement
+//! was handed**, so a test pointing the layout at a scratch directory points the
+//! mode at a scratch directory too. It exists because the evaluator arm has to
+//! re-check the mode *itself* rather than trust its caller (D11) — "unreachable
+//! outside dev mode" is a property of the spawn site or it is not a property at
+//! all — and because the mode is documented as read fresh at every wake rather
+//! than snapshotted. Taking a `bool` argument would have lost the first of those.
 //!
 //! One thing a worker needs is still emitted by the caller rather than returned
 //! from here: the two machine-level warnings about a missing `fleet` binary and a
@@ -54,7 +65,7 @@ use portable_pty::CommandBuilder;
 
 use crate::context_gauge::{self, TranscriptSource};
 use crate::prompts::PaneContext;
-use crate::{evaluator, guardrail, spawn};
+use crate::{dev, evaluator, guardrail, runs, spawn};
 
 // --- the layout ---------------------------------------------------------------
 
@@ -114,6 +125,24 @@ impl Layout {
     /// operator looks and one place `rm -rf ~/.fleetor` removes (Tier 1.1).
     pub fn config_file(&self) -> PathBuf {
         self.root.join("config.json")
+    }
+
+    /// Whether *this* installation is in dev mode (D11, D-061).
+    ///
+    /// The stored flag, read through the layout rather than through the
+    /// process-global reader — which is what lets [`place_evaluator`] re-check the
+    /// mode at the spawn site while a test still points it at a scratch
+    /// `config.json`. Three properties at once, and dropping any one of them was a
+    /// rejected alternative: the spawn site genuinely re-checks so a caller cannot
+    /// lie to it, the flag is read fresh at every placement rather than
+    /// snapshotted, and the operator's real `~/.fleetor/config.json` is never
+    /// consulted by a test.
+    ///
+    /// A missing, unreadable or malformed config reads as off, exactly as
+    /// [`crate::dev::is_enabled`] does — this is that function with the file named
+    /// instead of derived.
+    pub fn dev_enabled(&self) -> bool {
+        dev::read_at(&self.config_file())
     }
 
     /// The fleet unix socket the `fleet` CLI dials.
@@ -288,6 +317,13 @@ pub enum PaneSpec {
     /// One fenced worker, by slot: its own worktree of the target, its own
     /// private `HOME`, and the fleet's toolchain rather than the operator's.
     Worker(u8),
+    /// The evaluator (WP-15), in a snapshot of the live run.
+    ///
+    /// It carries no inputs of its own, and that is D2 rather than an omission:
+    /// the run it reads is the live one, laid out *by* placement, so there is
+    /// nothing for a caller to pass in and no directory it could point at that
+    /// placement did not write.
+    Evaluator,
 }
 
 impl PaneSpec {
@@ -296,11 +332,16 @@ impl PaneSpec {
         match self {
             PaneSpec::Orch => PaneId::Orch,
             PaneSpec::Worker(slot) => PaneId::Worker(*slot),
+            PaneSpec::Evaluator => PaneId::Evaluator,
         }
     }
 }
 
 /// Everything bringing one pane up produced, and nothing it did along the way.
+///
+/// `Debug` so a test asserting a *refusal* can say what it got instead — the
+/// refusal arms are the ones with no other output to print.
+#[derive(Debug)]
 pub struct Placed {
     /// What the registry will spawn.
     pub command: CommandBuilder,
@@ -334,6 +375,7 @@ pub fn place(
     match spec {
         PaneSpec::Orch => place_orch(layout, host, target, context),
         PaneSpec::Worker(slot) => place_worker(slot, layout, host, target, context),
+        PaneSpec::Evaluator => place_evaluator(layout, host, target, context),
     }
 }
 
@@ -504,6 +546,83 @@ fn place_worker(
     })
 }
 
+/// The evaluator (WP-15): the operator's own `claude` in a snapshot of the run it
+/// is about to read.
+///
+/// **It re-checks the mode itself (D11).** Its one caller has already asked
+/// [`evaluator::readiness`] the same question, and that is not enough: "there is no
+/// evaluator outside dev mode" has to be a property of the spawn site rather than of
+/// whoever happens to call it. What changed with this module is *how* it re-checks —
+/// through [`Layout::dev_enabled`] and [`Host::missions`], so the identical branch a
+/// production spawn takes can be taken against a scratch configuration.
+///
+/// **It lays the run out before it renders anything (D2).** The evaluator's working
+/// directory *is* a snapshot of the run, so there is no order in which a caller could
+/// usefully do this first: the brief cites the directory, and a brief citing a
+/// directory nobody wrote is a pane that spends its first turn asking about a path.
+///
+/// Shaped like `orch` — the operator's account and model, their `HOME`, a full
+/// environment inherit, no Fence — and unlike it in the three ways that are about
+/// the veil rather than about permissions: its brief comes from a separate repo with
+/// no `~/.fleetor/prompts/` override, its config dir is outside `pane-config/` so its
+/// own reasoning never lands in the archive the next generation reads, and its
+/// guardrail roots are its own working directory alone.
+fn place_evaluator(
+    layout: &Layout,
+    host: &Host,
+    target: &Path,
+    context: &PaneContext,
+) -> Result<Placed, String> {
+    let pane = PaneId::Evaluator;
+
+    let evaluator::Readiness::Ready(mission) =
+        evaluator::readiness(layout.dev_enabled(), target, &host.missions)
+    else {
+        return Err(NO_EVALUATOR.to_string());
+    };
+
+    // The run, laid out for reading. `snapshot_live_run` owns the directory it is
+    // given — it clears and recreates it — so nothing may be seeded into the cwd
+    // before this line.
+    let shell = layout.shell();
+    let run_id = runs::live_run_id(&shell, fleetor_core::time::now_ms());
+    let cwd = evaluator::retro_dir(layout.root(), &run_id);
+    runs::snapshot_live_run(&shell, &cwd, &run_id)?;
+
+    let brief = evaluator::render_brief(&mission, &cwd)?;
+
+    let config_dir = evaluator::config_dir(layout.root());
+    spawn::seed_config_dir(&config_dir, &cwd)?;
+    let notices = guardrail_notices(layout, pane, &config_dir, &cwd, context)?;
+
+    let command = spawn::evaluator_command_with(
+        &cwd,
+        &layout.socket(),
+        &config_dir,
+        &brief,
+        &context.launch.worker_permission_mode,
+        host.pane_program.as_deref(),
+        &host.orch_path(),
+    );
+
+    // Not on the live gauge, for `orch`'s reason: the gauge samples the transcripts
+    // of the panes doing the work, and this pane is not one of them.
+    Ok(Placed { command, notices, gauge: None })
+}
+
+/// What placing an evaluator fails with when this run does not get one.
+///
+/// One sentence for all three refusals rather than three, because they are three
+/// spellings of the same fact and only one of them is ever a surprise: a default
+/// build has no grader compiled in, an operator with the mode off asked for no
+/// grader, and a fleet pointed at an ordinary repo has no ground truth to grade
+/// against (D-060). The caller that reaches this in production —
+/// [`crate::fleet::wake_evaluator`] — has already told the operator *which* of the
+/// three it is, in the words that case deserves.
+pub const NO_EVALUATOR: &str =
+    "there is no evaluator for this run: it needs a devmode build, dev mode on in \
+     the fleet's own config, and a prepared mission workspace as the target";
+
 /// What placing a worker fails with when this machine has no key at all.
 ///
 /// A constant rather than an interpolated sentence, because it is now the value a
@@ -601,10 +720,14 @@ pub const MISSING_FLEET_BIN: &str =
 /// way `shared_checkout_warning` says peer review degrades rather than inventing a
 /// directory that is not there.
 ///
-/// `pub(crate)` because the old sequence in [`crate::fleet`] still places the
-/// other pane kinds and calls this — one implementation, two callers, rather than
-/// the hand-copied second copy this module exists to abolish.
-pub(crate) fn guardrail_notices(
+/// **Private, and that is the point of this ticket.** It had one caller outside
+/// this module — the old sequence's evaluator arm — and `tests/write_guardrail.rs`
+/// had a hand-typed copy of it that had already drifted: it called
+/// [`guardrail::roots_for`] unconditionally, so it could never have produced the
+/// narrower pair the branch below gives the evaluator. Both are gone. The rule now
+/// lives here, has no second spelling, and is reached from a test the only way
+/// production reaches it — through [`place`].
+fn guardrail_notices(
     layout: &Layout,
     pane: PaneId,
     config_dir: &Path,

@@ -101,7 +101,10 @@ struct Fleet {
     /// pane exists both commands refuse (see [`ensure_target_settable`]). The UI
     /// also stops offering the control at that point, which is now belt and
     /// braces rather than the only guard (D-071).
-    target: PathBuf,
+    ///
+    /// **The handoff watch holds a clone of this same cell, not a copy of its
+    /// value** (D14) — see [`Target`] for what that fixed.
+    target: Target,
     /// The briefs and launch settings every pane spawns with, from `prompts/`
     /// and the operator's `~/.fleetor/prompts/`. Resolved once for the same
     /// reason the target is: a fleet whose panes were briefed from two revisions
@@ -130,6 +133,46 @@ struct Fleet {
 /// Managed Tauri state: at most one embedded fleet.
 #[derive(Default)]
 pub struct FleetState(Mutex<Option<Fleet>>);
+
+/// The repo the fleet works on — **one value, shared by everything that reads it**
+/// (WP-21, D14).
+///
+/// Before this type there were two: the field on [`Fleet`], which
+/// [`apply_target`] rewrites, and a `PathBuf` the handoff watch was handed at
+/// bootstrap and kept forever. [`wake_evaluator`]'s doc comment claimed the two
+/// were "the same one", and they were not — a target set at the start gate moved
+/// the spawn path and left the watch on whatever bootstrap had resolved. The
+/// comment was right about what should be true; this makes it true, by giving the
+/// two readers one cell instead of two copies.
+///
+/// **No behaviour change, and there is a reason to expect none rather than a hope:**
+/// D-071 fixed the target the moment a pane exists, and a handoff cannot happen
+/// before `orch` exists to send one. So the value the watch used to snapshot and
+/// the value it now reads can only differ in a fleet that never reaches a handoff.
+/// The behaviour-change half of D14 was that freeze, and it is already in.
+///
+/// A `Mutex` rather than an `RwLock` because there is one writer, at most a
+/// handful of times, before any pane exists; a poisoned lock hands back the value
+/// anyway, since a target nobody can read is a fleet that cannot spawn.
+#[derive(Clone)]
+struct Target(Arc<Mutex<PathBuf>>);
+
+impl Target {
+    fn new(path: PathBuf) -> Self {
+        Self(Arc::new(Mutex::new(path)))
+    }
+
+    /// What the fleet is pointed at right now.
+    fn get(&self) -> PathBuf {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Point it somewhere else. Only ever reached through [`adopt_target`], which
+    /// refuses once a pane exists (D-071).
+    fn set(&self, path: &Path) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = path.to_path_buf();
+    }
+}
 
 // --- locations ----------------------------------------------------------------
 //
@@ -255,13 +298,13 @@ pub fn fleet_bootstrap(
         note(&store, *level, text);
     }
 
-    let target = resolve_target(&store)?;
-    let config = fleet_config_for(&target);
+    let target = Target::new(resolve_target(&store)?);
+    let config = fleet_config_for(&target.get());
 
     // Stamp what this run is, for the History row it becomes at the next start.
     // The target is only ever prose inside a notice in the log, so a run that
     // ended without this marker lists with an unknown target rather than a guess.
-    runs::begin(&dir, started_ms, &target);
+    runs::begin(&dir, started_ms, &target.get());
 
     // Prompts and launch settings, before any pane exists. Every notice the
     // resolver produced goes on the feed here — an override that silently did
@@ -301,12 +344,13 @@ pub fn fleet_bootstrap(
 
 /// Bring one pane up and hand it to the registry.
 ///
-/// **`orch` comes up through [`crate::placement`]; the rest still come up here**
-/// (WP-21, ticket 02). That module owns the order — cwd, config seed, guardrail,
+/// **Every pane kind that can exist comes up through [`crate::placement`]**
+/// (WP-21, ticket 04). That module owns the order — cwd, config seed, guardrail,
 /// notices, command — against a [`Layout`] and a [`Host`] handed to it, so the
-/// identical code path runs in a test against a scratch directory. Workers and the
-/// evaluator keep the arms below until the tickets that move them; ticket 05
-/// deletes what is left.
+/// identical code path runs in a test against a scratch directory. What is left
+/// here is the refusal for the one name with nothing to spawn, the machine-level
+/// warnings that have to land before placement can fail, and putting what
+/// placement returned where it goes; ticket 05 takes the rest.
 ///
 /// **The L1 re-seed requirement lives at the spawn site, structurally**, in both
 /// halves. `hasTrustDialogAccepted` is keyed by absolute project path, so a fleet
@@ -324,7 +368,7 @@ pub(crate) fn spawn_pane(
     let (target, store, context, gauges) = {
         let guard = fleet.0.lock().map_err(|e| e.to_string())?;
         let f = guard.as_ref().ok_or("fleet not bootstrapped")?;
-        (f.target.clone(), f.store.clone(), f.context.clone(), f.gauges.clone())
+        (f.target.get(), f.store.clone(), f.context.clone(), f.gauges.clone())
     };
 
     // The seam. The layout and the host are built *here*, at the one production
@@ -333,85 +377,43 @@ pub(crate) fn spawn_pane(
     // (D13): that is what the code did before this module existed, so a toolchain
     // installed mid-session still takes effect on the next pane restart.
     //
-    // `orch` and every worker are placed. The evaluator is not, yet — ticket 04
-    // moves it, and until then the arm below is the whole of what is left of the
-    // old sequence. Matched exhaustively rather than with a wildcard, so a new pane
-    // kind has to say which of the two it is instead of silently getting the old
-    // one.
+    // Every kind but one is placed. Matched exhaustively rather than with a
+    // wildcard, so a new pane kind has to say what places it instead of silently
+    // getting somebody else's arm.
     let spec = match pane {
-        PaneId::Orch => Some(PaneSpec::Orch),
-        PaneId::Worker(slot) => Some(PaneSpec::Worker(slot)),
-        PaneId::Operator | PaneId::Evaluator => None,
-    };
-    if let Some(spec) = spec {
-        // The machine-level warnings stay here rather than moving inside
-        // `place_worker`, and deliberately: they are emitted *before* placement can
-        // fail, so a machine with no worker key still tells the operator what else
-        // is missing instead of only naming the key. Ticket 05 converges them when
-        // the old sequence goes. `orch` gets its own from placement, so it is
-        // excluded here or it would be warned twice.
-        if matches!(pane, PaneId::Worker(_)) {
-            warn_about_the_machine(&store, pane);
-        }
-        let placed = placement::place(spec, &layout(), &Host::discover(), &target, &context)?;
-        for (level, text) in &placed.notices {
-            note(&store, *level, text);
-        }
-        if let Some(source) = placed.gauge {
-            gauges.record(pane, source);
-        }
-        return registry.spawn(pane, placed.command, rows, cols);
-    }
-
-    warn_about_the_machine(&store, pane);
-
-    let socket = socket_path();
-    let command = match pane {
+        PaneId::Orch => PaneSpec::Orch,
+        PaneId::Worker(slot) => PaneSpec::Worker(slot),
+        PaneId::Evaluator => PaneSpec::Evaluator,
         // Never spawnable, and refused here rather than left to fail somewhere
-        // deeper: there is no command to run for a human, no cwd that is
-        // theirs, and no config dir to seed. WP-07's "the operator is never
-        // spawnable or killable" is this arm plus the fact that nothing in the
-        // UI offers the button (`pty_kill` on a name with no pty already
-        // answers "operator is not running").
+        // deeper: there is no command to run for a human, no cwd that is theirs,
+        // and no config dir to seed. WP-07's "the operator is never spawnable or
+        // killable" is this arm plus the fact that nothing in the UI offers the
+        // button (`pty_kill` on a name with no pty already answers "operator is
+        // not running").
         PaneId::Operator => {
-            return Err("the operator is a participant, not a pane — there is nothing to spawn"
-                .to_string())
-        }
-        // Both placed by `crate::placement`, which this function returned through
-        // above. Unreachable, and refused rather than duplicated: two ways to
-        // bring a pane up is the exact drift WP-21 exists to end.
-        PaneId::Orch => return Err("orch is placed, not spawned here".to_string()),
-        PaneId::Worker(_) => return Err("workers are placed, not spawned here".to_string()),
-        // WP-15. Reached only through `wake_evaluator`, which has already
-        // checked the three conditions in `evaluator::readiness` — this arm
-        // re-checks the brief anyway, because "unreachable outside dev mode"
-        // has to be a property of the spawn site and not of its one caller.
-        //
-        // Shaped like `orch` (the operator's own account and model, no Fence,
-        // full environment inherit) and unlike it in three ways that are all
-        // about the veil rather than about permissions: its brief comes from a
-        // separate repo and has no `~/.fleetor/prompts/` override, its config
-        // dir is outside `pane-config/` so its own reasoning never lands in the
-        // run archive, and its guardrail roots are its own directory alone.
-        PaneId::Evaluator => {
-            let fleetor = fleetor_dir();
-            let brief = evaluator_brief(&fleetor, &target)?;
-            let cwd = brief.cwd;
-            let config_dir = evaluator::config_dir(&fleetor);
-            std::fs::create_dir_all(&cwd).map_err(|e| format!("create evaluator cwd: {e}"))?;
-            spawn::seed_config_dir(&config_dir, &cwd)?;
-            install_guardrail(&store, pane, &config_dir, &cwd, &context)?;
-            spawn::evaluator_command(
-                &cwd,
-                &socket,
-                &config_dir,
-                &brief.text,
-                &context.launch.worker_permission_mode,
+            return Err(
+                "the operator is a participant, not a pane — there is nothing to spawn".to_string()
             )
         }
     };
 
-    registry.spawn(pane, command, rows, cols)
+    // The machine-level warnings stay here rather than moving inside placement,
+    // and deliberately: they are emitted *before* placement can fail, so a machine
+    // with no worker key still tells the operator what else is missing instead of
+    // only naming the key — and a run with no evaluator still says the `fleet`
+    // binary is absent. Ticket 05 converges them. `orch` gets its own from
+    // placement, so it is excluded here or it would be warned twice.
+    if !matches!(pane, PaneId::Orch) {
+        warn_about_the_machine(&store, pane);
+    }
+    let placed = placement::place(spec, &layout(), &Host::discover(), &target, &context)?;
+    for (level, text) in &placed.notices {
+        note(&store, *level, text);
+    }
+    if let Some(source) = placed.gauge {
+        gauges.record(pane, source);
+    }
+    registry.spawn(pane, placed.command, rows, cols)
 }
 
 /// What this machine is missing, said once at spawn time rather than discovered
@@ -444,34 +446,6 @@ fn warn_about_the_machine(store: &Arc<dyn Store>, pane: PaneId) {
     }
 }
 
-/// Install this pane's write guardrail (WP-17), at the spawn site for the same
-/// reason the config seed is: the roots are derived from the cwd this pane is
-/// actually about to run in, so they cannot be got wrong by a code path that
-/// forgot to recompute them.
-///
-/// `cwd` is the pane's own — `orch`'s target repo, a worker's worktree, or (in
-/// the shared-checkout fallback) the target, which degrades the guardrail
-/// exactly the way `shared_checkout_warning` says peer review degrades rather
-/// than inventing a directory that is not there.
-/// The rule itself — including the evaluator's deliberately narrower roots — lives
-/// in [`placement::guardrail_notices`]. This is the emitting wrapper for the arms
-/// that have not moved to placement yet, so there is one implementation and not a
-/// second copy to drift.
-fn install_guardrail(
-    store: &Arc<dyn Store>,
-    pane: PaneId,
-    config_dir: &Path,
-    cwd: &Path,
-    context: &PaneContext,
-) -> Result<(), String> {
-    for (level, text) in
-        placement::guardrail_notices(&layout(), pane, config_dir, cwd, context)?
-    {
-        note(store, level, &text);
-    }
-    Ok(())
-}
-
 /// Poll the guardrail's refusal journal onto the Activity feed.
 ///
 /// **A silent denial is the wrong answer.** A pane that cannot tell a guardrail
@@ -496,29 +470,6 @@ fn spawn_guardrail_feed(rt: &Runtime, store: Arc<dyn Store>, shell: &Path) {
 }
 
 // --- the wake (WP-15) ----------------------------------------------------------
-
-/// The evaluator's brief, rendered, and the directory it will work in.
-struct EvaluatorBrief {
-    text: String,
-    cwd: PathBuf,
-}
-
-/// Lay the live run out for reading and render the brief against it.
-///
-/// Called from the spawn arm rather than from the wake, so the pane cannot come
-/// up pointed at a directory that was never written.
-fn evaluator_brief(fleetor: &Path, target: &Path) -> Result<EvaluatorBrief, String> {
-    let evaluator::Readiness::Ready(mission) = evaluator::readiness(dev::is_enabled(), target)
-    else {
-        return Err("there is no evaluator in this build or this mode".to_string());
-    };
-    let shell = shell_dir();
-    let run_id = runs::live_run_id(&shell, fleetor_core::time::now_ms());
-    let cwd = evaluator::retro_dir(fleetor, &run_id);
-    runs::snapshot_live_run(&shell, &cwd, &run_id)?;
-    let text = evaluator::render_brief(&mission, &cwd)?;
-    Ok(EvaluatorBrief { text, cwd })
-}
 
 /// Watch the run's own event stream for a handoff, and wake the evaluator on one.
 ///
@@ -558,7 +509,7 @@ fn spawn_evaluator_wake(
     bcast: Arc<BroadcastStore>,
     store: Arc<dyn Store>,
     app: AppHandle,
-    target: PathBuf,
+    target: Target,
 ) {
     rt.spawn(async move {
         // A follower of its own rather than an arm inside `spawn_follower`, so a
@@ -575,7 +526,7 @@ fn spawn_evaluator_wake(
             if !matches!(event, FleetEvent::Handoff { .. }) {
                 continue;
             }
-            for (level, text) in wake_evaluator(&app, &target) {
+            for (level, text) in wake_evaluator(&app, &target.get()) {
                 note(&store, level, &text);
             }
         }
@@ -585,12 +536,14 @@ fn spawn_evaluator_wake(
 /// One wake. Returns what the operator should be told — never nothing, unless
 /// the mode is simply off, because a wake that silently did nothing is
 /// indistinguishable from a wake that is broken.
-/// `target` is the run's own, snapshotted at bootstrap — the same one
-/// [`spawn_pane`] renders the brief against. Re-reading `config.json` here
-/// instead would let a mid-run target change send the two at different repos.
+/// `target` is read out of the fleet's own [`Target`] cell — **literally the same
+/// value [`spawn_pane`] places the evaluator against** (D14), rather than a copy
+/// taken at bootstrap that a target set at the start gate would leave behind.
+/// Re-reading `config.json` here instead would let a mid-run target change send
+/// the two at different repos.
 fn wake_evaluator(app: &AppHandle, target: &Path) -> Vec<(NoticeLevel, String)> {
     let mut notices = Vec::new();
-    match evaluator::readiness(dev::is_enabled(), target) {
+    match evaluator::readiness(dev::is_enabled(), target, &evaluator::MissionRoots::discover()) {
         // A build with no grader in it, and the ordinary non-dev case. Both are
         // silent: the first is what every release build is, and the second is
         // what the operator asked for by leaving the mode off.
@@ -750,7 +703,7 @@ pub fn fleet_config(state: State<'_, FleetState>) -> Result<FleetConfig, String>
 pub fn fleet_target(state: State<'_, FleetState>) -> Result<String, String> {
     let guard = state.0.lock().map_err(|e| e.to_string())?;
     let fleet = guard.as_ref().ok_or("fleet not bootstrapped")?;
-    Ok(fleet.target.to_string_lossy().into_owned())
+    Ok(fleet.target.get().to_string_lossy().into_owned())
 }
 
 /// Every pane and its state, with each worker's context gauge if one could be
@@ -924,7 +877,9 @@ fn apply_target(state: &FleetState, target: &Path) {
     let is_git = placement::git(target, &["rev-parse", "--git-dir"]);
     if let Ok(mut guard) = state.0.lock() {
         if let Some(fleet) = guard.as_mut() {
-            fleet.target = target.to_path_buf();
+            // The one write. Everything that reads the target — the spawn path
+            // and the handoff watch alike — reads this cell (D14).
+            fleet.target.set(target);
             fleet.config = fleet_config_for(target);
             note(
                 &fleet.store,

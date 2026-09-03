@@ -105,20 +105,26 @@ pub struct Mission {
 
 /// Whether this run gets an evaluator, and if not, why not.
 ///
-/// `dev_enabled` is passed in rather than read here so the caller owns the one
-/// read (`dev::is_enabled`) and this function stays testable without touching
-/// the operator's real `config.json`.
-pub fn readiness(dev_enabled: bool, target: &Path) -> Readiness {
+/// **Both of its inputs arrive rather than being read** (WP-21). `dev_enabled` is
+/// the caller's own read — [`crate::placement::Layout::dev_enabled`] in the spawn
+/// path, `dev::is_enabled` at the wake — and `roots` is the [`MissionRoots`] the
+/// [`Host`](crate::placement::Host) discovered (D12). Before WP-21 this function
+/// read the three roots out of the environment itself, which is what stopped
+/// placement being able to call it: a module that may not touch the process cannot
+/// call something that does.
+pub fn readiness(dev_enabled: bool, target: &Path, roots: &MissionRoots) -> Readiness {
     if BRIEF.is_none() {
         return Readiness::NotBuilt;
     }
     if !dev_enabled {
         return Readiness::ModeOff;
     }
-    let workspaces = workspaces_root();
-    match mission_for(target, &workspaces, &harness_root(), &answers_root()) {
+    match mission_for(target, &roots.workspaces, &roots.harness, &roots.answers) {
         Some(mission) => Readiness::Ready(mission),
-        None => Readiness::NoMission { target: target.to_path_buf(), workspaces },
+        None => Readiness::NoMission {
+            target: target.to_path_buf(),
+            workspaces: roots.workspaces.clone(),
+        },
     }
 }
 
@@ -323,6 +329,17 @@ mod tests {
         dir
     }
 
+    /// The three roots a fixture's mission lives under, as a machine would carry
+    /// them — so the readiness tests below exercise the same value the
+    /// [`Host`](crate::placement::Host) hands placement.
+    fn roots_of(workspaces: &Path, harness: &Path, answers: &Path) -> MissionRoots {
+        MissionRoots {
+            harness: harness.to_path_buf(),
+            workspaces: workspaces.to_path_buf(),
+            answers: answers.to_path_buf(),
+        }
+    }
+
     /// A prepared workspace, exactly the shape `prepare-mission.sh` builds.
     fn mission_fixture(name: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
         let base = scratch("mission");
@@ -383,8 +400,12 @@ mod tests {
     #[cfg(not(feature = "devmode"))]
     fn a_default_build_carries_no_brief_and_can_never_be_ready() {
         assert!(BRIEF.is_none(), "a default build must contain no evaluator prose");
-        let (repo, _, _, _) = mission_fixture("hyperfine-conclude");
-        assert_eq!(readiness(true, &repo), Readiness::NotBuilt, "even with the mode on");
+        let (repo, workspaces, harness, answers) = mission_fixture("hyperfine-conclude");
+        assert_eq!(
+            readiness(true, &repo, &roots_of(&workspaces, &harness, &answers)),
+            Readiness::NotBuilt,
+            "even with the mode on and a real mission under it",
+        );
     }
 
     #[test]
@@ -400,11 +421,33 @@ mod tests {
     /// binary *has* a grader, the mode says the operator wants one now.
     #[test]
     fn the_mode_is_a_gate_even_when_the_brief_is_compiled_in() {
-        let (repo, _, _, _) = mission_fixture("hyperfine-conclude");
-        let off = readiness(false, &repo);
+        let (repo, workspaces, harness, answers) = mission_fixture("hyperfine-conclude");
+        let roots = roots_of(&workspaces, &harness, &answers);
+        let off = readiness(false, &repo, &roots);
         assert!(
             matches!(off, Readiness::ModeOff | Readiness::NotBuilt),
             "the mode being off is never Ready: {off:?}"
+        );
+    }
+
+    /// The mission roots arrive as a value, so a target that is a real prepared
+    /// workspace under *one* machine's roots is `NoMission` under another's. This
+    /// is what stopped `readiness` reading the environment: placement may not, and
+    /// [`crate::placement::Host`] carries the answer instead (D12).
+    #[test]
+    #[cfg(feature = "devmode")]
+    fn readiness_judges_the_target_against_the_roots_it_was_handed() {
+        let (repo, workspaces, harness, answers) = mission_fixture("hyperfine-conclude");
+        assert!(matches!(
+            readiness(true, &repo, &roots_of(&workspaces, &harness, &answers)),
+            Readiness::Ready(_)
+        ));
+
+        let elsewhere = scratch("other-workspaces");
+        assert_eq!(
+            readiness(true, &repo, &roots_of(&elsewhere, &harness, &answers)),
+            Readiness::NoMission { target: repo, workspaces: elsewhere },
+            "the same target under another machine's roots is no mission at all",
         );
     }
 
