@@ -33,6 +33,7 @@ const VIEWS: readonly View[] = [
   "tasks",
   "activity",
   "history",
+  "critic",
   "evaluator",
   "settings",
 ];

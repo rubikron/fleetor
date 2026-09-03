@@ -10,6 +10,7 @@ For *when* each piece arrives and where it lands inside the pane's context windo
 |---|---|---|
 | `orch.md` | The orchestrator's brief | `{cwd}` `{workers}` `{delivery_contract}` `{scaffolding}` `{vision_tenets}` |
 | `worker.md` | The brief every worker slot renders | `{me}` `{cwd}` `{peers}` `{delivery_contract}` `{broadcast_rule}` `{scaffolding}` |
+| `critic.md` | The Critic's brief — reads one run's archive and reports what the fleet did | `{archive}` |
 | `delivery-contract.md` | Fragment: what a `fleet` exit code means, and the three outcome words | — |
 | `broadcast-rule.md` | Fragment: never answer a broadcast unless it names you | — |
 | `scaffolding.md` | Fragment: the working posture CC's own prompt used to supply | — |
@@ -32,6 +33,7 @@ All four workers render the same `worker.md`. They differ only in `{me}`, `{peer
 | `{broadcast_rule}` | the whole of `broadcast-rule.md` |
 | `{scaffolding}` | the whole of `scaffolding.md` |
 | `{vision_tenets}` | the whole of `vision-tenets.md` — orchestrator only |
+| `{archive}` | the run directory the Critic was pointed at — Critic only |
 
 Anything else in braces is left alone — these are markdown files, not format strings, so `Vec<{}>` in prose survives.
 
@@ -65,6 +67,16 @@ $ $EDITOR ~/.fleetor/prompts/worker.md
 ```
 
 To go back to the built-in, delete the file.
+
+## `critic.md` is here because the Critic is a product feature (D-076)
+
+The Critic is not a pane in the fleet — it appears in no roster, is no leg of a broadcast, and is in no brief's peer list — so `{me}` and `{peers}` mean nothing to it and it teaches no verbs. It is here anyway, and that is the point: it reads one run's archive and reports what the fleet did, which is a judgement the operator is meant to tune. Rewrite it as you like.
+
+Two clauses are doing the work, and `docs/notes/critic-spike-notes.md` §8 says so with a measurement behind it: **every finding carries a citation**, and **nothing is prescribed**. The same archive read with an unconstrained prompt produced fluent, largely *true*, entirely uncitable prose that quietly graded the work — worse than the bland summary the roadmap predicted, because an operator cannot tell its true claims from its unfalsifiable ones. Drop either clause and that comes back. The spike's own advice is to re-run the control before shipping a trim.
+
+The brief reports on **six** categories. Five are the roadmap's (WP-20 D10); the sixth — *"Anything else the fleet did that cost the operator"* — was added during the spike, where it produced the single largest finding on both measured runs while D10's third and fourth categories produced nothing on either. It is a bounded slot, not a free-form opinion slot: it carries the same citation rule, bans inference and prescription by name, and sends any moment you cannot cite to UNCITED. That wording is what kept it from reopening the door.
+
+`{archive}` is the one thing an override may not drop. A Critic that does not know which directory to read spends its first turn asking, so a template missing it is refused with a `Warn` and the built-in is used — the same treatment `orch.md` and `worker.md` get for a missing fragment.
 
 ## The one brief with no override, and why
 

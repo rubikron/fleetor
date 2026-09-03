@@ -314,6 +314,7 @@ fn channel_key(pane: PaneId) -> String {
         PaneId::Orch => "orch".to_string(),
         PaneId::Worker(n) => n.to_string(),
         PaneId::Evaluator => "evaluator".to_string(),
+        PaneId::Critic => "critic".to_string(),
         // No pty, so no channel — this name is refused before a spawn is
         // attempted (`fleet::spawn_pane`) and nothing ever listens here.
         PaneId::Operator => "operator".to_string(),
@@ -491,12 +492,13 @@ mod tests {
         // list is what would have caught it.
         let all: Vec<String> = PaneId::roster(&fleetor_core::pane::WORKER_SLOTS)
             .into_iter()
-            .chain([PaneId::Evaluator, PaneId::Operator])
+            .chain([PaneId::Evaluator, PaneId::Critic, PaneId::Operator])
             .flat_map(|p| [out_channel(p), exit_channel(p)])
             .collect();
         let unique: std::collections::HashSet<&String> = all.iter().collect();
         assert_eq!(all.len(), unique.len(), "two panes share a channel: {all:?}");
         assert_eq!(out_channel(PaneId::Evaluator), "pty://output/evaluator");
+        assert_eq!(out_channel(PaneId::Critic), "pty://output/critic");
     }
 
     /// **The veil at the registry** (WP-15). A terminal this registry runs is
@@ -507,23 +509,34 @@ mod tests {
     ///
     /// Driven through a real spawn rather than asserted on the predicate, so it
     /// fails if the filter is ever dropped from `roster()` itself.
+    /// **The Critic joined this test rather than getting one of its own**
+    /// (WP-20, D-076), because the claim is identical and the filter is one
+    /// line: a running terminal is on the roster only if it is a fleet member.
+    /// `fleet roster` and `fleet broadcast` both read this, so a Critic that
+    /// appeared here would be a Critic every broadcast wrote into.
     #[test]
     fn a_running_evaluator_is_not_on_the_fleets_roster() {
         let dir = std::env::temp_dir().join(format!("fleetor-roster-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let registry = PaneRegistry::new(Arc::new(|_: &str, _: String| {}), dir.join("panes.pids"));
 
-        for pane in [PaneId::Orch, PaneId::Worker(1), PaneId::Evaluator] {
+        for pane in [PaneId::Orch, PaneId::Worker(1), PaneId::Evaluator, PaneId::Critic] {
             let mut cmd = CommandBuilder::new("/bin/cat");
             cmd.env("TERM", "dumb");
             registry.spawn(pane, cmd, 24, 80).expect("spawn");
         }
 
         let roster: Vec<PaneId> = registry.roster().into_iter().map(|e| e.pane).collect();
-        assert_eq!(roster, vec![PaneId::Orch, PaneId::Worker(1)], "the evaluator is not the fleet");
-        // …and it is still addressable, which is the whole shape: a name that is
-        // in no enumeration and is not unreachable.
-        assert!(registry.writable(PaneId::Evaluator).is_ok(), "still a live pty to write to");
+        assert_eq!(
+            roster,
+            vec![PaneId::Orch, PaneId::Worker(1)],
+            "neither the evaluator nor the Critic is the fleet",
+        );
+        // …and both are still addressable, which is the whole shape: a name that
+        // is in no enumeration and is not unreachable.
+        for outsider in [PaneId::Evaluator, PaneId::Critic] {
+            assert!(registry.writable(outsider).is_ok(), "still a live pty to write to");
+        }
         registry.kill_all();
     }
 

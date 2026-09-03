@@ -625,12 +625,18 @@ body,
    it. Both children are always in the DOM — `.is-hidden` swaps which one is
    shown, because unmounting the terminal would destroy its xterm buffer with no
    screen replay behind it (§7 rule 5). */
+/* The Critic (WP-20). Same shape as the evaluator's view below — a waiting
+   state that swaps for a terminal, both hidden with `.is-hidden` rather than
+   unmounted — with one addition: a control, because the operator decides when
+   this one runs. */
+.critic-view,
 .evaluator-view {
   display: flex;
   min-height: 0;
   min-width: 0;
   flex: 1;
 }
+.critic-view__terminal,
 .evaluator-view__terminal {
   display: flex;
   flex: 1;
@@ -639,6 +645,7 @@ body,
 }
 /* The pre-handoff state. Prose, centred, and deliberately without a control:
    the evaluator wakes on a handoff and there is nothing here to press. */
+.critic-view__waiting,
 .evaluator-view__waiting {
   flex: 1;
   display: flex;
@@ -649,11 +656,13 @@ body,
   padding: 32px;
   text-align: center;
 }
+.critic-view__lede,
 .evaluator-view__lede {
   font-size: var(--t-body);
   color: var(--text-primary);
   margin: 0;
 }
+.critic-view__note,
 .evaluator-view__note {
   font-size: var(--t-small);
   color: var(--text-muted);
@@ -661,9 +670,32 @@ body,
   max-width: 46ch;
   margin: 0;
 }
+.critic-view__note code,
 .evaluator-view__note code {
   font-family: var(--font-mono);
   color: var(--text-secondary);
+}
+/* The one control either of these views has. The evaluator has none on purpose;
+   the Critic answers an ordinary question whenever the operator asks it. */
+.critic-view__start {
+  margin-top: 6px;
+  padding: 6px 18px;
+  font-size: var(--t-small);
+  font-family: inherit;
+  color: var(--fg);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+.critic-view__start:hover:not(:disabled) {
+  background: var(--bg-3);
+  border-color: var(--fg-mute);
+}
+.critic-view__start:disabled {
+  color: var(--fg-mute);
+  cursor: not-allowed;
 }
 .terminal-pane {
   background: var(--term-bg);

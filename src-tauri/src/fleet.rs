@@ -42,7 +42,7 @@ use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, oneshot, Notify};
 
 use crate::context_gauge::GaugeSources;
-use crate::placement::{self, Host, Layout, PaneSpec};
+use crate::placement::{self, Host, Layout, PaneSpec, RunSource};
 use crate::prompts::PaneContext;
 use crate::pty::PaneRegistry;
 use crate::{deliver, dev, evaluator, guardrail, prompts, runs, testbed};
@@ -398,6 +398,12 @@ pub(crate) fn spawn_pane(
         PaneId::Orch => PaneSpec::Orch,
         PaneId::Worker(slot) => PaneSpec::Worker(slot),
         PaneId::Evaluator => PaneSpec::Evaluator,
+        // **The live run, because that is the only run this name can mean here**
+        // (D-076). `pty_spawn` carries a pane and nothing else, so a Critic
+        // opened from the rail is a Critic on the run in progress; pointing one
+        // at a History row is a different gesture with a different argument, and
+        // it does not exist yet (`placement::ARCHIVED_NOT_BUILT`).
+        PaneId::Critic => PaneSpec::Critic { run: RunSource::Live },
         // Never spawnable, and refused here rather than left to fail somewhere
         // deeper: there is no command to run for a human, no cwd that is theirs,
         // and no config dir to seed. WP-07's "the operator is never spawnable or

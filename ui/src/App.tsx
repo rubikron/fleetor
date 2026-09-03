@@ -36,12 +36,17 @@ import { useTheme } from "./ui/useTheme";
 import { useDevMode } from "./ui/useDevMode";
 import { TerminalPane } from "./components/TerminalPane";
 import { killPane, onEvaluatorWake } from "./fleet/api";
-import { EVALUATOR, ORCH, paneSlot, type PaneId, type PaneStatus } from "./fleet/types";
+import { CRITIC, EVALUATOR, ORCH, paneSlot, type PaneId, type PaneStatus } from "./fleet/types";
 
 // Deeper than a worker's 2,000 and deeper than orch's 10,000: this pane reads a
 // whole run's archive and prints a retro at the end of it, and the operator
 // scrolls back through the reasoning rather than through the last few turns.
 const EVALUATOR_SCROLLBACK = 20000;
+
+// The Critic's, for the identical reason (WP-20): it reads a whole run's
+// archive, prints findings grouped under six headings with a citation on each,
+// and the operator scrolls back through them to check the ones they care about.
+const CRITIC_SCROLLBACK = 20000;
 
 function statusText(ready: boolean, error: string | null, count: number): string {
   if (error) return error;
@@ -170,6 +175,15 @@ export function App() {
     };
   }, []);
 
+  // **The Critic starts when the operator says so** (WP-20, D-076), which is the
+  // one place it differs from the evaluator's view above and the difference is
+  // the whole point: the evaluator's sequencing is evidence and must not be
+  // anticipated, while the Critic answers an ordinary question the operator asks
+  // whenever they want it answered. Latched like the wake, and for the same
+  // reason — the terminal below is mounted for the life of the app either way,
+  // and this flag only decides whether it may spawn a pty.
+  const [criticStarted, setCriticStarted] = useState(false);
+
   // Dev mode can be turned off while `evaluator` is the persisted view, which
   // would leave the operator on a view with no row in the rail to leave by.
   // `=== false` and not `!== true`: while the backend has not answered, the
@@ -243,6 +257,56 @@ export function App() {
                 run's events, and no past run can be sent to. */}
             <div className={`stage-view ${view === "history" ? "" : "is-hidden"}`}>
               <RunHistory runs={runs} />
+            </div>
+
+            {/* The Critic (WP-20, D-076). A view like every other: always
+                mounted, toggled with `.is-hidden`, never unmounted (§7 rule 5).
+
+                Present with dev mode off, because it is a product feature rather
+                than an instrument of an experiment — and it has a Start button,
+                which the view below deliberately does not. The two sit next to
+                each other and answer different questions: this one reports what
+                the fleet *did*, cited from the run's own archive, and has no
+                view at all on whether the code is right.
+
+                Nothing here can send: the pane is spawned with no fleet socket,
+                so a `fleet send` typed into it reaches nothing. Anything worth
+                acting on the operator forwards from the composer they already
+                have (the arc's D6), which keeps the human as the only writer. */}
+            <div className={`stage-view ${view === "critic" ? "" : "is-hidden"}`}>
+              <div className="critic-view">
+                <div className={`critic-view__waiting ${criticStarted ? "is-hidden" : ""}`}>
+                  <p className="critic-view__lede">The Critic reads the run in progress.</p>
+                  <p className="critic-view__note">
+                    It reports what the fleet did — idle panes, a block marked done before its
+                    check ran, a message that got no reply — with a timestamp, a file and a line
+                    from the archive behind every finding. A claim it cannot point at is not a
+                    finding, and it never says whether the work was any good: it has no way to
+                    know. It is a real terminal, so argue with a finding or ask it to look again.
+                  </p>
+                  <button
+                    type="button"
+                    className="critic-view__start"
+                    onClick={() => setCriticStarted(true)}
+                    disabled={!started}
+                    title={started ? undefined : "Start the fleet first — there is no run yet"}
+                  >
+                    Start
+                  </button>
+                </div>
+                <div className={`critic-view__terminal ${criticStarted ? "" : "is-hidden"}`}>
+                  <TerminalPane
+                    pane={CRITIC}
+                    label="critic"
+                    scrollback={CRITIC_SCROLLBACK}
+                    started={criticStarted}
+                    status={statuses[CRITIC] ?? "idle"}
+                    fontSize={zoom.terminalFontSize}
+                    theme={themeControls.theme}
+                    onStatus={onStatus}
+                  />
+                </div>
+              </div>
             </div>
 
             {/* The evaluator (D-073), which used to be a second OS window. It is

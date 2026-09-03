@@ -20,15 +20,16 @@ pub const WORKER_SLOTS: [u8; 4] = [1, 2, 3, 4];
 /// One name the fleet's record can carry. `Orch` is the operator's own
 /// orchestrator TUI; `Worker(n)` is worker pane `n`; `Operator` is the human,
 /// who has no terminal of their own (WP-07); `Evaluator` is a terminal that is
-/// not part of the fleet (WP-15).
+/// not part of the fleet (WP-15); `Critic` is a terminal that reads a run
+/// (WP-20).
 ///
 /// Ordering is declaration order — the operator first, then orch, then every
-/// worker — which is the order the roster wants. `Evaluator` sorts last on
-/// purpose: it appears in no enumeration, so there is no position it should
-/// occupy inside one.
+/// worker — which is the order the roster wants. `Evaluator` and `Critic` sort
+/// last on purpose: they appear in no enumeration, so there is no position
+/// either should occupy inside one.
 ///
-/// **Two variants are exceptions, in opposite directions, and every asymmetry
-/// around them falls out of one fact each rather than out of a flag:**
+/// **Three variants are exceptions, and every asymmetry around each one falls
+/// out of a single fact rather than out of a flag:**
 ///
 ///  - **`Operator` is the one variant with no pty behind it.** Nothing spawns
 ///    it, nothing kills it, and a message addressed to it is `recorded` rather
@@ -38,6 +39,15 @@ pub const WORKER_SLOTS: [u8; 4] = [1, 2, 3, 4];
 ///    *listing* and never the app's roster, and this joins the app's roster —
 ///    it is a real terminal, so a message to it is honestly `accepted` — and
 ///    never the listing. See [`PaneId::is_fleet_member`].
+///  - **`Critic` is a reader, not a participant** (WP-20, D-076). Its whole job
+///    is reading the archive of a run and reporting to the operator, and it is
+///    given no route back into the fleet at all — placement hands it no
+///    `FLEET_SOCKET`, so a `fleet send` typed inside it dials nothing. Every
+///    other asymmetry is that one fact: nothing enumerates a non-participant, so
+///    it is in no roster listing, is no leg of a broadcast and is in no brief's
+///    peer list; and nothing about it needs hiding, so — unlike the evaluator —
+///    it is **openly named**, and its brief ships in `prompts/` where the
+///    operator can read and rewrite it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum PaneId {
     /// The human at the keyboard. A name in the record, never a terminal.
@@ -48,13 +58,18 @@ pub enum PaneId {
     /// directions and enumerated by nothing — see [`PaneId::is_fleet_member`]
     /// for the one predicate every consequence of that is derived from.
     Evaluator,
+    /// A terminal that reads a run and reports to the operator (WP-20). Not in
+    /// the fleet either, and for a different reason than the evaluator: it is a
+    /// product feature rather than a hidden instrument. See
+    /// [`PaneId::is_fleet_member`].
+    Critic,
 }
 
 impl PaneId {
     /// The worker slot number, or `None` for every name that is not a worker.
     pub fn slot(self) -> Option<u8> {
         match self {
-            PaneId::Operator | PaneId::Orch | PaneId::Evaluator => None,
+            PaneId::Operator | PaneId::Orch | PaneId::Evaluator | PaneId::Critic => None,
             PaneId::Worker(n) => Some(n),
         }
     }
@@ -71,23 +86,38 @@ impl PaneId {
         matches!(self, PaneId::Evaluator)
     }
 
+    pub fn is_critic(self) -> bool {
+        matches!(self, PaneId::Critic)
+    }
+
     /// Whether this name is part of the fleet — the predicate every enumeration
     /// of the fleet filters on, and the whole of WP-15's veil in one function.
     ///
     /// A member is enumerable: it appears in `fleet roster`'s answer, it is a
     /// leg of a `fleet broadcast`, and its name is in the peer list a brief is
-    /// rendered with. `Evaluator` is none of those things, and that is not a
-    /// property of how the app was started or of what happens to be spawned —
-    /// it is a property of the name, answered once here so no caller re-derives
-    /// it and gets a different answer.
+    /// rendered with. `Evaluator` and `Critic` are none of those things, and
+    /// that is not a property of how the app was started or of what happens to
+    /// be spawned — it is a property of the name, answered once here so no
+    /// caller re-derives it and gets a different answer.
+    ///
+    /// **The two non-members are non-members for different reasons, and the
+    /// difference is worth keeping in mind when reading anything else about
+    /// them.** The evaluator is hidden: WP-12's veil requires that no pane ever
+    /// learns it exists, so its brief is compiled in from a separate repository
+    /// and the fleet's own prose is checked for its vocabulary. The Critic is
+    /// not hidden at all — it is a product feature, openly named, with its brief
+    /// in `prompts/` for the operator to edit (D-076). It is outside the fleet
+    /// because it is a **reader** of a run rather than a participant in one, and
+    /// nothing enumerates a reader.
     ///
     /// **Not the same question as [`PaneId::has_pty`], and the two disagree in
     /// both directions.** The operator has no terminal and *is* a name the
-    /// fleet is taught. The evaluator has a real terminal and is not. Deriving
-    /// one from the other is how a fan-out ends up reaching something no pane
-    /// has ever heard of, which is the leak this package exists to prevent.
+    /// fleet is taught. The evaluator and the Critic have real terminals and are
+    /// not. Deriving one from the other is how a fan-out ends up reaching
+    /// something no pane has ever heard of, which is the leak this package
+    /// exists to prevent.
     pub fn is_fleet_member(self) -> bool {
-        !matches!(self, PaneId::Evaluator)
+        !matches!(self, PaneId::Evaluator | PaneId::Critic)
     }
 
     /// Whether there is a terminal behind this name.
@@ -108,12 +138,13 @@ impl PaneId {
     /// The full roster of **panes** for a fleet with these worker slots: orch
     /// first, then the workers in the order given.
     ///
-    /// Neither the operator nor the evaluator is in it, for opposite reasons.
-    /// This list is what spawns, what a broadcast fans out to, and whose names a
-    /// brief's peer list is built from — three things the human is not, and
-    /// three things the evaluator must not be. The one place the operator joins
-    /// a roster is the `fleet roster` *listing*, which the hub assembles; the
-    /// evaluator joins no listing at all.
+    /// Neither the operator nor the evaluator nor the Critic is in it, and the
+    /// reasons all differ. This list is what spawns, what a broadcast fans out
+    /// to, and whose names a brief's peer list is built from — three things the
+    /// human is not, three things the evaluator must not be, and three things a
+    /// pane that only reads a run has no business being. The one place the
+    /// operator joins a roster is the `fleet roster` *listing*, which the hub
+    /// assembles; the other two join no listing at all.
     pub fn roster(workers: &[u8]) -> Vec<PaneId> {
         std::iter::once(PaneId::Orch).chain(workers.iter().copied().map(PaneId::Worker)).collect()
     }
@@ -126,6 +157,7 @@ impl fmt::Display for PaneId {
             PaneId::Orch => f.write_str("orch"),
             PaneId::Worker(n) => write!(f, "worker-{n}"),
             PaneId::Evaluator => f.write_str("evaluator"),
+            PaneId::Critic => f.write_str("critic"),
         }
     }
 }
@@ -176,6 +208,15 @@ impl FromStr for PaneId {
     /// away from a pane that has never heard of it. Parsing it is deliberately
     /// **not** a claim that it exists: the hub holds the roster, and a name with
     /// no terminal behind it is refused with the same sentence `worker-9` gets.
+    ///
+    /// **`critic` is exact too, and it parses for one reason only: the app's own
+    /// `pty_spawn` deserializes a `PaneId` out of JSON** (WP-20). The Critic
+    /// sends nothing and is sent nothing — it has no `FLEET_SOCKET` — so no
+    /// model ever types this string; the webview does, when the operator presses
+    /// Start. Parsing it is not a claim that it is in the fleet
+    /// ([`PaneId::is_fleet_member`] is), and it is absent from the list
+    /// [`ParsePaneIdError`] offers for the same reason the evaluator is: that
+    /// sentence is the fleet's own names and nothing else.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let t = s.trim().to_ascii_lowercase();
         if matches!(t.as_str(), "orch" | "orchestrator" | "lead" | "o") {
@@ -186,6 +227,9 @@ impl FromStr for PaneId {
         }
         if t == "evaluator" {
             return Ok(PaneId::Evaluator);
+        }
+        if t == "critic" {
+            return Ok(PaneId::Critic);
         }
         let digits = t
             .strip_prefix("worker-")
@@ -401,6 +445,44 @@ mod tests {
         assert!(!PaneId::Evaluator.is_orch() && !PaneId::Evaluator.is_operator());
     }
 
+    /// **The third exception, and the one fact it all falls out of: the Critic
+    /// is a reader, not a participant** (WP-20, D-076).
+    ///
+    /// It looks like the evaluator on every predicate here, and the reason is
+    /// different in kind — the evaluator is *hidden* from the fleet, and this is
+    /// simply not *in* it. That difference has no predicate of its own because
+    /// it is not a property of the name: it is where the brief lives
+    /// (`prompts/critic.md`, the operator's to edit), what gates the pane
+    /// (nothing does), and whether the fleet's prose is greped for the word
+    /// (it is not — the Critic is openly named).
+    #[test]
+    fn the_critic_reads_a_run_and_is_therefore_in_no_enumeration_of_the_fleet() {
+        assert!(!PaneId::Critic.is_fleet_member(), "nothing enumerates a reader");
+        assert!(PaneId::Critic.has_pty(), "it is a real, typeable terminal");
+        assert!(PaneId::Critic.is_critic());
+        assert!(!PaneId::Critic.is_evaluator(), "two identities, not one with a mode flag (D5)");
+        assert!(!PaneId::Evaluator.is_critic());
+        assert_eq!(PaneId::Critic.slot(), None);
+        assert!(!PaneId::Critic.is_orch() && !PaneId::Critic.is_operator());
+        assert!(!PaneId::roster(&WORKER_SLOTS).contains(&PaneId::Critic));
+    }
+
+    /// It parses exactly, with no aliases, for one reason: `pty_spawn`
+    /// deserializes a `PaneId` out of the webview's JSON. No model ever types
+    /// it — the Critic has no socket to dial and appears in no brief.
+    #[test]
+    fn the_critics_name_round_trips_because_the_app_spawns_it_by_name() {
+        for s in ["critic", "Critic", " CRITIC "] {
+            assert_eq!(s.parse::<PaneId>().unwrap(), PaneId::Critic, "{s}");
+        }
+        for near_miss in ["c", "crit", "critic-1", "critics", "reviewer"] {
+            assert!(near_miss.parse::<PaneId>().is_err(), "{near_miss} must not parse");
+        }
+        let json = serde_json::to_string(&PaneId::Critic).unwrap();
+        assert_eq!(json, "\"critic\"");
+        assert_eq!(serde_json::from_str::<PaneId>(&json).unwrap(), PaneId::Critic);
+    }
+
     /// Not enumerated is not the same as not addressable: exact, no aliases,
     /// and it round-trips like every other name — because a pane that has been
     /// messaged has to be able to answer.
@@ -431,10 +513,12 @@ mod tests {
             };
             assert!(message.contains(&shown), "the fleet's own names must all be offered: {name}");
         }
-        assert!(
-            !message.contains(&PaneId::Evaluator.to_string()),
-            "a typo must not teach a name the sender was never briefed on: {message}",
-        );
+        for outsider in [PaneId::Evaluator, PaneId::Critic] {
+            assert!(
+                !message.contains(&outsider.to_string()),
+                "a typo must not teach a name the sender was never briefed on: {message}",
+            );
+        }
     }
 
     #[test]
