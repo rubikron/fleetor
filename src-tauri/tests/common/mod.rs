@@ -36,6 +36,7 @@
 use std::path::{Path, PathBuf};
 
 use fleetor_core::pane::PaneId;
+use fleetor_shell::critic;
 use fleetor_shell::evaluator::{self, MissionRoots};
 use fleetor_shell::guardrail;
 use fleetor_shell::placement::{self, Host, Layout, PaneSpec, Placed};
@@ -146,6 +147,8 @@ impl Bench {
     pub fn config_dir(&self, pane: PaneId) -> PathBuf {
         if pane.is_evaluator() {
             evaluator::config_dir(self.layout.root())
+        } else if pane.is_critic() {
+            critic::config_dir(self.layout.root())
         } else {
             self.layout.pane_config(pane)
         }
@@ -168,15 +171,24 @@ impl Bench {
     /// "placement laid the run out somewhere and pointed the pane at it" and not a
     /// timestamp format.
     pub fn retro_dir(&self) -> PathBuf {
-        let retro = self.layout.root().join("dev").join("retro");
-        let mut found: Vec<PathBuf> = std::fs::read_dir(&retro)
-            .unwrap_or_else(|e| panic!("{} must exist: {e}", retro.display()))
-            .flatten()
-            .map(|e| e.path())
-            .collect();
-        assert_eq!(found.len(), 1, "exactly one run was laid out: {found:?}");
-        found.pop().unwrap()
+        the_one_run_under(&self.layout.root().join("dev").join("retro"))
     }
+
+    /// The directory the Critic was placed in: the one run under
+    /// `critic/runs/`. Found by looking, for [`Self::retro_dir`]'s reason.
+    pub fn critic_run_dir(&self) -> PathBuf {
+        the_one_run_under(&critic::critic_dir(self.layout.root()).join("runs"))
+    }
+}
+
+fn the_one_run_under(dir: &Path) -> PathBuf {
+    let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("{} must exist: {e}", dir.display()))
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    assert_eq!(found.len(), 1, "exactly one run was laid out: {found:?}");
+    found.pop().unwrap()
 }
 
 impl Drop for Bench {

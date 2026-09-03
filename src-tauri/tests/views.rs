@@ -24,6 +24,10 @@ use std::path::{Path, PathBuf};
 
 const RAIL: &str = "ui/src/components/Sidebar.tsx";
 const RESTORE: &str = "ui/src/ui/usePersistedNav.ts";
+/// The stage, where each view's content is mounted. Read by one test (WP-20),
+/// which pins §7 rule 5 for the Critic's terminal the way `tests/evaluator.rs`
+/// pins it for the evaluator's.
+const STAGE: &str = "ui/src/App.tsx";
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("src-tauri has a parent").to_path_buf()
@@ -135,5 +139,104 @@ fn the_evaluator_is_one_of_the_rails_views() {
         restorable_views().iter().any(|v| v == "evaluator"),
         "and it restores like the others — `App.tsx` corrects it when dev mode is off, which \
          it can only do for a view that was restored in the first place",
+    );
+}
+
+/// **The Critic is a view like every other, and unlike the evaluator's row it is
+/// not dev-only** (WP-20, D-076). It is a product feature: the operator has it
+/// whatever mode the app is in, so nothing in the rail filters it out.
+///
+/// The last clause is what a source read can reach. `devOnly` is a field on the
+/// row, and the rail's `rows` filter is the one thing that consults it, so a
+/// Critic row that grew the flag would be a Critic that vanished with the mode —
+/// exactly the failure this whole file exists for, one level up.
+#[test]
+fn the_critic_is_a_rail_view_that_is_not_dev_only() {
+    let rail = rail_views();
+    assert!(rail.iter().any(|v| v == "critic"), "the Critic is a view in the rail: {rail:?}");
+    assert!(
+        restorable_views().iter().any(|v| v == "critic"),
+        "and it restores like the others — nothing corrects it away afterwards, because \
+         nothing gates it",
+    );
+
+    // The row itself, read out of the rail's own declaration.
+    let source = read(RAIL);
+    let row = between(&source, "view: \"critic\"", '}', "the Critic's rail row");
+    assert!(
+        !row.contains("devOnly"),
+        "the Critic must be in the rail whatever the mode is — it is a product feature, not \
+         an instrument of an experiment:{row}",
+    );
+
+    // **And the rail says which question each of the two run-reading views
+    // answers.** In dev mode they sit next to each other, and two rows labelled
+    // only "Critic" and "Evaluator" would leave the operator to guess which one
+    // holds the answer key. Both carry a `hint`, and it reaches the row's `title`.
+    let evaluator_row = between(&source, "view: \"evaluator\"", '}', "the evaluator's rail row");
+    for (which, row) in [("critic", &row), ("evaluator", &evaluator_row)] {
+        assert!(row.contains("hint:"), "the {which} row says what it answers:{row}");
+    }
+    assert!(
+        source.contains("item.hint"),
+        "…and the hint is rendered, not merely declared — `title={{collapsed ? item.label : \
+         item.hint}}` is what puts it in front of the operator",
+    );
+}
+
+/// **The Critic's terminal stays mounted, and it has the Start control the
+/// evaluator deliberately does not** (WP-20, D-076).
+///
+/// The first half is §7 rule 5: unmounting an xterm destroys its buffer and there
+/// is no screen replay behind a pty (L7), so the view holds its terminal the way
+/// every other view holds its content — always in the tree, toggled with
+/// `.is-hidden`.
+///
+/// The second half is the difference between these two panes said as an
+/// assertion. The evaluator's sequencing *is* the evidence, so its view offers
+/// nothing to press and `tests/evaluator.rs` fails if a button appears. The
+/// Critic answers an ordinary question, so its view offers exactly one control
+/// and this test fails if that disappears.
+#[test]
+fn the_critics_terminal_is_never_conditionally_rendered_and_it_has_a_start_control() {
+    let app = read(STAGE);
+    // The Critic's own stage-view, up to where the next block's comment begins —
+    // the *comment*, not the next `stage-view`, because the prose between them
+    // discusses `.is-hidden` and would be counted below.
+    let block = app
+        .split("stage-view ${view === \"critic\"")
+        .nth(1)
+        .and_then(|rest| rest.split("{/* The evaluator").next())
+        .expect("App.tsx has a critic stage-view, followed by the evaluator's");
+
+    assert!(block.contains("<TerminalPane"), "the Critic's view holds a terminal");
+    assert!(
+        block.contains("pane={CRITIC}"),
+        "and it is the Critic's pane, not something that merely looks like one",
+    );
+    // Three hides, and every one of them is CSS — the view's own, plus the two
+    // children that swap. Nothing here leaves the tree, which is §7 rule 5 stated
+    // as a count rather than as a hope.
+    assert_eq!(
+        block.matches("is-hidden").count(),
+        3,
+        "the Critic's view hides three things with `.is-hidden` and unmounts none: itself \
+         when another view is selected, its pre-start prose once it is running, and its \
+         terminal until then:\n{block}",
+    );
+    for tell in ["&&", "? <", "?.("] {
+        assert!(
+            !block.contains(tell),
+            "`{tell}` in the Critic view's markup: §7 rule 5 says a terminal is hidden with \
+             `.is-hidden`, never unmounted. A pty that is still alive behind an xterm that \
+             was torn down comes back blank, and nothing on this side can repaint it:\n{block}",
+        );
+    }
+
+    // The one control, and the sentence that says what it will and will not do.
+    assert!(block.contains("<button"), "the operator starts the Critic when they want it");
+    assert!(
+        block.contains("never says whether the work was any good"),
+        "the view states the remit before the operator spends anything on it:\n{block}",
     );
 }

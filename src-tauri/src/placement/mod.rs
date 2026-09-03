@@ -32,12 +32,22 @@
 //!
 //! ## What is here yet
 //!
-//! [`PaneSpec`] has three variants: `orch`, a worker, and the evaluator — every
-//! pane kind that can exist today. The Critic gains its variant in the ticket that
-//! builds it. A variant that existed but errored would be a trap of exactly the
-//! kind `building.md` §6 names: the obvious next move on finding one is to point
-//! it at something live, and the live path for that kind is elsewhere. Every
-//! variant that exists, works.
+//! [`PaneSpec`] has four variants: `orch`, a worker, the evaluator and the Critic
+//! — every pane kind that can exist today. Every one of them works, which is the
+//! rule this module keeps: a variant that existed but errored would be a trap of
+//! exactly the kind `building.md` §6 names, since the obvious next move on
+//! finding one is to point it at something live.
+//!
+//! **[`RunSource`] is the one place that rule is bent, and deliberately** (D-076).
+//! The Critic carries the run it is critiquing, and a run is either the live one
+//! or an archived one; the shape is the design prototype's and both variants are
+//! declared here so that the type says what a Critic is rather than what this
+//! ticket got to. Only [`RunSource::Live`] is built. [`RunSource::Archived`] is
+//! constructed nowhere in the application — no UI offers it, no caller names it —
+//! and [`place_critic`] answers it with [`ARCHIVED_NOT_BUILT`] rather than with a
+//! half-built placement. The §6 trap does not apply, because there is no other
+//! live path for it to be re-pointed at: reading an archived run does not exist
+//! yet anywhere.
 //!
 //! ## The one read that is not from the process, and is not an argument either
 //!
@@ -67,7 +77,7 @@ use portable_pty::CommandBuilder;
 
 use crate::context_gauge::{self, TranscriptSource};
 use crate::prompts::PaneContext;
-use crate::{dev, evaluator, guardrail, runs};
+use crate::{critic, dev, evaluator, guardrail, runs};
 
 /// How a pane's `claude` process is shaped — **an internal of this module** since
 /// D-075.
@@ -376,6 +386,30 @@ pub enum PaneSpec {
     /// nothing for a caller to pass in and no directory it could point at that
     /// placement did not write.
     Evaluator,
+    /// The Critic (WP-20, D-076), in the run it is critiquing.
+    ///
+    /// **The one variant that carries an input, and the input is which run.**
+    /// The evaluator's run is the live one by construction — it wakes on a
+    /// handoff, which only a live run produces. The Critic is opened by the
+    /// operator, who can be looking at the run in progress or at a row in
+    /// History, so *which run* is a real choice a caller makes and therefore
+    /// travels in the spec rather than being re-derived somewhere deeper.
+    Critic { run: RunSource },
+}
+
+/// Which run a Critic is pointed at (WP-20, D-076).
+///
+/// **Both variants are declared and only [`RunSource::Live`] is built.** See this
+/// module's "What is here yet" for why the type says what a Critic is rather than
+/// what this ticket got to, and what placement does with the other one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RunSource {
+    /// The run in progress, laid out by placement the way the evaluator's is —
+    /// `events.json`, `manifest.json` and every pane's transcript, copied rather
+    /// than moved, from a database that is still being written.
+    Live,
+    /// A past run, by its archive id. Nothing constructs this yet.
+    Archived(String),
 }
 
 impl PaneSpec {
@@ -385,6 +419,7 @@ impl PaneSpec {
             PaneSpec::Orch => PaneId::Orch,
             PaneSpec::Worker(slot) => PaneId::Worker(*slot),
             PaneSpec::Evaluator => PaneId::Evaluator,
+            PaneSpec::Critic { .. } => PaneId::Critic,
         }
     }
 }
@@ -428,6 +463,7 @@ pub fn place(
         PaneSpec::Orch => place_orch(layout, host, target, context),
         PaneSpec::Worker(slot) => place_worker(slot, layout, host, target, context),
         PaneSpec::Evaluator => place_evaluator(layout, host, target, context),
+        PaneSpec::Critic { run } => place_critic(run, layout, host, context),
     }
 }
 
@@ -665,6 +701,77 @@ fn place_evaluator(
     Ok(Placed { command, notices, gauge: None })
 }
 
+/// The Critic (WP-20, D-076): the operator's own `claude` in the run it is
+/// critiquing, with no way back into the fleet.
+///
+/// **Three things it does not do, and each is the identity rather than an
+/// omission:**
+///
+///  - **It does not check dev mode.** It is a product feature. There is no
+///    readiness question to ask, because there is no answer key it could be
+///    missing — it reports what the archive proves and nothing else.
+///  - **It does not take the target.** The Critic reads a run, and a run is a
+///    directory placement lays out; the repository the fleet was pointed at is
+///    named inside `manifest.json`, where the Critic reads it like every other
+///    fact. A pane that reads a run has no business holding the live checkout.
+///  - **It is given no socket.** [`spawn::critic_command_with`] hands it no
+///    `FLEET_SOCKET` and no `FLEETOR_PANE`, so `fleet send` inside it dials
+///    nothing (the arc's D6).
+///
+/// **It lays the run out before it renders anything**, for the reason
+/// [`place_evaluator`] does (D2): the working directory *is* the run, the brief
+/// cites that directory, and a brief citing a directory nobody wrote is a pane
+/// that spends its first turn asking about a path.
+fn place_critic(
+    run: RunSource,
+    layout: &Layout,
+    host: &Host,
+    context: &PaneContext,
+) -> Result<Placed, String> {
+    let pane = PaneId::Critic;
+    let RunSource::Live = run else {
+        return Err(ARCHIVED_NOT_BUILT.to_string());
+    };
+
+    // The run, laid out for reading. `snapshot_live_run` owns the directory it is
+    // given — it clears and recreates it — so nothing may be seeded into the cwd
+    // before this line.
+    let shell = layout.shell();
+    let run_id = runs::live_run_id(&shell, fleetor_core::time::now_ms());
+    let cwd = critic::run_dir(layout.root(), &run_id);
+    runs::snapshot_live_run(&shell, &cwd, &run_id)?;
+
+    let brief = critic::render_brief(&context.critic_template, &cwd)?;
+
+    let config_dir = critic::config_dir(layout.root());
+    spawn::seed_config_dir(&config_dir, &cwd)?;
+    let notices = guardrail_notices(layout, pane, &config_dir, &cwd, context)?;
+
+    let command = spawn::critic_command_with(
+        &cwd,
+        &config_dir,
+        &brief,
+        &context.launch.worker_permission_mode,
+        host.pane_program.as_deref(),
+        &host.orch_path(),
+    );
+
+    // Not on the live gauge, for `orch`'s reason and the evaluator's: the gauge
+    // samples the transcripts of the panes doing the work, and this pane is not
+    // one of them.
+    Ok(Placed { command, notices, gauge: None })
+}
+
+/// What placing a Critic on an archived run answers with, until the ticket that
+/// builds it.
+///
+/// A sentence rather than a half-built placement, and rather than a variant that
+/// silently placed a *live* Critic instead — which would be the worst of the
+/// three, because the operator would get a pane that looked right and was reading
+/// the wrong run.
+pub const ARCHIVED_NOT_BUILT: &str =
+    "the Critic can read the run in progress; reading a past run from History is not built yet";
+
 /// What placing an evaluator fails with when this run does not get one.
 ///
 /// One sentence for all three refusals rather than three, because they are three
@@ -807,9 +914,17 @@ pub const MISSING_RUSTUP: &str =
 /// once. `orch` is excluded because [`place_orch`] emits the `fleet`-binary line
 /// itself, from this same constant — it is the one pane kind whose placement
 /// cannot fail before that line is reached.
+///
+/// **The Critic is excluded too, for the opposite reason to `orch`'s** (D-076).
+/// `orch` is excluded because it emits the `fleet`-binary line itself; the Critic
+/// is excluded because the line would be false for it. It is handed no
+/// `FLEET_SOCKET` and no `FLEETOR_PANE`, so it could not message a pane on a
+/// machine where `fleet` *is* built — warning that "panes will spawn but cannot
+/// message each other" would tell the operator to go build a binary that would
+/// change nothing about this pane.
 pub fn machine_notices(host: &Host, pane: PaneId) -> Vec<(NoticeLevel, String)> {
     let mut notices = Vec::new();
-    if matches!(pane, PaneId::Orch) {
+    if matches!(pane, PaneId::Orch | PaneId::Critic) {
         return notices;
     }
     if host.fleet_bin.is_none() {
@@ -846,16 +961,22 @@ fn guardrail_notices(
     context: &PaneContext,
 ) -> Result<Vec<(NoticeLevel, String)>, String> {
     let shell = layout.shell();
-    // **The evaluator's roots are narrower than any pane's, deliberately.** It must
-    // read everything the run produced and change almost nothing — its own stated
-    // boundary is that running a test suite is fine and editing a tracked file,
-    // committing or touching a branch is not. So it gets its working directory and
-    // nothing else: not `_shell` (which would let it write the live event log it is
-    // reading), and not the operator's `[fence] allow` extras, which exist for panes
-    // that are doing the work. Reads are untouched for every pane alike — the hook
-    // is not registered for `Read` at all (D-065), which is what makes "read
-    // everything" true without a rule.
-    let roots = if pane.is_evaluator() {
+    // **A pane that reads a run gets roots narrower than any pane's,
+    // deliberately.** It must read everything the run produced and change almost
+    // nothing — the evaluator's stated boundary is that running a test suite is
+    // fine and editing a tracked file, committing or touching a branch is not, and
+    // the Critic's remit is narrower still: it runs nothing at all. So each gets
+    // its working directory and nothing else: not `_shell` (which would let it
+    // write the live event log it is reading), and not the operator's
+    // `[fence] allow` extras, which exist for panes that are doing the work. Reads
+    // are untouched for every pane alike — the hook is not registered for `Read`
+    // at all (D-065), which is what makes "read everything" true without a rule.
+    //
+    // **Two names on one branch, not a shared predicate** (D-076). They are
+    // separate identities (the arc's D5) that happen to need the same roots for
+    // the same reason; a `PaneId::reads_a_run()` would read as one identity with a
+    // mode flag, which is the shape that decision refused.
+    let roots = if pane.is_evaluator() || pane.is_critic() {
         vec![cwd.to_path_buf()]
     } else {
         guardrail::roots_for(cwd, &shell, &context.launch.fence_allow)

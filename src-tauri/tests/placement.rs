@@ -19,12 +19,19 @@ use std::path::{Path, PathBuf};
 
 use fleetor_core::event::NoticeLevel;
 use fleetor_core::pane::PaneId;
-use fleetor_shell::placement::{self, Host, Layout, PaneSpec};
+use fleetor_shell::placement::{self, Host, Layout, PaneSpec, RunSource};
 use fleetor_shell::prompts::PaneContext;
 
-/// The evaluator fixture, shared with `tests/write_guardrail.rs` rather than
-/// retyped in both — see that module for what the four preconditions are.
-#[cfg(feature = "devmode")]
+/// The whole-installation fixture, shared with `tests/write_guardrail.rs` rather
+/// than retyped in both — see that module for what the four preconditions are.
+///
+/// **Ungated since WP-20** (D-076). It was `#[cfg(feature = "devmode")]` because
+/// the only pane that needed a whole installation was the evaluator, which no
+/// default build has. The Critic needs one too — it works in a snapshot of a live
+/// run, so a real store has to exist for placement to snapshot — and it exists in
+/// every build, so the fixture cannot be gated on a feature it does not use. The
+/// module carries `#![allow(dead_code)]`, so the mission-only helpers cost a
+/// default build nothing.
 mod common;
 
 /// A scratch root nothing else in the suite shares, holding a layout and a target
@@ -994,4 +1001,255 @@ fn placing_the_evaluator_lays_the_run_out_and_briefs_it_against_that_directory()
             path.display(),
         );
     }
+}
+
+// --- the Critic (WP-20, D-076) --------------------------------------------------
+//
+// Every test below runs **without** `--features devmode`, and that is an
+// assertion rather than a convenience: the Critic is a product feature, so a
+// default build has to be able to place one. None of them writes an environment
+// variable and none of them touches `~/.fleetor`.
+
+/// **The Critic exists with dev mode off**, which is the whole of "it is a product
+/// feature and not an instrument of an experiment."
+///
+/// Asserted the way `placing_an_evaluator_reads_the_mode_from_the_layouts_own_config`
+/// asserts the opposite: by flipping the flag in this layout's own `config.json`
+/// — the same file an operator's switch writes — and watching the answer *not*
+/// change.
+#[test]
+fn the_critic_is_placed_whatever_the_mode_says_because_nothing_gates_it() {
+    let bench = common::Bench::new("critic-mode");
+
+    // No config at all: the ordinary first-run state, and off.
+    bench.try_place(PaneSpec::Critic { run: RunSource::Live }).expect("no config is not a refusal");
+    bench.dev_mode(false);
+    bench.try_place(PaneSpec::Critic { run: RunSource::Live }).expect("the mode off is not either");
+    bench.dev_mode(true);
+    bench.try_place(PaneSpec::Critic { run: RunSource::Live }).expect("and on changes nothing");
+}
+
+/// **The run is laid out for reading, and the brief points at where it landed.**
+///
+/// The evaluator's D2 applies unchanged: the working directory *is* the run, the
+/// brief cites that directory, and a brief citing a directory nobody wrote is a
+/// pane that spends its first turn asking about a path. Both halves are asserted,
+/// because a snapshot the brief does not name and a name with no snapshot behind
+/// it fail identically from the outside.
+#[test]
+fn placing_the_critic_lays_the_live_run_out_and_briefs_it_against_that_directory() {
+    let bench = common::Bench::new("critic-run");
+
+    let placed = bench.place(PaneSpec::Critic { run: RunSource::Live });
+
+    // The run, on disk, in the directory the pane will start in — the same three
+    // things `snapshot_live_run` writes for the evaluator, from the same database.
+    let cwd = bench.critic_run_dir();
+    assert!(cwd.join("events.json").is_file(), "the log, as JSON, for a reader with no SQLite");
+    assert!(cwd.join("manifest.json").is_file(), "and what is in the directory");
+    assert_eq!(
+        placed.command.get_cwd().map(PathBuf::from),
+        Some(cwd.clone()),
+        "the pane starts in the run it was given",
+    );
+
+    // The brief, on the command, naming that same directory.
+    let brief = critic_brief(&placed.command);
+    assert!(brief.contains(&cwd.display().to_string()), "the brief names the run directory");
+    assert!(!brief.contains("{archive}"), "no placeholder survived rendering");
+    assert!(
+        brief.contains("Every finding carries a citation"),
+        "and it is the brief the spike converged on, not a summary of it",
+    );
+
+    // Not on the live gauge: it samples the transcripts of the panes doing the work.
+    assert!(placed.gauge.is_none(), "the Critic records no transcript source");
+
+    // Everything it wrote is under the layout it was handed.
+    for path in walk(&bench.root) {
+        assert!(
+            path.starts_with("state")
+                || path.starts_with("workspaces")
+                || path.starts_with("harness")
+                || path.starts_with("answers"),
+            "{} is outside everything placement was handed",
+            path.display(),
+        );
+    }
+}
+
+/// **`fleet send` from inside the Critic does not reach a pane, and the reason is
+/// that there is nothing to dial.**
+///
+/// The `fleet` CLI resolves `FLEET_SOCKET` before it does anything else and
+/// refuses with a sentence naming the variable when it is unset or empty
+/// (`fleetor-cli::socket`). A pane placed without it therefore cannot open the
+/// socket, cannot send a `Hello`, and cannot reach the hub — a stronger guarantee
+/// than a rule saying it must not, because there is no code path to forget.
+///
+/// `orch` is placed against the same layout with the same context in the same
+/// test, because "no route" is a comparison: asserting the absence of a variable
+/// nobody sets anywhere would assert nothing.
+#[test]
+fn the_critic_is_given_no_socket_so_fleet_send_inside_it_reaches_nothing() {
+    let bench = common::Bench::new("critic-mute");
+
+    let critic = bench.place(PaneSpec::Critic { run: RunSource::Live }).command;
+    let orch = bench.place(PaneSpec::Orch).command;
+
+    // The comparison. `orch` gets both; the Critic gets neither.
+    assert_eq!(
+        env_on(&orch, "FLEET_SOCKET"),
+        Some(bench.layout.socket().display().to_string()),
+        "orch can reach the hub, which is what makes the absence below mean something",
+    );
+    assert_eq!(env_on(&orch, "FLEETOR_PANE").as_deref(), Some("orch"));
+
+    assert_eq!(
+        env_on(&critic, "FLEET_SOCKET"),
+        None,
+        "with no socket the `fleet` CLI refuses before it opens anything: findings reach the \
+         operator through this pane's own view and the Activity feed, never through the fleet",
+    );
+    assert_eq!(
+        env_on(&critic, "FLEETOR_PANE"),
+        None,
+        "and it is not a participant in the record either — there is no name for the hub to \
+         attribute a message to",
+    );
+
+    // It is still a terminal, so the rest of what makes a pane a pane is there.
+    assert_eq!(env_on(&critic, "TERM").as_deref(), Some("xterm-256color"));
+    assert!(env_on(&critic, "PATH").is_some_and(|p| !p.is_empty()));
+
+    // Nothing warns it that the `fleet` binary is missing, because building one
+    // would change nothing about this pane.
+    let bare = Host::bare();
+    assert!(
+        placement::machine_notices(&bare, PaneId::Critic).is_empty(),
+        "a pane with no route to the fleet must not be told to go build the fleet CLI",
+    );
+    assert!(
+        !placement::machine_notices(&bare, PaneId::Worker(1)).is_empty(),
+        "…while a pane that does have one still is",
+    );
+}
+
+/// **The Critic's write roots are its own working directory alone, like the
+/// evaluator's** — and the comparison is what makes "alone" mean anything.
+///
+/// Two exclusions carry it, and both would be invisible in a `Vec` held briefly in
+/// memory, so this reads the policy file the pane's Claude Code will actually load:
+///
+///  1. **No `_shell`.** It holds the live event log this pane is reading. A critic
+///     that could write its own evidence is not one.
+///  2. **No operator `[fence] allow` extras.** Those exist for the panes doing the
+///     work; an operator widening the fleet's reach must not widen its reader's.
+#[test]
+fn the_critics_write_roots_are_its_own_directory_alone_and_orch_is_wider() {
+    let mut bench = common::Bench::new("critic-roots");
+    let extra = bench.operator_allows("shared-cache");
+
+    bench.place(PaneSpec::Critic { run: RunSource::Live });
+    let critic_roots = bench.guardrail_roots(PaneId::Critic);
+    assert_eq!(
+        critic_roots,
+        vec![bench.critic_run_dir().display().to_string()],
+        "the Critic writes in the run it was given and nowhere else",
+    );
+
+    bench.place(PaneSpec::Orch);
+    let orch_roots = bench.guardrail_roots(PaneId::Orch);
+    assert_eq!(
+        orch_roots,
+        vec![
+            bench.target.display().to_string(),
+            bench.layout.shell().display().to_string(),
+            extra.display().to_string(),
+        ],
+        "orch gets its cwd, `_shell` and the operator's extra — the Critic got neither of \
+         the last two",
+    );
+    assert!(orch_roots.len() > critic_roots.len(), "strictly narrower, not merely different");
+
+    // And its config dir is outside `_shell` — so no pane in the run being
+    // critiqued can write into it, and its own transcript is neither copied into
+    // the directory it is reading nor archived with the run.
+    let config_dir = bench.config_dir(PaneId::Critic);
+    assert!(
+        !config_dir.starts_with(bench.layout.shell()),
+        "{} is inside the tree `runs::harvest_transcripts` walks",
+        config_dir.display(),
+    );
+}
+
+/// **The Critic's brief is the operator's to rewrite**, which is the asymmetry
+/// separating it from the pane whose brief is compiled in from another repository.
+///
+/// Driven all the way through placement rather than asserted on the resolver, so
+/// what it pins is that the operator's words reach the process — the thing an
+/// operator who edited the file actually wants to be true.
+#[test]
+fn the_critics_brief_comes_from_the_prompts_directory_the_operator_can_edit() {
+    let mut bench = common::Bench::new("critic-brief");
+
+    // What ships is what a default placement uses.
+    let shipped = critic_brief(&bench.place(PaneSpec::Critic { run: RunSource::Live }).command);
+    assert!(shipped.contains("You are the Critic"), "the shipped brief reaches the command");
+
+    // …and an override replaces it, through the same resolver every other brief
+    // uses. The context is the one placement is handed, so this is `resolve`'s
+    // output travelling rather than a string poked in.
+    let prompts = bench.root.join("prompts-override");
+    std::fs::create_dir_all(&prompts).unwrap();
+    std::fs::write(
+        prompts.join("critic.md"),
+        "You are the Critic. Read {archive} and report only what it proves.\n",
+    )
+    .unwrap();
+    bench.context = PaneContext::resolve(&prompts);
+
+    let placed = bench.place(PaneSpec::Critic { run: RunSource::Live });
+    let mine = critic_brief(&placed.command);
+    assert!(mine.contains("report only what it proves"), "the operator's own words: {mine}");
+    assert!(!mine.contains("You have no answer key"), "and not the built-in's: {mine}");
+    assert!(
+        mine.contains(&bench.critic_run_dir().display().to_string()),
+        "rendered against the run, exactly as the built-in is",
+    );
+}
+
+/// **Reading an archived run is declared and not built** (ticket 09).
+///
+/// The refusal is a sentence rather than a half-built placement, and rather than a
+/// silent fall-through to the live run — which would be the worst of the three,
+/// because the operator would get a pane that looked right and was reading a
+/// different run than the one they asked for. Nothing is laid out on the way to
+/// it, so a refused placement leaves nothing behind for the next one to find.
+#[test]
+fn placing_a_critic_on_an_archived_run_refuses_and_writes_nothing() {
+    let bench = common::Bench::new("critic-archived");
+
+    let why = bench
+        .try_place(PaneSpec::Critic { run: RunSource::Archived("2026-08-08T00-32-58Z".into()) })
+        .expect_err("an archived run is not built yet");
+    assert_eq!(why, placement::ARCHIVED_NOT_BUILT);
+    assert!(
+        !fleetor_shell::critic::critic_dir(bench.layout.root()).exists(),
+        "a refusal lays nothing out",
+    );
+}
+
+/// The rendered Critic brief, off the command placement built.
+///
+/// Found by its opening sentence rather than by argument position, so a change to
+/// the flag order fails loudly here instead of quietly asserting on
+/// `--permission-mode`.
+fn critic_brief(command: &portable_pty::CommandBuilder) -> String {
+    command
+        .get_argv()
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .find(|a| a.contains("You are the Critic"))
+        .expect("the rendered brief is on the command")
 }

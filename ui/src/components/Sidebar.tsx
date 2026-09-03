@@ -48,6 +48,7 @@ export type View =
   | "tasks"
   | "activity"
   | "history"
+  | "critic"
   | "evaluator"
   | "settings";
 
@@ -117,6 +118,17 @@ const ICONS: Record<View, ReactNode> = {
       <polyline points="8,4.9 8,8 10.3,9.4" />
     </svg>
   ),
+  // a speech bubble over a rule: the run read back, and reported on.
+  // Deliberately unlike the magnifier below — in dev mode the two rows sit
+  // together and answer different questions, so they must not read as two
+  // spellings of one thing.
+  critic: (
+    <svg {...ICON_PROPS}>
+      <path d="M2.4 3.4h11.2v7.4H8.6L5.4 13.6v-2.8H2.4z" />
+      <line x1="5" y1="6" x2="11" y2="6" />
+      <line x1="5" y1="8.4" x2="9" y2="8.4" />
+    </svg>
+  ),
   // a magnifier over a rule: reading the run back. Deliberately not a clipboard
   // or a tick — this pane grades a finished mission, and both of those shapes
   // read as the task board next door.
@@ -145,7 +157,7 @@ const ICONS: Record<View, ReactNode> = {
   ),
 };
 
-const WORKSPACE: { view: View; label: string; devOnly?: true }[] = [
+const WORKSPACE: { view: View; label: string; hint?: string; devOnly?: true }[] = [
   { view: "fleet", label: "Terminals" },
   { view: "messages", label: "Messages" },
   // Next to Messages on purpose: the board is what the fleet agreed on and the
@@ -155,12 +167,27 @@ const WORKSPACE: { view: View; label: string; devOnly?: true }[] = [
   // Last of the always-present rows, and after the live views on purpose:
   // everything above is this run, this one is every run before it.
   { view: "history", label: "History" },
+  // **The Critic** (WP-20, D-076). An ordinary row, present whether or not dev
+  // mode is on, because it is a product feature rather than an instrument of an
+  // experiment. It carries a `hint` for the same reason the row below it does:
+  // in dev mode the two sit next to each other, and two panes that both read a
+  // run have to say in the rail which question each answers.
+  {
+    view: "critic",
+    label: "Critic",
+    hint: "Critic — what the fleet did, cited from the run's own archive",
+  },
   // **Last, and dev-only, and that ordering is the point** (D-073). A row that
   // appears and disappears with the mode has to sit at the end, or turning dev
   // mode on shifts every row below it and the rail the operator has learned
   // moves under them. It carries no start control: the evaluator wakes when
   // `orch` hands off, and the view says so — see App.tsx.
-  { view: "evaluator", label: "Evaluator", devOnly: true },
+  {
+    view: "evaluator",
+    label: "Evaluator",
+    hint: "Evaluator — whether the mission was met, against this mission's own key",
+    devOnly: true,
+  },
 ];
 
 export function Sidebar({
@@ -188,7 +215,9 @@ export function Sidebar({
               onClick={() => onSelect(item.view)}
               // Collapsed, the label is the only thing naming the icon, so it
               // has to survive as a tooltip and as the accessible name.
-              title={collapsed ? item.label : undefined}
+              // Expanded, a row that has to be told apart from its neighbour
+              // says which question it answers instead.
+              title={collapsed ? item.label : item.hint}
               aria-label={collapsed ? item.label : undefined}
             >
               <span className="nav__icon">{ICONS[item.view]}</span>

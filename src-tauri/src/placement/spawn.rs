@@ -196,6 +196,58 @@ pub(super) fn evaluator_command_with(
     cmd
 }
 
+// --- the Critic ---------------------------------------------------------------
+
+/// The Critic's `claude` (WP-20, D-076), in the directory the run was laid out in.
+///
+/// **Shaped like `orch`, and unlike every other pane in one respect that is the
+/// whole identity: it is handed no `FLEET_SOCKET` and no `FLEETOR_PANE`.** It
+/// calls [`apply_terminal_env`] rather than [`apply_pane_env`], so the `fleet`
+/// CLI inside it has nothing to dial — `fleet send` exits non-zero with the
+/// sentence that names the missing variable, and no pty is written to. The arc's
+/// D6 says findings reach the operator through this pane's own view and the
+/// Activity feed and never through the fleet; this is that, made structural
+/// rather than promised.
+///
+/// Otherwise it is `orch`: the operator's own account and model, their `HOME`, a
+/// full environment inherit, no Fence — because it has to reach a real `git` and
+/// read a few hundred archived files.
+///
+/// **`--permission-mode` is the worker's, for the evaluator's reason.** This pane
+/// reads an archive unattended, and a `manual` posture would park it on its first
+/// `Read` while looking exactly like a healthy pane. It is not a widening of Tier
+/// 1.7: its write guardrail is its own working directory alone
+/// (`placement::guardrail_notices`), which is a strict subset of what any worker's
+/// auto-approve could already change.
+///
+/// `config_dir` must already have been through [`seed_config_dir`] for this exact
+/// `cwd` (L1), and the `CLAUDE_SECURESTORAGE_CONFIG_DIR` pairing is `orch`'s
+/// (D-062): set and empty, so the operator's own login is found rather than an
+/// empty credential namespace keyed by a hash of the config dir.
+pub(super) fn critic_command_with(
+    cwd: &Path,
+    config_dir: &Path,
+    brief: &str,
+    permission_mode: &str,
+    program: Option<&str>,
+    path: &str,
+) -> CommandBuilder {
+    let mut cmd = base_command_with(
+        program,
+        &[
+            "--permission-mode".to_string(),
+            permission_mode.to_string(),
+            "--system-prompt".to_string(),
+            brief.to_string(),
+        ],
+    );
+    cmd.cwd(cwd);
+    apply_terminal_env(&mut cmd, path.to_string());
+    cmd.env("CLAUDE_CONFIG_DIR", config_dir);
+    cmd.env(ENV_CC_SECURESTORAGE_DIR, "");
+    cmd
+}
+
 // --- the workers --------------------------------------------------------------
 
 /// One worker pane: isolated config dir, its own worktree, its own private
@@ -324,23 +376,42 @@ pub(super) fn pane_program() -> Option<String> {
     std::env::var(ENV_PANE_CMD).ok().filter(|s| !s.trim().is_empty())
 }
 
-/// What makes any process a pane: a truecolor terminal, a PATH that can find both
-/// `claude` and `fleet`, its own name, and the socket to reach the fleet on.
+/// What makes any process one of *this app's* terminals: a truecolor terminal, a
+/// PATH that can find `claude`, and no inherited child-session marker.
 ///
 /// `path` is the caller's to choose (WP-08, the Fence):
-/// [`Host::orch_path`](crate::placement::Host) for orch and the evaluator,
-/// `Host::worker_path` for a worker. Both resolve `fleet`'s location the identical
-/// way; they differ only in whether the operator's own HOME contributes rungs.
-fn apply_pane_env(cmd: &mut CommandBuilder, pane: PaneId, socket: &Path, path: String) {
+/// [`Host::orch_path`](crate::placement::Host) for orch, the evaluator and the
+/// Critic, `Host::worker_path` for a worker. Both resolve `fleet`'s location the
+/// identical way; they differ only in whether the operator's own HOME contributes
+/// rungs.
+///
+/// **Split from [`apply_pane_env`] so that one pane kind can have this and not
+/// that** (WP-20, D-076). Everything here is about being a terminal; everything
+/// there is about being addressable in the fleet's record, and the Critic is the
+/// first identity that is the first without being the second.
+fn apply_terminal_env(cmd: &mut CommandBuilder, path: String) {
     cmd.env("PATH", path);
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
-    cmd.env("FLEETOR_PANE", pane.to_string());
-    cmd.env("FLEET_SOCKET", socket);
     // Phase 0 saw this on every spike run: launching the shell from inside a
     // `claude` session leaks the marker through the environment inherit and
     // silently disables transcript saving in every pane below it.
     cmd.env_remove("CLAUDE_CODE_CHILD_SESSION");
+}
+
+/// The two variables that make a terminal a participant in the fleet's record:
+/// its own name, and the socket to reach the hub on.
+///
+/// **A pane that is handed neither has no route to the fleet at all**, which is
+/// the Critic's whole shape (D-076): the `fleet` CLI reads `FLEET_SOCKET` before
+/// it does anything else and refuses with a sentence naming the variable, so a
+/// `fleet send` typed inside such a pane exits non-zero and reaches nothing.
+/// That is a stronger guarantee than a rule somewhere saying it must not — there
+/// is nothing to dial.
+fn apply_pane_env(cmd: &mut CommandBuilder, pane: PaneId, socket: &Path, path: String) {
+    apply_terminal_env(cmd, path);
+    cmd.env("FLEETOR_PANE", pane.to_string());
+    cmd.env("FLEET_SOCKET", socket);
 }
 
 /// A PATH that finds `claude` and `fleet` even when the app was launched from a

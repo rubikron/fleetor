@@ -27,6 +27,16 @@ export const OPERATOR: PaneId = "operator";
 /// addressable by name in both directions and enumerated by nothing.
 export const EVALUATOR: PaneId = "evaluator";
 
+/// The Critic (WP-20), mirroring `fleetor_core::pane::PaneId::Critic`.
+///
+/// A real terminal that is in no listing, like `EVALUATOR` — and outside the
+/// fleet for a different reason: it is a **reader** of a run rather than a
+/// participant in one. Nothing hides it. It is named in the rail, its brief is
+/// `prompts/critic.md` for the operator to edit, and it exists whether or not
+/// dev mode is on. It is also the one pane with no route back: placement hands
+/// it no fleet socket, so `fleet send` inside it reaches nothing.
+export const CRITIC: PaneId = "critic";
+
 export const WORKER_SLOTS = [1, 2, 3, 4] as const;
 
 export function workerPane(slot: number): PaneId {
