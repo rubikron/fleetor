@@ -166,10 +166,12 @@ pub fn orch_command_with(
 ///    a `manual` posture would park it on its first `Read` while looking exactly
 ///    like a healthy pane — the risk register's worst entry. This is **not** a
 ///    widening of Tier 1.7: its write guardrail is narrower than any worker's
-///    (`fleet::install_guardrail` gives it its own directory and not `_shell`),
-///    so what auto-approve can actually change here is a strict subset of what a
-///    worker's already could. Said plainly so it is not re-litigated, exactly as
-///    WP-17 said the inverse.
+///    (`placement::guardrail_notices` gives it its own directory and not
+///    `_shell`), so what auto-approve can actually change here is a strict subset
+///    of what a worker's already could. Said plainly so it is not re-litigated,
+///    exactly as WP-17 said the inverse — and, since WP-21, asserted rather than
+///    said: `tests/write_guardrail.rs` runs the installed hook and watches this
+///    pane be refused a write a worker is allowed.
 ///
 /// `config_dir` must already have been through [`seed_config_dir`] for this
 /// exact `cwd` (L1), and the `CLAUDE_SECURESTORAGE_CONFIG_DIR` pairing is
@@ -182,14 +184,44 @@ pub fn evaluator_command(
     brief: &str,
     permission_mode: &str,
 ) -> CommandBuilder {
-    let mut cmd = base_command(&[
-        "--permission-mode".to_string(),
-        permission_mode.to_string(),
-        "--system-prompt".to_string(),
-        brief.to_string(),
-    ]);
+    evaluator_command_with(
+        cwd,
+        socket,
+        config_dir,
+        brief,
+        permission_mode,
+        pane_program().as_deref(),
+        &augmented_path(),
+    )
+}
+
+/// [`evaluator_command`] with the two process-derived inputs handed in instead of
+/// read (WP-21), exactly as [`orch_command_with`] is to [`orch_command`].
+///
+/// The stand-in program and the `PATH` are the only things this pane's command
+/// reached into the process for, and [`crate::placement`] may not do that. The
+/// `PATH` it is given is `orch`'s — this pane is the operator's own `claude` and
+/// gets their tool rungs — never a worker's fenced one.
+pub fn evaluator_command_with(
+    cwd: &Path,
+    socket: &Path,
+    config_dir: &Path,
+    brief: &str,
+    permission_mode: &str,
+    program: Option<&str>,
+    path: &str,
+) -> CommandBuilder {
+    let mut cmd = base_command_with(
+        program,
+        &[
+            "--permission-mode".to_string(),
+            permission_mode.to_string(),
+            "--system-prompt".to_string(),
+            brief.to_string(),
+        ],
+    );
     cmd.cwd(cwd);
-    apply_pane_env(&mut cmd, PaneId::Evaluator, socket, augmented_path());
+    apply_pane_env(&mut cmd, PaneId::Evaluator, socket, path.to_string());
     cmd.env("CLAUDE_CONFIG_DIR", config_dir);
     cmd.env(ENV_CC_SECURESTORAGE_DIR, "");
     cmd
@@ -318,13 +350,14 @@ pub fn worker_command_with(
 
 // --- shared -------------------------------------------------------------------
 
-/// The program plus its arguments, honoring the test override.
-fn base_command(args: &[String]) -> CommandBuilder {
-    base_command_with(pane_program().as_deref(), args)
-}
-
-/// [`base_command`] with the override handed in rather than read from the process,
-/// so [`crate::placement`] can build a command without touching it (WP-21).
+/// The program plus its arguments, with the stand-in override handed in rather
+/// than read from the process, so [`crate::placement`] can build a command without
+/// touching it (WP-21).
+///
+/// There was a reading sibling of this until every pane kind moved onto the
+/// placement seam; the last caller of it was `evaluator_command`, and it went with
+/// that move. The public `*_command` entry points that still read are the reading
+/// layer now, and there is exactly one of them per pane kind.
 fn base_command_with(program: Option<&str>, args: &[String]) -> CommandBuilder {
     if let Some(stand_in) = program.map(str::trim).filter(|s| !s.is_empty()) {
         return CommandBuilder::new(stand_in);

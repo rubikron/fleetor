@@ -22,6 +22,11 @@ use fleetor_core::pane::PaneId;
 use fleetor_shell::placement::{self, Host, Layout, PaneSpec};
 use fleetor_shell::prompts::PaneContext;
 
+/// The evaluator fixture, shared with `tests/write_guardrail.rs` rather than
+/// retyped in both — see that module for what the four preconditions are.
+#[cfg(feature = "devmode")]
+mod common;
+
 /// A scratch root nothing else in the suite shares, holding a layout and a target
 /// side by side. Both are handed to `place`, so between them they are the whole of
 /// what a placement is allowed to touch.
@@ -737,4 +742,166 @@ fn the_config_seed_is_keyed_to_the_target_the_pane_will_run_in() {
         serde_json::json!(true),
         "the trust flag must be under the resolved target path: {value:#}",
     );
+}
+
+// --- the evaluator ----------------------------------------------------------------
+
+/// **The evaluator's guardrail roots are its own working directory, and nothing
+/// else** — narrower than any other pane's, and never asserted until now.
+///
+/// This is the veil at the filesystem, and it is a different claim from the veil in
+/// `PaneId`. The name is absent from every enumeration; *this* is the other half —
+/// the pane that reads everything the run produced may change almost nothing. Two
+/// exclusions carry it, and both would be invisible in a `Vec` held briefly in
+/// memory, so this reads the policy file the pane's Claude Code will actually load:
+///
+///  1. **No `_shell`.** Every other pane has it, and it holds the live event log
+///     this pane is reading. A grader that could write its own evidence is not one.
+///  2. **No operator `[fence] allow` extras.** Those exist for the panes doing the
+///     work; an operator widening the fleet's reach must not widen its judge's.
+///
+/// The orchestrator is placed against the same layout with the same context in the
+/// same test, because "narrower" is a comparison and asserting it against a
+/// remembered number would be asserting it against nothing.
+#[test]
+#[cfg(feature = "devmode")]
+fn the_evaluators_write_roots_are_its_own_directory_alone_and_no_pane_is_narrower() {
+    let mut bench = common::Bench::new("roots");
+    bench.dev_mode(true);
+    // An operator who has widened the fleet's reach. It must reach `orch` and stop
+    // there.
+    let extra = bench.operator_allows("shared-cache");
+
+    bench.place(PaneSpec::Evaluator);
+    let evaluator_roots = bench.guardrail_roots(PaneId::Evaluator);
+    assert_eq!(
+        evaluator_roots,
+        vec![bench.retro_dir().display().to_string()],
+        "the evaluator writes in the run it was given and nowhere else",
+    );
+
+    // The comparison that makes "narrower" mean something: the same layout, the same
+    // context, a pane that is doing the work.
+    bench.place(PaneSpec::Orch);
+    let orch_roots = bench.guardrail_roots(PaneId::Orch);
+    assert_eq!(
+        orch_roots,
+        vec![
+            bench.target.display().to_string(),
+            bench.layout.shell().display().to_string(),
+            extra.display().to_string(),
+        ],
+        "orch gets its cwd, `_shell` and the operator's extra — the evaluator got neither \
+         of the last two",
+    );
+    assert!(orch_roots.len() > evaluator_roots.len(), "strictly narrower, not merely different");
+
+    // And its config dir is outside `_shell`, so its own reasoning never lands in the
+    // archive the next generation reads (D-062). Asserted here because this is the
+    // test that knows where placement actually put it.
+    let config_dir = bench.config_dir(PaneId::Evaluator);
+    assert!(
+        !config_dir.starts_with(bench.layout.shell()),
+        "{} is inside the tree `runs::harvest_transcripts` walks",
+        config_dir.display(),
+    );
+}
+
+/// **Dev mode is re-checked at the spawn site, and the flag comes from the layout**
+/// (D11).
+///
+/// The wake has already asked the same question, and that is deliberately not
+/// enough: "there is no evaluator outside dev mode" has to be a property of the
+/// place the pane is built, or a caller can lie about it. What proves the property
+/// *is* a property is flipping the flag without touching the process — the same
+/// scratch `config.json` an operator's switch would write, in a directory this test
+/// owns — and watching the answer change.
+///
+/// **Gated on `devmode` because an ungated version would assert nothing.** Without
+/// the feature there is no brief compiled in, so placement refuses whatever the flag
+/// says, and a test that passed for that reason would say nothing about the mode.
+#[test]
+#[cfg(feature = "devmode")]
+fn placing_an_evaluator_reads_the_mode_from_the_layouts_own_config() {
+    let bench = common::Bench::new("mode");
+
+    // No config at all: the ordinary first-run state, and off.
+    assert_eq!(
+        bench
+            .try_place(PaneSpec::Evaluator)
+            .expect_err("no config means no mode means no evaluator"),
+        placement::NO_EVALUATOR,
+    );
+
+    // Explicitly off is the same answer, and the operator's own home was never
+    // consulted to reach it.
+    bench.dev_mode(false);
+    assert_eq!(
+        bench.try_place(PaneSpec::Evaluator).expect_err("the mode off is a refusal"),
+        placement::NO_EVALUATOR,
+    );
+
+    // Nothing was written on the way to either refusal: a refused placement must not
+    // leave a half-laid-out run behind for the next one to find.
+    assert!(!bench.layout.root().join("dev").exists(), "a refusal lays nothing out");
+
+    // And the one thing that changed is the flag in this layout's own file.
+    bench.dev_mode(true);
+    bench
+        .try_place(PaneSpec::Evaluator)
+        .expect("the same call, the same arguments, the mode on in the layout's config");
+}
+
+/// **The run is laid out for reading, and the brief points at where it landed**
+/// (D2).
+///
+/// This is not a step a caller could usefully have done first: the brief cites the
+/// directory, and a brief citing a directory nobody wrote costs the pane its first
+/// turn asking about it. Both halves are asserted, because a snapshot the brief does
+/// not name and a name with no snapshot behind it fail identically from the outside.
+#[test]
+#[cfg(feature = "devmode")]
+fn placing_the_evaluator_lays_the_run_out_and_briefs_it_against_that_directory() {
+    let bench = common::Bench::new("laid-out");
+    bench.dev_mode(true);
+
+    let placed = bench.place(PaneSpec::Evaluator);
+
+    // The run, on disk, in the directory the pane will start in.
+    let cwd = bench.retro_dir();
+    assert!(cwd.join("events.json").is_file(), "the log, as JSON, for a reader with no SQLite");
+    assert!(cwd.join("manifest.json").is_file(), "and what is in the directory");
+    assert_eq!(
+        placed.command.get_cwd().map(PathBuf::from),
+        Some(cwd.clone()),
+        "the pane starts in the run it was given",
+    );
+
+    // The brief, on the command, naming that same directory and this mission.
+    let brief = placed
+        .command
+        .get_argv()
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .find(|a| a.contains(common::MISSION))
+        .expect("the rendered brief is on the command");
+    assert!(brief.contains(&cwd.display().to_string()), "the brief names the run directory");
+    assert!(
+        !brief.contains("{run_dir}") && !brief.contains("{mission_file}"),
+        "no placeholder survived rendering",
+    );
+
+    // Not on the live gauge: it samples the transcripts of the panes doing the work.
+    assert!(placed.gauge.is_none(), "the evaluator records no transcript source");
+
+    // Everything it wrote is under the layout it was handed — the property the whole
+    // module exists for, extended to the pane that writes outside `_shell`.
+    for path in walk(&bench.root) {
+        assert!(
+            path.starts_with("state") || path.starts_with("workspaces")
+                || path.starts_with("harness") || path.starts_with("answers"),
+            "{} is outside everything placement was handed",
+            path.display(),
+        );
+    }
 }

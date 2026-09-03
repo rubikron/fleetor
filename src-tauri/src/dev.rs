@@ -59,7 +59,13 @@ pub fn set_enabled(enabled: bool) -> Result<bool, String> {
 }
 
 /// [`is_enabled`] against a named config file.
-fn read_at(file: &Path) -> bool {
+///
+/// The seam [`crate::placement::Layout::dev_enabled`] reaches through (D11): the
+/// evaluator's spawn site re-checks the mode itself, and it has to be able to do
+/// that against the layout it was handed rather than against the operator's real
+/// home. `is_enabled` stays the process-global entry point for everything that
+/// has no layout in hand.
+pub(crate) fn read_at(file: &Path) -> bool {
     parse_dev_mode(&std::fs::read_to_string(file).unwrap_or_default())
 }
 
