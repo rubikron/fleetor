@@ -35,7 +35,7 @@ use fleetor_core::wire::{Op, OpResult};
 use fleetor_core::Store;
 use fleetor_db::SqliteStore;
 use fleetor_ipc::UnixTransport;
-use fleetor_server::{AppCommand, BroadcastStore, Hub};
+use fleetor_server::{AppCommand, BroadcastStore, Hub, Interview};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 use tokio::runtime::Runtime;
@@ -149,6 +149,17 @@ struct Fleet {
     /// identical function `Hub::serve_conn` calls after reading a `Hello`, with
     /// the socket the only thing missing.
     hub: Arc<Hub>,
+    /// Whether the operator has opened the Critic's interview (WP-21, D-079).
+    /// Closed on a fresh fleet, and a property of the *run* rather than of a
+    /// pane's session — a `/clear` or a respawn inside the Critic does not
+    /// close it, because nothing about a restarted terminal changes what the
+    /// operator decided to allow.
+    ///
+    /// **A handle on the hub's own cell, taken from [`Hub::interview`], not a
+    /// second copy of the value** — the mistake [`Target`] exists to have
+    /// fixed. The hub is what enforces the switch; these commands only move it,
+    /// and two `bool`s would let the UI report open while the hub still refused.
+    interview: Interview,
 }
 
 /// Managed Tauri state: at most one embedded fleet.
@@ -343,6 +354,7 @@ pub fn fleet_bootstrap(
         gauges,
         app: app_tx,
         layout,
+        interview: hub.interview(),
         hub,
     });
     Ok(snap)
@@ -975,6 +987,54 @@ pub fn fleet_set_target(
 
     adopt_target(&registry, &state, &canonical)?;
     Ok(canonical.to_string_lossy().into_owned())
+}
+
+// --- the Critic's interview (WP-21, D-079) ------------------------------------
+//
+// Two commands over one `bool`, and the asymmetry between them is the point: the
+// setter writes a `Notice` and the reader writes nothing. Opening and closing
+// each change *what is possible* in the run — one of them makes a pane that was
+// unable to reach the fleet able to interrupt it — and the log records outcomes
+// (Tier 1.6). Reading the switch is not an outcome.
+//
+// Neither command is on the message path and neither can be: they move a cell
+// the hub reads *before* it resolves anything. See `Hub::handle`'s doc comment
+// for why that is the only legal shape here, and `decisions.md` D-079 for the
+// argument in full.
+
+/// Open or close the Critic's interview, and answer with what is now stored.
+///
+/// The return is deliberately the **stored** state read back rather than the
+/// argument echoed: the operator's control renders from this, and a control that
+/// reported what it asked for rather than what took effect is the class of lie
+/// this codebase spends most of its doc comments avoiding.
+///
+/// Both edges write a `Notice` naming which it was, so an operator reading the
+/// Activity feed later can see the decision beside the turns it spent.
+#[tauri::command]
+pub fn critic_interview_open(open: bool, state: State<'_, FleetState>) -> Result<bool, String> {
+    let guard = state.0.lock().map_err(|e| e.to_string())?;
+    let fleet = guard.as_ref().ok_or("no fleet is running")?;
+    let stored = fleet.interview.set(open);
+    note(
+        &fleet.store,
+        NoticeLevel::Info,
+        if stored {
+            "the Critic's interview is open — it can now message the fleet, and doing so \
+             spends the fleet's turns"
+        } else {
+            "the Critic's interview is closed — it can read the run and reach no pane"
+        },
+    );
+    Ok(stored)
+}
+
+/// Whether the interview is open. Read-only, and writes nothing to the log.
+#[tauri::command]
+pub fn critic_interview_is_open(state: State<'_, FleetState>) -> Result<bool, String> {
+    let guard = state.0.lock().map_err(|e| e.to_string())?;
+    let fleet = guard.as_ref().ok_or("no fleet is running")?;
+    Ok(fleet.interview.is_open())
 }
 
 // --- past runs (WP-11) --------------------------------------------------------

@@ -18,10 +18,14 @@
 //!    question to ask, because there is no answer key it could be missing.
 //!  - **It is openly named** — in the rail, in the Activity feed, in this
 //!    source. Nothing about it depends on the fleet not knowing it exists.
-//!  - **It cannot message the fleet.** Placement hands it no `FLEET_SOCKET`, so
-//!    a `fleet send` typed inside it dials nothing and exits non-zero. Findings
-//!    reach the operator through its own view; anything worth acting on the
-//!    operator forwards from the composer they already have (the arc's D6).
+//!  - **It can message the fleet only while the operator has opened the
+//!    interview** (WP-21, D-079). It holds a `FLEET_SOCKET` like every other
+//!    pane, because a socket is baked in at spawn and could not be added later
+//!    without respawning the pane; the operator's switch is enforced in the hub
+//!    instead, which refuses an op from `critic` at accept time while the
+//!    interview is closed — before anything is resolved, asked or logged. With
+//!    it closed, findings still reach the operator through this pane's own view
+//!    and the composer they already have (the arc's D6).
 //!
 //! ## The brief is the one the spike converged on
 //!

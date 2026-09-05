@@ -208,6 +208,31 @@ orch ──▶ fleet reply ──▶ evaluator          ← works with no new co
 
 ---
 
+## 3g. `critic` — the second terminal that is not in the fleet, and the one switch on the path (WP-20 D-076, WP-21 D-079)
+
+The Critic reads a run and reports to the operator. Like the evaluator (§3f) it has a real terminal and is in no listing — `is_fleet_member()` is `false`, so no roster row, no broadcast leg, no peer list — and unlike it, nothing about it is hidden: it is openly named and its brief ships in `prompts/`.
+
+WP-20 gave it no `FLEET_SOCKET` at all, so a `fleet send` inside it dialled nothing. WP-21 gave it one, because an operator control that hands a running pane a socket is not buildable: both variables are fixed on the `CommandBuilder` at spawn, so adding one later means respawning the pane and destroying the conversation the operator opened the interview to have.
+
+```
+                        interview CLOSED
+critic ──▶ fleet send orch ──▶ hub ─┬─▶ OpResult::Error, exit 1
+                                    └─▶ (nothing else: no Message, no AppCommand,
+                                         no store write, no last_inbound_from)
+
+                        interview OPEN   ← critic_interview_open(true)
+critic ──▶ fleet send orch ──▶ (the path in §1, unmodified) ──▶ orch's pty
+orch   ──▶ fleet reply    ──▶ critic     ← the same last_inbound_from as any pane
+```
+
+**The switch is the one thing on this page that can refuse a message, and where it sits is why that is legal.** It is read at the top of `Hub::handle`, *before* the `match op` — the same place `Hub::cmd`'s allowlist refuses a command, and the same class of refusal: **at accept time, before anything enters the delivery path**. Nothing is accepted-then-dropped, nothing is logged, and the event log of a run in which a closed Critic tried to speak is identical to one in which it never did. That is asserted, not promised: `src-tauri/tests/panes.rs::a_closed_interview_refuses_the_critic_and_leaves_the_event_log_untouched`, on a real pty. Open, the line is not reached at all and §1 applies unchanged. It is **not** a mute on a live route; a mute is the shape Tier 1.4 has rejected twice (`building.md` §9.3).
+
+**Inbound needs no switch and no code.** `fleet send critic` from any pane is an ordinary delivery — `deliver.rs` looks the name up in the registry and finds a live pty — and it works whether the interview is open or closed. The operator's control decides whether the Critic may *interrupt* the fleet, never whether a pane may answer one.
+
+**Both edges are on the feed.** `critic_interview_open` writes a `Notice` when it opens and another when it closes, because each changes what is possible in the run and the log records outcomes.
+
+---
+
 ## 4. The registry — five ptys, and sometimes a sixth
 
 One pty per pane, keyed by `PaneId`. Five are the fleet; in dev mode a sixth is the evaluator (§3f), in the same registry so `kill_all` and `orphans.rs` reap it like any other — a separate registry would reopen the leaked-Opus money bug. Three properties matter.
