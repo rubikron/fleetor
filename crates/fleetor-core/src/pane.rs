@@ -41,8 +41,10 @@ pub const WORKER_SLOTS: [u8; 4] = [1, 2, 3, 4];
 ///    never the listing. See [`PaneId::is_fleet_member`].
 ///  - **`Critic` is a reader, not a participant** (WP-20, D-076). Its whole job
 ///    is reading the archive of a run and reporting to the operator, and it is
-///    given no route back into the fleet at all — placement hands it no
-///    `FLEET_SOCKET`, so a `fleet send` typed inside it dials nothing. Every
+///    given a route back into the fleet only on the operator's word (WP-21,
+///    D-079) — it holds a `FLEET_SOCKET` like any pane, and while the operator
+///    has not opened its interview the hub refuses its ops before resolving
+///    anything, so nothing is ever accepted-then-dropped. Every
 ///    other asymmetry is that one fact: nothing enumerates a non-participant, so
 ///    it is in no roster listing, is no leg of a broadcast and is in no brief's
 ///    peer list; and nothing about it needs hiding, so — unlike the evaluator —
@@ -468,8 +470,9 @@ mod tests {
     }
 
     /// It parses exactly, with no aliases, for one reason: `pty_spawn`
-    /// deserializes a `PaneId` out of the webview's JSON. No model ever types
-    /// it — the Critic has no socket to dial and appears in no brief.
+    /// deserializes a `PaneId` out of the webview's JSON, and — since WP-21 —
+    /// a pane meets the name when an interview message arrives, having been
+    /// taught it by no brief (D-079). Aliases would buy nothing either way.
     #[test]
     fn the_critics_name_round_trips_because_the_app_spawns_it_by_name() {
         for s in ["critic", "Critic", " CRITIC "] {

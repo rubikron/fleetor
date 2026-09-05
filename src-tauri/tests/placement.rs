@@ -1078,60 +1078,86 @@ fn placing_the_critic_lays_the_live_run_out_and_briefs_it_against_that_directory
     }
 }
 
-/// **`fleet send` from inside the Critic does not reach a pane, and the reason is
-/// that there is nothing to dial.**
+/// **The Critic is handed the same two variables `orch` is, and is still not in
+/// the fleet** (WP-21, D-079).
 ///
-/// The `fleet` CLI resolves `FLEET_SOCKET` before it does anything else and
-/// refuses with a sentence naming the variable when it is unset or empty
-/// (`fleetor-cli::socket`). A pane placed without it therefore cannot open the
-/// socket, cannot send a `Hello`, and cannot reach the hub — a stronger guarantee
-/// than a rule saying it must not, because there is no code path to forget.
+/// This test is WP-20's `the_critic_is_given_no_socket_so_fleet_send_inside_it_
+/// reaches_nothing` inverted rather than deleted, and the comparison against
+/// `orch` is kept for the reason it was there in the first place: asserting the
+/// *presence* of a variable proves nothing unless a pane known to have it is
+/// placed from the same layout in the same test, so a bench that silently
+/// stopped setting sockets for everyone would fail here rather than pass.
 ///
-/// `orch` is placed against the same layout with the same context in the same
-/// test, because "no route" is a comparison: asserting the absence of a variable
-/// nobody sets anywhere would assert nothing.
+/// **Why the absence had to go.** `FLEET_SOCKET` is baked into the
+/// `CommandBuilder` at spawn. An operator control that hands the pane a socket
+/// when they open the interview would therefore have to respawn the pane —
+/// destroying the conversation they opened the interview to have. So the switch
+/// is not here; it is in `fleetor_server::hub::Hub::handle`, which refuses an op
+/// from `critic` at accept time while the interview is closed. The pty tests in
+/// `panes.rs` are where that behaviour is pinned; this file only proves the
+/// route exists to be gated.
+///
+/// **And the point of the whole design, asserted here with the socket present:**
+/// `PaneId::Critic.is_fleet_member()` is still `false`. Addressable, never
+/// enumerated.
 #[test]
-fn the_critic_is_given_no_socket_so_fleet_send_inside_it_reaches_nothing() {
-    let bench = common::Bench::new("critic-mute");
+fn the_critic_is_given_a_socket_and_is_still_not_a_member_of_the_fleet() {
+    let bench = common::Bench::new("critic-socket");
 
     let critic = bench.place(PaneSpec::Critic { run: RunSource::Live }).command;
     let orch = bench.place(PaneSpec::Orch).command;
 
-    // The comparison. `orch` gets both; the Critic gets neither.
+    // The comparison. Both get both, and they are the same socket.
+    let socket = Some(bench.layout.socket().display().to_string());
     assert_eq!(
         env_on(&orch, "FLEET_SOCKET"),
-        Some(bench.layout.socket().display().to_string()),
-        "orch can reach the hub, which is what makes the absence below mean something",
+        socket,
+        "orch can reach the hub, which is what makes the presence below mean something",
     );
     assert_eq!(env_on(&orch, "FLEETOR_PANE").as_deref(), Some("orch"));
 
     assert_eq!(
         env_on(&critic, "FLEET_SOCKET"),
-        None,
-        "with no socket the `fleet` CLI refuses before it opens anything: findings reach the \
-         operator through this pane's own view and the Activity feed, never through the fleet",
+        socket,
+        "the Critic dials the same hub orch does — the operator's switch gates what the hub \
+         does with what arrives, not whether there is anything to dial",
     );
     assert_eq!(
-        env_on(&critic, "FLEETOR_PANE"),
-        None,
-        "and it is not a participant in the record either — there is no name for the hub to \
-         attribute a message to",
+        env_on(&critic, "FLEETOR_PANE").as_deref(),
+        Some("critic"),
+        "and it is a participant in the record under its own name, so the log can say who \
+         asked rather than attributing an interview to nobody",
+    );
+
+    // **The invariant, asserted with the socket in hand.** A voice is not a
+    // membership: no roster row, no leg of a broadcast, in no rendered brief's
+    // peer list. Every one of those is filtered on this one predicate.
+    assert!(
+        !PaneId::Critic.is_fleet_member(),
+        "a socket must not have made the Critic enumerable — that is the entire design",
+    );
+    assert!(
+        !PaneId::roster(&fleetor_core::pane::WORKER_SLOTS).contains(&PaneId::Critic),
+        "the roster is what spawns, what a broadcast reaches, and what a peer list is built \
+         from, and the Critic is in none of the three",
     );
 
     // It is still a terminal, so the rest of what makes a pane a pane is there.
     assert_eq!(env_on(&critic, "TERM").as_deref(), Some("xterm-256color"));
     assert!(env_on(&critic, "PATH").is_some_and(|p| !p.is_empty()));
 
-    // Nothing warns it that the `fleet` binary is missing, because building one
-    // would change nothing about this pane.
+    // And the machine notice it used to be excluded from is now true of it: a
+    // Critic on a machine with no `fleet` binary has an interview that cannot be
+    // opened in any useful sense.
     let bare = Host::bare();
     assert!(
-        placement::machine_notices(&bare, PaneId::Critic).is_empty(),
-        "a pane with no route to the fleet must not be told to go build the fleet CLI",
+        !placement::machine_notices(&bare, PaneId::Critic).is_empty(),
+        "a pane that can now reach the hub must be told when the binary that reaches it is \
+         missing",
     );
     assert!(
-        !placement::machine_notices(&bare, PaneId::Worker(1)).is_empty(),
-        "…while a pane that does have one still is",
+        placement::machine_notices(&bare, PaneId::Orch).is_empty(),
+        "…while orch still emits that line from its own placement instead",
     );
 }
 

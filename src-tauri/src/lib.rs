@@ -105,6 +105,8 @@ pub fn run() {
             fleet::fleet_set_target,
             fleet::fleet_roster,
             fleet::fleet_send,
+            fleet::critic_interview_open,
+            fleet::critic_interview_is_open,
             fleet::runs_list,
             fleet::run_events,
             fleet::run_rename,

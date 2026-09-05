@@ -18,17 +18,19 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use base64::{engine::general_purpose::STANDARD, Engine};
+use fleetor_core::event::FleetEvent;
 use fleetor_core::message::frame_for_pane;
 use fleetor_core::pane::{PaneId, WORKER_SLOTS};
+use fleetor_core::wire::{Op, OpResult};
 use fleetor_core::Store;
 use fleetor_db::SqliteStore;
 use fleetor_shell::context_gauge::GaugeSources;
 use fleetor_shell::deliver::spawn_delivery;
 use fleetor_shell::pty::{exit_channel, out_channel, Emit, PaneRegistry};
 use fleetor_shell::placement::spawn;
-use fleetor_shell::placement::{self, Host, Layout, PaneSpec};
+use fleetor_shell::placement::{self, Host, Layout, PaneSpec, RunSource};
 use fleetor_shell::prompts::PaneContext;
-use fleetor_server::AppCommand;
+use fleetor_server::{AppCommand, Hub};
 use portable_pty::CommandBuilder;
 use tokio::sync::{mpsc, oneshot};
 
@@ -620,4 +622,199 @@ fn a_roster_ask_surfaces_a_workers_sampled_context_gauge() {
 
     registry.kill_all();
     let _ = std::fs::remove_dir_all(&config_dir);
+}
+
+// --- the Critic's interview, on real ptys (WP-21, D-079) ----------------------
+//
+// Stage A's gate, proven where the arc doc requires it: real processes on real
+// ptys, a real `Hub`, a real store, and the operator's switch moved between the
+// two calls. A `CommandBuilder` inspection could only have shown that the Critic
+// now holds a socket — which is exactly the half of this design that is *not*
+// the safety property.
+
+/// Everything one interview test needs: orch and the Critic on real ptys, a hub
+/// wired to a real delivery loop, and the store the hub logs into.
+///
+/// The store is a real one rather than [`scratch_store`]'s throwaway because
+/// **the log is the assertion** in the closed-gate test below: a refusal that
+/// left a row behind would be the accepted-then-dropped shape Tier 1.4 bans, and
+/// nothing but reading the log back can tell the difference.
+struct Interviewed {
+    registry: Arc<PaneRegistry>,
+    transcript: Arc<Transcript>,
+    store: Arc<dyn Store>,
+    hub: Arc<Hub>,
+    rt: tokio::runtime::Runtime,
+}
+
+impl Interviewed {
+    fn new() -> Self {
+        let transcript = Arc::new(Transcript::default());
+        let registry = Arc::new(PaneRegistry::new(transcript.emitter(), scratch_registry_path()));
+
+        let (layout, target) = scratch_installation();
+        // `place_critic` lays its cwd out from a snapshot of the live run, so a
+        // real store has to exist under this layout before it is called — the
+        // same precondition `tests/common`'s bench establishes.
+        std::fs::create_dir_all(layout.shell()).unwrap();
+        SqliteStore::open(&layout.shell().join("state.db"))
+            .expect("a live run for the Critic to be placed against");
+
+        let host = stand_in_host();
+        let ctx = PaneContext::baked();
+        for spec in [PaneSpec::Orch, PaneSpec::Critic { run: RunSource::Live }] {
+            let pane = spec.pane();
+            let placed = placement::place(spec, &layout, &host, &target, &ctx)
+                .unwrap_or_else(|e| panic!("placing {pane}: {e}"));
+            registry.spawn(pane, placed.command, 24, 80).unwrap();
+        }
+
+        let store: Arc<dyn Store> = Arc::new(SqliteStore::open_in_memory().unwrap());
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let (tx, rx) = mpsc::unbounded_channel::<AppCommand>();
+        spawn_delivery(&rt, registry.clone(), rx, store.clone(), Arc::new(GaugeSources::default()));
+        let hub = Hub::new(store.clone(), tx);
+
+        Self { registry, transcript, store, hub, rt }
+    }
+
+    /// Every row in the event log, as `(seq, kind)` — enough to prove the log
+    /// did not move without pinning what an unrelated event looks like.
+    fn log(&self) -> Vec<(i64, String)> {
+        self.store
+            .events_since(0)
+            .unwrap()
+            .into_iter()
+            .map(|(seq, event)| (seq, event.kind().to_string()))
+            .collect()
+    }
+
+    fn send(&self, from: PaneId, to: PaneId, text: &str) -> OpResult {
+        self.rt.block_on(self.hub.handle(from, Op::Send { to, text: text.to_string() }))
+    }
+}
+
+/// **The Tier 1.4 assertion, and the reason this file is where it lives.**
+///
+/// With the interview closed, `fleet send orch` from inside the Critic is
+/// refused — and the thing that makes the refusal legal rather than the banned
+/// accepted-then-dropped shape is what *did not happen*: the event log is
+/// identical either side of the attempt, and orch's pty never saw the words.
+/// Asserting only that the call failed would pass against an implementation that
+/// logged the attempt and threw the message away, which is precisely the shape
+/// `building.md` §9.3 records as argued and lost twice.
+#[test]
+fn a_closed_interview_refuses_the_critic_and_leaves_the_event_log_untouched() {
+    let bench = Interviewed::new();
+    bench.transcript.wait_for(&out_channel(PaneId::Orch), "ready");
+
+    // A first, ordinary delivery, so the log is non-empty: "unchanged" has to
+    // mean "did not move", not "was empty both times".
+    let warmed = bench.send(PaneId::Orch, PaneId::Critic, "an ordinary message");
+    assert!(
+        matches!(warmed, OpResult::Delivered { accepted: true, .. }),
+        "the ordinary path must still work: {warmed:?}",
+    );
+    let before = bench.log();
+    assert!(!before.is_empty(), "the log must have something in it for this test to mean anything");
+
+    let refused = bench.send(PaneId::Critic, PaneId::Orch, "why did you route it that way");
+    let OpResult::Error { message } = refused else {
+        panic!("a closed interview must refuse: {refused:?}");
+    };
+    assert!(
+        message.contains("interview is closed") && message.contains("nothing was sent"),
+        "the sentence has to say what happened and what to do about it: {message:?}",
+    );
+
+    assert_eq!(
+        bench.log(),
+        before,
+        "a refused send wrote to the event log — that is the accepted-then-dropped shape \
+         Tier 1.4 bans, and it makes the log lie about what the run contained",
+    );
+
+    // And nothing reached the terminal either. Given time to arrive rather than
+    // asserted instantly, so a delivery that was merely slow cannot pass this.
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        !bench.transcript.text(&out_channel(PaneId::Orch)).contains("why did you route it"),
+        "the refused message reached orch's pty",
+    );
+
+    bench.registry.kill_all();
+}
+
+/// **The other edge: open, and it is an ordinary send.**
+///
+/// The identical call the test above refuses is `accepted`, reaches orch's real
+/// pty framed as any pane's message is. The switch is the only thing that moved
+/// between the two tests.
+#[test]
+fn an_open_interview_lets_the_critic_reach_a_real_pane() {
+    let bench = Interviewed::new();
+    bench.transcript.wait_for(&out_channel(PaneId::Orch), "ready");
+
+    assert!(!bench.hub.interview().is_open(), "a fresh fleet starts closed");
+    assert!(bench.hub.interview().set(true), "the switch answers with what it stored");
+
+    let result = bench.send(PaneId::Critic, PaneId::Orch, "what did you believe at the time");
+    let OpResult::Delivered { accepted, detail, .. } = result else {
+        panic!("an open interview delivers: {result:?}");
+    };
+    assert!(accepted, "the Critic's message was refused: {detail:?}");
+
+    let seen = bench.transcript.wait_for(&out_channel(PaneId::Orch), "what did you believe");
+    assert!(
+        seen.contains("[fleet · critic]"),
+        "a pane sees an ordinary `fleet send` from `critic`, framed like any other: {seen:?}",
+    );
+
+    // Closing it again refuses the very next call, with no respawn in between —
+    // which is the whole reason the gate is in the hub rather than at spawn.
+    assert!(!bench.hub.interview().set(false));
+    let refused = bench.send(PaneId::Critic, PaneId::Orch, "one more question");
+    assert!(
+        matches!(refused, OpResult::Error { .. }),
+        "the switch must close as well as open: {refused:?}",
+    );
+
+    bench.registry.kill_all();
+}
+
+/// **Inbound: a pane can answer the Critic** (WP-21 performance criteria).
+///
+/// WP-20's ticket 08 only ever tested the Critic's *outbound* refusal, so a
+/// pane's ability to reply to it was unproven — an interview in which only one
+/// side can speak is not an interview. This drives the whole path: `fleet send
+/// critic` from orch, through the hub, through `deliver.rs`'s writer, onto the
+/// Critic's real pty, and into the log naming it as the recipient.
+///
+/// **It needs no interview.** The gate is on the *sender*, and orch is not
+/// gated: the operator's switch decides whether the Critic may interrupt the
+/// fleet, never whether a pane may answer one.
+#[test]
+fn a_pane_can_answer_the_critic_and_the_log_records_the_recipient() {
+    let bench = Interviewed::new();
+    bench.transcript.wait_for(&out_channel(PaneId::Critic), "ready");
+
+    let result = bench.send(PaneId::Orch, PaneId::Critic, "I had no receipt, I inferred it");
+    let OpResult::Delivered { accepted, detail, .. } = result else {
+        panic!("a message to the Critic delivers: {result:?}");
+    };
+    assert!(accepted, "orch's answer to the Critic was refused: {detail:?}");
+
+    let seen = bench.transcript.wait_for(&out_channel(PaneId::Critic), "I had no receipt");
+    assert!(seen.contains("[fleet · orch]"), "framed like any message: {seen:?}");
+
+    assert!(
+        bench.store.events_since(0).unwrap().iter().any(|(_, event)| matches!(
+            event,
+            FleetEvent::Message { to, from, .. } if *to == PaneId::Critic && *from == PaneId::Orch
+        )),
+        "the log must name the Critic as the recipient, or an interview leaves no record of \
+         which half of it was the answer",
+    );
+
+    bench.registry.kill_all();
 }

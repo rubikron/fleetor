@@ -88,6 +88,16 @@ const APP_GONE: &str = "the fleet app is not accepting commands — its window m
 const APP_DROPPED: &str =
     "the fleet app took the message but never answered — treat it as not delivered";
 
+/// What the Critic is told when it speaks and the interview is closed (WP-21).
+///
+/// It names the reason and the remedy, because the pane reading it is a model
+/// reading its own Bash stderr. It deliberately does **not** say "no such pane":
+/// `orch` exists, and a sentence blaming the addressee for a state of the
+/// operator's switch would be the log-lie L3 is about, one layer up.
+const INTERVIEW_CLOSED: &str =
+    "the interview is closed, so no pane is an address from here and nothing was sent — \
+     the operator opens it with the control in the Critic view";
+
 struct HubState {
     /// Who last got a message *through* to each pane — the target `fleet reply`
     /// resolves to. Only successful deliveries land here: replying to a pane that
@@ -95,11 +105,42 @@ struct HubState {
     last_inbound_from: Mutex<HashMap<PaneId, PaneId>>,
 }
 
+/// Whether the operator has opened the Critic's interview (WP-21, D-079).
+///
+/// **One value, shared by the hub that enforces it and the commands that move
+/// it** — the shape `src-tauri`'s `Target` uses for the fleet's target, and for
+/// its reason: two copies of a run-scoped switch is how one reader ends up
+/// enforcing a state the other has already changed.
+///
+/// A `Mutex<bool>` rather than an `AtomicBool` to keep the house convention
+/// visible at the type: **a poisoned lock hands back the value anyway**, because
+/// a switch nobody can read would leave the Critic permanently unable to speak
+/// *and* the operator unable to say so. `false` — closed — is the default, and
+/// it is the state a fresh fleet starts in.
+#[derive(Clone, Default)]
+pub struct Interview(Arc<Mutex<bool>>);
+
+impl Interview {
+    /// Whether the Critic may reach the fleet right now.
+    pub fn is_open(&self) -> bool {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Move the switch, and answer with what it now holds — so the caller
+    /// reports the stored state rather than the state it asked for.
+    pub fn set(&self, open: bool) -> bool {
+        let mut guard = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = open;
+        *guard
+    }
+}
+
 /// The routing hub. Cheap to clone (everything shared behind `Arc`).
 pub struct Hub {
     state: Arc<HubState>,
     store: Arc<dyn Store>,
     app: mpsc::UnboundedSender<AppCommand>,
+    interview: Interview,
 }
 
 impl Hub {
@@ -111,7 +152,15 @@ impl Hub {
             state: Arc::new(HubState { last_inbound_from: Mutex::new(HashMap::new()) }),
             store,
             app,
+            interview: Interview::default(),
         })
+    }
+
+    /// The interview switch this hub enforces (WP-21, D-079). A handle on the
+    /// same cell, not a copy of its value — the app's commands move it and this
+    /// hub reads it.
+    pub fn interview(&self) -> Interview {
+        self.interview.clone()
     }
 
     /// Bind the transport, then serve until cancelled.
@@ -163,7 +212,34 @@ impl Hub {
     /// "operator → pane rides the existing path unmodified" is true by
     /// construction rather than by a second implementation that resembles it.
     /// The CLI reaches the identical function through [`Hub::serve_conn`].
+    ///
+    /// **One sender is answered before the `match`, and where that line sits is
+    /// the whole of WP-21's Tier 1.4 argument** (D-079). The Critic holds a
+    /// socket so that the operator can make it an address without respawning the
+    /// pane and destroying their conversation with it — `FLEET_SOCKET` is baked
+    /// into a command at spawn, so a switch cannot be built there. The switch
+    /// therefore lives here, and it is only legal in one shape: **refused at
+    /// accept time, before anything is resolved, asked or written.**
+    ///
+    /// Read what the early return skips, because that list *is* the compliance
+    /// claim. Nothing below it runs: no `Message` is constructed, no
+    /// [`AppCommand`] is sent, `self.app` is not touched, `self.store` is not
+    /// touched, and `last_inbound_from` is not written — so no pane's next
+    /// `fleet reply` is redirected either. The sender gets
+    /// [`OpResult::Error`], which the `fleet` CLI prints to stderr and exits
+    /// non-zero on. **Nothing is accepted-then-dropped, and the event log is
+    /// byte-identical to a run in which the attempt never happened** —
+    /// `src-tauri/tests/panes.rs::a_closed_interview_refuses_the_critic_and_leaves_the_event_log_untouched`
+    /// counts the log either side of a refused send and asserts it did not move.
+    /// This is the class of refusal `Hub::cmd`'s allowlist check already is, and
+    /// the class D-034 kept: before the delivery path, never inside it.
+    ///
+    /// It is not a mute on a live route. Open, this line is not reached at all
+    /// and the Critic's ops take the identical path every other sender's do.
     pub async fn handle(&self, from: PaneId, op: Op) -> OpResult {
+        if from.is_critic() && !self.interview.is_open() {
+            return OpResult::Error { message: INTERVIEW_CLOSED.to_string() };
+        }
         match op {
             Op::Send { to, text } => self.send(from, to, text).await,
             Op::Broadcast { text } => self.broadcast(from, text).await,

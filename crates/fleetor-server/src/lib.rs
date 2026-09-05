@@ -16,4 +16,4 @@ pub mod bus;
 pub mod hub;
 
 pub use bus::{BroadcastStore, EventBus, EventFollower, BUS_CAPACITY};
-pub use hub::{AppCommand, DeliveryResult, Hub};
+pub use hub::{AppCommand, DeliveryResult, Hub, Interview};

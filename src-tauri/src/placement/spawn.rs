@@ -200,14 +200,23 @@ pub(super) fn evaluator_command_with(
 
 /// The Critic's `claude` (WP-20, D-076), in the directory the run was laid out in.
 ///
-/// **Shaped like `orch`, and unlike every other pane in one respect that is the
-/// whole identity: it is handed no `FLEET_SOCKET` and no `FLEETOR_PANE`.** It
-/// calls [`apply_terminal_env`] rather than [`apply_pane_env`], so the `fleet`
-/// CLI inside it has nothing to dial — `fleet send` exits non-zero with the
-/// sentence that names the missing variable, and no pty is written to. The arc's
-/// D6 says findings reach the operator through this pane's own view and the
-/// Activity feed and never through the fleet; this is that, made structural
-/// rather than promised.
+/// **Shaped like `orch`, and it is handed `FLEETOR_PANE` and `FLEET_SOCKET`
+/// exactly as the evaluator is** (WP-21, D-079). It called
+/// [`apply_terminal_env`] rather than [`apply_pane_env`] in WP-20, and the
+/// absence of a socket was the whole identity; that absence is gone, and the
+/// reason it had to go is mechanical rather than a change of mind. Both
+/// variables are baked into this `CommandBuilder` at spawn, so "hand it a socket
+/// when the operator opens the interview" cannot be built here without
+/// respawning the pane — which would destroy the operator's conversation with
+/// the pane they just decided to let speak. **The switch moved to the hub
+/// instead** (`fleetor_server::hub::Hub::handle`): while the interview is
+/// closed, an op from `critic` is refused at accept time, before anything is
+/// resolved, asked or logged.
+///
+/// What did *not* move: [`PaneId::Critic::is_fleet_member`](PaneId::is_fleet_member)
+/// is still `false` with the socket in hand — no roster row, no broadcast leg, in
+/// no rendered brief's peer list — and this pane's write guardrail is still its
+/// own working directory alone. It gained a voice, not a pen.
 ///
 /// Otherwise it is `orch`: the operator's own account and model, their `HOME`, a
 /// full environment inherit, no Fence — because it has to reach a real `git` and
@@ -226,6 +235,7 @@ pub(super) fn evaluator_command_with(
 /// empty credential namespace keyed by a hash of the config dir.
 pub(super) fn critic_command_with(
     cwd: &Path,
+    socket: &Path,
     config_dir: &Path,
     brief: &str,
     permission_mode: &str,
@@ -242,7 +252,7 @@ pub(super) fn critic_command_with(
         ],
     );
     cmd.cwd(cwd);
-    apply_terminal_env(&mut cmd, path.to_string());
+    apply_pane_env(&mut cmd, PaneId::Critic, socket, path.to_string());
     cmd.env("CLAUDE_CONFIG_DIR", config_dir);
     cmd.env(ENV_CC_SECURESTORAGE_DIR, "");
     cmd
@@ -402,12 +412,19 @@ fn apply_terminal_env(cmd: &mut CommandBuilder, path: String) {
 /// The two variables that make a terminal a participant in the fleet's record:
 /// its own name, and the socket to reach the hub on.
 ///
-/// **A pane that is handed neither has no route to the fleet at all**, which is
-/// the Critic's whole shape (D-076): the `fleet` CLI reads `FLEET_SOCKET` before
-/// it does anything else and refuses with a sentence naming the variable, so a
-/// `fleet send` typed inside such a pane exits non-zero and reaches nothing.
-/// That is a stronger guarantee than a rule somewhere saying it must not — there
-/// is nothing to dial.
+/// **A pane that is handed neither has no route to the fleet at all**: the
+/// `fleet` CLI reads `FLEET_SOCKET` before it does anything else and refuses
+/// with a sentence naming the variable, so a `fleet send` typed inside such a
+/// pane exits non-zero and reaches nothing.
+///
+/// **Every pane kind that exists is handed both, as of WP-21 (D-079).** The
+/// Critic was the one exception — that was its whole shape in WP-20 — and it
+/// stopped being one for a mechanical reason: these two variables are fixed on
+/// the `CommandBuilder` at spawn, so a runtime control over a pane's route
+/// cannot live here without respawning the pane. It lives in the hub instead.
+/// Being handed these is therefore *not* a claim of fleet membership, and it
+/// never was one: [`PaneId::is_fleet_member`] answers that, and it is `false`
+/// for two of the panes this function is called for.
 fn apply_pane_env(cmd: &mut CommandBuilder, pane: PaneId, socket: &Path, path: String) {
     apply_terminal_env(cmd, path);
     cmd.env("FLEETOR_PANE", pane.to_string());

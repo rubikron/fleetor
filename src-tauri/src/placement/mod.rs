@@ -714,9 +714,14 @@ fn place_evaluator(
 ///    directory placement lays out; the repository the fleet was pointed at is
 ///    named inside `manifest.json`, where the Critic reads it like every other
 ///    fact. A pane that reads a run has no business holding the live checkout.
-///  - **It is given no socket.** [`spawn::critic_command_with`] hands it no
-///    `FLEET_SOCKET` and no `FLEETOR_PANE`, so `fleet send` inside it dials
-///    nothing (the arc's D6).
+///  - **It is given a socket, and it is still not in the fleet** (WP-21, D-079).
+///    [`spawn::critic_command_with`] hands it `FLEET_SOCKET` and `FLEETOR_PANE`
+///    exactly as [`place_evaluator`] does, because a socket baked in at spawn is
+///    the only kind there is — the operator's switch cannot add one later
+///    without respawning the pane. What the switch gates instead is the hub:
+///    while the interview is closed every op from `critic` is refused before it
+///    resolves anything. `PaneId::Critic.is_fleet_member()` is `false` either
+///    way, so this adds no roster row, no broadcast leg and no peer-list entry.
 ///
 /// **It lays the run out before it renders anything**, for the reason
 /// [`place_evaluator`] does (D2): the working directory *is* the run, the brief
@@ -749,6 +754,7 @@ fn place_critic(
 
     let command = spawn::critic_command_with(
         &cwd,
+        &layout.socket(),
         &config_dir,
         &brief,
         &context.launch.worker_permission_mode,
@@ -915,16 +921,17 @@ pub const MISSING_RUSTUP: &str =
 /// itself, from this same constant — it is the one pane kind whose placement
 /// cannot fail before that line is reached.
 ///
-/// **The Critic is excluded too, for the opposite reason to `orch`'s** (D-076).
-/// `orch` is excluded because it emits the `fleet`-binary line itself; the Critic
-/// is excluded because the line would be false for it. It is handed no
-/// `FLEET_SOCKET` and no `FLEETOR_PANE`, so it could not message a pane on a
-/// machine where `fleet` *is* built — warning that "panes will spawn but cannot
-/// message each other" would tell the operator to go build a binary that would
-/// change nothing about this pane.
+/// **The Critic was excluded too, and WP-21 put it back** (D-076, then D-079).
+/// The old reason was that the line would be *false* for it: with no
+/// `FLEET_SOCKET` it could not message a pane on a machine where `fleet` was
+/// built, so telling the operator to go build one would have been advice that
+/// changed nothing. It has a socket now, so the line is true — a Critic on a
+/// machine with no `fleet` binary is a Critic whose interview cannot be opened
+/// in any useful sense, and that is exactly the failure this notice exists to
+/// surface before it looks like a healthy pane.
 pub fn machine_notices(host: &Host, pane: PaneId) -> Vec<(NoticeLevel, String)> {
     let mut notices = Vec::new();
-    if matches!(pane, PaneId::Orch | PaneId::Critic) {
+    if matches!(pane, PaneId::Orch) {
         return notices;
     }
     if host.fleet_bin.is_none() {
