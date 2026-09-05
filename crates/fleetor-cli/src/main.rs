@@ -245,7 +245,7 @@ fn run() -> Result<ExitCode> {
             text: join(text),
         },
         Command::Broadcast { text } => Op::Broadcast { text: join(text) },
-        Command::Reply { text } => Op::Reply { text: join(text) },
+        Command::Reply { text } => Op::Reply { text: reply_text(text)? },
         Command::Cmd { pane, command, why } => {
             Op::Cmd { to: target(&pane)?, command: join(command), why }
         }
@@ -550,6 +550,46 @@ fn join(text: Vec<String>) -> String {
     text.join(" ")
 }
 
+/// The body of a `fleet reply`, or a refusal if the pane wrote a recipient
+/// where the body starts (D-077).
+///
+/// **This is a measured defect, not a hypothetical one.** `reply` is
+/// `trailing_var_arg` like every message verb, and it has no recipient field —
+/// so `fleet reply worker-3 "Agreed"` parses cleanly, prepends `worker-3` to the
+/// *message* and delivers the whole thing to whoever messaged the sender last.
+/// A 5m 40s run produced nine such misdeliveries: the brief teaches
+/// `fleet send orch "<text>"` on the line above `fleet reply "<text>"`, and
+/// panes pattern-matched the argument across. Nothing failed, so nothing was
+/// corrected — two panes spent turns diagnosing "tangled cross-replies" and one
+/// re-sent three confirmations it had already sent.
+///
+/// **The discriminator is the first argv element, not the first word.** A pane
+/// must still be able to start a sentence with a peer's name, and
+/// `fleet reply "worker-3 said the annex is out"` arrives here as a single
+/// element that is not a pane name. Only `fleet reply worker-3 "…"` — a
+/// separate argument that [`PaneId`] itself accepts — is refused. Asking
+/// `PaneId::from_str` rather than matching spellings by hand is what keeps this
+/// exactly as wide as `fleet send`'s own recipient: `orch`, `lead`, `o`,
+/// `operator`, `2`, `w2`, `worker2`, `worker-2` and the rest all move together.
+///
+/// **Tier 1.4 holds because this refuses at parse.** It runs where
+/// `Command::Send`'s `pane.parse::<PaneId>()` runs — before the runtime is
+/// built, before the socket is dialled, before any `Op` exists — so it is the
+/// same shape of failure as `fleet send worker-9`, and nothing between a
+/// `fleet send` and a pty gained the ability to refuse anything.
+fn reply_text(text: Vec<String>) -> Result<String> {
+    if let Some(first) = text.first() {
+        if first.parse::<PaneId>().is_ok() {
+            anyhow::bail!(
+                "`fleet reply` does not take a recipient — use \
+                 `fleet send {first} \"<text>\"`, or drop the name to answer \
+                 whoever messaged you last"
+            );
+        }
+    }
+    Ok(join(text))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -593,6 +633,108 @@ mod tests {
         assert!(Cli::try_parse_from(["fleet", "send", "2"]).is_err());
         assert!(Cli::try_parse_from(["fleet", "broadcast"]).is_err());
         assert!(Cli::try_parse_from(["fleet", "reply"]).is_err());
+    }
+
+    // --- `fleet reply` takes no recipient (D-077) ------------------------------
+
+    /// argv in, and out comes exactly what `run()` would put on the wire for a
+    /// `fleet reply` — or the refusal it would print instead. Goes through clap
+    /// on purpose: the whole discriminator is *how argv was split*, and a test
+    /// that built the `Vec<String>` by hand would be testing its own assumption.
+    fn reply_from(argv: &[&str]) -> Result<String> {
+        let cli = Cli::try_parse_from(argv).unwrap_or_else(|e| panic!("{argv:?}: {e}"));
+        let Command::Reply { text } = cli.command else { panic!("expected reply") };
+        reply_text(text)
+    }
+
+    /// The measured defect: nine misdeliveries in one 5m 40s run, because
+    /// `trailing_var_arg` makes `fleet reply worker-3 "…"` *succeed* with the
+    /// name glued to the front of the body and the body sent to somebody else.
+    /// Every spelling `fleet send` takes as a recipient has to be caught, or the
+    /// pane that types the uncaught one is back to a silent misroute.
+    #[test]
+    fn a_reply_that_names_a_recipient_is_refused_for_every_spelling_send_accepts() {
+        for name in [
+            "orch",
+            "orchestrator",
+            "lead",
+            "o",
+            "operator",
+            "critic",
+            "0",
+            "3",
+            "255",
+            "w3",
+            "worker3",
+            "worker-3",
+            "OrCh",
+            "Worker-3",
+            " orch ",
+        ] {
+            assert!(
+                name.parse::<PaneId>().is_ok(),
+                "{name:?}: this test is only meaningful for names `fleet send` accepts"
+            );
+            let refused = reply_from(&["fleet", "reply", name, "Agreed", "—", "Rooftop", "Garden"]);
+            assert!(refused.is_err(), "{name:?} was accepted as the start of a message body");
+        }
+    }
+
+    /// The refusal is read by a model that then types the next command, so it
+    /// names the verb that *does* take a recipient and hands back the name it
+    /// was given. Pinned exactly: a vaguer sentence is the same silent misroute
+    /// one turn later.
+    #[test]
+    fn the_refusal_names_the_verb_that_does_take_a_recipient() {
+        let refused = reply_from(&["fleet", "reply", "worker-3", "Agreed — Rooftop Garden"]);
+        assert_eq!(
+            refused.unwrap_err().to_string(),
+            "`fleet reply` does not take a recipient — use `fleet send worker-3 \"<text>\"`, \
+             or drop the name to answer whoever messaged you last"
+        );
+    }
+
+    /// **The half that matters more.** A pane must be able to open a message
+    /// with a peer's name — quoting one, reporting on one, arguing with one.
+    /// Here the name is *inside* the single argv element the shell handed over,
+    /// so it is prose, and prose goes through untouched.
+    #[test]
+    fn a_reply_may_begin_with_a_peers_name_when_the_name_is_prose() {
+        for (argv, expected) in [
+            (
+                vec!["fleet", "reply", "worker-3 said the annex is out"],
+                "worker-3 said the annex is out",
+            ),
+            (vec!["fleet", "reply", "orch wants the parser first"], "orch wants the parser first"),
+            (vec!["fleet", "reply", "2 of the three checks pass"], "2 of the three checks pass"),
+            // Unquoted, and the name is not in front: still a message.
+            (vec!["fleet", "reply", "ask", "worker-3"], "ask worker-3"),
+        ] {
+            assert_eq!(reply_from(&argv).unwrap(), expected, "{argv:?}");
+        }
+    }
+
+    /// The check asks `PaneId` rather than matching spellings of its own, so it
+    /// is exactly as wide as `fleet send`'s recipient and cannot drift from it.
+    /// Note `self`: `fleet send self` is not a thing (only `fleet cmd` resolves
+    /// it), so a reply may start with the word. A first token starting with `-`
+    /// never reaches here at all — clap rejects it ahead of us, `-1` included.
+    ///
+    /// One name `PaneId` accepts is missing from both lists in this file, and
+    /// not because it is uncovered: WP-15's Tier 1.4 grep forbids the string in
+    /// every file on the delivery path, and this is one of them. It is exercised
+    /// in `tests/reply_recipient.rs`, which is not.
+    #[test]
+    fn the_refusal_is_exactly_as_wide_as_the_recipient_fleet_send_accepts() {
+        for candidate in [
+            "orch", "lead", "o", "operator", "critic", "2", "w2", "worker2", "worker-2", "self",
+            "w", "worker", "worker-", "worker_3", "256", "3pm", "Agreed", "annex", "orch,",
+            "worker-3 said the annex is out",
+        ] {
+            let is_a_pane_name = candidate.parse::<PaneId>().is_ok();
+            let refused = reply_from(&["fleet", "reply", candidate, "text"]).is_err();
+            assert_eq!(refused, is_a_pane_name, "{candidate:?}");
+        }
     }
 
     // --- the command channel (D-045) ------------------------------------------
