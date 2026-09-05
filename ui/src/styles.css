@@ -636,6 +636,95 @@ body,
   min-width: 0;
   flex: 1;
 }
+/* The Critic stacks: the interview gate sits above whichever of the two states
+   is showing. Scoped to `.critic-view` alone — the evaluator's view has no bar
+   and keeps the row it has always had. */
+.critic-view {
+  flex-direction: column;
+}
+/* **The interview gate** (WP-21 stage A). Always rendered, on purpose: the cost
+   sentence below is an acceptance criterion of the package — the operator must
+   be able to tell *before pressing* that this spends the fleet's turns — and a
+   `title` cannot be seen on the way to the button or reached from a keyboard.
+   It is printed, in the token the palette reserves for cost. */
+.critic-view__interview {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--bg-1);
+}
+/* The state, said in words. "Open interview" on a button is a verb or an
+   adjective depending on who reads it; this is neither. */
+.critic-view__gate {
+  font-family: var(--mono);
+  font-size: var(--t-label);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--fg-mute);
+}
+/* Open is the state that is costing something, so it is the one the eye finds
+   first — the same coral the rest of the app spends on "active". */
+.critic-view__gate--open {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.critic-view__gate--closed {
+  color: var(--fg-dim);
+}
+.critic-view__gate--unknown,
+.critic-view__gate--norun {
+  color: var(--fg-mute);
+}
+.critic-view__interview-toggle {
+  padding: 5px 14px;
+  font-size: var(--t-small);
+  font-family: inherit;
+  color: var(--fg);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+.critic-view__interview-toggle:hover:not(:disabled) {
+  background: var(--bg-3);
+  border-color: var(--fg-mute);
+}
+.critic-view__interview-toggle:disabled {
+  color: var(--fg-mute);
+  cursor: not-allowed;
+}
+/* `--gold` is the palette's declared token for "awareness — review / pending /
+   unread / cost", and this is a cost. Both themes redeclare it, so this reads
+   in either one. */
+.critic-view__cost {
+  flex: 1 1 34ch;
+  margin: 0;
+  font-size: var(--t-small);
+  line-height: 1.5;
+  color: var(--gold);
+}
+.critic-view__cost code {
+  font-family: var(--mono);
+  color: inherit;
+}
+/* Empty until a write fails, and then it says so where the switch that did not
+   move is — the switch itself stays where it was (no optimistic flip). */
+.critic-view__interview-error:empty {
+  display: none;
+}
+.critic-view__interview-error {
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: var(--t-small);
+  color: var(--red);
+}
 .critic-view__terminal,
 .evaluator-view__terminal {
   display: flex;

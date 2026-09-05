@@ -34,6 +34,7 @@ import { usePaneJump } from "./ui/usePaneJump";
 import { useWindowState } from "./ui/useWindowState";
 import { useTheme } from "./ui/useTheme";
 import { useDevMode } from "./ui/useDevMode";
+import { useCriticInterview } from "./ui/useCriticInterview";
 import { TerminalPane } from "./components/TerminalPane";
 import { killPane, onEvaluatorWake } from "./fleet/api";
 import { CRITIC, EVALUATOR, ORCH, paneSlot, type PaneId, type PaneStatus } from "./fleet/types";
@@ -184,6 +185,13 @@ export function App() {
   // and this flag only decides whether it may spawn a pty.
   const [criticStarted, setCriticStarted] = useState(false);
 
+  // **The interview gate** (WP-21 stage A). Rust holds it, because it decides
+  // whether a `fleet send` from inside the Critic resolves at all; this is a
+  // view of that state, on the `useDevMode` shape, with no optimistic flip.
+  // Keyed on the fleet being up: with no run there is nothing to interview, and
+  // that is also when the control is disabled below.
+  const interview = useCriticInterview(started);
+
   // Dev mode can be turned off while `evaluator` is the persisted view, which
   // would leave the operator on a view with no row in the rail to leave by.
   // `=== false` and not `!== true`: while the backend has not answered, the
@@ -275,6 +283,60 @@ export function App() {
                 have (the arc's D6), which keeps the human as the only writer. */}
             <div className={`stage-view ${view === "critic" ? "" : "is-hidden"}`}>
               <div className="critic-view">
+                {/* **The interview gate** (WP-21 stage A). Always in the tree,
+                    never conditionally rendered: the view is hidden with CSS and
+                    nothing inside it may leave the tree, or the terminal below
+                    goes with it (§7 rule 5).
+
+                    The cost is *printed*, not hovered. WP-21 makes "the operator
+                    can tell, before pressing the control, that it will spend the
+                    fleet's turns" an acceptance criterion, and the arc already
+                    records what a tooltip buys: ticket 08's Critic/Evaluator
+                    distinction is "a hover tooltip plus each view's own lede",
+                    and it is named there as the weak part. A hover cannot be
+                    seen on the way to the button and does not exist for a
+                    keyboard press at all. So the sentence sits beside the
+                    control, in the token the palette reserves for cost.
+
+                    The state is said in words as well as in the verb, because
+                    "Open interview" alone reads as either the state or the
+                    action depending on who is looking. */}
+                <div className="critic-view__interview">
+                  <span
+                    className={`critic-view__gate critic-view__gate--${
+                      started ? (interview.open === null ? "unknown" : interview.open ? "open" : "closed") : "norun"
+                    }`}
+                  >
+                    Interview:{" "}
+                    {started
+                      ? interview.open === null
+                        ? "checking…"
+                        : interview.open
+                          ? "open"
+                          : "closed"
+                      : "no run"}
+                  </span>
+                  <button
+                    type="button"
+                    className="critic-view__interview-toggle"
+                    onClick={interview.toggle}
+                    disabled={interview.open === null}
+                    title={
+                      started
+                        ? "Open puts the Critic on the fleet's address book; closed, a send from it fails to resolve"
+                        : "Start the fleet first — there is no run to interview"
+                    }
+                  >
+                    {interview.open === true ? "Close interview" : "Open interview"}
+                  </button>
+                  <p className="critic-view__cost">
+                    Opening this spends the fleet&rsquo;s turns: every question the Critic asks costs{" "}
+                    <code>orch</code> or a worker a turn it would have spent on the run, and asking
+                    mid-run can perturb it. Closed, the Critic is not an address and can spend
+                    nothing.
+                  </p>
+                  <p className="critic-view__interview-error">{interview.error}</p>
+                </div>
                 <div className={`critic-view__waiting ${criticStarted ? "is-hidden" : ""}`}>
                   <p className="critic-view__lede">The Critic reads the run in progress.</p>
                   <p className="critic-view__note">
