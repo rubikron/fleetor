@@ -218,4 +218,124 @@ mod tests {
         assert!(lowered.contains("under exactly the same rules"));
         assert!(lowered.contains("not a shortcoming you inferred"));
     }
+
+    /// **The in-remit / out-of-remit line** (WP-21 stage A).
+    ///
+    /// "Find mistakes and lapses of judgement" reads like a reversal of the ban
+    /// on judging, and it is not: a decision about *the run* is in remit, a
+    /// judgement about *the code* is out. The arc doc calls that distinction its
+    /// most important sentence, so both worked examples — real findings from the
+    /// first live run — are pinned, not just the abstract rule.
+    #[test]
+    fn the_brief_draws_the_line_between_a_decision_about_the_run_and_a_judgement_about_the_code() {
+        let lowered = flat();
+        assert!(
+            lowered.contains("the line that paragraph draws runs between the run and the code"),
+            "the distinction has to be stated, not implied by the examples",
+        );
+        assert!(lowered.contains("a decision about **the run** is yours to report"));
+        assert!(lowered.contains("a judgement about **the code** is not"));
+        assert!(
+            lowered.contains(
+                "*\"orch reported the run verified by receipts; no receipt existed\"* is in remit"
+            ),
+            "the in-remit worked example",
+        );
+        assert!(
+            lowered.contains(
+                "*\"the retry logic should have been extracted\"* is not"
+            ),
+            "the out-of-remit worked example",
+        );
+        assert!(
+            lowered.contains("asking about mistakes does not widen the remit"),
+            "the remit does not widen; only the evidence inside it does",
+        );
+    }
+
+    /// **Testimony is not record** (WP-21 stage A).
+    ///
+    /// The citation rule's ban on paraphrase — *"you can cite what it wrote, not
+    /// why it wrote it"* — would be quietly deleted by admitting an interview
+    /// answer as archive evidence, because an answer is exactly a pane saying
+    /// why. So the third citation form is visually distinct, corroboration is
+    /// the most an answer can do, a contradiction is itself an archive-anchored
+    /// finding, and an unsettled question still goes to UNCITED.
+    #[test]
+    fn the_brief_admits_testimony_as_corroboration_and_never_as_the_anchor() {
+        let lowered = flat();
+        assert!(lowered.contains("**testimony is not record.**"));
+        assert!(
+            lowered.contains("cite an answer as `interview <pane> <ts>` — never in the shape of \
+                              an archive citation"),
+            "a third citation form, distinct from `events.json seq n` and a transcript line",
+        );
+        assert!(
+            lowered.contains(
+                "a finding may be **corroborated** by testimony and is **never established** by it"
+            ),
+            "the whole of what an answer is worth",
+        );
+        assert!(
+            lowered.contains("every finding keeps its archive anchor"),
+            "and the anchor is the archive's, always",
+        );
+        assert!(
+            lowered.contains(
+                "**an answer that contradicts the archive is itself a finding**, and an \
+                 archive-anchored one"
+            ),
+            "this is where a lapse of judgement about the run surfaces",
+        );
+        assert!(
+            lowered.contains("goes to uncited, **with the answer recorded**"),
+            "UNCITED survives the interview, and it records what asking produced",
+        );
+    }
+
+    /// **How an interview is conducted** — the gate, and the two verb shapes.
+    ///
+    /// A brief that taught `fleet reply <pane> "…"` would teach a shape the CLI
+    /// refuses at parse (D-077), so the no-recipient rule is pinned by its own
+    /// sentence. The closed interview failing at resolution is pinned too: a
+    /// Critic that read "no such pane" as a defect in the run would file the
+    /// operator's own switch as a finding.
+    #[test]
+    fn the_brief_says_when_the_critic_may_ask_and_in_what_shape() {
+        let lowered = flat();
+        assert!(lowered.contains("when the operator opens an interview — and only then"));
+        assert!(
+            lowered.contains("a send fails with \"no such pane\"; that is the interview being \
+                              closed, not a fault of the run and not a finding"),
+            "the closed gate is resolution failure, and it is not a finding",
+        );
+        assert!(lowered.contains("address a pane by name with `fleet send orch \"<text>\"`"));
+        assert!(
+            lowered.contains("`fleet reply` takes **no recipient**"),
+            "D-077: a name in front of the text is refused at parse",
+        );
+        assert!(
+            lowered.contains("do not ask what should have been built"),
+            "the remit binds the questions as well as the findings",
+        );
+    }
+
+    /// The interview gets its own output section, beside the three the spike
+    /// converged on, so a reader can tell at a glance which claims rest on the
+    /// record and which on testimony.
+    #[test]
+    fn the_output_has_an_interview_section_beside_orientation_findings_and_uncited() {
+        let lowered = flat();
+        for section in ["- **orientation**", "- **findings**", "- **interview**", "- **uncited**"] {
+            assert!(lowered.contains(section), "the output lost `{section}`");
+        }
+        assert!(
+            lowered.contains("- **interview** — only if the operator opened one"),
+            "no interview, no section to pad",
+        );
+        let findings = lowered.find("- **findings**").expect("FINDINGS is in the output");
+        let interview = lowered.find("- **interview**").expect("INTERVIEW is in the output");
+        let uncited = lowered.find("- **uncited**").expect("UNCITED is in the output");
+        assert!(findings < interview && interview < uncited, "testimony reads after the record");
+    }
 }
