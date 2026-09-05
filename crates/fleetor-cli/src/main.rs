@@ -244,7 +244,7 @@ fn run() -> Result<ExitCode> {
             to: pane.parse::<PaneId>().map_err(|e| anyhow::anyhow!("{e}"))?,
             text: join(text),
         },
-        Command::Broadcast { text } => Op::Broadcast { text: join(text) },
+        Command::Broadcast { text } => Op::Broadcast { text: broadcast_text(text)? },
         Command::Reply { text } => Op::Reply { text: reply_text(text)? },
         Command::Cmd { pane, command, why } => {
             Op::Cmd { to: target(&pane)?, command: join(command), why }
@@ -590,6 +590,43 @@ fn reply_text(text: Vec<String>) -> Result<String> {
     Ok(join(text))
 }
 
+/// The body of a `fleet broadcast`, or a refusal if the pane wrote a recipient
+/// where the body starts (D-078).
+///
+/// The same argv shape as [`reply_text`], and caught for the same reason — but
+/// **the cost of missing it is not the same, and that is worth being honest
+/// about.** A misaddressed `reply` is a *misroute*: the wrong pane gets the
+/// message and the right one never does, which is what produced nine silent
+/// misdeliveries in one measured run. A `broadcast` has no recipient to get
+/// wrong; everyone receives it either way, so the cost of the unfixed defect is
+/// only a stray leading word. No measurement says it has ever happened.
+///
+/// It is caught anyway because the *other* error is the expensive one:
+/// `fleet broadcast worker-3 "…"` from a pane that meant to reach one peer
+/// tells all four, which is the failure `prompts/worker.md` already calls
+/// "almost never the right call". Announcing to the whole fleet what belonged
+/// in one message is worse than a stray word.
+///
+/// **The false positive this creates, and why it is affordable.** Unlike
+/// `reply`, a broadcast plausibly *does* open with a peer's name — "worker-3 is
+/// blocked on the schema" is an ordinary announcement, and a pane that types it
+/// unquoted is refused here for writing correct prose. So the refusal names
+/// both remedies rather than assuming which was meant: send to one pane, or
+/// quote the message. Either correction is one line, in the turn the pane is
+/// already in.
+fn broadcast_text(text: Vec<String>) -> Result<String> {
+    if let Some(first) = text.first() {
+        if first.parse::<PaneId>().is_ok() {
+            anyhow::bail!(
+                "`fleet broadcast` does not take a recipient — use \
+                 `fleet send {first} \"<text>\"` to reach one pane, or quote the \
+                 whole message if it really begins with a name"
+            );
+        }
+    }
+    Ok(join(text))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -734,6 +771,87 @@ mod tests {
             let is_a_pane_name = candidate.parse::<PaneId>().is_ok();
             let refused = reply_from(&["fleet", "reply", candidate, "text"]).is_err();
             assert_eq!(refused, is_a_pane_name, "{candidate:?}");
+        }
+    }
+
+    // --- `fleet broadcast` takes no recipient either (D-078) -------------------
+
+    /// [`reply_from`]'s twin, and through clap for the same reason: the whole
+    /// discriminator is how argv was split.
+    fn broadcast_from(argv: &[&str]) -> Result<String> {
+        let cli = Cli::try_parse_from(argv).unwrap_or_else(|e| panic!("{argv:?}: {e}"));
+        let Command::Broadcast { text } = cli.command else { panic!("expected broadcast") };
+        broadcast_text(text)
+    }
+
+    /// `broadcast` has the identical argv shape to `reply` — `trailing_var_arg`,
+    /// no recipient field — so a name in front is glued to the body the same way.
+    /// The failure it prevents is the opposite one: not a message reaching the
+    /// wrong pane, but a message meant for one pane reaching all four.
+    #[test]
+    fn a_broadcast_that_names_a_recipient_is_refused_for_every_spelling_send_accepts() {
+        for name in
+            ["orch", "orchestrator", "lead", "o", "operator", "critic", "0", "3", "255", "w3",
+             "worker3", "worker-3", "OrCh", "Worker-3", " orch "]
+        {
+            assert!(
+                name.parse::<PaneId>().is_ok(),
+                "{name:?}: this test is only meaningful for names `fleet send` accepts"
+            );
+            assert!(
+                broadcast_from(&["fleet", "broadcast", name, "the", "annex", "is", "out"]).is_err(),
+                "{name:?} was accepted as the start of a broadcast body"
+            );
+        }
+    }
+
+    /// Pinned exactly, and it names **both** remedies rather than one. A
+    /// broadcast plausibly does open with a peer's name, unlike a reply, so the
+    /// refused pane may have meant either "send this to worker-3" or "announce
+    /// that worker-3 is blocked" — and it must be able to act without guessing
+    /// which reading the CLI had.
+    #[test]
+    fn the_broadcast_refusal_names_both_remedies() {
+        assert_eq!(
+            broadcast_from(&["fleet", "broadcast", "worker-3", "is blocked"])
+                .unwrap_err()
+                .to_string(),
+            "`fleet broadcast` does not take a recipient — use `fleet send worker-3 \"<text>\"` \
+             to reach one pane, or quote the whole message if it really begins with a name"
+        );
+    }
+
+    /// The affordable false positive, made explicit: an announcement that really
+    /// does start with a peer's name still goes out — quoted.
+    #[test]
+    fn a_broadcast_may_begin_with_a_peers_name_when_the_name_is_prose() {
+        for (argv, expected) in [
+            (
+                vec!["fleet", "broadcast", "worker-3 is blocked on the schema"],
+                "worker-3 is blocked on the schema",
+            ),
+            (vec!["fleet", "broadcast", "orch has the lock"], "orch has the lock"),
+            (vec!["fleet", "broadcast", "heads", "up", "worker-3"], "heads up worker-3"),
+        ] {
+            assert_eq!(broadcast_from(&argv).unwrap(), expected, "{argv:?}");
+        }
+    }
+
+    /// Both verbs ask `PaneId` rather than matching spellings of their own, so
+    /// neither can drift from `fleet send`'s recipient or from each other.
+    #[test]
+    fn broadcast_and_reply_refuse_exactly_the_same_set_of_names() {
+        for candidate in [
+            "orch", "lead", "o", "operator", "critic", "2", "w2", "worker2", "worker-2", "self",
+            "w", "worker", "worker-", "worker_3", "256", "3pm", "Agreed", "annex", "orch,",
+            "worker-3 is blocked on the schema",
+        ] {
+            let is_a_pane_name = candidate.parse::<PaneId>().is_ok();
+            let broadcast_refused =
+                broadcast_from(&["fleet", "broadcast", candidate, "text"]).is_err();
+            let reply_refused = reply_from(&["fleet", "reply", candidate, "text"]).is_err();
+            assert_eq!(broadcast_refused, is_a_pane_name, "{candidate:?}");
+            assert_eq!(broadcast_refused, reply_refused, "{candidate:?}: the two verbs disagree");
         }
     }
 
