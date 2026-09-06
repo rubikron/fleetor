@@ -60,32 +60,14 @@ const COALESCE_MAX: usize = 64 * 1024;
 /// One pty read.
 const READ_CHUNK: usize = 8192;
 
-/// Bracketed paste, so the receiving TUI treats a message as pasted text rather
-/// than as a stream of keystrokes.
-///
-/// **Claude Code's answer to checkpoint 9, and it is read from the spec rather
-/// than from here** (WP-25 #21). Nothing in this module consults these three any
-/// more: [`CLAUDE_CODE_SPEC`](crate::placement::harness::CLAUDE_CODE_SPEC) names
-/// them, and [`PaneRegistry::write_paste`] reads the profile off the pane's own
-/// harness. They stay `pub(crate)` and stay here because the convention
-/// `harness.rs` states for `HOOK_FILE` and `WRITE_TOOLS` is that a literal keeps
-/// living beside the code that owns the subject until the contract batch (#23)
-/// moves it into the spec and deletes the constant.
-pub(crate) const PASTE_START: &[u8] = b"\x1b[200~";
-pub(crate) const PASTE_END: &[u8] = b"\x1b[201~";
-/// What submits a paste once it is closed.
-pub(crate) const SUBMIT_BYTES: &[u8] = b"\r";
-
-/// The gap between the closing paste marker and the `\r` that submits it.
-///
-/// Phase 0 measured 0/10/30 ms and all three submit reliably — pty stream ordering
-/// is preserved. 30 ms anyway, so we don't depend on Claude Code batching the
-/// end-marker and the CR within one input-handler tick, which is a version detail.
-/// This is the **only** delay anywhere between `fleet send` and a pty (D-034), and
-/// per-harness (C26) because it is a widening of a value the invariant already
-/// sanctions — unlike a startup wait, which is a *new* delay and is why checkpoint
-/// 9 has no field for one.
-pub(crate) const SUBMIT_GAP_MS: u64 = 30;
+// Bracketed paste framing, the submit byte and the submit gap were `pub(crate)`
+// constants here until the contract batch (WP-25 #23). They are checkpoint 9 —
+// one harness's answer, not this driver's — so they live on
+// [`TypingProfile`](crate::placement::harness::TypingProfile) and
+// [`PaneRegistry::write_paste`] reads them off the pane's own spec (C35). The
+// submit gap is still D-034's only delay between `fleet send` and a pty; the
+// invariant is asserted on `TypingProfile::submit_gap_ms` now, and
+// `harness_literals.rs` is the tripwire that stops it creeping back in here.
 
 /// How long a pane gets to honor SIGTERM before it is killed outright.
 const TERM_GRACE: Duration = Duration::from_millis(200);

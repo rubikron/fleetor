@@ -9,23 +9,27 @@
 //! the set, so "what would a second vendor have to answer" could only be
 //! discovered by reading all eight.
 //!
-//! ## What this module is, and what it is not yet
+//! ## What this module is
 //!
-//! **This is the expand half of a wide refactor.** The new form is added beside
-//! the old one: [`ClaudeCode`](crate::placement::harness::ClaudeCode)'s
-//! [`HarnessSpec`] states, as data, exactly what the literals in those eight files
-//! already do, and **the literals are still what runs**. Nothing here changes
-//! behaviour, and no call site reads a field of this spec yet. Migrating them is
-//! the next several tickets' work, one disjoint file group at a time, and the
-//! contract step that deletes the literals is the one after that. Until then the
-//! two forms are asserted equal by the `tests` module below rather than assumed
-//! equal.
+//! **The single source of truth, and as of the contract step it is the only one.**
+//! Phase 1 ran expand–migrate–contract: this spec was written beside the literals
+//! (#14), the conformance suite became the safety net (#15, #16), five batches
+//! pointed the call sites here (#18–#22), and #23 deleted what was left over. No
+//! production file spells a vendor answer any more, and
+//! `src-tauri/tests/harness_literals.rs` is the tripwire that says so by reading
+//! the source — because a call site that re-hardcodes `CLAUDE_CONFIG_DIR` builds
+//! byte for byte the same command as one that reads [`ConfigDir::env_var`], so no
+//! test that *runs* the code can tell them apart.
 //!
-//! **Every one of the fourteen is defined here, including the ones no call site
-//! reads.** That is deliberate and it is the reason this ticket is one ticket: the
-//! migrations that follow run in parallel against disjoint files, and they can
-//! only do that if they *read* this spec and never extend it. A checkpoint left
-//! for later is a collision between two of them.
+//! **Every one of the fourteen is defined here, including the ones no production
+//! call site reads yet.** Three are read only by the conformance suite —
+//! [`Posture::sandbox_keys`], [`Credentials::provider_keys`] and
+//! [`Outbound::reachability_keys`] — and they stay, because all three are the same
+//! absent reader: the config-dir seeding a harness that is *configured* rather
+//! than flagged would need, which is one reader in phase 2's
+//! [`Harness::seed_config_dir`] rather than three (C36). Deleting them would make
+//! phase 2 re-add them field by field, which is the trap `building.md` §6 is about
+//! pointed the other way round.
 //!
 //! ## The one rule this module inherits
 //!
@@ -558,12 +562,15 @@ pub trait Harness: std::fmt::Debug + Send + Sync + 'static {
 /// Claude Code — the harness every pane has run since before there was a seam,
 /// and for now the only registered one.
 ///
-/// A unit struct: everything it knows is in [`CLAUDE_CODE_SPEC`], and its three
-/// methods delegate to the functions that already implement them. **It is
-/// registered but not yet wired through**, which is the expand step's whole
-/// definition — the literals in `spawn.rs` and its siblings are still what runs,
-/// and the `tests` module below is what keeps the two forms from drifting until the migrations
-/// delete one of them.
+/// A unit struct: everything it knows is in [`CLAUDE_CODE_SPEC`], and two of its
+/// three methods delegate to `spawn::project_key` and `spawn::seed_config_dir`.
+/// **Those two are Claude Code's own answers to checkpoints 14 and 4** (C31), not
+/// the fleet's assumptions — which is why the contract step left them where they
+/// are and deleted nothing there. They are reached through [`Harness`] and called
+/// directly by no one.
+///
+/// It is registered *and* wired through: every literal those eight files carried
+/// now comes off this spec.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ClaudeCode;
 
@@ -634,24 +641,29 @@ pub const CLAUDE_CODE_SPEC: HarnessSpec = HarnessSpec {
     guardrail: GuardrailInstall {
         settings_file: "settings.json",
         hook_event: "PreToolUse",
-        tool_matcher: guardrail::WRITE_TOOLS,
+        tool_matcher: "Bash|Write|Edit|MultiEdit|NotebookEdit",
         hook_file: guardrail::HOOK_FILE,
     },
 
     // 8 — outbound reachability. No seatbelt, so the socket is simply reachable.
     outbound: Outbound { sandboxed: false, socket_reachable: true, reachability_keys: &[] },
 
-    // 9 — typing profile. `pty::write_paste` reads it. See the type's doc for why
-    // there is no startup wait here. The four values name `pty`'s own constants
-    // rather than repeating them, the convention `HOOK_FILE` and `WRITE_TOOLS`
-    // already follow: they are Claude Code's, so #23 moves the literals in here
-    // and deletes the constants.
+    // 9 — typing profile. `pty::write_paste` reads it off the pane's own harness
+    // (C35). The four values were `pty`'s constants until the contract batch
+    // (#23); they are Claude Code's answers rather than the pty driver's, so they
+    // live here now and `pty.rs` no longer spells them at all. See the type's doc
+    // for why there is no startup wait.
+    //
+    // `submit_gap_ms` is D-034's one delay between `fleet send` and a pty: phase 0
+    // measured 0/10/30 ms and all three submit, because pty stream ordering is
+    // preserved; 30 ms anyway, so the fleet does not depend on the TUI batching
+    // the end marker and the CR within one input-handler tick.
     typing: TypingProfile {
         bracketed_paste: true,
-        paste_start: crate::pty::PASTE_START,
-        paste_end: crate::pty::PASTE_END,
-        submit_bytes: crate::pty::SUBMIT_BYTES,
-        submit_gap_ms: crate::pty::SUBMIT_GAP_MS,
+        paste_start: b"\x1b[200~",
+        paste_end: b"\x1b[201~",
+        submit_bytes: b"\r",
+        submit_gap_ms: 30,
     },
 
     // 10 — command-channel spellings, one row per allowlisted command.
@@ -745,15 +757,20 @@ pub fn by_name(name: &str) -> Option<&'static dyn Harness> {
 
 // --- pinning the two forms together -------------------------------------------
 
-/// **The expand step's safety net, and it is temporary by design.**
+/// **What the expand step's safety net became once there was no second form
+/// left** (#23).
 ///
-/// While both forms exist, every one of these asserts that a field of
-/// [`CLAUDE_CODE_SPEC`] says what the literal it will replace already does. They
-/// are not the conformance suite — that is a later ticket, one pass per registered
-/// harness with each checkpoint asserted end to end through
-/// [`place`](crate::placement::place). These are narrower and cheaper: they exist
-/// so that the migrations can trust the spec, and the contract step that deletes
-/// the literals is what retires them.
+/// These began as pins holding [`CLAUDE_CODE_SPEC`] against the literals it was
+/// written beside. The literals are gone, so what each one now pins is the *value*
+/// — the paste framing, the argv shape, the allowlist coverage, the two live
+/// constants the spec names rather than copies. That is still worth asserting and
+/// it is cheap, so they stay rather than being retired: a value that changes here
+/// changes what a pane runs.
+///
+/// They are not the conformance suite. That is `tests/harness_conformance_1_7.rs`
+/// and its sibling — one pass per registered harness, every checkpoint observed
+/// end to end through [`place`](crate::placement::place). These are narrower and
+/// run in-crate.
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -586,7 +586,7 @@ fn place_orch(
         NoticeLevel::Info,
         context_gauge::spawn_estimate_notice_text(pane, &rendered, None),
     ));
-    notices.push((NoticeLevel::Info, orch_config_dir_notice(&config_dir)));
+    notices.push((NoticeLevel::Info, orch_config_dir_notice(&config_dir, harness.spec())));
 
     let command = spawn::orch_command_with(
         harness,
@@ -1097,13 +1097,17 @@ fn guardrail_notices(
 /// reaches its input box, and fails on its first turn while every `fleet send`
 /// reports `accepted`. The fix is one `/login` inside the pane, and it sticks — so
 /// the operator needs the sentence more than they need the machinery to detect it.
-fn orch_config_dir_notice(config_dir: &Path) -> String {
+fn orch_config_dir_notice(config_dir: &Path, spec: &HarnessSpec) -> String {
+    // The binary is named off checkpoint 1 rather than spelled here (#23): this
+    // sentence tells the operator their *own* install is untouched, and naming the
+    // wrong vendor's binary in it is a sentence that reassures about nothing.
     format!(
         "orch is running on the fleet's own config dir at {}, so its transcript is \
          archived with the run. It keeps your login. If the orch pane says \
          “Not logged in · Run /login”, run `/login` inside that pane once — it \
-         persists, and it cannot disturb your own `claude`.",
-        config_dir.display()
+         persists, and it cannot disturb your own `{}`.",
+        config_dir.display(),
+        spec.program.bin,
     )
 }
 
@@ -1151,7 +1155,10 @@ mod tests {
     /// changed.
     #[test]
     fn the_orch_config_dir_notice_says_what_to_do_if_the_login_did_not_carry() {
-        let text = orch_config_dir_notice(Path::new("/Users/me/.fleetor/_shell/pane-config/orch"));
+        let spec = harness::claude_code().spec();
+        let text =
+            orch_config_dir_notice(Path::new("/Users/me/.fleetor/_shell/pane-config/orch"), spec);
+        assert!(text.contains(spec.program.bin), "checkpoint 1 names the binary: {text}");
         assert!(text.contains("/Users/me/.fleetor/_shell/pane-config/orch"), "{text}");
         assert!(text.contains("archived with the run"), "why it moved at all: {text}");
         assert!(text.contains("Not logged in"), "the exact string the pane would show: {text}");

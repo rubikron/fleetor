@@ -64,8 +64,14 @@
 //! them read off the spec now, and the project key the trust record is filed under
 //! is asked of the harness rather than canonicalized here.
 //!
-//! The literals that remain belong to checkpoints this module does not own —
-//! `CLAUDE_CODE_MAX_CONTEXT_TOKENS` is 11 — and are the next batches' to move.
+//! Checkpoint 11's export half followed in the contract batch (WP-25, issue #23):
+//! the variable the fleet's asserted context window is exported to a worker
+//! through is `gauge.window_env` and the number is `gauge.window_tokens`, so no
+//! literal remains here. What is still spelled out in this module is
+//! [`ENV_CC_SECURESTORAGE_DIR`], which the spec *names* rather than repeats, and
+//! [`project_key`] / [`seed_config_dir`] — Claude Code's own answers to
+//! checkpoints 14 and 4, reached through [`Harness`] rather than called directly
+//! (C31). Those are one harness's implementation, not the fleet's assumptions.
 
 use std::path::{Path, PathBuf};
 
@@ -414,14 +420,16 @@ pub(super) fn worker_command_with(
     if let Some(var) = spec.posture.model_env {
         cmd.env(var, &ctx.launch.worker_model);
     }
-    // CC does not recognize the worker model name and would assume a 200k
-    // window, auto-compacting early (WP-02 finding). Export the fleet's own
-    // stated window instead — the same constant the context gauge divides by,
-    // so CC's bookkeeping and our display can never disagree (D-054).
-    cmd.env(
-        "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
-        crate::context_gauge::WORKER_WINDOW_TOKENS.to_string(),
-    );
+    // Checkpoint 11's export half, off the spec (WP-25 #23). A harness that does
+    // not recognize the worker model's name would assume its own default window
+    // and auto-compact early (WP-02 finding), so where the fleet is the one
+    // asserting the window it exports that same number to the pane — one value,
+    // read from `gauge.window_tokens`, so the vendor's bookkeeping and the rail's
+    // display cannot disagree (D-054). Both `None` is a harness that publishes its
+    // own window, which is the strictly better answer and gets nothing exported.
+    if let (Some(var), Some(window)) = (spec.gauge.window_env, spec.gauge.window_tokens) {
+        cmd.env(var, window.to_string());
+    }
     // Checkpoint 5's second half, and the half that is easier to get wrong.
     //
     // Not "don't set it" — *unset* it. The worker inherits the operator's
@@ -713,19 +721,22 @@ pub(super) fn seed_config_dir(harness: &dyn Harness, dir: &Path, cwd: &Path) -> 
         .entry("projects")
         .or_insert_with(json_object)
         .as_object_mut()
-        .ok_or("existing \"projects\" in .claude.json is not an object")?;
+        .ok_or_else(|| {
+            format!("existing \"projects\" in {} is not an object", spec.config_dir.seed_file)
+        })?;
     let entry = projects
         .entry(project)
         .or_insert_with(json_object)
         .as_object_mut()
-        .ok_or("existing project entry in .claude.json is not an object")?;
+        .ok_or_else(|| {
+            format!("existing project entry in {} is not an object", spec.project_identity.trust_file)
+        })?;
     for key in spec.project_identity.trust_keys {
         entry.insert((*key).into(), true.into());
     }
 
-    // Write via a sibling temp file: a half-written `.claude.json` is a pane that
-    // boots into onboarding, which is the failure this whole function exists to
-    // prevent.
+    // Write via a sibling temp file: a half-written seed file is a pane that boots
+    // into onboarding, which is the failure this whole function exists to prevent.
     let tmp = file.with_extension("json.tmp");
     let text = serde_json::to_string_pretty(&root).map_err(|e| format!("encode config: {e}"))?;
     std::fs::write(&tmp, text).map_err(|e| format!("write {}: {e}", tmp.display()))?;

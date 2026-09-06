@@ -67,17 +67,14 @@ pub const HOOK_FILE: &str = "write-guardrail.py";
 /// operator's shell would be a different program.
 const INTERPRETER: &str = "/usr/bin/python3";
 
-/// The tools the hook is registered for — Claude Code's `matcher` regex.
-/// `Read`, `Grep`, `Glob` and everything else never invoke it at all, which is
-/// what makes "reads stay open" a property of the wiring rather than a promise
-/// inside the script.
-///
-/// **Named by [`GuardrailInstall::tool_matcher`] rather than repeated there**, so
-/// the two cannot drift by editing one side. The value is this vendor's tool
-/// names, so it is the spec that decides which matcher a pane is installed with;
-/// this constant is where Claude Code's answer is written down until #23 moves
-/// the literal.
-pub const WRITE_TOOLS: &str = "Bash|Write|Edit|MultiEdit|NotebookEdit";
+// The tools the hook is registered for used to be a `WRITE_TOOLS` constant here.
+// The value is one vendor's tool names — `Read`, `Grep` and `Glob` never invoke
+// the hook at all, which is what makes "reads stay open" a property of the wiring
+// rather than a promise inside the script — so the contract batch (#23) moved it
+// onto `GuardrailInstall::tool_matcher`, where a second harness answers it
+// differently. [`install`] reads it off the spec it is handed; nothing here
+// spells it. `HOOK_FILE` above stayed, because the script is the fleet's own and
+// every harness gets the same one.
 
 /// Where refusals accumulate for the Activity feed. One file for the whole
 /// fleet, under `_shell` like everything else the running fleet owns.
@@ -390,7 +387,7 @@ mod tests {
         assert!(command.contains("--deny '/fleetor/_shell/pane-config'"), "{command}");
         assert_eq!(
             settings(&dir)["hooks"]["PreToolUse"][0]["matcher"],
-            serde_json::json!(WRITE_TOOLS),
+            serde_json::json!(cc().tool_matcher),
         );
 
         let _ = std::fs::remove_dir_all(&dir);
