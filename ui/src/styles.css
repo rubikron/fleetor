@@ -1042,6 +1042,24 @@ body,
   color: var(--fg-mute);
 }
 
+/* what each harness will actually spend (WP-25 #36, story 12). Directly under the
+   body sentence and above the seat rows, because it qualifies "it will spend
+   tokens" — whose tokens is the part that differs between the orchestrator seat and
+   a worker, and it is read before the pickers rather than after them. Marked rather
+   than dimmed: this is the cost statement, not a footnote to it. */
+.pane-gate__cost {
+  list-style: none;
+  margin: 0 0 0.875rem;
+  padding: 0 0 0 0.75rem;
+  border-left: 2px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  font-size: var(--t-small);
+  line-height: 1.5;
+  color: var(--fg-dim);
+}
+
 /* one seat's harness and model on the spend gate (WP-25 #35). A row rather than
    the flat key/value the other facts use: the controls sit on one line and the
    harness's own facts sit under them, so a login state is read in the same glance

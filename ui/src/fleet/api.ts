@@ -60,15 +60,21 @@ export function fetchGate(refresh = false): Promise<GateState> {
   return invoke<GateState>("fleet_gate", { refresh });
 }
 
-/// Record what the operator picked, and resolve with **what is now stored**.
+/// Record what the operator picked, and resolve with **the whole gate**, read back.
 ///
 /// The resolved value is the backend's, read back — not the argument echoed. The
 /// gate's summary renders from it, and a summary rendered from what the interface
 /// asked for rather than from what took effect is a gate promising a fleet that is
 /// not the one that will spawn. Rejects with a message the operator can act on when
 /// a harness named is not one this build can place.
-export function setSeats(seats: FleetSeats): Promise<FleetSeats> {
-  return invoke<FleetSeats>("fleet_set_seats", { seats });
+///
+/// **It resolves with `GateState` rather than the seats alone** (#36). The refusal,
+/// the cost lines and the model fallbacks are all functions of the selection *and*
+/// the live readings — so a pick that changed the seats here and left this side to
+/// re-derive the rest would be two implementations of one rule, and the one that is
+/// wrong would be the one the operator reads.
+export function setSeats(seats: FleetSeats): Promise<GateState> {
+  return invoke<GateState>("fleet_set_seats", { seats });
 }
 
 /// Every pane and its state, each worker's context gauge attached when one

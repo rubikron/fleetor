@@ -1413,6 +1413,34 @@ impl LoginState {
     pub fn caveat(&self) -> Option<&'static str> {
         self.is_logged_in().then_some(REACHABILITY_NOT_AUTHORIZATION)
     }
+
+    /// **Whether a seat on this harness could actually spawn** (WP-25 #36, story
+    /// 11).
+    ///
+    /// Two of the four states are a refusal and two are not, and the pair that is
+    /// not is the whole of C14's narrowness. `Unreadable` is a *working*
+    /// installation whose report this build could not parse; refusing it would stop
+    /// a fleet on the strength of a parse error, which is the failure the narrow
+    /// refusal exists to avoid. `LoggedIn` is obvious. The other two are the states
+    /// in which a pane would come up on a login prompt.
+    ///
+    /// **The one spelling of the rule.** `ui/src/fleet/types.ts`'s
+    /// `CANNOT_TAKE_A_SEAT` lists the same two status words for the interface, and
+    /// `src-tauri/tests/gate_refusal.rs` reads both and fails if they part company —
+    /// a gate that greys out a row the backend would happily start, or starts one
+    /// the row greyed out, is exactly the silent disagreement that test exists for.
+    pub fn can_take_a_seat(&self) -> bool {
+        !matches!(self, LoginState::NoCredential { .. } | LoginState::NotInstalled)
+    }
+}
+
+/// The sentence for a harness whose binary is not on the `PATH` this app inherited.
+///
+/// A free function because two callers need the identical words — the gate's row
+/// (`HarnessOffer::from`) and the start refusal ([`HarnessReadiness::refusal`]) —
+/// and an operator told two different things about one machine trusts neither.
+pub fn not_on_the_path(invoked: &str) -> String {
+    format!("`{invoked}` is not on the PATH this app was launched with, so no seat can run it.")
 }
 
 /// The sentence [`LoginState::caveat`] returns, pinned by a test for the reason
@@ -1533,6 +1561,22 @@ impl HarnessReadiness {
             provider: None,
             models: Vec::new(),
             posture: ResolvedPosture::default(),
+        }
+    }
+
+    /// **Why the fleet will not start a seat on this harness, in the vendor's own
+    /// words** — `None` when it will (WP-25 #36, story 11).
+    ///
+    /// The condition is [`LoginState::can_take_a_seat`] and nothing else, so a
+    /// refusal and a greyed-out row can never disagree about the same machine. What
+    /// this adds is the *sentence*, and it is the vendor's rather than ours wherever
+    /// the vendor produced one: "no usable credential" is our word for the state,
+    /// but the operator can only act on the line the vendor wrote.
+    pub fn refusal(&self) -> Option<String> {
+        match &self.login {
+            LoginState::NoCredential { summary } => Some(summary.clone()),
+            LoginState::NotInstalled => Some(not_on_the_path(&self.invoked)),
+            LoginState::LoggedIn(_) | LoginState::Unreadable { .. } => None,
         }
     }
 
@@ -1971,6 +2015,43 @@ mod tests {
                 approval: Some("never".to_string()),
             },
         }
+    }
+
+    /// **The refusal and the greyed-out row are one rule read from two ends**
+    /// (WP-25 #36, story 11).
+    ///
+    /// [`LoginState::can_take_a_seat`] decides whether a row is offered;
+    /// [`HarnessReadiness::refusal`] decides whether a start is stopped, and
+    /// supplies the sentence. If those two ever disagree the gate greys out a
+    /// harness the fleet would happily start, or starts one the gate greyed out —
+    /// and neither fails a compile. So they are asserted to be the same predicate,
+    /// over all four states.
+    #[test]
+    fn what_may_not_take_a_seat_is_exactly_what_refuses_a_start() {
+        let states = [
+            LoginState::LoggedIn(AccountShape::ApiKey),
+            LoginState::NoCredential { summary: "no Codex credentials".into() },
+            LoginState::NotInstalled,
+            LoginState::Unreadable { why: "unknown report format".into() },
+        ];
+        for login in states {
+            let reading = HarnessReadiness { login: login.clone(), ..logged_in() };
+            assert_eq!(
+                reading.login.can_take_a_seat(),
+                reading.refusal().is_none(),
+                "a seat that may be taken is a start that is not refused: {login:?}",
+            );
+        }
+
+        // The two that refuse carry the vendor's own words, and the not-installed
+        // sentence is the one `HarnessOffer::from` puts on the row (`not_on_the_path`).
+        let refused = HarnessReadiness {
+            login: LoginState::NoCredential { summary: "no Codex credentials".into() },
+            ..logged_in()
+        };
+        assert_eq!(refused.refusal().as_deref(), Some("no Codex credentials"));
+        let absent = HarnessReadiness::not_installed(crate::placement::codex::codex().spec());
+        assert_eq!(absent.refusal(), Some(not_on_the_path("codex")));
     }
 
     /// **The reachability-not-authorization caveat reaches the operator**, on the

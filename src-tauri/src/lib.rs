@@ -40,7 +40,7 @@ pub mod testbed;
 
 use std::sync::Arc;
 
-use fleet::FleetState;
+use fleet::{FleetState, GateHold};
 use pty::PaneRegistry;
 use tauri::{Emitter, Manager, WindowEvent};
 
@@ -54,6 +54,13 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(FleetState::default())
+        // **The start gate's own state, managed for the app rather than for a
+        // fleet** (WP-25 #36). The gate is the screen that runs before
+        // `fleet_bootstrap`, so what it renders from — the harness readings and the
+        // operator's seat selection — cannot live on the fleet it is deciding
+        // whether to start. `Fleet` takes a clone of this same `Arc`, so what the
+        // pickers write is what `spawn_pane` places against (M15).
+        .manage(Arc::new(GateHold::default()))
         .setup(|app| {
             // Before this session spawns anything of its own: reap whatever a
             // crash or Force Quit left running from the last one. The close

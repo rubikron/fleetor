@@ -21,6 +21,13 @@
 // held probe and writes back through it. The summary below reads the same `seats`
 // value the pickers write and the backend places against, so this card cannot
 // promise a fleet that is not the one that will spawn (M15).
+//
+// **Since WP-25 #36 the card also refuses** (stories 11, 12, 14). Three things on
+// it are the backend's answers rather than this file's, arriving on the same
+// `GateState` the rows render from — the per-harness cost lines, the model
+// fallbacks, and the refusals that disable the Start button. None of the three is
+// re-derived here: `fleet_bootstrap` refuses on the identical verdict, and a rule
+// implemented on both sides of a wire is a rule that will eventually hold on one.
 
 import { useState, useEffect, useRef } from "react";
 import { pickTarget, setTarget } from "../fleet/api";
@@ -34,6 +41,7 @@ import {
   type GateState,
   type HarnessOffer,
   type SeatChoice,
+  type StartRefusal,
 } from "../fleet/types";
 import { offerFor, useSeatPickers } from "../ui/useSeatPickers";
 
@@ -257,6 +265,11 @@ export function StartGate({ config, onStart, onTargetChanged }: StartGateProps) 
   // fleet is actually about to spend, and not once per seat.
   const spending = gate === null ? [] : selectedHarnesses(gate);
   const caveats = spending.filter((offer) => offer.caveat !== null);
+  // **Read, never re-derived.** Whether this fleet may start is the backend's
+  // answer, arriving on the same value the rows render from; computing it here from
+  // `canTakeASeat` would be a second implementation of a rule that has to hold in
+  // one place (#36).
+  const refusals = gate?.verdict.refusals ?? [];
 
   return (
     <div className="pane-gate pane-gate--workspace">
@@ -266,6 +279,22 @@ export function StartGate({ config, onStart, onTargetChanged }: StartGateProps) 
           Spawns the orchestrator{hasWorkers ? ` and ${WORKER_SLOTS.length} worker terminals` : ""},
           each on the harness named below, all wired to the hub. It will spend tokens.
         </p>
+        {/* **What it will spend, per harness and per seat** (#36, story 12, C9).
+            "It will spend tokens" is the sentence above and it is not enough on its
+            own: a turn in the orchestrator seat runs the operator's *own* login and
+            can draw down their subscription quota, while a worker is fenced on
+            FLEETOR's provider and key and cannot reach that plan at all. The two
+            fail differently and are paid for differently, so they are two sentences.
+            Both are written by the backend from the same `seats` the pickers wrote,
+            so this card cannot promise a fleet that is not the one that will spawn
+            (M15). */}
+        {gate !== null && gate.verdict.cost.length > 0 && (
+          <ul className="pane-gate__cost">
+            {gate.verdict.cost.map((line) => (
+              <li key={`${line.harness}-${line.seats}`}>{line.sentence}</li>
+            ))}
+          </ul>
+        )}
         <ul className="pane-gate__facts">
           {gate === null ? (
             <li>
@@ -390,6 +419,33 @@ export function StartGate({ config, onStart, onTargetChanged }: StartGateProps) 
             <span className="mono">{offer.name}</span>: {offer.caveat}
           </p>
         ))}
+        {/* **A remembered model the vendor no longer lists** (#36, story 14). It
+            already fell back — `fleet_set_seats` settled the seat before it stored
+            it, so the row above shows the default and a retired id cannot reach a
+            `--model` flag. This is the notice that keeps that from being a silent
+            substitution: the operator asked for something specific and got something
+            else, which they have to be told. */}
+        {(gate?.verdict.fallbacks ?? []).map((fallen) => (
+          <p key={`${fallen.seat}-${fallen.asked}`} className="pane-gate__note">
+            <span className="mono">{fallen.asked}</span> is not in{" "}
+            <span className="mono">{fallen.harness}</span>&apos;s model list on this machine, so{" "}
+            {fallen.seat} fell back to <span className="mono">{fallen.fell_back_to}</span>. Pick one
+            from the list, or re-check logins if you have just changed your catalog.
+          </p>
+        ))}
+        {/* **Why the fleet will not start** (#36, story 11). Named per seat rather
+            than as one "cannot start", because the operator's next action is to
+            change *that row* — and the sentence is the vendor's own, since a login
+            problem is fixed with the vendor's own command. The button below is
+            disabled on the same verdict, and `fleet_bootstrap` refuses on it too:
+            the interface is the courtesy, the backend is the rule. */}
+        {(gate?.verdict.refusals ?? []).map((refused) => (
+          <p key={refused.seat} className="pane-gate__error">
+            {refused.seat} is on <span className="mono">{refused.harness}</span>, which{" "}
+            {refused.reason} Nothing will spawn until that seat can take one — log in and press
+            Re-check logins, or put it on another harness.
+          </p>
+        ))}
         <p className="pane-gate__note">{WHAT_A_REMEMBERED_MODEL_IS}</p>
         <div className="pane-gate__actions">
           <button
@@ -407,13 +463,27 @@ export function StartGate({ config, onStart, onTargetChanged }: StartGateProps) 
           >
             {picking ? "Choosing…" : "Choose folder…"}
           </button>
-          <button className="pane-gate__go" onClick={onStart}>
+          {/* **Refuse to start** (#36, story 11). Disabled, never hidden, and it
+              says why on hover — an operator whose button vanished would have no way
+              to tell a refusal from a bug. `fleet_bootstrap` refuses on the same
+              verdict, so this is the courtesy and not the enforcement. */}
+          <button
+            className="pane-gate__go"
+            onClick={onStart}
+            disabled={refusals.length > 0}
+            title={refusals.length === 0 ? undefined : refusals.map(oneLine).join("; ")}
+          >
             Start fleet
           </button>
         </div>
       </div>
     </div>
   );
+}
+
+/// One refusal as a single line, for the disabled button's tooltip.
+function oneLine(refused: StartRefusal): string {
+  return `${refused.seat} is on ${refused.harness}, which ${refused.reason}`;
 }
 
 /// Each distinct harness this fleet is about to spend, once.

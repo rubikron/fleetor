@@ -12,11 +12,13 @@
 // hold a fleet: nothing is spawned from this file, and a machine that has forgotten
 // its localStorage gets the unpicked fleet the backend already defaults to.
 //
-// **A remembered model that no longer exists is deliberately not handled here.**
-// That is #36's — falling back with a visible notice, rather than spawning — and
-// doing half of it here would put the quiet half in the file that looks like it
-// handles it. What this file validates is shape: strings where strings belong, and
-// harness names that still resolve against the live list.
+// **A remembered model that no longer exists is not handled here, and #36 kept it
+// that way.** The fallback lives in `fleet.rs::settle_models`, on the side that has
+// the live catalog and does the storing — so the value that falls back is the value
+// that would have spawned, in one place, rather than a check here and an enforcement
+// there. What this file validates is shape: strings where strings belong, and
+// harness names that still resolve against the live list. What comes back from
+// `setSeats` is the settled fleet, already fallen back and already judged.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { fetchGate, setSeats } from "../fleet/api";
@@ -167,13 +169,13 @@ export function useSeatPickers(): SeatPickers {
         const answered = await fetchGate();
         if (!live) return;
         const restored = restore(answered, readRemembered());
-        if (restored === null) {
-          setGate(answered);
-        } else {
-          const stored = await setSeats(restored);
-          if (!live) return;
-          setGate({ ...answered, seats: stored });
-        }
+        // The whole answer replaces the whole answer. `setSeats` returns a
+        // `GateState`, so what is displayed after a restore is the backend's own
+        // reading of the restored fleet — including whether it may start at all and
+        // whether a remembered model survived the vendor's current catalog (#36).
+        const settled = restored === null ? answered : await setSeats(restored);
+        if (!live) return;
+        setGate(settled);
       } catch (e) {
         if (live) setError(String(e));
       } finally {
@@ -194,7 +196,12 @@ export function useSeatPickers(): SeatPickers {
       void setSeats(next)
         .then((stored) => {
           setError(null);
-          setGate((current) => (current === null ? current : { ...current, seats: stored }));
+          // The backend's whole answer, not a splice. A model the vendor's catalog
+          // no longer lists has already fallen back inside `stored`, and the cost
+          // lines and the refusal describe *that* fleet (#36) — merging only
+          // `seats` would leave the summary a round trip behind the thing it is
+          // summarising.
+          setGate(stored);
         })
         .catch((e: unknown) => setError(String(e)));
     },

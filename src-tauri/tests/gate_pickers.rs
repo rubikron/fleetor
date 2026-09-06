@@ -251,7 +251,7 @@ fn the_recheck_button_forces_a_probe_rather_than_re_rendering_one() {
     );
     let backend = read(BACKEND);
     assert!(
-        backend.contains("if refresh { gate.refresh() } else { gate.read() }"),
+        backend.contains("if refresh { gate.harnesses.refresh() } else { gate.harnesses.read() }"),
         "`fleet_gate` no longer branches on `refresh`, so the button and the render make the \
          same request",
     );
@@ -417,7 +417,7 @@ fn the_gate_promises_no_plan_tier() {
 fn the_seats_the_gate_writes_are_the_seats_that_spawn() {
     let backend = read(BACKEND);
     assert!(
-        backend.contains("fleet.seats = picked;"),
+        backend.contains("gate.store_seats(picked);"),
         "`fleet_set_seats` no longer stores what the operator picked",
     );
     let spawn = between(

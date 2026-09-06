@@ -154,16 +154,60 @@ export interface FleetSeats {
   workers: SeatChoice[];
 }
 
+// --- what a click will cost, and what would refuse it (WP-25 #36) -------------
+//
+// Every type below is computed in Rust (`src-tauri/src/fleet.rs`) and rendered
+// here. Nothing in this interface re-derives them, and that is the point: the rule
+// that disables the button and the rule `fleet_bootstrap` enforces have to be one
+// rule, or the fleet refuses a start the gate said was fine — or the reverse, which
+// is worse.
+
+/// One seat the fleet will not start with, and why (story 11).
+export interface StartRefusal {
+  seat: string;
+  harness: string;
+  /// The vendor's own sentence about this machine — the operator's actionable line.
+  reason: string;
+}
+
+/// What one harness will actually spend, in one role (story 12, C9).
+export interface CostLine {
+  /// `orchestrator`, `all 4 worker seats`, `worker seats 1 and 3`.
+  seats: string;
+  harness: string;
+  sentence: string;
+}
+
+/// A model the harness's own catalog does not list, and what the seat fell back to
+/// (story 14).
+export interface ModelFallback {
+  seat: string;
+  harness: string;
+  asked: string;
+  fell_back_to: string;
+}
+
+/// **What a click will do**, read off the seats that will place.
+export interface StartVerdict {
+  /// Empty exactly when the fleet may start.
+  refusals: StartRefusal[];
+  cost: CostLine[];
+  fallbacks: ModelFallback[];
+}
+
 /// **The whole of what the start gate renders from.**
 ///
 /// One value, so the pickers and the summary cannot be reading two things: the
 /// summary is generated from `seats`, and `seats` is what the backend places
-/// against.
+/// against. Since #36 `fleet_set_seats` answers with this same type rather than
+/// with the seats alone, so a pick replaces the whole screen with what the backend
+/// stored instead of splicing a new selection into an older verdict.
 export interface GateState {
   harnesses: HarnessOffer[];
   seats: FleetSeats;
   /// The model a worker runs when the operator names none.
   worker_model_default: string;
+  verdict: StartVerdict;
 }
 
 /// The orchestrator's sentinel, and the one label it wears (M2).
