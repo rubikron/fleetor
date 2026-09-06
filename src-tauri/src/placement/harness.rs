@@ -117,6 +117,11 @@ pub struct HarnessSpec {
     pub guardrail: GuardrailInstall,
     /// **Checkpoint 8 — outbound reachability.**
     pub outbound: Outbound,
+    /// **Not a checkpoint** — what has to happen between a running process and a
+    /// pane that can receive, read only by `pty::PaneRegistry::spawn` (#42, C26).
+    /// It sits here because this is where it happens: a pane has to be able to
+    /// receive before checkpoint 9 has anything to type into.
+    pub bring_up: BringUp,
     /// **Checkpoint 9 — typing profile.**
     pub typing: TypingProfile,
     /// **Checkpoint 10 — command-channel spellings.**
@@ -375,6 +380,55 @@ pub struct Outbound {
     pub reachability_keys: &'static [(&'static str, &'static str)],
 }
 
+/// **How a pane of this harness gets from a running process to one that can
+/// receive a message** — and **not** a fifteenth checkpoint (WP-25 #42, C26).
+///
+/// A pty is not a prompt. Checkpoint 1 says what to run; this says what has to
+/// happen after it is running before checkpoint 9 has anything to type into.
+/// For Claude Code the answer is *nothing*, which is why this seam did not exist
+/// until a harness needed something.
+///
+/// **Measured, on `codex-cli 0.153.4`:** a codex pane opens on an animated splash
+/// that ends on a keypress rather than on a timer — still animating after 75 s
+/// untouched (`docs/notes/codex-clear-notes.md`) — and it **discards** everything
+/// written to it until that keypress. A first message delivered into it is
+/// silently gone while the pane looks perfectly healthy, which is exactly the lie
+/// Tier 1.5 and D-034 exist to prevent.
+///
+/// **Why this is an enum and not a duration.** C26 refused a `startup_wait` field,
+/// including a zero-valued one, on the grounds that a number encodes a guess where
+/// a readiness check exists — and that a behaviour-preserving placeholder is how
+/// such a field lands unopposed. Both objections are answered rather than dodged:
+/// this carries no number for anyone to tune, and Claude Code's [`AtOnce`] is not
+/// a placeholder awaiting a value but a measured statement about a harness that
+/// can receive the moment it has a pty. The *when* stays in `pty.rs`, where it is
+/// a condition on what the pane paints rather than a constant to be believed.
+///
+/// **Nothing here reaches the message path.** Both variants are read by
+/// `PaneRegistry::spawn` and by nothing else; the difference between them is when
+/// a pane is announced, never what happens to a message once one is.
+///
+/// [`AtOnce`]: BringUp::AtOnce
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BringUp {
+    /// **The pane can receive as soon as it has a pty.** Claude Code's answer, and
+    /// the one that changes nothing: the pane is announced inside `spawn`, exactly
+    /// as every pane has been since there was a registry.
+    AtOnce,
+    /// **The pane opens on something that ends on a keypress and throws away what
+    /// it is sent until then.** It is woken — and *observed* until it settles —
+    /// before it is announced, so it is never addressable while it cannot receive.
+    ///
+    /// The wake happens on the bring-up path, before the pane is in the registry,
+    /// which is where C26 said a harness that must be waited for belongs: it
+    /// delays nothing `fleet send` can already reach, because `fleet send` cannot
+    /// reach a pane that is not announced. A message sent into that window is
+    /// refused for want of a pane and comes back `accepted: false` — the same
+    /// answer a pane nobody has spawned gives, and an honest one, where a message
+    /// swallowed by a splash gets a green `accepted` (Tier 1.5).
+    AfterWaking,
+}
+
 /// **Checkpoint 9 — typing profile.**
 ///
 /// How bytes get from the hub into this harness's input box and become a
@@ -390,6 +444,10 @@ pub struct Outbound {
 /// forbids and which has been argued and lost twice. A harness that needs one
 /// needs *readiness detection*, which is a mechanism rather than a number and does
 /// not belong in a table of constants.
+///
+/// That mechanism now exists: [`BringUp`], read by `pty::PaneRegistry::spawn`
+/// before the pane is announced. It is the thing C26 said the answer would have
+/// to be, and it is still not a field here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypingProfile {
     /// Whether the message is framed as a bracketed paste, so a multi-line body
@@ -792,6 +850,11 @@ pub const CLAUDE_CODE_SPEC: HarnessSpec = HarnessSpec {
 
     // 8 — outbound reachability. No seatbelt, so the socket is simply reachable.
     outbound: Outbound { sandboxed: false, socket_reachable: true, reachability_keys: &[] },
+
+    // Bring-up. Claude Code reaches a composer that accepts input on its own, so
+    // a pane of it is announced the moment it has a pty — which is what every
+    // pane has always done, and what keeps this a widening rather than a change.
+    bring_up: BringUp::AtOnce,
 
     // 9 — typing profile. `pty::write_paste` reads it off the pane's own harness
     // (C35). The four values were `pty`'s constants until the contract batch

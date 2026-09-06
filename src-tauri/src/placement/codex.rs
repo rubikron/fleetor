@@ -574,6 +574,10 @@ pub const CODEX_SPEC: HarnessSpec = HarnessSpec {
         reachability_keys: &[("sandbox_workspace_write.network_access", "true")],
     },
 
+    // Bring-up (#42). A fresh pane opens on a splash that ends on a keypress and
+    // discards what it is sent until then, so it is woken before it is announced.
+    bring_up: super::harness::BringUp::AfterWaking,
+
     // 9 — typing profile (C22). A bracketed paste followed by CR into a real pty
     // submits the turn: the request reached the capture server carrying a sentinel
     // absent from the pasted bytes. **The framing is measured; the gap is not, and

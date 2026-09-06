@@ -4,7 +4,7 @@
 //! whole product stands on: five terminals, each with its own pty, its own pair of
 //! event channels, and its own writer lock.
 //!
-//! Four decisions here are load-bearing, and each of them is a silent failure if
+//! Five decisions here are load-bearing, and each of them is a silent failure if
 //! reversed:
 //!
 //!  - **Per-pane event channels** (`pty://output/orch`, `pty://output/2`). Not one
@@ -30,6 +30,16 @@
 //!    more: the spec says which bytes go out, never whether or when — no queue,
 //!    no guard, no retry, no ceiling joined the message path, and checkpoint 9
 //!    has no startup-wait field for one to arrive as (C26).
+//!  - **A pane that cannot receive is not in the map delivery reads** (#42, C26).
+//!    Codex opens on an animated splash that ends on a keypress and throws away
+//!    everything written to it until then, so a pane of it is woken — and watched
+//!    until it stops painting — *before* it is announced. The wake is on the
+//!    bring-up path and nowhere else: `writable` did not learn a new question,
+//!    because a readiness check between `fleet send` and a live pty is the Tier
+//!    1.4 violation this whole arrangement exists to avoid. Which harnesses need
+//!    it is [`BringUp`]'s answer, and it carries no number for anyone to tune —
+//!    `wake` asks the pane whether it has stopped painting rather than waiting
+//!    out a guess about how long it takes.
 //!  - **`kill_all` signals the process group.** `openpty` gives each child its own
 //!    session, so killing the pid alone can leave the real work orphaned. A leaked
 //!    Opus after window close is a money bug.
@@ -39,7 +49,7 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -49,7 +59,7 @@ use fleetor_core::pane::{PaneEntry, PaneId, PaneState};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use tauri::State;
 
-use crate::placement::harness::{CommandChannel, TypingProfile};
+use crate::placement::harness::{BringUp, CommandChannel, TypingProfile};
 use crate::placement::HarnessSpec;
 
 /// Merge pty reads for this long before emitting, so a repainting TUI doesn't
@@ -73,9 +83,53 @@ const READ_CHUNK: usize = 8192;
 const TERM_GRACE: Duration = Duration::from_millis(200);
 const TERM_POLL: Duration = Duration::from_millis(20);
 
+// --- waking a pane that opens on a splash (#42, C26) ---------------------------
+//
+// **These three are the bring-up path's, and none of them is a startup wait.**
+// A startup wait is a number you believe instead of looking; what is below is a
+// loop that looks. How long a pane takes to come up is decided by the pane —
+// `wake` returns as soon as it settles and not before, and a pane that settles
+// in 200 ms is announced in 200 ms.
+
+/// The keypress a splash ends on.
+///
+/// On an empty composer this submits nothing, which is the whole reason it is
+/// safe to press more than once — and it is pressed more than once, because
+/// nothing tells us when the pane started reading. Measured on `codex-cli
+/// 0.153.4`: a `\r` written before the pane reads is **discarded**, so this
+/// cannot be written once at spawn and left to the pty's ordering to deliver.
+const WAKE_KEY: &[u8] = b"\r";
+
+/// After a press, how long its own repaint is allowed to land before the sample
+/// below starts. Without it the loop measures the echo of its own keypress and
+/// never converges — that is a real failure, met and fixed on the way here.
+const PRESS_SETTLE: Duration = Duration::from_millis(600);
+
+/// The window a pane has to stay silent in to count as settled.
+///
+/// **Measured rather than picked:** a codex pane on its splash paints every 72 ms
+/// on average and its largest gap over 279 consecutive frames was **152 ms**, so
+/// this sits at roughly 2.5× the widest gap an animating pane has shown. Once
+/// settled the same pane painted 75 bytes in 12 s. It is a threshold on the
+/// pane's own silence, not a duration anyone waits out: the loop below exits on
+/// the first quiet sample.
+const QUIET_SAMPLE: Duration = Duration::from_millis(400);
+
 /// One pane's writer, shared by every path that types into it. Named because
 /// three signatures here hand it around and the shape is noise at each of them.
 type PaneWriter = Arc<Mutex<Box<dyn Write + Send>>>;
+
+/// What [`wake`] needs from a pane, taken while the registry locks are held and
+/// used after they are released.
+///
+/// Three `Arc` clones rather than a borrow of the entry, because the entry stays
+/// in the `waking` map the whole time — so `kill` can still reach the process,
+/// and so a bring-up cannot outlive a pane the operator stopped.
+struct Waking {
+    writer: PaneWriter,
+    painted: Arc<AtomicU64>,
+    state: Arc<AtomicU8>,
+}
 
 /// How the registry talks to the outside world: `(channel, base64 payload)`.
 /// A callback rather than an `AppHandle` so the registry is testable headless.
@@ -104,6 +158,15 @@ struct Pane {
     /// Written by the reader thread, read by the roster. A [`PaneState`] as an
     /// atomic, because the reader learns of an exit and the roster asks about it.
     state: Arc<AtomicU8>,
+    /// Bytes this pane has painted, ever. Written by the coalescer, read only by
+    /// [`wake`] — which asks whether it has *stopped* growing.
+    ///
+    /// A counter rather than a timestamp because that is the question being
+    /// asked: two reads a fixed window apart, equal, is a pane that painted
+    /// nothing in that window. A pane that has painted nothing *at all* is a
+    /// process that is not yet a terminal, and the zero tells that apart from
+    /// silence.
+    painted: Arc<AtomicU64>,
 }
 
 const SPAWNING: u8 = 0;
@@ -121,6 +184,26 @@ fn decode_state(raw: u8) -> PaneState {
 /// Managed Tauri state: every pane the shell is running.
 pub struct PaneRegistry {
     panes: Mutex<HashMap<PaneId, Pane>>,
+    /// Panes that have a pty and cannot yet receive (#42).
+    ///
+    /// **A second map rather than a flag on the first, and that is the whole
+    /// point.** A pane is addressable because it is in `panes`; every path that
+    /// can reach a pty — [`Self::write`], [`Self::write_paste`],
+    /// [`Self::write_command`], and `writable` underneath all three — looks a
+    /// name up there and is untouched by this. Holding an unready pane *out* of
+    /// that map is not a gate on the message path, because there is nothing new
+    /// on the message path to gate with: a `fleet send` into this window is
+    /// refused for want of a pane, exactly as it is for a pane nobody has
+    /// spawned, and comes back `accepted: false` carrying "… is not running" —
+    /// which is the sentence the sending model reads on stderr (Tier 1.5).
+    ///
+    /// The alternative — one map plus a readiness check in `writable` — is the
+    /// same behaviour and a Tier 1.4 violation, because the check would sit
+    /// between `fleet send` and a live pty and could only grow.
+    ///
+    /// Killing and pid-recording read both maps; the roster and delivery read
+    /// only `panes`. Locks are always taken `panes` first.
+    waking: Mutex<HashMap<PaneId, Pane>>,
     emit: Emit,
     /// Where live pane pids are durably recorded, for `orphans::sweep` to find
     /// on the next launch. Explicit rather than resolved internally, so a test
@@ -131,7 +214,12 @@ pub struct PaneRegistry {
 
 impl PaneRegistry {
     pub fn new(emit: Emit, registry_path: std::path::PathBuf) -> Self {
-        Self { panes: Mutex::new(HashMap::new()), emit, registry_path }
+        Self {
+            panes: Mutex::new(HashMap::new()),
+            waking: Mutex::new(HashMap::new()),
+            emit,
+            registry_path,
+        }
     }
 
     /// Spawn `cmd` under a fresh pty as `pane`.
@@ -143,6 +231,19 @@ impl PaneRegistry {
     /// `harness` is the spec `place` returned beside `cmd` — the same placement,
     /// so what the pane runs and how the registry types into it cannot come from
     /// two different answers.
+    ///
+    /// **A pane whose harness answers [`BringUp::AfterWaking`] is woken before it
+    /// is announced** (#42, C26). It gets its pty, its pump and its channels
+    /// immediately — the operator watches it come up like any other pane — but it
+    /// does not enter the map delivery reads until it has stopped painting, and
+    /// this call does not return until then. Roughly 2 s for a codex pane; the
+    /// pane decides, not a constant. Nothing is queued or retried on its behalf:
+    /// a message aimed at it in that window is refused for want of a pane and
+    /// answered `accepted: false`, which is a thing the sender can act on —
+    /// unlike the green `accepted` a swallowed message gets today.
+    ///
+    /// [`BringUp::AtOnce`] is every pane FLEETOR has ever run, and takes the same
+    /// path it always did.
     pub fn spawn(
         &self,
         pane: PaneId,
@@ -151,10 +252,39 @@ impl PaneRegistry {
         rows: u16,
         cols: u16,
     ) -> Result<(), String> {
+        let Some(waking) = self.open(pane, cmd, harness, rows, cols)? else {
+            return Ok(());
+        };
+        wake(pane, &waking)?;
+        self.announce(pane)
+    }
+
+    /// Give `pane` a pty, and either announce it or hand back what waking it
+    /// needs. `None` means there is nothing left to do — the pane was already
+    /// running, or its harness is ready the moment it has a pty.
+    ///
+    /// Split from [`Self::spawn`] so the registry locks are provably released
+    /// before anything sleeps: [`wake`] runs for seconds, and a bring-up holding
+    /// the map would stall delivery to the other four panes, which is the one
+    /// thing this whole design exists to avoid.
+    fn open(
+        &self,
+        pane: PaneId,
+        cmd: CommandBuilder,
+        harness: &'static HarnessSpec,
+        rows: u16,
+        cols: u16,
+    ) -> Result<Option<Waking>, String> {
         let mut panes = self.lock()?;
+        let mut waking = self.waking()?;
+        // Already coming up. React StrictMode double-mounts every terminal, and a
+        // second process for one pane is worse than a slow first one.
+        if waking.contains_key(&pane) {
+            return Ok(None);
+        }
         if let Some(existing) = panes.get(&pane) {
             if decode_state(existing.state.load(Ordering::Relaxed)).accepts_input() {
-                return Ok(());
+                return Ok(None);
             }
             panes.remove(&pane); // dead: drop it and start a new one
         }
@@ -173,21 +303,62 @@ impl PaneRegistry {
             pair.master.take_writer().map_err(|e| format!("take writer for {pane}: {e}"))?;
 
         let state = Arc::new(AtomicU8::new(SPAWNING));
+        let painted = Arc::new(AtomicU64::new(0));
         // The channel names are computed once, here, and moved into the pump —
         // the reader thread must not `format!` per read.
-        spawn_pump(reader, self.emit.clone(), out_channel(pane), exit_channel(pane), state.clone());
-
-        panes.insert(
-            pane,
-            Pane {
-                master: pair.master,
-                harness,
-                writer: Arc::new(Mutex::new(writer)),
-                child,
-                state,
-            },
+        spawn_pump(
+            reader,
+            self.emit.clone(),
+            out_channel(pane),
+            exit_channel(pane),
+            state.clone(),
+            painted.clone(),
         );
-        record_live_pids(&panes, &self.registry_path);
+
+        let entry = Pane {
+            master: pair.master,
+            harness,
+            writer: Arc::new(Mutex::new(writer)),
+            child,
+            state,
+            painted,
+        };
+
+        match harness.bring_up {
+            BringUp::AtOnce => {
+                panes.insert(pane, entry);
+                record_live_pids(&panes, &waking, &self.registry_path);
+                Ok(None)
+            }
+            BringUp::AfterWaking => {
+                let handle = Waking {
+                    writer: entry.writer.clone(),
+                    painted: entry.painted.clone(),
+                    state: entry.state.clone(),
+                };
+                waking.insert(pane, entry);
+                // Recorded now rather than at announcement: a pane being woken is
+                // a real process, and a crash before it settles must still leave
+                // `orphans::sweep` something to reap.
+                record_live_pids(&panes, &waking, &self.registry_path);
+                Ok(Some(handle))
+            }
+        }
+    }
+
+    /// Move a woken pane into the map delivery reads. **This is the moment a pane
+    /// becomes addressable**, and nothing before it can be sent to.
+    ///
+    /// A pane that is no longer in `waking` was killed while it was coming up.
+    /// It is not announced: putting it back would resurrect a pane the operator
+    /// stopped, and `kill` already terminated the process.
+    fn announce(&self, pane: PaneId) -> Result<(), String> {
+        let mut panes = self.lock()?;
+        let mut waking = self.waking()?;
+        if let Some(entry) = waking.remove(&pane) {
+            panes.insert(pane, entry);
+            record_live_pids(&panes, &waking, &self.registry_path);
+        }
         Ok(())
     }
 
@@ -282,11 +453,18 @@ impl PaneRegistry {
     /// The exit event is left to the pump, which fires it when the pty EOFs —
     /// both dropping the master and killing the child guarantee that. Emitting
     /// one here too would give the tab two deaths for one process.
+    /// A pane still being woken is killable too — it is a real process, and the
+    /// operator watching it animate is exactly who would want to stop it. Its
+    /// bring-up notices the entry is gone and announces nothing.
     pub fn kill(&self, pane: PaneId) -> Result<(), String> {
         let mut panes = self.lock()?;
-        let mut entry = panes.remove(&pane).ok_or_else(|| format!("{pane} is not running"))?;
+        let mut waking = self.waking()?;
+        let mut entry = panes
+            .remove(&pane)
+            .or_else(|| waking.remove(&pane))
+            .ok_or_else(|| format!("{pane} is not running"))?;
         terminate(&mut entry);
-        record_live_pids(&panes, &self.registry_path);
+        record_live_pids(&panes, &waking, &self.registry_path);
         Ok(())
     }
 
@@ -305,8 +483,12 @@ impl PaneRegistry {
     ///
     /// A poisoned registry answers `true`: the one caller is a guard that must
     /// fail closed, and "I cannot tell" is not "there are none."
+    /// A pane still being woken counts: its config dir, its worktree and its
+    /// brief were all seeded against the target as it was when it spawned, which
+    /// is the whole of what this guard is asking about.
     pub fn any_pane(&self) -> bool {
-        self.panes.lock().map(|panes| !panes.is_empty()).unwrap_or(true)
+        let live = self.panes.lock().map(|panes| !panes.is_empty()).unwrap_or(true);
+        live || self.waking.lock().map(|waking| !waking.is_empty()).unwrap_or(true)
     }
 
     /// Reap every pane. Called on window close — best-effort and deliberately
@@ -315,6 +497,14 @@ impl PaneRegistry {
         let Ok(mut panes) = self.panes.lock() else { return };
         for (_, mut entry) in panes.drain() {
             terminate(&mut entry);
+        }
+        // Panes still coming up are reaped here too. A window closed during a
+        // bring-up would otherwise leave the one thing this module's `kill_all`
+        // exists to prevent: a live agent process with nobody watching it.
+        if let Ok(mut waking) = self.waking.lock() {
+            for (_, mut entry) in waking.drain() {
+                terminate(&mut entry);
+            }
         }
         crate::orphans::write_registry(&self.registry_path, &[]);
     }
@@ -373,6 +563,12 @@ impl PaneRegistry {
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, HashMap<PaneId, Pane>>, String> {
         self.panes.lock().map_err(|e| format!("pane registry poisoned: {e}"))
+    }
+
+    /// Always taken *after* [`Self::lock`], never before — the only two places
+    /// that hold both are `open`/`announce` and `kill`/`kill_all`.
+    fn waking(&self) -> Result<std::sync::MutexGuard<'_, HashMap<PaneId, Pane>>, String> {
+        self.waking.lock().map_err(|e| format!("pane registry poisoned: {e}"))
     }
 }
 
@@ -436,6 +632,7 @@ fn spawn_pump(
     out_channel: String,
     exit_channel: String,
     state: Arc<AtomicU8>,
+    painted: Arc<AtomicU64>,
 ) {
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
 
@@ -475,6 +672,11 @@ fn spawn_pump(
             // closest honest signal we have that it is a terminal and not a
             // process; delivery does not depend on it (see `writable`).
             state.store(LIVE, Ordering::Relaxed);
+            // How much it has painted, for `wake` to ask whether it has stopped
+            // (#42). Counted here rather than in the reader thread because this
+            // is where a *frame* is: the reader returns on any byte available, so
+            // its own idea of "a paint" is an artifact of scheduling.
+            painted.fetch_add(batch.len() as u64, Ordering::Relaxed);
             emit(&out_channel, STANDARD.encode(&batch));
             if disconnected {
                 break;
@@ -483,6 +685,57 @@ fn spawn_pump(
         state.store(DEAD, Ordering::Relaxed);
         emit(&exit_channel, String::new());
     });
+}
+
+/// Press the key a splash ends on until the pane stops painting (#42, C26).
+///
+/// **This detects readiness; it does not wait out a guess.** The question asked
+/// is one the pane answers itself — *are you still painting?* — and the answer
+/// comes off the same byte stream the terminal is rendering, counted by the
+/// coalescer that was already counting it. A pane that settles quickly is
+/// announced quickly. Measured against `codex-cli 0.153.4` with a freshly seeded
+/// `CODEX_HOME`: **ready in about 2 s, after 2 presses.**
+///
+/// **Why it presses rather than only watching.** A fresh codex pane's splash does
+/// not end on its own — #24 left one animating for 75 s — so watching alone
+/// waits forever. `\r` on an empty composer submits nothing, which is what makes
+/// pressing it repeatedly safe, and it is pressed repeatedly because a press
+/// written before the pane starts reading is *discarded*: measured, and the
+/// reason this could not be one blind write at spawn with the pty's own ordering
+/// left to deliver it.
+///
+/// **The two halves of the ready test are both load-bearing.** `painted > 0`
+/// separates a process that has not yet become a terminal from one that has
+/// gone quiet — without it every pane is "settled" the instant it is spawned.
+/// Equal counts across [`QUIET_SAMPLE`] is the silence itself.
+///
+/// **A pane that never settles is never announced, and that is the honest
+/// failure** (D-034). The alternative is a deadline, which would announce a pane
+/// that is still swallowing and hand back the green `accepted` this whole ticket
+/// exists to stop. The operator is not left guessing: the pty is pumping to the
+/// terminal from the moment it exists, so an unsettled pane is one they are
+/// watching animate, and [`PaneRegistry::kill`] reaches it.
+///
+/// Returns early if the pane dies on the way up; [`PaneRegistry::announce`] then
+/// files the corpse, so a harness that cannot start looks like one that started
+/// and exited rather than like a pane that never existed.
+fn wake(pane: PaneId, waking: &Waking) -> Result<(), String> {
+    loop {
+        if !decode_state(waking.state.load(Ordering::Relaxed)).accepts_input() {
+            return Ok(());
+        }
+        {
+            let mut guard = waking.writer.lock().map_err(|e| e.to_string())?;
+            guard.write_all(WAKE_KEY).map_err(|e| format!("wake {pane}: {e}"))?;
+            guard.flush().map_err(|e| format!("wake {pane}: {e}"))?;
+        }
+        std::thread::sleep(PRESS_SETTLE);
+        let before = waking.painted.load(Ordering::Relaxed);
+        std::thread::sleep(QUIET_SAMPLE);
+        if before > 0 && waking.painted.load(Ordering::Relaxed) == before {
+            return Ok(());
+        }
+    }
 }
 
 /// Durably record which pids should still be running, so a launch after a
@@ -495,8 +748,13 @@ fn spawn_pump(
 /// sweep's own liveness+identity check already treats "gone" as a no-op, so a
 /// stale entry costs nothing on the next launch — it just isn't worth a write
 /// on every pty EOF to keep it byte-exact between explicit mutations.
-fn record_live_pids(panes: &HashMap<PaneId, Pane>, registry_path: &std::path::Path) {
-    let pids: Vec<u32> = panes.values().filter_map(|p| p.child.process_id()).collect();
+fn record_live_pids(
+    panes: &HashMap<PaneId, Pane>,
+    waking: &HashMap<PaneId, Pane>,
+    registry_path: &std::path::Path,
+) {
+    let pids: Vec<u32> =
+        panes.values().chain(waking.values()).filter_map(|p| p.child.process_id()).collect();
     crate::orphans::write_registry(registry_path, &pids);
 }
 
