@@ -363,24 +363,55 @@ impl Pass {
 
     /// Type `body` into a **real pty** the way the hub types every message, and
     /// return what the process on the far end read back, plus how long the write
-    /// itself took.
+    /// itself took. Checkpoint 9's evidence; [`Self::echo_of`] is the mechanics.
+    pub fn echo_of_a_paste(&self, body: &str) -> (String, Duration) {
+        self.echo_of(|registry, pane| registry.write_paste(pane, body))
+    }
+
+    /// Type `command` into a **real pty** the way the hub types every slash
+    /// command, and return what the process on the far end read back.
+    ///
+    /// **The sibling checkpoint 10 was missing** (C35). That checkpoint used to
+    /// assert against [`fleetor_core::Command::keystrokes`], which is
+    /// harness-free: it is the *canonical* spelling, so the suite asserted what
+    /// the fleet decided rather than what the harness types, and it passed only
+    /// because Claude Code's table happens to be the identity map. A harness
+    /// whose table was not the identity would be typed correctly and asserted
+    /// wrongly. Driving [`PaneRegistry::write_command`] over a real pty asserts
+    /// the production translation instead — the same call `deliver` makes, fed
+    /// the same `keystrokes()` the hub hands it, with the spelling applied where
+    /// production applies it.
+    ///
+    /// Everything else is [`Self::echo_of_a_paste`]'s: the same placement, the
+    /// same stand-in pane program, the same zero tokens. The elapsed time is
+    /// dropped because the submit gap is checkpoint 9's assertion and asserting
+    /// it twice would make one checkpoint's failure look like two.
+    pub fn echo_of_a_command(&self, command: &str) -> String {
+        self.echo_of(|registry, pane| registry.write_command(pane, command)).0
+    }
+
+    /// One stand-in pane, one write into it, and what the far end read back.
     ///
     /// **This is the one thing on `Pass` that is not a placement**, because
-    /// checkpoint 9 is not a property of a command — it is a property of the bytes
-    /// that are later written into one. It still starts at
+    /// checkpoints 9 and 10 are not properties of a command — they are properties
+    /// of the bytes that are later written into one. It still starts at
     /// [`placement::place`]: the pane is placed exactly as this pass's worker is,
-    /// against the same layout, with the one documented difference that the machine
-    /// carries a stand-in pane program. That override is checkpoint 1's own escape
-    /// hatch — it is a fact about the machine rather than about the harness, which
-    /// is why it lives on [`Host`] — and it is what buys a real process on the far
-    /// end of a real pty for no tokens. Measuring the framing against the *vendor's*
-    /// own binary is C13's tier, not this one.
+    /// against the same layout, with the one documented difference that the
+    /// machine carries a stand-in pane program. That override is checkpoint 1's
+    /// own escape hatch — it is a fact about the machine rather than about the
+    /// harness, which is why it lives on [`Host`] — and it is what buys a real
+    /// process on the far end of a real pty for no tokens. Measuring against the
+    /// *vendor's* own binary is C13's tier, not this one; for codex that is
+    /// `tests/codex_typing.rs`.
     ///
     /// The stand-in is a plain shell, so it echoes the paste markers back as
     /// ordinary characters and only ever prints a line it was given as a
-    /// **submitted** one — which is what makes both halves of the profile visible
+    /// **submitted** one — which is what makes both halves of a profile visible
     /// from outside.
-    pub fn echo_of_a_paste(&self, body: &str) -> (String, Duration) {
+    fn echo_of(
+        &self,
+        write: impl FnOnce(&PaneRegistry, PaneId) -> Result<(), String>,
+    ) -> (String, Duration) {
         let seen: Arc<Mutex<String>> = Arc::default();
         let sink = seen.clone();
         let emit: Emit = Arc::new(move |_channel: &str, payload: String| {
@@ -418,9 +449,9 @@ impl Pass {
         wait_until(&seen, "ready");
 
         let started = Instant::now();
-        let written = registry.write_paste(pane, body);
+        let written = write(&registry, pane);
         let elapsed = started.elapsed();
-        written.expect("a live pane accepts a paste");
+        written.expect("a live pane accepts a write");
 
         // Waited for on the stand-in's *own* marker, never on the body: a tty echoes
         // what was written to it long before the process on the far end has read a

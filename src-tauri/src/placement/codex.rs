@@ -633,15 +633,30 @@ pub const CODEX_SPEC: HarnessSpec = HarnessSpec {
     // discards what it is sent until then, so it is woken before it is announced.
     bring_up: super::harness::BringUp::AfterWaking,
 
-    // 9 — typing profile (C22). A bracketed paste followed by CR into a real pty
-    // submits the turn: the request reached the capture server carrying a sentinel
-    // absent from the pasted bytes. **The framing is measured; the gap is not, and
-    // is #32's.** C22's 6 s/0.6 s failure and 12 s/1.5 s success used fixed sleeps
-    // that conflate a startup wait with the post-paste gap, so which of the two is
-    // load-bearing is not yet known — and `submit_gap_ms` is the one delay on the
-    // message path (Tier 1.4, D-034), which is not a number to guess at. It stays
-    // at Claude Code's measured 30 until #32 isolates codex's own, and C37 already
-    // showed the startup half is a readiness question rather than a constant.
+    // 9 — typing profile (C22, C26; #32). A bracketed paste followed by CR into a
+    // real pty submits the turn, and **one paste is one turn**: a three-line body
+    // delivered into a woken pane reaches the model in a *single* request carrying
+    // every line, which is what `bracketed_paste` is a field to buy — unbracketed,
+    // the first newline submits and one message becomes three.
+    //
+    // **The gap is measured now and it is Claude Code's 30.** C22's 6 s/0.6 s
+    // failure and 12 s/1.5 s success used fixed sleeps that conflated a startup
+    // wait with the post-paste gap, so #24 withdrew any claim about which was
+    // load-bearing (C37). #32 submits at **30 ms** — twenty times shorter than the
+    // gap in C22's *failing* row — on a pane #42 woke, so the post-paste gap was
+    // never the discriminator and there is no codex number to encode. It stays at
+    // 30 because that is what was measured to work, not because it was inherited.
+    //
+    // **`submit_bytes` is load-bearing, and that is a control rather than an
+    // assumption:** codex ships a `disable_paste_burst` key, so a TUI that
+    // submitted on `paste_end` alone would read identically. The same paste framed
+    // with no submit byte paints into the composer and never reaches the wire —
+    // which is exactly the lie this seam refuses (Tier 1.5, D-034).
+    //
+    // **There is no startup wait here and there is no field for one** (C26). A
+    // codex pane's readiness is `bring_up` above, on the spawn path, before the
+    // pane is announced — a mechanism, not a number. `tests/codex_typing.rs` is
+    // the evidence for this checkpoint; `tests/codex_bringup.rs` is that one's.
     typing: TypingProfile {
         bracketed_paste: true,
         paste_start: b"\x1b[200~",
@@ -652,7 +667,10 @@ pub const CODEX_SPEC: HarnessSpec = HarnessSpec {
 
     // 10 — command-channel spellings (C10). `codex` carries `/clear` and
     // `/compact` under the fleet's own names, so M7's open question closes with
-    // identical rows.
+    // identical rows. It also carries `/model` and `/review`, and neither gets a
+    // row: checkpoint 10 refuses a spelling for a word the fleet does not allow,
+    // because a row nothing will ever type is a promise nobody checks. Widening
+    // `ALLOWED_COMMANDS` is Tier 2 and comes first.
     commands: CommandChannel { spellings: &[("/clear", "/clear"), ("/compact", "/compact")] },
 
     // 11 — gauge source and window. Codex publishes `context_window` per model in

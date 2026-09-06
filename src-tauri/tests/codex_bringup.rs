@@ -47,28 +47,24 @@
 //! reason — a tier that skips quietly rots into decoration.
 
 use std::collections::HashMap;
-use std::io::Write;
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use base64::{engine::general_purpose::STANDARD, Engine};
 use fleetor_core::pane::PaneId;
-use fleetor_shell::placement::codex::{codex, CODEX_SPEC, OPERATOR_DIR};
+use fleetor_shell::placement::codex::CODEX_SPEC;
 use fleetor_shell::placement::harness::BringUp;
-use fleetor_shell::placement::{HarnessSpec, Seed};
-use fleetor_shell::pty::{out_channel, Emit, PaneRegistry};
+use fleetor_shell::placement::HarnessSpec;
+use fleetor_shell::pty::PaneRegistry;
 use portable_pty::CommandBuilder;
 
-/// The vendor binary, and the build every number in this file was measured
-/// against.
-const VENDOR_BIN: &str = "codex";
-const RECORDED_BUILD: &str = "codex-cli 0.153.4";
-
-/// The pane's window. A 0x0 terminal is not a terminal — codex paints empty
-/// frames into one — and this is the size the shell's own terminals report.
-const ROWS: u16 = 40;
-const COLS: u16 = 120;
+/// The pane, the capture server and the paint reader are
+/// `tests/codex_pane/mod.rs`'s — shared with `tests/codex_typing.rs` (#32) so
+/// one file's control cannot vouch for the other file's arm through a second,
+/// drifted copy of the instrument.
+mod codex_pane;
+use codex_pane::{
+    announce, on_path, scratch, CodexPane, Painted, RECORDED_BUILD, VENDOR_BIN,
+};
 
 /// How long a delivered message is given to reach the wire.
 ///
@@ -86,168 +82,6 @@ const ON_THE_WIRE: Duration = Duration::from_secs(25);
 /// the arm below stops being a control and nobody would be told.
 static ANNOUNCED_AT_ONCE: HarnessSpec = HarnessSpec { bring_up: BringUp::AtOnce, ..CODEX_SPEC };
 
-// --- the instruments ----------------------------------------------------------
-
-/// Everything a pane has painted, assembled from the registry's own emit
-/// callback — the same bytes the operator's terminal renders.
-#[derive(Default)]
-struct Painted {
-    channel: String,
-    bytes: Mutex<Vec<u8>>,
-}
-
-impl Painted {
-    fn watching(pane: PaneId) -> Arc<Self> {
-        Arc::new(Self { channel: out_channel(pane), bytes: Mutex::new(Vec::new()) })
-    }
-
-    fn emitter(self: &Arc<Self>) -> Emit {
-        let me = Arc::clone(self);
-        Arc::new(move |channel: &str, payload: String| {
-            if channel != me.channel {
-                return;
-            }
-            if let Ok(raw) = STANDARD.decode(payload) {
-                me.bytes.lock().expect("the paint lock").extend_from_slice(&raw);
-            }
-        })
-    }
-
-    fn painted(&self) -> usize {
-        self.bytes.lock().expect("the paint lock").len()
-    }
-
-    /// What the pane painted, escapes removed and **all** whitespace collapsed.
-    ///
-    /// Codex repaints character by character with cursor moves between, so a word
-    /// never survives as a word with its spacing intact. Collapsing is what makes
-    /// a substring test work at all — this is a readiness signal, not a
-    /// rendering, and it is `probe_clear.py`'s `screen()` in Rust.
-    fn screen(&self) -> String {
-        let raw = self.bytes.lock().expect("the paint lock").clone();
-        let text = String::from_utf8_lossy(&raw);
-        let mut out = String::with_capacity(text.len());
-        let mut chars = text.chars().peekable();
-        while let Some(c) = chars.next() {
-            if c != '\u{1b}' {
-                if !c.is_whitespace() && !c.is_control() {
-                    out.push(c);
-                }
-                continue;
-            }
-            match chars.peek() {
-                // OSC: runs to BEL or ST.
-                Some(']') => {
-                    for c in chars.by_ref() {
-                        if c == '\u{7}' || c == '\u{1b}' {
-                            break;
-                        }
-                    }
-                }
-                // CSI: parameter bytes, then one final letter.
-                Some('[') => {
-                    chars.next();
-                    for c in chars.by_ref() {
-                        if c.is_ascii_alphabetic() {
-                            break;
-                        }
-                    }
-                }
-                _ => {
-                    chars.next();
-                }
-            }
-        }
-        out
-    }
-}
-
-/// A fabricated provider on loopback that records every request body and answers
-/// `data: [DONE]`, completing no turn. `probe.py`'s instrument (C13), in Rust so
-/// this file drives the registry rather than a subprocess.
-struct Capture {
-    port: u16,
-    bodies: Arc<Mutex<Vec<String>>>,
-}
-
-impl Capture {
-    fn start() -> Self {
-        use std::io::{BufRead, BufReader, Read};
-        use std::net::TcpListener;
-
-        let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
-        let port = listener.local_addr().expect("its address").port();
-        let bodies = Arc::new(Mutex::new(Vec::new()));
-        let recorded = Arc::clone(&bodies);
-
-        std::thread::spawn(move || {
-            for stream in listener.incoming().flatten() {
-                let mut reader = BufReader::new(&stream);
-                let mut length = 0usize;
-                loop {
-                    let mut line = String::new();
-                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
-                        break;
-                    }
-                    if let Some(n) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                        length = n.trim().parse().unwrap_or(0);
-                    }
-                }
-                let mut body = vec![0u8; length];
-                if reader.read_exact(&mut body).is_ok() {
-                    recorded
-                        .lock()
-                        .expect("the capture lock")
-                        .push(String::from_utf8_lossy(&body).into_owned());
-                }
-                let mut out = &stream;
-                let _ = Write::write_all(
-                    &mut out,
-                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
-                      Connection: close\r\n\r\ndata: [DONE]\n\n",
-                );
-                let _ = Write::flush(&mut out);
-            }
-        });
-
-        Self { port, bodies }
-    }
-
-    fn carrying(&self, needle: &str) -> bool {
-        self.bodies.lock().expect("the capture lock").iter().any(|b| b.contains(needle))
-    }
-}
-
-/// `libtest` captures `println!` and `eprintln!` on a passing test, so a skip
-/// announced with either is invisible in a plain `cargo test`. fd 2 is not
-/// intercepted. Lifted from `vendor_binary_tier.rs`, whose header argues it.
-fn announce(lines: &[String]) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::io::FromRawFd;
-        let mut fd2 = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(2) });
-        let _ = writeln!(fd2, "\n{}\n", lines.join("\n"));
-    }
-}
-
-fn on_path(program: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|path| {
-        std::env::split_paths(&path)
-            .map(|dir| dir.join(program))
-            .find(|candidate| candidate.is_file())
-    })
-}
-
-fn scratch(tag: &str) -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "fleetor-codex-bringup-{tag}-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("a clock")
-            .as_nanos()
-    ))
-}
-
 // --- the arms -----------------------------------------------------------------
 
 /// One pane, brought up under `spec`, sent `message` the instant `spawn` returns.
@@ -258,80 +92,20 @@ fn deliver_into_a_fresh_pane(
     spec: &'static HarnessSpec,
     message: &str,
 ) -> (bool, Arc<Painted>) {
-    let root = scratch(match spec.bring_up {
+    let tag = match spec.bring_up {
         BringUp::AfterWaking => "woken",
         BringUp::AtOnce => "control",
-    });
-    let operator_home = root.join("operator");
-    let pane_home = root.join("pane-home");
-    let cwd = root.join("work");
-    let seeded = root.join("seeded");
-    std::fs::create_dir_all(operator_home.join(OPERATOR_DIR)).expect("a fabricated installation");
-    std::fs::create_dir_all(&pane_home).expect("the Fence's private HOME");
-    std::fs::create_dir_all(&cwd).expect("a pane cwd");
-
-    // **The seeder, not a hand-written directory.** The `CODEX_HOME` under test
-    // has to be the one a pane actually gets (C6), or the splash this file is
-    // about is not the splash a pane meets.
-    let brief = "You are a FLEETOR worker pane.";
-    codex()
-        .seed_config_dir(&Seed::new(&seeded, &cwd, Some(&operator_home)).with_brief(brief))
-        .expect("seeding a pane's CODEX_HOME");
-
-    let capture = Capture::start();
-    let over = |key: &str, value: &str| ["-c".to_string(), format!("{key}={value}")];
-    let base_url = format!("\"http://127.0.0.1:{}\"", capture.port);
-
-    let mut cmd = CommandBuilder::new(vendor);
-    // The shell's own terminal is not an alt-screen one, and the probe measured
-    // through the same flag.
-    cmd.arg("--no-alt-screen");
-    // The provider is overridden on argv rather than rewritten into the seeded
-    // file, so this arm stays independent of how the seed spells its own
-    // provider — that is #29's to change and this is not a test of it.
-    for arg in over("model_provider", "probe")
-        .into_iter()
-        .chain(over("model_providers.probe.name", "\"probe\""))
-        .chain(over("model_providers.probe.base_url", &base_url))
-        .chain(over("model_providers.probe.wire_api", "\"responses\""))
-        .chain(over("model_providers.probe.experimental_bearer_token", "\"sk-probe\""))
-        // Provider-level, not top-level: set at the top level they do nothing,
-        // and each turn becomes a dozen identical requests (C37).
-        .chain(over("model_providers.probe.request_max_retries", "0"))
-        .chain(over("model_providers.probe.stream_max_retries", "0"))
-    {
-        cmd.arg(arg);
-    }
-    cmd.cwd(&cwd);
-    cmd.env("CODEX_HOME", &seeded);
-    cmd.env("HOME", &pane_home);
-    cmd.env("TERM", "xterm-256color");
-    cmd.env("COLORTERM", "truecolor");
-
-    let pane = PaneId::Worker(1);
-    let painted = Painted::watching(pane);
-    let registry = PaneRegistry::new(painted.emitter(), root.join("panes.pids"));
-    registry.spawn(pane, cmd, spec, ROWS, COLS).expect("a codex pane");
+    };
+    let pane = CodexPane::brought_up(vendor, spec, tag);
 
     // **The instant it is announced.** No settling, no sleep, no readiness check
     // of its own — this is what `deliver` does the moment a `fleet send` lands,
     // and the whole claim is that the pane can take it.
-    registry.write_paste(pane, message).expect("the delivery");
+    pane.deliver(message).expect("the delivery");
 
-    let deadline = Instant::now() + ON_THE_WIRE;
-    let mut arrived = false;
-    while Instant::now() < deadline {
-        if capture.carrying(message) {
-            arrived = true;
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    }
-    registry.kill_all();
-    std::fs::remove_dir_all(&root).ok();
-    (arrived, painted)
+    let arrived = pane.reached_the_wire(message, ON_THE_WIRE);
+    (arrived, Arc::clone(&pane.painted))
 }
-
 /// **The ticket, measured against the registry the shell actually uses** (#42).
 ///
 /// A message delivered the instant `spawn` returns reaches the model. Run against

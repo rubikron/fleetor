@@ -281,12 +281,22 @@ fn checkpoint_9_a_paste_reaches_a_real_pty_framed_as_the_profile_says_and_submit
 /// `/` is the first character in the input box, so this is the one delivery in the
 /// product that is deliberately not attributed to its sender.
 ///
-/// **Not observable through `place`.** The channel is `fleetor_core`'s and the
-/// writer that carries it is private to `deliver`; what a test can reach is the
-/// accept-time gate and the keystrokes it produces, which is where the spelling
-/// is decided. That those keystrokes reach a real pty as their own write is
-/// already asserted by `tests/panes.rs`, once, for the fleet rather than per
-/// harness.
+/// **Not observable through `place`, and asserted on a real pty for the same
+/// reason checkpoint 9 is** (C28, C35). The end-to-end half used to compare
+/// `fleetor_core::Command::keystrokes()` against this harness's spelling —
+/// **which was the wrong subject.** `keystrokes()` is harness-free: it is the
+/// canonical word the fleet allowlisted, so that assertion tested what the fleet
+/// decided and not what the harness types, and it held only because Claude Code's
+/// table is the identity map. A harness whose table was not the identity would
+/// have been typed correctly by `pty::write_command` and asserted wrongly here —
+/// the gap C35 recorded and left open.
+///
+/// It is closed by driving the production path: `keystrokes()`, the exact string
+/// the hub hands `deliver`, goes into `PaneRegistry::write_command` over a real
+/// pty with the stand-in pane program on the far end, and the far end must read
+/// **this harness's spelling**. The lookup, the framing and the submit byte are
+/// all production's, so a `spell` that returned its argument fails against any
+/// non-identity table.
 #[test]
 fn checkpoint_10_every_allowlisted_command_has_a_spelling_and_it_is_typed_unframed() {
     for_each_registered("cp10", |pass| {
@@ -325,12 +335,32 @@ fn checkpoint_10_every_allowlisted_command_has_a_spelling_and_it_is_typed_unfram
                 panic!("{}: the fleet refused its own allowlisted {canonical}: {why}", pass.spec.name)
             });
 
-            assert_eq!(
-                command.keystrokes(),
-                format!("{spelling} {COMMAND_ARGUMENT}"),
-                "{}: what will be typed into the pane is not this harness's spelling of \
-                 {canonical}, unframed and with its arguments intact",
+            // What the far end must have read: the harness's *spelling*, its
+            // argument intact, inside this profile's paste framing and submitted.
+            // Built from the spec rather than from anything this file knows about
+            // a vendor, exactly as checkpoint 9 builds its own.
+            let typing = &pass.spec.typing;
+            let spelled = format!("{spelling} {COMMAND_ARGUMENT}");
+            let framed = if typing.bracketed_paste {
+                format!(
+                    "{}{spelled}{}",
+                    String::from_utf8_lossy(typing.paste_start),
+                    String::from_utf8_lossy(typing.paste_end),
+                )
+            } else {
+                spelled
+            };
+
+            let seen = pass.echo_of_a_command(command.keystrokes());
+            assert!(
+                seen.contains(&format!("echo: {framed}")),
+                "{}: the far end did not read this harness's spelling of {canonical}. The \
+                 hub handed `write_command` {:?} — the canonical word — and this harness \
+                 spells it {spelling:?}, so that is what had to reach the pty: its \
+                 argument intact, the slash still in column 0, and as one submitted line. \
+                 It saw {seen:?}",
                 pass.spec.name,
+                command.keystrokes(),
             );
         }
     });
