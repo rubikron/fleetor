@@ -923,18 +923,24 @@ body,
   background: color-mix(in srgb, var(--bg-1) 90%, transparent);
   z-index: 5;
 }
-/* 25rem -> 37.5rem, half again as wide. The card carries a full filesystem
-   path, and at the old width that field was overflowing almost immediately —
-   the extra room means the common case is readable without panning it. Still
-   capped rather than fluid: this is a paragraph plus three facts, and a line
-   that runs the width of a 5K display is harder to read, not easier. */
+/* 25rem -> 37.5rem -> 50rem. The half-again bump to 37.5rem was sized for a
+   filesystem path and three plain facts; #35/#36 then put a harness picker, a
+   model field and a "use default" button on one line per seat, and a card
+   that width forced the `<select>` and the model `<input>` to fight over
+   whatever was left after the label column — which is what crushed the
+   harness picker to a sliver rendering as `c.` and clipped
+   `deepseek-v4-flash` down to `deepsee`. 50rem gives the controls row a fixed
+   floor width per control (see `.seat-row__controls` below) with room left
+   over for the facts prose. Still capped rather than fluid, for the same
+   reason as before: a line that runs the width of a 5K display is harder to
+   read, not easier. */
 .pane-gate__card {
-  max-width: 37.5rem;
+  max-width: 50rem;
   width: 100%;
   background: var(--bg-2);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 1.25rem 1.375rem;
+  padding: 1.375rem 1.625rem 1.5rem;
 }
 .pane-gate__title {
   margin: 0 0 0.5rem;
@@ -944,6 +950,7 @@ body,
 }
 .pane-gate__body {
   margin: 0 0 0.875rem;
+  max-width: 62ch;
   font-size: var(--t-small);
   line-height: 1.5;
   color: var(--fg-dim);
@@ -954,18 +961,26 @@ body,
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.375rem;
+  gap: 0.5rem;
 }
-.pane-gate__facts li {
+/* Plain key/value rows only — "harnesses: unavailable", "workers: none", the
+   target folder. Scoped to its own class rather than `.pane-gate__facts li`
+   (a bare-`li` selector outranks a single class like `.seat-row` on
+   specificity alone, which is what silently forced every seat row's grid
+   layout back to flex before this rule existed — the two column structures
+   this redesign fixes were never fighting the layout the same way). */
+.pane-gate__facts li.pane-gate__fact {
   display: flex;
   gap: 0.625rem;
   font-size: var(--t-small);
 }
 .pane-gate__facts .k {
-  /* widened from 4rem: mono runs wider than the sans this replaced, and
-     "orchestrator" uppercase in mono no longer fits 4rem without overflowing
-     into the value column. */
-  flex: 0 0 5.75rem;
+  /* widened from 4rem, then 5.75rem: mono runs wider than the sans this
+     replaced, and "orchestrator" uppercase in mono no longer fits without
+     overflowing into the value column. Shared by every row style below so a
+     label lines up whether it is a plain fact, a seat row, or the workers
+     header. */
+  flex: 0 0 6.5rem;
   color: var(--fg-mute);
   text-transform: uppercase;
   font-size: var(--t-label);
@@ -1040,46 +1055,81 @@ body,
   font-size: var(--t-small);
   color: var(--accent);
 }
+/* The three prose notices below the pickers (the reachability caveat, the
+   stale-model fallback, and the staleness note on what a remembered model
+   is). All three carry deliberately-written sentences that are load-bearing
+   in full — WP-25 #36's own words, not shortened here — so what changes is
+   how they sit on the page rather than what they say: a hairline block
+   rather than a bare line, and a measure near 60ch so a paragraph that used
+   to run the card's full mono width now reads as a paragraph. */
 .pane-gate__note {
-  margin: 0.75rem 0 0;
+  margin: 0.625rem 0 0;
+  max-width: 60ch;
+  padding: 0.5rem 0.75rem;
+  border-left: 2px solid var(--border);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--bg-1);
   font-size: var(--t-label);
-  line-height: 1.5;
+  line-height: 1.6;
   color: var(--fg-mute);
 }
+/* The reachability caveat and the stale-model fallback both ask to be read
+   before the operator presses Start — gold is this system's own token for
+   awareness/cost/pending, so it is reached for here rather than a new hue. */
+.pane-gate__note--warn { border-left-color: var(--gold); color: var(--fg-dim); }
 
 /* what each harness will actually spend (WP-25 #36, story 12). Directly under the
    body sentence and above the seat rows, because it qualifies "it will spend
    tokens" — whose tokens is the part that differs between the orchestrator seat and
    a worker, and it is read before the pickers rather than after them. Marked rather
-   than dimmed: this is the cost statement, not a footnote to it. */
+   than dimmed: this is the cost statement, not a footnote to it. Capped to the same
+   measure as the notes below it, for the same reason: two sentences of prose read
+   better at a comfortable width than stretched the width of a wide card. */
 .pane-gate__cost {
   list-style: none;
-  margin: 0 0 0.875rem;
+  margin: 0 0 1rem;
   padding: 0 0 0 0.75rem;
+  max-width: 60ch;
   border-left: 2px solid var(--border);
   display: flex;
   flex-direction: column;
-  gap: 0.375rem;
+  gap: 0.5rem;
   font-size: var(--t-small);
-  line-height: 1.5;
+  line-height: 1.55;
   color: var(--fg-dim);
 }
 
-/* one seat's harness and model on the spend gate (WP-25 #35). A row rather than
-   the flat key/value the other facts use: the controls sit on one line and the
-   harness's own facts sit under them, so a login state is read in the same glance
-   as the model it qualifies. */
-.seat-row {
+/* One seat's harness and model on the spend gate (WP-25 #35), and the header
+   row that groups the four workers (WP-26). Both are the same grid — label
+   column, then a controls track — so the orchestrator row and every worker
+   row line up under one another regardless of how many facts lines a
+   particular row happens to carry underneath. `li.seat-row`/`li.seat-group-
+   header` (rather than the bare class) outranks `.pane-gate__facts li` on
+   specificity on purpose; see the comment on that rule. */
+.pane-gate__facts li.seat-row,
+.pane-gate__facts li.seat-group-header {
   display: grid;
-  grid-template-columns: 5.75rem 1fr;
-  gap: 0.125rem 0.625rem;
+  grid-template-columns: 6.5rem 1fr;
+  column-gap: 0.75rem;
+  row-gap: 0.4375rem;
   font-size: var(--t-small);
 }
-.seat-row .k { grid-column: 1; }
+.seat-row .k,
+.seat-group-header .k { grid-column: 1; }
+.seat-row .k { padding-top: 0.375rem; }
+/* **The fix for the crushed picker.** The controls used to be a flex row
+   with `min-width: 0` on both the `<select>` and the model `<input>`, which
+   let the flexbox shrink algorithm crush the select toward zero the moment
+   the row ran out of room — rendering as `c.` with nothing readable in it.
+   A grid with an explicit `minmax()` floor per control cannot do that: the
+   harness track never drops below 10.5rem and the model track never drops
+   below 12rem, so both controls stay legible regardless of what their
+   siblings ask for. */
 .seat-row__controls {
   grid-column: 2;
-  display: flex;
-  gap: 0.375rem;
+  display: grid;
+  grid-template-columns: minmax(10.5rem, 12rem) minmax(12rem, 1fr) auto;
+  gap: 0.5rem;
   align-items: center;
   min-width: 0;
 }
@@ -1087,62 +1137,81 @@ body,
 .seat-row__warn {
   grid-column: 2;
   margin: 0;
+  max-width: 56ch;
   font-size: var(--t-label);
-  line-height: 1.45;
+  line-height: 1.5;
 }
 .seat-row__facts { color: var(--fg-mute); }
 .seat-row__warn { color: var(--accent); }
 .seat-row__harness,
 .seat-row__model {
+  width: 100%;
+  min-width: 0;
   font-family: var(--mono);
   font-size: var(--t-small);
   color: var(--fg-dim);
   background: var(--bg-1);
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-sm);
-  padding: 0.1875rem 0.375rem;
+  padding: 0.3125rem 0.4375rem;
 }
-.seat-row__harness { flex: 0 1 auto; min-width: 0; }
-.seat-row__model { flex: 1 1 auto; min-width: 0; }
 .seat-row__harness:focus,
 .seat-row__model:focus {
   color: var(--fg);
   border-color: var(--border);
   outline: none;
 }
+.seat-row__model::placeholder { color: var(--fg-mute); }
 /* A harness this machine cannot run stays in the list, greyed, carrying its
    reason — never dropped, because an absent option reads as unsupported. */
 .seat-row__harness option:disabled { color: var(--fg-mute); }
 .seat-row__sentinel {
-  flex: 0 0 auto;
   font-family: var(--mono);
   font-size: var(--t-label);
   color: var(--fg-mute);
   background: transparent;
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-sm);
-  padding: 0.1875rem 0.4375rem;
+  padding: 0.3125rem 0.5rem;
   cursor: pointer;
+  white-space: nowrap;
 }
 .seat-row__sentinel:hover:not(:disabled) { border-color: var(--accent); color: var(--fg-dim); }
 .seat-row__sentinel:disabled { opacity: 0.4; cursor: default; }
-.seat-disclosure {
-  display: flex;
-  gap: 0.625rem;
-  font-size: var(--t-small);
+
+/* The workers disclosure, now a labelled header instead of a floating line
+   under the row it affects (defect 6) — a "workers" key in the same column
+   every other row's label sits in, with the toggle and a plain-language
+   note about whether the four currently agree sharing the row beside it. */
+.seat-group-header {
+  padding-top: 0.375rem;
+  margin-top: 0.125rem;
+  border-top: 1px solid var(--border-soft);
 }
-.seat-disclosure .k { flex: 0 0 5.75rem; }
+.seat-group-header .k { padding-top: 0.1875rem; }
+.seat-group-header__row {
+  grid-column: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+.seat-group-header__note {
+  font-size: var(--t-label);
+  color: var(--fg-mute);
+}
 .seat-disclosure__toggle {
   font-family: var(--mono);
   font-size: var(--t-label);
-  color: var(--fg-mute);
+  color: var(--accent);
   background: transparent;
   border: none;
   padding: 0;
   cursor: pointer;
 }
-.seat-disclosure__toggle:hover:not(:disabled) { color: var(--fg-dim); }
-.seat-disclosure__toggle:disabled { opacity: 0.45; cursor: default; }
+.seat-disclosure__toggle:hover:not(:disabled) { text-decoration: underline; }
+.seat-disclosure__toggle:disabled { opacity: 0.55; color: var(--fg-mute); cursor: default; }
 
 /* the workspace stage: every view mounted, only one shown (L7) */
 .workspace__stage {

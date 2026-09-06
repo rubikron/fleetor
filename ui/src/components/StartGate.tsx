@@ -92,7 +92,7 @@ function optionLabel(offer: HarnessOffer): string {
   }
 }
 
-interface SeatRowProps {
+export interface SeatRowProps {
   label: string;
   gate: GateState;
   seat: SeatChoice;
@@ -106,7 +106,13 @@ interface SeatRowProps {
 }
 
 /// One seat's harness and model, with the harness's own facts beneath them.
-function SeatRow({ label, gate, seat, sentinel, onHarness, onModel, aside }: SeatRowProps) {
+///
+/// **Exported so a render probe can mount it directly** (C63) — the orchestrator
+/// row and every worker row are this one component, so proving it actually
+/// produces the harness `<select>`, the model field and the facts line is proving
+/// the whole card's seat-picking half is reachable, not just that the source says
+/// the right thing.
+export function SeatRow({ label, gate, seat, sentinel, onHarness, onModel, aside }: SeatRowProps) {
   const offer = offerFor(gate, seat.harness);
   const models = offer?.models ?? [];
   const listId = `models-${label.replace(/\s+/g, "-")}`;
@@ -297,7 +303,7 @@ export function StartGate({ config, onStart, onTargetChanged }: StartGateProps) 
         )}
         <ul className="pane-gate__facts">
           {gate === null ? (
-            <li>
+            <li className="pane-gate__fact">
               <span className="k">harnesses</span>
               <span className="v">
                 {pickers.loading ? "asking each harness about this machine…" : "unavailable"}
@@ -315,65 +321,81 @@ export function StartGate({ config, onStart, onTargetChanged }: StartGateProps) 
                 aside="Runs your own login, and the provider it resolved — inherited and displayed, never picked."
               />
               {!hasWorkers ? (
-                <li>
+                <li className="pane-gate__fact">
                   <span className="k">workers</span>
                   <span className="v">none — no API key found, the orchestrator runs alone</span>
                 </li>
-              ) : pickers.expanded ? (
-                <>
-                  {WORKER_SLOTS.map((slot) => {
-                    const seat = workers[slot - 1];
-                    if (seat === undefined) return null;
-                    return (
-                      <SeatRow
-                        key={slot}
-                        label={`worker ${slot}`}
-                        gate={gate}
-                        seat={seat}
-                        sentinel={workerDefault}
-                        onHarness={(harness) => pickers.chooseHarness(workerPane(slot), harness)}
-                        onModel={(model) => pickers.chooseModel(workerPane(slot), model)}
-                      />
-                    );
-                  })}
-                </>
               ) : (
-                firstWorker !== undefined && (
-                  <SeatRow
-                    label={`${WORKER_SLOTS.length} workers`}
-                    gate={gate}
-                    seat={firstWorker}
-                    sentinel={workerDefault}
-                    onHarness={pickers.chooseWorkersHarness}
-                    onModel={pickers.chooseWorkersModel}
-                    aside="Fenced, on FLEETOR's own provider and key — never your login."
-                  />
-                )
-              )}
-              {hasWorkers && (
-                <li className="seat-disclosure">
-                  <span className="k" />
-                  <button
-                    type="button"
-                    className="seat-disclosure__toggle"
-                    aria-expanded={pickers.expanded}
-                    disabled={!pickers.workersAgree}
-                    title={
-                      pickers.workersAgree
-                        ? undefined
-                        : "the four workers differ, so one row cannot speak for them"
-                    }
-                    onClick={() => pickers.setExpanded(!pickers.expanded)}
-                  >
-                    {pickers.expanded
-                      ? "▾ one harness for all four"
-                      : "▸ give each worker its own harness"}
-                  </button>
-                </li>
+                <>
+                  {/* **The disclosure now lives under the label it controls** (defect
+                      6): a "workers" header row, so the toggle is never a line an
+                      operator finds floating under four rows with no clear owner. It
+                      also says in words whether the four currently agree, since
+                      "disabled, with a tooltip on hover" is not itself discoverable. */}
+                  <li className="seat-group-header">
+                    <span className="k">workers</span>
+                    <div className="seat-group-header__row">
+                      <span className="seat-group-header__note">
+                        {pickers.expanded
+                          ? pickers.workersAgree
+                            ? "shown separately"
+                            : "shown separately — they differ"
+                          : "one row speaks for all four"}
+                      </span>
+                      <button
+                        type="button"
+                        className="seat-disclosure__toggle"
+                        aria-expanded={pickers.expanded}
+                        disabled={!pickers.workersAgree}
+                        title={
+                          pickers.workersAgree
+                            ? undefined
+                            : "the four workers differ, so one row cannot speak for them"
+                        }
+                        onClick={() => pickers.setExpanded(!pickers.expanded)}
+                      >
+                        {pickers.expanded
+                          ? "▾ one harness for all four"
+                          : "▸ give each worker its own harness"}
+                      </button>
+                    </div>
+                  </li>
+                  {pickers.expanded ? (
+                    <>
+                      {WORKER_SLOTS.map((slot) => {
+                        const seat = workers[slot - 1];
+                        if (seat === undefined) return null;
+                        return (
+                          <SeatRow
+                            key={slot}
+                            label={`worker ${slot}`}
+                            gate={gate}
+                            seat={seat}
+                            sentinel={workerDefault}
+                            onHarness={(harness) => pickers.chooseHarness(workerPane(slot), harness)}
+                            onModel={(model) => pickers.chooseModel(workerPane(slot), model)}
+                          />
+                        );
+                      })}
+                    </>
+                  ) : (
+                    firstWorker !== undefined && (
+                      <SeatRow
+                        label={`${WORKER_SLOTS.length} workers`}
+                        gate={gate}
+                        seat={firstWorker}
+                        sentinel={workerDefault}
+                        onHarness={pickers.chooseWorkersHarness}
+                        onModel={pickers.chooseWorkersModel}
+                        aside="Fenced, on FLEETOR's own provider and key — never your login."
+                      />
+                    )
+                  )}
+                </>
               )}
             </>
           )}
-          <li>
+          <li className="pane-gate__fact">
             <span className="k">target</span>
             <input
               className="v pane-gate__path"
@@ -415,7 +437,7 @@ export function StartGate({ config, onStart, onTargetChanged }: StartGateProps) 
             everything looks fine, so it is said on the card and not only on the
             feed. */}
         {caveats.map((offer) => (
-          <p key={offer.name} className="pane-gate__note">
+          <p key={offer.name} className="pane-gate__note pane-gate__note--warn">
             <span className="mono">{offer.name}</span>: {offer.caveat}
           </p>
         ))}
@@ -426,7 +448,7 @@ export function StartGate({ config, onStart, onTargetChanged }: StartGateProps) 
             substitution: the operator asked for something specific and got something
             else, which they have to be told. */}
         {(gate?.verdict.fallbacks ?? []).map((fallen) => (
-          <p key={`${fallen.seat}-${fallen.asked}`} className="pane-gate__note">
+          <p key={`${fallen.seat}-${fallen.asked}`} className="pane-gate__note pane-gate__note--warn">
             <span className="mono">{fallen.asked}</span> is not in{" "}
             <span className="mono">{fallen.harness}</span>&apos;s model list on this machine, so{" "}
             {fallen.seat} fell back to <span className="mono">{fallen.fell_back_to}</span>. Pick one
