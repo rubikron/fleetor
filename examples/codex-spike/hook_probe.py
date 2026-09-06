@@ -85,13 +85,17 @@ BUILD = "codex-cli 0.153.4"
 
 # Short, under /tmp: codex opens `app-server-control.sock` inside CODEX_HOME and AF_UNIX
 # paths are capped near 104 bytes. `trust_probe.py` records the same constraint.
-ROOT = "/tmp/codex-hook-probe"
+ROOT = f"/tmp/codex-hook-probe-{os.getpid()}"
 HOME = ROOT + "/home"
 WT = ROOT + "/wt"
 OUTSIDE = ROOT + "/outside/loot.txt"
 WITNESS = ROOT + "/witness.jsonl"
 
-PORT = 8797
+# Assigned by the OS in `serve`, not chosen here. A fixed port is what makes two
+# concurrent runs of this probe — or of the vendor tier that drives it as a model —
+# collide, with the second one's server dying on `EADDRINUSE` and its arm reporting
+# that the model was never reached (#43).
+PORT = 0
 VENDOR = os.environ.get("CODEX_BIN", "/opt/homebrew/bin/codex")
 
 FAILURES = []
@@ -155,7 +159,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 def serve():
-    http.server.HTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+    """Start the canned model on a port the OS picks, and return it.
+
+    Binding here rather than inside the thread is what lets a caller write the
+    port into a config it composes on the next line.
+    """
+    global PORT
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    PORT = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return PORT
 
 
 # --- scratch installation -----------------------------------------------------
@@ -195,19 +208,21 @@ def build_scratch():
     return f"/usr/bin/env python3 {hook}"
 
 
-BASE_CONFIG = (
-    'model = "probe-model"\n'
-    'model_provider = "probe"\n'
-    "features.hooks = true\n"
-    f'model_catalog_json = "{HOME}/models.json"\n'
-    'sandbox_mode = "danger-full-access"\n'
-    'approval_policy = "never"\n'
-    "\n[model_providers.probe]\n"
-    'name = "probe"\n'
-    f'base_url = "http://127.0.0.1:{PORT}"\n'
-    'wire_api = "responses"\n'
-    'experimental_bearer_token = "sk-probe"\n'
-)
+def base_config():
+    """The seeded `config.toml`, composed after `serve` has a port to name."""
+    return (
+        'model = "probe-model"\n'
+        'model_provider = "probe"\n'
+        "features.hooks = true\n"
+        f'model_catalog_json = "{HOME}/models.json"\n'
+        'sandbox_mode = "danger-full-access"\n'
+        'approval_policy = "never"\n'
+        "\n[model_providers.probe]\n"
+        'name = "probe"\n'
+        f'base_url = "http://127.0.0.1:{PORT}"\n'
+        'wire_api = "responses"\n'
+        'experimental_bearer_token = "sk-probe"\n'
+    )
 
 
 def entry_toml(command):
@@ -228,7 +243,7 @@ def turn(binary, config_extra="", args=()):
     for p in (WITNESS, OUTSIDE):
         if os.path.exists(p):
             os.unlink(p)
-    open(HOME + "/config.toml", "w").write(BASE_CONFIG + config_extra)
+    open(HOME + "/config.toml", "w").write(base_config() + config_extra)
     env = {**os.environ, "CODEX_HOME": HOME}
     try:
         subprocess.run(
@@ -259,7 +274,7 @@ def main():
     if running != BUILD:
         print(f"NOTE — recorded against {BUILD}, running {running}. Findings may have drifted.")
 
-    threading.Thread(target=serve, daemon=True).start()
+    serve()
     ours = build_scratch()
     decoy = "/usr/bin/true"
 
@@ -350,7 +365,7 @@ def real_arm():
     command = real_guardrail_command("worker-1", [WT], policy, journal)
 
     Handler.n = 0
-    open(HOME + "/config.toml", "w").write(BASE_CONFIG + config_block(command))
+    open(HOME + "/config.toml", "w").write(base_config() + config_block(command))
     env = {**os.environ, "CODEX_HOME": HOME}
     try:
         subprocess.run([VENDOR, "exec", "--skip-git-repo-check", BYPASS, "go"],
@@ -417,7 +432,7 @@ def fleet_seeded(argv):
     json.dump({"models": [entry]}, open(home + "/models.json", "w"))
 
     Handler.n = 0
-    threading.Thread(target=serve, daemon=True).start()
+    serve()
     overrides = [
         'model="probe-model"',
         'model_provider="probe"',

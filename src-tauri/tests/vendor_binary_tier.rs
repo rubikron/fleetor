@@ -16,6 +16,10 @@
 //! reaches a real endpoint. That probe is suite infrastructure per C13, not a
 //! throwaway. This file wires it in and gates on it; it does not reimplement it.
 //!
+//! Since #43 it gates its **sibling** the same way — `probe_clear.py`, five arms,
+//! the `/clear` survival measurement C37 recorded and left ungated. Both probes
+//! are run in sequence by the one gate below, and both exit codes count.
+//!
 //! ## The skip discipline is the whole ballgame
 //!
 //! C13 states the cost outright: a machine without the vendor binary runs a
@@ -48,11 +52,27 @@
 //!
 //! ## Cost, stated (D-081)
 //!
-//! On a machine with the vendor binary this file adds roughly **47 s** to
-//! `cargo test`: two non-interactive turns, three sandboxed commands and two
-//! real pty sessions, all bounded by the probe's own per-subprocess timeouts.
+//! On a machine with the vendor binary the two probes add roughly **85 s** to
+//! `cargo test` — `probe.py`'s ~46 s (two non-interactive turns, three sandboxed
+//! commands, two real pty sessions) plus `probe_clear.py`'s ~39 s (two more pty
+//! sessions, each driven through a turn, a `/clear` and another turn), all
+//! bounded by the probes' own per-subprocess timeouts. That is up from the ~47 s
+//! D-081 stated, and the increase is the whole of #43's second half: the
+//! alternative to paying it is a measurement nothing re-checks.
+//!
 //! It runs by default rather than behind an opt-in flag, because an opt-in flag
 //! is a quiet skip with extra steps.
+//!
+//! ## Concurrency (#43)
+//!
+//! The probes admit **one run at a time**, on a lock they take themselves, and
+//! each run gets its own scratch root and an OS-assigned port. Before that, two
+//! simultaneous runs shared a fixed root and a fixed port, and the second wiped
+//! the first's installation mid-pty — observed as a red `typing-fast-does-not-submit`
+//! that was contention wearing a regression's clothes. A tier whose red means
+//! "maybe someone else was running" is worse than one that skips loudly, so the
+//! second run now waits, and if it waits out the probe's own limit it prints
+//! `BUSY:` and this file announces a skip instead of a failure.
 
 use std::fs;
 use std::io::Write;
@@ -80,12 +100,27 @@ const INTERPRETER: &str = "python3";
 /// The probe, relative to the repository root. One command, eight arms.
 const PROBE: &str = "examples/codex-spike/probe.py";
 
+/// **Its sibling**, relative to the repository root. One command, five arms: the
+/// `/clear` survival measurement behind C37, gated here since #43.
+///
+/// C37 landed it runnable but ungated and said so as a stated cost, which is the
+/// decoration C13 warns about — an ungated probe stops being re-checkable and
+/// becomes folklore dated to one build. It is a sibling rather than a ninth arm
+/// of [`PROBE`] because it needs a capture server that numbers every request.
+const CLEAR_PROBE: &str = "examples/codex-spike/probe_clear.py";
+
+/// The two probes this tier gates on, in the order it runs them.
+const PROBES: [&str; 2] = [PROBE, CLEAR_PROBE];
+
 /// The vendor build every arm was recorded against, spelled the way both the
 /// probe and the spike notes spell it.
 const RECORDED_BUILD: &str = "codex-cli 0.153.4";
 
 /// The notes that carry the measurements, version-stamped to [`RECORDED_BUILD`].
 const NOTES: &str = "docs/notes/codex-spike-notes.md";
+
+/// The notes that carry [`CLEAR_PROBE`]'s measurement (C37), stamped the same way.
+const CLEAR_NOTES: &str = "docs/notes/codex-clear-notes.md";
 
 /// This file, relative to the repository root — it reads its own source, because
 /// since #27 it stands up a loopback provider of its own.
@@ -124,6 +159,53 @@ fn announce(lines: &[String]) {
     }
 }
 
+/// **The binary an arm runs when it wants one reading** (C47, #43).
+///
+/// Not the `codex` on PATH, which on this machine is the cmux shim. Two reasons,
+/// and the second is why this landed with the concurrency work:
+///
+///  - the shim injects six `-c hooks.*` flags and a hook-trust bypass, so an arm
+///    that runs it measures the vendor **plus six injected hooks** — a confound
+///    in every arm that did not ask for one, and it fires the operator's desktop
+///    notifications on every pane a probe opens;
+///  - its path is a per-session temporary under `TMPDIR`, and it can be swept
+///    while a run is in flight. That was observed here as
+///    `could not run …/cmux-cli-shims/…/codex: No such file or directory` —
+///    a red arm with the vendor's name on it and nothing to do with the vendor.
+///
+/// The two arms that take **both** readings on purpose — the write-guardrail arm
+/// and the gate probe — resolve their own binaries and do not call this.
+fn the_vendor_binary() -> Option<PathBuf> {
+    let absolute = Path::new(VENDOR_ABSOLUTE);
+    if absolute.is_file() {
+        return Some(absolute.to_path_buf());
+    }
+    on_path(VENDOR_BIN)
+}
+
+/// A scratch name no concurrent run can also choose, and no longer than that.
+///
+/// **Unique**, because the wall clock alone is not: two runs of this tier started
+/// together take the same millisecond, land on the same root, and the second
+/// one's `fleet.sock` fails to bind with `AddrInUse` — contention wearing a
+/// regression's clothes, which is the whole of #43. The pid is what distinguishes
+/// them; the clock distinguishes two runs from the same shell.
+///
+/// **Short**, because one of these roots holds an `AF_UNIX` socket and those
+/// paths cap at `SUN_LEN` — about 104 bytes, of which macOS's `TMPDIR` already
+/// spends 49. Spelling the clock in full nanoseconds fits the budget on Linux and
+/// blows it here, which is `path must be shorter than SUN_LEN` rather than
+/// anything about the vendor. The low digits carry all the uniqueness two runs
+/// need, so the name stays around 30 bytes.
+fn scratch_name(what: &str) -> String {
+    let ticks = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("a clock")
+        .as_nanos()
+        % 100_000_000;
+    format!("fleetor-codex-{what}-{}-{ticks}", std::process::id())
+}
+
 /// Resolve a program on `PATH` the way a shell would: first executable file
 /// wins. No crate for this — it is eight lines and this file has no deps.
 fn on_path(program: &str) -> Option<PathBuf> {
@@ -153,23 +235,25 @@ fn on_path(program: &str) -> Option<PathBuf> {
 /// for one thing only: evidence that arms actually ran, so a probe that silently
 /// did nothing cannot pass as a green tier.
 #[test]
-fn the_vendor_binary_tier_runs_the_probe_or_announces_its_absence() {
+fn the_vendor_binary_tier_runs_the_probes_or_announces_their_absence() {
     let root = repo_root();
-    let probe = root.join(PROBE);
 
     // A missing probe is a deleted tier, not an absent vendor. C13 makes the
-    // probe suite infrastructure; losing it must be as loud as any other test
+    // probes suite infrastructure; losing one must be as loud as any other test
     // failure, and it must not wear a skip's clothes.
-    assert!(
-        probe.is_file(),
-        "{PROBE} is the vendor-binary tier. It is missing, which is a deleted tier rather \
-         than an absent vendor binary (C13). Restore it; do not delete this test."
-    );
+    for probe_rel in PROBES {
+        assert!(
+            root.join(probe_rel).is_file(),
+            "{probe_rel} is part of the vendor-binary tier. It is missing, which is a deleted \
+             tier rather than an absent vendor binary (C13). Restore it; do not delete this test."
+        );
+    }
 
     let Some(interpreter) = on_path(INTERPRETER) else {
         announce(&[
             format!("SKIPPED: the vendor-binary tier — no {INTERPRETER} on PATH."),
-            format!("  {PROBE} cannot run, so no vendor behaviour was measured."),
+            format!("  {PROBE} and {CLEAR_PROBE} cannot run, so no vendor behaviour"),
+            "  was measured.".into(),
             "  This machine is running a strictly weaker conformance suite (C13).".into(),
         ]);
         return;
@@ -181,7 +265,9 @@ fn the_vendor_binary_tier_runs_the_probe_or_announces_its_absence() {
             format!("  Recorded against {RECORDED_BUILD}. Nothing below was measured:"),
             "    brief-replaces, brief-rejected, agents-md, fence,".into(),
             "    socket-refused-by-default, socket-lifted-by-network-access,".into(),
-            "    typing-fast-does-not-submit, typing-tuned-submits".into(),
+            "    typing-fast-does-not-submit, typing-tuned-submits,".into(),
+            "    clear-brief-before, clear-actually-cleared, clear-brief-survives,".into(),
+            "    clear-brief-identical, clear-brief-survives-via-flag".into(),
             "  The artifact tier still proves FLEETOR wrote its keys. It cannot prove".into(),
             "  the vendor honoured them — that is what these arms are for.".into(),
             "  This machine is running a strictly weaker conformance suite (C13).".into(),
@@ -189,9 +275,26 @@ fn the_vendor_binary_tier_runs_the_probe_or_announces_its_absence() {
         return;
     };
 
-    let out = Command::new(&interpreter)
+    // Sequentially, and deliberately: both probes drive a real pty and both take
+    // the probes' own one-run-at-a-time lock, so running them concurrently would
+    // buy nothing and cost the timing the pty arms measure.
+    for probe_rel in PROBES {
+        gate_on(&interpreter, &root, probe_rel, &vendor);
+    }
+}
+
+/// Run one probe and gate on its exit code, or announce loudly why it measured
+/// nothing.
+///
+/// Every outcome is a passing assertion, a panic carrying the probe's whole
+/// transcript, or a banner on fd 2. The one outcome that is neither pass nor
+/// fail is `BUSY:` — another run held the probes' lock for the whole wait, which
+/// is a machine that was never quiet rather than a vendor that changed (#43).
+fn gate_on(interpreter: &Path, root: &Path, probe_rel: &str, vendor: &Path) {
+    let probe = root.join(probe_rel);
+    let out = Command::new(interpreter)
         .arg(&probe)
-        .current_dir(&root)
+        .current_dir(root)
         .output()
         .unwrap_or_else(|e| panic!("could not run {}: {e}", probe.display()));
 
@@ -199,12 +302,24 @@ fn the_vendor_binary_tier_runs_the_probe_or_announces_its_absence() {
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     let transcript = format!("--- probe stdout ---\n{stdout}\n--- probe stderr ---\n{stderr}");
 
+    // Contention, announced as contention. The alternative this replaces is the
+    // expensive one: a red arm that means "someone else was running", which
+    // spends an operator's afternoon on a vendor change that never happened.
+    if stdout.contains("BUSY:") {
+        announce(&[
+            format!("SKIPPED: {probe_rel} — another codex-spike run held the lock throughout."),
+            "  Nothing was measured, and nothing here is evidence of a regression.".into(),
+            "  Re-run this tier on a quiet machine before trusting its silence (C13).".into(),
+        ]);
+        return;
+    }
+
     // The probe skips on the same condition this file just ruled out. If it
     // skipped anyway, the two disagree about the machine — which is the one
     // way a skip could become silent, so it is a failure rather than a skip.
     assert!(
         !stdout.contains("SKIP:"),
-        "the probe skipped although `{VENDOR_BIN}` resolved to {}. The tier and the probe \
+        "{probe_rel} skipped although `{VENDOR_BIN}` resolved to {}. The tier and the probe \
          disagree about this machine, so nothing was measured and nothing announced it.\n{transcript}",
         vendor.display()
     );
@@ -213,12 +328,12 @@ fn the_vendor_binary_tier_runs_the_probe_or_announces_its_absence() {
     let arms = stdout.matches("  PASS  ").count() + stdout.matches("  FAIL  ").count();
     assert!(
         arms > 0,
-        "the probe exited without reporting a single arm. Exit 0 with nothing measured is \
+        "{probe_rel} exited without reporting a single arm. Exit 0 with nothing measured is \
          the failure this tier was built to make impossible.\n{transcript}"
     );
     assert!(
         stdout.contains(" failed"),
-        "the probe did not reach its own verdict line, so its exit code is not a count of \
+        "{probe_rel} did not reach its own verdict line, so its exit code is not a count of \
          failed arms and gating on it would be guesswork.\n{transcript}"
     );
 
@@ -226,7 +341,7 @@ fn the_vendor_binary_tier_runs_the_probe_or_announces_its_absence() {
     assert_eq!(
         out.status.code(),
         Some(0),
-        "the vendor-binary tier is red: {arms} arms ran and the probe reports failures. \
+        "the vendor-binary tier is red: {arms} arms ran in {probe_rel} and it reports failures. \
          A failing arm is either a regression in what FLEETOR writes or drift in the vendor \
          build — the probe says which. Re-record rather than patching around drift.\n{transcript}"
     );
@@ -252,11 +367,28 @@ fn the_probe_is_committed_infrastructure_stamped_with_its_vendor_build() {
         "{PROBE} must name the vendor build it was recorded against, as `BUILD`"
     );
 
+    // The sibling takes the same stamp from the same place — it imports `BUILD`
+    // rather than spelling it again, which is the only way two files cannot
+    // drift apart. Assert the import, not a second copy of the string.
+    let clear = fs::read_to_string(root.join(CLEAR_PROBE)).expect("the sibling is committed too");
+    assert!(
+        clear.contains("from probe import") && clear.contains("BUILD"),
+        "{CLEAR_PROBE} must take its vendor build id from {PROBE} rather than spelling it \
+         again, or the two can report different builds for the same run"
+    );
+
     let notes = fs::read_to_string(root.join(NOTES)).expect("the spike notes are committed");
     assert!(
         notes.contains(RECORDED_BUILD),
         "{NOTES} must carry the same vendor build id as {PROBE} ({RECORDED_BUILD}), or a \
          failing arm cannot be traced to the measurement it contradicts"
+    );
+
+    let clear_notes = fs::read_to_string(root.join(CLEAR_NOTES)).expect("C37's notes are committed");
+    assert!(
+        clear_notes.contains(RECORDED_BUILD),
+        "{CLEAR_NOTES} must carry the same vendor build id as {CLEAR_PROBE} ({RECORDED_BUILD}), \
+         or a failing `/clear` arm cannot be traced to the measurement it contradicts"
     );
 }
 
@@ -279,9 +411,21 @@ fn the_probe_addresses_nothing_but_loopback() {
     // property has to be checked where the URL now lives as well.
     let here = fs::read_to_string(root.join(THIS_FILE)).expect("this tier reads its own source");
 
+    // The sibling addresses nothing at all: it borrows `probe.build_scratch`'s
+    // provider block wholesale, so the property is inherited rather than
+    // restated. Both halves are checked — that it names no host of its own, and
+    // that it still gets its provider from the file that does.
+    let clear = fs::read_to_string(root.join(CLEAR_PROBE)).expect("the sibling is committed too");
+    assert!(
+        clear.contains("probe.build_scratch"),
+        "{CLEAR_PROBE} no longer takes its provider block from {PROBE}, so nothing guarantees \
+         the model provider it points the vendor at is a local capture server"
+    );
+
     let offenders: Vec<&str> = src
         .split("://")
         .skip(1)
+        .chain(clear.split("://").skip(1))
         // The scanner's own `"://"` literal is the one occurrence in this file
         // that is not an address, and it is recognisable because what follows it
         // is the end of that string literal rather than a host.
@@ -339,7 +483,7 @@ fn the_seeded_codex_home_loads_in_the_real_binary_and_the_trap_reproduces() {
     use fleetor_shell::placement::codex::{codex, OPERATOR_DIR};
     use fleetor_shell::placement::Seed;
 
-    let Some(vendor) = on_path(VENDOR_BIN) else {
+    let Some(vendor) = the_vendor_binary() else {
         announce(&[
             format!("SKIPPED: the codex config-seeding arm — `{VENDOR_BIN}` is not on PATH."),
             format!("  Recorded against {RECORDED_BUILD}. Nothing below was measured:"),
@@ -350,13 +494,7 @@ fn the_seeded_codex_home_loads_in_the_real_binary_and_the_trap_reproduces() {
         return;
     };
 
-    let root = std::env::temp_dir().join(format!(
-        "fleetor-codex-vendor-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("a clock")
-            .as_millis()
-    ));
+    let root = std::env::temp_dir().join(scratch_name("vendor"));
     let operator_home = root.join("operator");
     let operator_dir = operator_home.join(OPERATOR_DIR);
     let pane_home = root.join("pane-home");
@@ -577,7 +715,7 @@ fn the_seeded_brief_replaces_the_vendor_prompt_on_the_wire() {
     use fleetor_shell::placement::codex::{codex, OPERATOR_DIR};
     use fleetor_shell::placement::Seed;
 
-    let Some(vendor) = on_path(VENDOR_BIN) else {
+    let Some(vendor) = the_vendor_binary() else {
         announce(&[
             format!("SKIPPED: the codex brief-carrier arm — `{VENDOR_BIN}` is not on PATH."),
             format!("  Recorded against {RECORDED_BUILD}. Nothing below was measured:"),
@@ -589,13 +727,7 @@ fn the_seeded_brief_replaces_the_vendor_prompt_on_the_wire() {
         return;
     };
 
-    let root = std::env::temp_dir().join(format!(
-        "fleetor-codex-brief-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("a clock")
-            .as_millis()
-    ));
+    let root = std::env::temp_dir().join(scratch_name("brief"));
     let operator_home = root.join("operator");
     let pane_home = root.join("pane-home");
     let cwd = root.join("work");
@@ -758,7 +890,7 @@ fn the_sandbox_trio_fences_a_real_pane_and_the_fleet_socket_still_reaches_it() {
     const FOUR: [&str; 4] =
         ["multi_agent", "browser_use", "computer_use", "in_app_local_automation"];
 
-    let Some(vendor) = on_path(VENDOR_BIN) else {
+    let Some(vendor) = the_vendor_binary() else {
         announce(&[
             format!("SKIPPED: the codex containment arm — `{VENDOR_BIN}` is not on PATH."),
             format!("  Recorded against {RECORDED_BUILD}. Nothing below was measured:"),
@@ -772,13 +904,7 @@ fn the_sandbox_trio_fences_a_real_pane_and_the_fleet_socket_still_reaches_it() {
         return;
     };
 
-    let root = std::env::temp_dir().join(format!(
-        "fleetor-codex-fence-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("a clock")
-            .as_millis()
-    ));
+    let root = std::env::temp_dir().join(scratch_name("fence"));
     let operator_home = root.join("operator");
     let operator_dir = operator_home.join(OPERATOR_DIR);
     let pane_home = root.join("pane-home");
@@ -1050,7 +1176,7 @@ fn the_vendor_resolves_a_worker_to_fleetors_provider_and_refuses_the_operators_k
         .token_env
         .expect("codex carries the fleet's key in a variable its provider entry names");
 
-    let Some(vendor) = on_path(VENDOR_BIN) else {
+    let Some(vendor) = the_vendor_binary() else {
         announce(&[
             format!("SKIPPED: the codex credential arm — `{VENDOR_BIN}` is not on PATH."),
             format!("  Recorded against {RECORDED_BUILD}. Nothing below was measured:"),
@@ -1063,13 +1189,7 @@ fn the_vendor_resolves_a_worker_to_fleetors_provider_and_refuses_the_operators_k
         return;
     };
 
-    let root = std::env::temp_dir().join(format!(
-        "fleetor-codex-cred-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("a clock")
-            .as_millis()
-    ));
+    let root = std::env::temp_dir().join(scratch_name("cred"));
     let operator_home = root.join("operator");
     let operator_dir = operator_home.join(OPERATOR_DIR);
     let pane_home = root.join("pane-home");
@@ -1253,7 +1373,7 @@ fn the_operators_own_seat_authenticates_and_a_fenced_seat_holds_nothing_of_the_o
         .token_env
         .expect("codex carries the fleet's key in a variable its provider entry names");
 
-    let Some(vendor) = on_path(VENDOR_BIN) else {
+    let Some(vendor) = the_vendor_binary() else {
         announce(&[
             format!("SKIPPED: the codex orchestrator-login arm — `{VENDOR_BIN}` is not on PATH."),
             format!("  Recorded against {RECORDED_BUILD}. Nothing below was measured:"),
@@ -1266,13 +1386,7 @@ fn the_operators_own_seat_authenticates_and_a_fenced_seat_holds_nothing_of_the_o
         return;
     };
 
-    let root = std::env::temp_dir().join(format!(
-        "fleetor-codex-seat-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("a clock")
-            .as_millis()
-    ));
+    let root = std::env::temp_dir().join(scratch_name("seat"));
     let pane_home = root.join("pane-home");
     let cwd = root.join("worktree");
     fs::create_dir_all(&pane_home).expect("the Fence's private HOME");
@@ -1569,13 +1683,7 @@ fn a_fleet_seeded_codex_worker_is_refused_a_write_outside_its_worktree() {
     };
 
     for (binary, is_vendor) in binaries {
-        let scratch = std::env::temp_dir().join(format!(
-            "fleetor-codex-guardrail-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("a clock")
-                .as_nanos()
-        ));
+        let scratch = std::env::temp_dir().join(scratch_name("guardrail"));
         let operator_home = scratch.join("operator");
         let cwd = scratch.join("worktree");
         let shell = scratch.join("_shell");
@@ -1788,13 +1896,7 @@ fn the_gates_probe_reads_all_three_auth_shapes_the_vendor_reports() {
         return;
     };
 
-    let root = std::env::temp_dir().join(format!(
-        "fleetor-codex-gate-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("a clock")
-            .as_millis()
-    ));
+    let root = std::env::temp_dir().join(scratch_name("gate"));
     let pane_home = root.join("pane-home");
     let cwd = root.join("worktree");
     fs::create_dir_all(&pane_home).expect("a private HOME");

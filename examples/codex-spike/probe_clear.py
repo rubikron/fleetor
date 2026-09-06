@@ -44,9 +44,13 @@ Exit code is the number of failed arms, so CI can gate on it. Skips cleanly
 (exit 0, loud message) when `codex` is not on PATH — C13's stated rule.
 
 Every URL here is loopback, deliberately, the same property
-`vendor_binary_tier.rs` asserts of `probe.py`. That test pins `probe.py` by
-name and does not yet run this file; wiring it in is a Rust change and is left
-to whoever next touches that tier.
+`vendor_binary_tier.rs` asserts of `probe.py`. That test now runs this file too
+and gates on its exit code (#43), so a regression in the `/clear` measurement is
+as loud as a regression in any of `probe.py`'s arms.
+
+Its scratch root, its capture directory and its port are per-run, and it takes
+`probe.py`'s one-run-at-a-time lock — see that module's header for why both
+layers are there.
 """
 
 import fcntl
@@ -69,11 +73,11 @@ import probe  # noqa: E402  — the scratch installation, the build stamp, the P
 
 from probe import BUILD, FAILURES, check  # noqa: E402
 
-PORT = 8732  # probe.py owns 8731; these must be able to run back to back
-ROOT = "/tmp/codex-clear-spike"
+PORT = 0  # assigned by the OS in `serve`; a fixed port is a collision waiting (#43)
+ROOT = f"/tmp/codex-clear-spike-{os.getpid()}"
 # Outside ROOT on purpose: `probe.build_scratch` deletes ROOT, and the second
 # carrier's scratch would take the first carrier's evidence with it.
-CAPROOT = "/tmp/codex-clear-spike-captures"
+CAPROOT = f"/tmp/codex-clear-spike-{os.getpid()}-captures"
 capdir = CAPROOT
 
 PRE = "PRECLEAR-SENTINEL"
@@ -121,7 +125,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 def serve():
-    http.server.HTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+    """`probe.serve`, numbering every request: the port is the OS's to pick."""
+    global PORT
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    PORT = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return PORT
 
 
 # --- scratch installation -----------------------------------------------------
@@ -174,8 +183,8 @@ class Pane:
         if self.pid == 0:
             os.chdir(wt)
             os.execve(
-                shutil.which("codex"),
-                ["codex", "--no-alt-screen", *argv],
+                probe.CODEX,
+                [probe.CODEX, "--no-alt-screen", *argv],
                 {**os.environ, "CODEX_HOME": home,
                  "TERM": "xterm-256color", "COLORTERM": "truecolor"},
             )
@@ -427,13 +436,28 @@ def main():
         return 0
     import subprocess
 
-    actual = subprocess.run(["codex", "--version"], capture_output=True, text=True).stdout.strip()
-    print(f"codex-clear-spike — recorded against {BUILD}, running against {actual}\n")
+    if probe.hold_the_lock("codex-spike") is None:
+        print(f"BUSY: another codex-spike run held {probe.LOCK} for {probe.LOCK_WAIT:.0f}s, so\n"
+              f"      nothing was measured here. This is not a regression and not a clean\n"
+              f"      machine either — re-run when the machine is quiet.")
+        return 0
+
+    serve()
+    # The vendor binary, not the shim on PATH — `probe.py`'s header says why, and
+    # this file's panes are exactly the ones whose `Stop` notified the operator.
+    # It is resolved before the banner, so the banner reports the build of the
+    # binary the arms actually run.
+    probe.PORT, probe.ROOT = PORT, ROOT
+    os.makedirs(ROOT, exist_ok=True)
+    probe.CODEX = probe.resolve_vendor()
+
+    actual = subprocess.run([probe.CODEX, "--version"],
+                            capture_output=True, text=True).stdout.strip()
+    print(f"codex-clear-spike — recorded against {BUILD}, running against {actual}")
+    print(f"  vendor binary: {probe.CODEX}\n")
     if actual != BUILD:
         print("  NOTE: build differs from the recorded one. A failure below may be drift,\n"
               "        not a regression — re-record rather than patching around it.\n")
-
-    threading.Thread(target=serve, daemon=True).start()
 
     home, wt, argv = build_scratch("config")
     time.sleep(0.5)
@@ -444,6 +468,11 @@ def main():
     arm_flag_carrier(home, wt, argv)
 
     print(f"\n{len(FAILURES)} failed" + (f": {', '.join(FAILURES)}" if FAILURES else ""))
+    if FAILURES:
+        print(f"  scratch kept at {ROOT} and the numbered requests at {CAPROOT}")
+    else:
+        shutil.rmtree(ROOT, ignore_errors=True)
+        shutil.rmtree(CAPROOT, ignore_errors=True)
     return len(FAILURES)
 
 
