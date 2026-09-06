@@ -51,6 +51,25 @@ in `[projects."…"]`. The consequences that decide issue #30's shape:
     `-c projects."…".trust_level="trusted"` parses, lands in the projects table, and does
     **not** clear the gate (`cli-override-does-not-clear-gate`).
 
+## The three wake arms (#47)
+
+`arms_wake` is the probe #30 named and could not run: **this instrument with FLEETOR's own
+bring-up wake in front of it.** `pty::wake` presses `\r` until the pane stops painting and
+`1. Yes, continue` is the gate's pre-selected option, so the question is whether waking a
+pane answers a dialog nobody meant to answer. It does, and it is worse than that:
+
+  * `wake-settles-a-trusted-pane` — the control. A seeded pane meets no gate and settles
+    after one press, so a "trusted" reading below cannot be a wake that does nothing;
+  * `wake-dismisses-the-gate` — an unseeded pane paints the gate and the **second press
+    dismisses it**, leaving a pane at its composer that looks perfectly healthy;
+  * `wake-grants-trust-on-disk` — and codex **persists** `trust_level = "trusted"` for that
+    directory into the pane's own `CODEX_HOME/config.toml`, which is the finding: the wake
+    did not merely skip a dialog, it granted trust and wrote it down.
+
+These arms wake a pane rather than only watching one, so unlike every arm above them they do
+type — one `\r`, on the bring-up path, into a composer that is empty. Still zero tokens: an
+empty submit is not a turn, and the provider is still a dead loopback port.
+
 Exit code is the number of failed arms, so CI can gate on it. Skips cleanly (exit 0,
 loud message) when `codex` is not on PATH — C13's stated rule. The git-fixture arms skip
 loudly on their own if `git` is missing, which is not the same event.
@@ -68,6 +87,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 BUILD = "codex-cli 0.153.4"
@@ -137,11 +157,10 @@ def build_scratch(have_git):
 # --- the measurement ----------------------------------------------------------
 
 
-def observe(entries, cwd, extra=(), budget=14.0):
-    """Boot one real codex TUI and report `"gate"`, `"trusted"` or `"inconclusive"`.
+def boot(entries, cwd, extra=()):
+    """Write the fabricated config and start one real codex TUI on a real pty.
 
-    Returns as soon as a marker appears, so a gated arm costs about three seconds. The
-    pane is killed before anything is typed into it: that is the whole zero-token story.
+    Returns `(pid, fd, trusted_markers)`. Nothing is ever typed by this function.
     """
     open(HOME + "/config.toml", "w").write(
         BASE_CONFIG
@@ -167,6 +186,32 @@ def observe(entries, cwd, extra=(), budget=14.0):
     import struct
     import termios
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+    return pid, fd, trusted_markers
+
+
+def reap(pid, fd):
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.kill(pid, sig)
+            for _ in range(20):
+                if os.waitpid(pid, os.WNOHANG)[0]:
+                    break
+                time.sleep(0.05)
+            else:
+                continue
+            break
+        except (ProcessLookupError, ChildProcessError):
+            break
+    os.close(fd)
+
+
+def observe(entries, cwd, extra=(), budget=14.0):
+    """Boot one real codex TUI and report `"gate"`, `"trusted"` or `"inconclusive"`.
+
+    Returns as soon as a marker appears, so a gated arm costs about three seconds. The
+    pane is killed before anything is typed into it: that is the whole zero-token story.
+    """
+    pid, fd, trusted_markers = boot(entries, cwd, extra)
 
     buf, verdict, end = b"", "inconclusive", time.time() + budget
     while time.time() < end:
@@ -186,20 +231,114 @@ def observe(entries, cwd, extra=(), budget=14.0):
                 verdict = "trusted"
                 break
 
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        try:
-            os.kill(pid, sig)
-            for _ in range(20):
-                if os.waitpid(pid, os.WNOHANG)[0]:
-                    break
-                time.sleep(0.05)
-            else:
-                continue
-            break
-        except (ProcessLookupError, ChildProcessError):
-            break
-    os.close(fd)
+    reap(pid, fd)
     return verdict
+
+
+# --- the wake, in front of the gate (#47) -------------------------------------
+#
+# `pty::wake` presses the key a splash ends on until the pane stops painting, and
+# `1. Yes, continue` is the trust gate's *pre-selected* option. #30 could not
+# measure what that does to a gated pane without destroying its own control, so it
+# named this probe as the thing that would settle it. The three constants below are
+# `pty.rs`'s, spelled again here rather than approximated: a wake that pressed on a
+# different cadence would answer a different question.
+
+WAKE_KEY = b"\r"
+PRESS_SETTLE = 0.6   # pty::PRESS_SETTLE
+QUIET_SAMPLE = 0.4   # pty::QUIET_SAMPLE
+
+
+def observe_woken(entries, cwd, extra=(), budget=25.0):
+    """Boot one real codex TUI **and wake it the way `PaneRegistry::spawn` does**.
+
+    Unlike [`observe`], this does not stop at the first marker: the whole question is
+    what the pane looks like *after* the wake has finished pressing. Returns
+    `(verdict, gate_seen, presses, persisted)` — the last being whatever
+    `trust_level` rows the pane wrote back into its own `config.toml`, which is how a
+    silently granted trust would leave a trace.
+    """
+    pid, fd, trusted_markers = boot(entries, cwd, extra)
+
+    painted = [0]
+    stop = threading.Event()
+    presses = [0]
+
+    def waking():
+        # `pty::wake`, transcribed: press, let the press's own repaint land, then
+        # ask whether the pane painted anything across one quiet sample.
+        while not stop.is_set():
+            try:
+                os.write(fd, WAKE_KEY)
+            except OSError:
+                return
+            presses[0] += 1
+            if stop.wait(PRESS_SETTLE):
+                return
+            before = painted[0]
+            if stop.wait(QUIET_SAMPLE):
+                return
+            if before > 0 and painted[0] == before:
+                return
+
+    waker = threading.Thread(target=waking, daemon=True)
+    waker.start()
+
+    buf, gate_seen, end = b"", False, time.time() + budget
+    while time.time() < end:
+        if select.select([fd], [], [], 0.2)[0]:
+            try:
+                chunk = os.read(fd, 65536)
+            except OSError:
+                break
+            if not chunk:
+                break
+            buf += chunk
+            painted[0] += len(chunk)
+            if GATE in strip(buf):
+                gate_seen = True
+        if not waker.is_alive():
+            # The wake has settled. Give the pane one more moment to finish
+            # repainting whatever the last press left it on, then read the screen.
+            time.sleep(1.0)
+            while select.select([fd], [], [], 0.2)[0]:
+                try:
+                    chunk = os.read(fd, 65536)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                buf += chunk
+            break
+
+    stop.set()
+    waker.join(timeout=3)
+
+    # **The last marker wins, not the first.** `buf` is everything the pane has ever
+    # painted, and a gate that was answered is still in it — reading it the way
+    # [`observe`] does would report `"gate"` for a pane that is sitting at its
+    # composer. Which marker the pane painted *last* is the state it ended in.
+    text = strip(buf)
+    gate_seen = gate_seen or GATE in text
+    at_gate = text.rfind(GATE)
+    at_composer = max(text.rfind(m) for m in trusted_markers)
+    if at_composer > at_gate:
+        verdict = "trusted"
+    elif at_gate >= 0:
+        verdict = "gate"
+    else:
+        verdict = "inconclusive"
+
+    reap(pid, fd)
+    # What the pane wrote back into its own `config.toml`. A trust row that was not
+    # seeded is the whole of #47: trust granted on the operator's behalf, by a
+    # keypress nobody meant as an answer.
+    persisted = sorted(
+        set(re.findall(r'^\[projects\.(".*?")\]', open(HOME + "/config.toml").read(),
+                       re.M))
+        - {f'"{e}"' for e in entries}
+    )
+    return verdict, gate_seen, presses[0], persisted
 
 
 def strip(b):
@@ -257,6 +396,30 @@ def arms_worktree():
     arm("main-repo-key-trusts-worktree-subdir", "trusted", [repo], wt + "/inner")
 
 
+def arms_wake():
+    """**#47's question**: does `pty::wake` answer a trust gate it was not seeded past?
+
+    The gated arm is the one that matters. Its control is the same wake against a
+    *seeded* pane, which must settle at the composer — without it a gated arm that
+    reported "trusted" could just as easily be a wake that does nothing at all.
+    """
+    child = CANON + "/plain/parent/child"
+
+    verdict, gate_seen, presses, persisted = observe_woken([child], child)
+    check("wake-settles-a-trusted-pane", verdict == "trusted",
+          f"expected trusted, saw {verdict} after {presses} presses "
+          f"(gate seen: {gate_seen})")
+
+    verdict, gate_seen, presses, persisted = observe_woken([], child)
+    print(f"        gated pane + wake: verdict={verdict} gate_seen={gate_seen} "
+          f"presses={presses} newly-trusted={persisted}")
+    check("wake-dismisses-the-gate", gate_seen and verdict == "trusted",
+          f"the gate appeared and the wake pressed through it, ending at "
+          f"{verdict}")
+    check("wake-grants-trust-on-disk", persisted == [f'"{child}"'],
+          f"the pane persisted a trust row nobody seeded: {persisted}")
+
+
 def main():
     binary = os.environ.get("CODEX_BIN") or shutil.which("codex")
     if binary is None:
@@ -277,6 +440,7 @@ def main():
 
     arms_plain()
     arms_symlink()
+    arms_wake()
     if have_git:
         arms_git()
         arms_worktree()

@@ -49,7 +49,7 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -115,6 +115,34 @@ const PRESS_SETTLE: Duration = Duration::from_millis(600);
 /// the first quiet sample.
 const QUIET_SAMPLE: Duration = Duration::from_millis(400);
 
+/// The first-run **trust gate**'s own words (#47; C34, C51).
+///
+/// **The wake may not press through this, and until #47 it did.** Measured under
+/// both binaries (C47) against `codex-cli 0.153.4`, re-runnable as `python3
+/// examples/codex-spike/trust_probe.py`: a pane whose trust seeding did not cover
+/// its cwd paints this in about three seconds, the wake's *second* `\r` answers it
+/// — `1. Yes, continue` is pre-selected — and the vendor then **persists**
+/// `trust_level = "trusted"` for that directory into the pane's own `config.toml`.
+/// So the failure was not merely a dismissed dialog: it was FLEETOR granting trust
+/// on the operator's behalf, writing it to disk, and announcing a pane that looked
+/// perfectly healthy. That is a loud failure (a parked pane) converted into a
+/// silent one that also grants trust — strictly worse than the bug it hid.
+///
+/// **Why the literal lives here and not on [`HarnessSpec`].** [`WAKE_KEY`] is the
+/// same kind of fact and is already here: both are what the *bring-up path* knows
+/// about the pane it is waking, and neither is one of the fourteen checkpoints —
+/// `project_identity` answers where trust is *written*, never what the dialog for
+/// its absence says. `harness_literals.rs` pins vendor strings the spec owns, and
+/// this is not one, so nothing is being routed around. Cost, stated: a second
+/// [`BringUp::AfterWaking`] harness with a differently-worded gate would need this
+/// to become a spec field, and today there is exactly one.
+///
+/// Matched against the pane's paint with whitespace and escapes removed, because
+/// codex repaints character by character with cursor moves between — the same
+/// reading `codex_trust_gate.rs` and `trust_probe.py` take, and the reason a raw
+/// substring search finds nothing.
+const TRUST_GATE: &str = "Do you trust the contents of this directory";
+
 /// One pane's writer, shared by every path that types into it. Named because
 /// three signatures here hand it around and the shape is noise at each of them.
 type PaneWriter = Arc<Mutex<Box<dyn Write + Send>>>;
@@ -122,13 +150,137 @@ type PaneWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 /// What [`wake`] needs from a pane, taken while the registry locks are held and
 /// used after they are released.
 ///
-/// Three `Arc` clones rather than a borrow of the entry, because the entry stays
+/// Four `Arc` clones rather than a borrow of the entry, because the entry stays
 /// in the `waking` map the whole time — so `kill` can still reach the process,
 /// and so a bring-up cannot outlive a pane the operator stopped.
 struct Waking {
     writer: PaneWriter,
     painted: Arc<AtomicU64>,
     state: Arc<AtomicU8>,
+    /// Set by the pump the moment [`TRUST_GATE`] reaches the pty (#47). Read by
+    /// [`wake`] before every press, so the answer is *stop*, not *press on*.
+    gate: Arc<AtomicBool>,
+    /// What a refusal has to be able to name. Taken off the [`CommandBuilder`]
+    /// before it is consumed, because after `spawn_command` the cwd and the
+    /// configuration directory are only knowable from the child.
+    context: BringUpContext,
+}
+
+/// Where a refused bring-up points the operator (#47).
+///
+/// Read only on the failure path — nothing here is consulted by a pane that comes
+/// up cleanly, and nothing here is on the message path at all.
+struct BringUpContext {
+    /// The pane's cwd, as it was handed to the pty.
+    cwd: Option<std::path::PathBuf>,
+    /// The harness's configuration directory, from the environment the pane was
+    /// given. `CODEX_HOME` for codex.
+    config_dir: Option<std::path::PathBuf>,
+    /// The name of the variable above, so the sentence can spell the fix.
+    config_env_var: &'static str,
+    /// Checkpoint 14's file inside it — `config.toml`.
+    trust_file: &'static str,
+}
+
+/// Watches a pane's paint for [`TRUST_GATE`] and raises a flag (#47).
+///
+/// **A rolling window rather than a buffer, and that is deliberate.** The obvious
+/// shape is to keep everything the pane painted and search it, which is what the
+/// tests do — but a splash paints ~196 KB in two seconds, so a registry doing it
+/// would hold that per pane for the life of the process. This keeps exactly as
+/// many characters as the needle is long, carries its escape-stripping state
+/// across reads, and therefore gives the same answer a search over the whole
+/// transcript would: a match here is a match there.
+///
+/// The stripping rule is [`Painted::screen`]'s in the tests — escapes out,
+/// whitespace and control characters out — because codex repaints character by
+/// character with cursor moves between and no word survives with its spacing
+/// intact. It diverges in one harmless place: an OSC terminated by `ESC \` eats
+/// the backslash here and keeps it there, which can only ever make this *more*
+/// willing to match, never less.
+///
+/// Only [`BringUp::AfterWaking`] panes get one. For every other pane the pump
+/// carries a `None` and pays one branch per batch.
+struct GateScanner {
+    needle: Vec<char>,
+    window: std::collections::VecDeque<char>,
+    escape: Escape,
+    seen: Arc<AtomicBool>,
+}
+
+/// Where the scanner is inside a terminal escape sequence, kept across reads
+/// because a sequence can be split between two of them.
+enum Escape {
+    /// Ordinary text.
+    No,
+    /// `ESC` seen; the next character says which kind.
+    Opened,
+    /// `ESC [` — parameter bytes, then one final ASCII letter.
+    Csi,
+    /// `ESC ]` — runs to `BEL` or to the `ESC` of a string terminator.
+    Osc,
+}
+
+impl GateScanner {
+    fn watching(literal: &str, seen: Arc<AtomicBool>) -> Self {
+        let needle: Vec<char> = literal.chars().filter(|c| !c.is_whitespace()).collect();
+        Self {
+            window: std::collections::VecDeque::with_capacity(needle.len()),
+            needle,
+            escape: Escape::No,
+            seen,
+        }
+    }
+
+    /// One coalesced frame. Lossy on purpose: a multi-byte character split across
+    /// two reads becomes a replacement character, which the ASCII needle simply
+    /// does not match.
+    fn feed(&mut self, batch: &[u8]) {
+        if self.seen.load(Ordering::Relaxed) {
+            return;
+        }
+        for c in String::from_utf8_lossy(batch).chars() {
+            match self.escape {
+                Escape::No => {
+                    if c == '\u{1b}' {
+                        self.escape = Escape::Opened;
+                    } else if !c.is_whitespace() && !c.is_control() {
+                        self.push(c);
+                    }
+                }
+                Escape::Opened => {
+                    self.escape = match c {
+                        '[' => Escape::Csi,
+                        ']' => Escape::Osc,
+                        // A two-character sequence: this *was* the second half.
+                        _ => Escape::No,
+                    }
+                }
+                Escape::Csi => {
+                    if c.is_ascii_alphabetic() {
+                        self.escape = Escape::No;
+                    }
+                }
+                Escape::Osc => {
+                    if c == '\u{7}' {
+                        self.escape = Escape::No;
+                    } else if c == '\u{1b}' {
+                        self.escape = Escape::Opened;
+                    }
+                }
+            }
+        }
+    }
+
+    fn push(&mut self, c: char) {
+        if self.window.len() == self.needle.len() {
+            self.window.pop_front();
+        }
+        self.window.push_back(c);
+        if self.window.len() == self.needle.len() && self.window.iter().eq(self.needle.iter()) {
+            self.seen.store(true, Ordering::Relaxed);
+        }
+    }
 }
 
 /// How the registry talks to the outside world: `(channel, base64 payload)`.
@@ -293,6 +445,17 @@ impl PaneRegistry {
             .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
             .map_err(|e| format!("openpty for {pane}: {e}"))?;
 
+        // Taken *before* `spawn_command` consumes the builder — after it, the only
+        // thing that knows this pane's cwd is the child (#47).
+        let context = BringUpContext {
+            cwd: cmd.get_cwd().map(std::path::PathBuf::from),
+            config_dir: cmd
+                .get_env(harness.config_dir.env_var)
+                .map(std::path::PathBuf::from),
+            config_env_var: harness.config_dir.env_var,
+            trust_file: harness.project_identity.trust_file,
+        };
+
         let child = pair.slave.spawn_command(cmd).map_err(|e| format!("spawn {pane}: {e}"))?;
         // The child holds the slave fd now; drop ours so EOF propagates on exit.
         drop(pair.slave);
@@ -304,6 +467,14 @@ impl PaneRegistry {
 
         let state = Arc::new(AtomicU8::new(SPAWNING));
         let painted = Arc::new(AtomicU64::new(0));
+        // Only a pane that is going to be woken is watched for the gate: the
+        // question "is this pane parked on a dialog my keypress would answer" is
+        // asked by the wake and by nothing else (#47).
+        let gate = Arc::new(AtomicBool::new(false));
+        let watch = match harness.bring_up {
+            BringUp::AfterWaking => Some(GateScanner::watching(TRUST_GATE, gate.clone())),
+            BringUp::AtOnce => None,
+        };
         // The channel names are computed once, here, and moved into the pump —
         // the reader thread must not `format!` per read.
         spawn_pump(
@@ -313,6 +484,7 @@ impl PaneRegistry {
             exit_channel(pane),
             state.clone(),
             painted.clone(),
+            watch,
         );
 
         let entry = Pane {
@@ -335,6 +507,8 @@ impl PaneRegistry {
                     writer: entry.writer.clone(),
                     painted: entry.painted.clone(),
                     state: entry.state.clone(),
+                    gate,
+                    context,
                 };
                 waking.insert(pane, entry);
                 // Recorded now rather than at announcement: a pane being woken is
@@ -633,6 +807,7 @@ fn spawn_pump(
     exit_channel: String,
     state: Arc<AtomicU8>,
     painted: Arc<AtomicU64>,
+    mut watch: Option<GateScanner>,
 ) {
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
 
@@ -677,6 +852,13 @@ fn spawn_pump(
             // is where a *frame* is: the reader returns on any byte available, so
             // its own idea of "a paint" is an artifact of scheduling.
             painted.fetch_add(batch.len() as u64, Ordering::Relaxed);
+            // …and whether what it painted is the trust gate (#47). Here for the
+            // same reason the counter is: this is where a *frame* is, and the
+            // scanner carries its escape state across frames so a dialog split
+            // between two reads is still one dialog.
+            if let Some(scanner) = watch.as_mut() {
+                scanner.feed(&batch);
+            }
             emit(&out_channel, STANDARD.encode(&batch));
             if disconnected {
                 break;
@@ -719,8 +901,22 @@ fn spawn_pump(
 /// Returns early if the pane dies on the way up; [`PaneRegistry::announce`] then
 /// files the corpse, so a harness that cannot start looks like one that started
 /// and exited rather than like a pane that never existed.
+///
+/// **A wake that sees [`TRUST_GATE`] stops and says so** (#47). Measured under both
+/// binaries: pressing on answers the dialog — `1. Yes, continue` is pre-selected —
+/// and the vendor writes the resulting trust to disk. So the gate is checked before
+/// every press and while every sleep is running, and the answer is an `Err` naming
+/// the directory. This is the same judgement #42 made for a pane that never
+/// settles, applied to a pane that would settle *for the wrong reason*: an
+/// unannounced pane with a loud error beats a healthy-looking one FLEETOR trusted a
+/// directory to produce. Nothing is queued or retried; the pane is left running and
+/// still painting, so the dialog the error describes is on screen underneath it,
+/// and [`PaneRegistry::kill`] reaches it.
 fn wake(pane: PaneId, waking: &Waking) -> Result<(), String> {
     loop {
+        if waking.gate.load(Ordering::Relaxed) {
+            return Err(gate_refusal(pane, &waking.context));
+        }
         if !decode_state(waking.state.load(Ordering::Relaxed)).accepts_input() {
             return Ok(());
         }
@@ -729,13 +925,101 @@ fn wake(pane: PaneId, waking: &Waking) -> Result<(), String> {
             guard.write_all(WAKE_KEY).map_err(|e| format!("wake {pane}: {e}"))?;
             guard.flush().map_err(|e| format!("wake {pane}: {e}"))?;
         }
-        std::thread::sleep(PRESS_SETTLE);
+        if watch_for_the_gate(waking, PRESS_SETTLE) {
+            return Err(gate_refusal(pane, &waking.context));
+        }
         let before = waking.painted.load(Ordering::Relaxed);
-        std::thread::sleep(QUIET_SAMPLE);
+        if watch_for_the_gate(waking, QUIET_SAMPLE) {
+            return Err(gate_refusal(pane, &waking.context));
+        }
         if before > 0 && waking.painted.load(Ordering::Relaxed) == before {
             return Ok(());
         }
     }
+}
+
+/// Sleep for `window`, but stop the moment the gate appears. `true` if it did.
+///
+/// The gate reaches the pty about three seconds in and the presses are a second
+/// apart, so a plain `sleep` would leave a whole press between seeing the dialog
+/// and refusing to answer it. This is a poll on a flag the pump already set, not a
+/// new wait: the total time a clean bring-up spends here is unchanged.
+fn watch_for_the_gate(waking: &Waking, window: Duration) -> bool {
+    const POLL: Duration = Duration::from_millis(20);
+    let deadline = Instant::now() + window;
+    while Instant::now() < deadline {
+        if waking.gate.load(Ordering::Relaxed) {
+            return true;
+        }
+        std::thread::sleep(POLL.min(deadline.saturating_duration_since(Instant::now())));
+    }
+    waking.gate.load(Ordering::Relaxed)
+}
+
+/// What the operator is told when a pane's trust seeding did not cover its own cwd
+/// (#47; C34, C51).
+///
+/// It reaches them the way every other failed spawn does — `spawn` → `spawn_pane`
+/// → `pty_spawn` → the rejected `invoke`, which `TerminalPane.tsx` writes into the
+/// pane itself and marks dead. **It names the keys the seed actually wrote rather
+/// than recomputing the two it should have**, which is the more useful half: the
+/// computation is the thing under suspicion, so its output is evidence and a second
+/// run of it would only agree with itself.
+fn gate_refusal(pane: PaneId, context: &BringUpContext) -> String {
+    let cwd = context.cwd.as_ref().map(|p| p.display().to_string());
+    let canonical = context
+        .cwd
+        .as_ref()
+        .and_then(|p| std::fs::canonicalize(p).ok())
+        .map(|p| p.display().to_string());
+    let directory = match (&cwd, &canonical) {
+        (Some(given), Some(real)) if given != real => format!("{given} (resolves to {real})"),
+        (Some(given), _) => given.clone(),
+        (None, _) => "the pane's own working directory".to_string(),
+    };
+
+    let trust_file = context.config_dir.as_ref().map(|dir| dir.join(context.trust_file));
+    let seeded = match &trust_file {
+        Some(file) => {
+            let keys = trust_keys_in(file);
+            if keys.is_empty() {
+                format!("{} carries no project trust keys at all", file.display())
+            } else {
+                format!("{} trusts only {}", file.display(), keys.join(", "))
+            }
+        }
+        None => format!("this pane was given no {}", context.config_env_var),
+    };
+
+    format!(
+        "{pane} put up its first-run trust dialog and the bring-up refused to answer it.\n\
+         \n  directory: {directory}\n  seeding:   {seeded}\n\n\
+         Checkpoint 14 seeds two keys — the canonicalized working directory and the main \
+         repository it resolves to — so this dialog never appears (C34, C51). Neither \
+         covers the directory above, so the seeding is what is wrong, not the pane. \
+         FLEETOR did not press the key that would have dismissed it: `1. Yes, continue` is \
+         pre-selected, so the wake would have trusted this directory on your behalf and the \
+         vendor would have written that trust to disk (#47). The pane is still running and \
+         still on the dialog, and it was **not** announced — nothing can be sent to it. \
+         Restart it once the seeding is fixed."
+    )
+}
+
+/// The `[projects."…"]` keys a trust file carries, in the order it spells them.
+///
+/// A line scan rather than a TOML parse: this runs only on the failure path, the
+/// answer is going into a sentence a human reads, and a malformed file that parsed
+/// to nothing would be exactly the case worth *seeing*.
+fn trust_keys_in(file: &std::path::Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(file) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter_map(|line| {
+            let key = line.trim().strip_prefix("[projects.")?.strip_suffix(']')?;
+            (!key.is_empty()).then(|| key.to_string())
+        })
+        .collect()
 }
 
 /// Durably record which pids should still be running, so a launch after a
@@ -926,6 +1210,57 @@ mod tests {
              after accept time",
         );
         assert_eq!(spell(&channel, ""), "");
+    }
+
+    /// **The gate detector, against the way the vendor actually paints** (#47).
+    ///
+    /// Codex draws the dialog one character at a time with a cursor move between
+    /// each, inside a box, across however many pty reads scheduling produces —
+    /// which is why a raw substring search over a read finds nothing and why the
+    /// scanner has to carry its escape state across frames. This feeds the literal
+    /// the hard way: every character in its own batch, each preceded by a cursor
+    /// move, and one of the escape sequences split down the middle.
+    #[test]
+    fn the_trust_gate_is_detected_through_cursor_moves_and_across_reads() {
+        let seen = Arc::new(AtomicBool::new(false));
+        let mut scanner = GateScanner::watching(TRUST_GATE, seen.clone());
+
+        scanner.feed(b"\x1b[2J\x1b]0;codex\x07  \xe2\x94\x8c\xe2\x94\x80 trust \xe2\x94\x80\r\n");
+        assert!(!seen.load(Ordering::Relaxed), "the header is not the dialog");
+
+        for (i, c) in TRUST_GATE.chars().enumerate() {
+            // The split: half a CSI in one read, the rest in the next.
+            scanner.feed(b"\x1b[3");
+            scanner.feed(format!("{}H{c}", 10 + i).as_bytes());
+        }
+        assert!(
+            seen.load(Ordering::Relaxed),
+            "the gate reached the pty character by character and the scanner missed it — \
+             which is the whole failure #47 closes, because the wake would then press `\\r` \
+             into a pre-selected `1. Yes, continue`",
+        );
+    }
+
+    /// …and it does not fire on ordinary output, which is the half that decides
+    /// whether a healthy codex pane can ever come up at all. A pane that could
+    /// never be woken is a fleet with no codex in it.
+    #[test]
+    fn nothing_short_of_the_gate_raises_it() {
+        for (painted, expected) in [
+            ("Do you trust the contents", false),
+            ("Do you trust the contents of this repository", false),
+            ("do you trust the contents of this directory", false),
+            ("Reading /Users/x/trust the contents of this directory.md", false),
+            // Whitespace carries no meaning here — the pane's own spacing is an
+            // artifact of where it moved the cursor — and the window is rolling,
+            // so a prefix in front of the dialog is still the dialog.
+            ("  \u{2502} Do  you\ttrust the\ncontents of this directory? \u{2502}", true),
+        ] {
+            let seen = Arc::new(AtomicBool::new(false));
+            let mut scanner = GateScanner::watching(TRUST_GATE, seen.clone());
+            scanner.feed(painted.as_bytes());
+            assert_eq!(seen.load(Ordering::Relaxed), expected, "{painted:?}");
+        }
     }
 
     /// Only a dead pane refuses input — asserted on the decoder the registry

@@ -210,19 +210,32 @@ in a subdirectory of its worktree renders no gate.
   those spellings produce the same path for the worktrees FLEETOR creates.
 - **Submodules, bare repositories, and a worktree whose main repository has itself moved.**
   Untried.
-- **Whether accepting the gate writes the entry back, and where.** No arm ever answers the
-  dialog, deliberately — answering it is a write, and this spike writes to no real config.
-- **What FLEETOR's own wake does to a gated pane.** Appended by #30. `BringUp::AfterWaking`
-  presses `\r` until the pane goes quiet, and `1. Yes, continue` is the gate's *pre-selected*
-  option — so a woken pane plausibly answers the dialog rather than parking on it. Untried:
-  every arm here, and every arm in `tests/codex_trust_gate.rs`, boots under
-  `BringUp::AtOnce` and types nothing, precisely so the gate is observed rather than
-  dismissed. The probe that would settle it is this one with a wake in front of it. It does
-  not change what #30 implements — a pane whose trust FLEETOR decided by pressing return is
-  a pane FLEETOR trusted blindly — but "the pane parks indefinitely" is a statement about a
-  pane nobody is typing into.
 - **`trust_level` values other than `"trusted"`.** Only that a bogus value fails config
   loading outright.
+
+## What the wake does to a gated pane — measured (#47)
+
+**Both of the questions #30 left open here are now answered, and the answer to the second is
+worse than it was assumed to be.** Re-runnable as the `arms_wake` pair in
+`trust_probe.py`; recorded against `codex-cli 0.153.4` under **both binaries** (C47), which
+gave identical readings.
+
+| arm | reading |
+|---|---|
+| `wake-settles-a-trusted-pane` | a seeded pane meets no gate, settles after **1 press**, ends at its composer |
+| `wake-dismisses-the-gate` | an unseeded pane paints the gate, and the wake's **2nd press dismisses it** — the pane ends at its composer looking healthy |
+| `wake-grants-trust-on-disk` | that pane **persists** `[projects."<canonical cwd>"] trust_level = "trusted"` into its own `CODEX_HOME/config.toml` |
+
+So the wake did answer the dialog, and **accepting the gate does write the entry back** — into
+the pane's seeded `CODEX_HOME`, not the operator's `~/.codex`, which is the one mercy in it.
+The failure was therefore not merely a dismissed dialog: a loud, diagnosable failure (a parked
+pane, detectable here in about three seconds) became a silent one **that also granted trust**.
+
+`pty::wake` now stops on the gate rather than pressing through it — `TRUST_GATE` is watched by
+the pump as the pane paints, the bring-up returns an `Err` naming the directory and the keys
+the seed actually wrote, and the pane is left unannounced. `tests/codex_trust_gate.rs` runs
+under `BringUp::AfterWaking` as a result, so the row above is what its control arm now asserts:
+gate painted, bring-up refused by name, **and no trust key the seed did not write**.
 
 ## The shim, and why it is in these notes
 

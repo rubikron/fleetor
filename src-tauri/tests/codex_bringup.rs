@@ -260,6 +260,124 @@ fn a_pane_still_being_woken_is_still_reaped() {
     std::fs::remove_dir_all(&root).ok();
 }
 
+// --- the wake meets a trust gate (#47) ------------------------------------------
+
+/// One fake pane that paints `line` and then sits there, with a `CODEX_HOME`
+/// beside it whose only project key covers a directory this pane is not in.
+///
+/// **A shell rather than the vendor, so both arms below run on every machine.**
+/// What is under test is not what codex paints — `trust_probe.py` and
+/// `codex_trust_gate.rs` measure that against the real binary — it is what the
+/// **wake** does once that text reaches the pty. A pane that paints once and falls
+/// silent is the cleanest statement of it: with no gate check it settles in about a
+/// second and is announced, so the two arms below differ by one word of paint.
+struct BroughtUp {
+    registry: PaneRegistry,
+    pane: PaneId,
+    cwd: std::path::PathBuf,
+    /// What `spawn` answered. The `Err` is the refusal under test, and its text is
+    /// the sentence `TerminalPane.tsx` writes into the pane itself.
+    outcome: Result<(), String>,
+}
+
+fn paint_and_bring_up(root: &std::path::Path, line: &str) -> BroughtUp {
+    let cwd = root.join("work");
+    let home = root.join("codex-home");
+    std::fs::create_dir_all(&cwd).expect("a pane cwd");
+    std::fs::create_dir_all(&home).expect("a CODEX_HOME");
+    std::fs::write(
+        home.join("config.toml"),
+        "[projects.\"/somewhere/else\"]\ntrust_level = \"trusted\"\n",
+    )
+    .expect("a seed that covers the wrong directory");
+
+    let pane = PaneId::Worker(1);
+    let painted = Painted::watching(pane);
+    let registry = PaneRegistry::new(painted.emitter(), root.join("panes.pids"));
+
+    // Painted word by word with a cursor move before each, the way the vendor
+    // repaints — so the arm exercises the scanner rather than a substring search,
+    // which is exactly what would not have worked against the real dialog.
+    let mut cmd = CommandBuilder::new("/bin/sh");
+    cmd.arg("-c");
+    cmd.arg(format!(
+        "printf '\\033[2J\\033[H'; i=10; for w in {line}; do \
+         printf '\\033[%d;1H%s ' \"$i\" \"$w\"; i=$((i+1)); done; \
+         printf '\\033[30;1H> 1. Yes, continue   2. No, quit'; sleep 30"
+    ));
+    cmd.cwd(&cwd);
+    cmd.env("CODEX_HOME", &home);
+    cmd.env("TERM", "xterm-256color");
+
+    let outcome = registry.spawn(pane, cmd, &CODEX_SPEC, 40, 120);
+    BroughtUp { registry, pane, cwd, outcome }
+}
+
+/// **The ticket** (#47). A pane parked on the trust gate is refused, not answered.
+///
+/// Measured first, under both binaries, and the reading is why this exists: the
+/// wake's second `\r` *did* dismiss the dialog, the pane reached its composer
+/// looking healthy, and the vendor persisted `trust_level = "trusted"` for the
+/// directory into the pane's own `config.toml`. That is a loud failure — a parked
+/// pane, which #25's probe detects in about three seconds — converted into a silent
+/// one that also grants trust.
+#[test]
+fn a_pane_that_paints_the_trust_gate_is_refused_rather_than_answered() {
+    let root = scratch("gate");
+    let up = paint_and_bring_up(&root, "Do you trust the contents of this directory?");
+    let refusal = up.outcome.clone().expect_err(
+        "the wake settled a pane that was sitting on its trust dialog. `1. Yes, continue` is \
+         pre-selected, so the press that settled it answered the dialog — FLEETOR trusting a \
+         directory on the operator's behalf, which the vendor then writes to disk (#47).",
+    );
+
+    assert!(
+        refusal.contains(&up.cwd.display().to_string()),
+        "the refusal has to name the directory that was not trusted — it is the one thing the \
+         operator needs in order to fix the seeding: {refusal}",
+    );
+    assert!(
+        refusal.contains("/somewhere/else") && refusal.contains("config.toml"),
+        "…and the keys the seed did write, and the file they are in, so there is something to \
+         compare that directory against: {refusal}",
+    );
+
+    // **Not announced**, which is the other half of the ticket: a refused pane must
+    // not become addressable by some other route.
+    assert!(
+        up.registry.write_paste(up.pane, "too early").is_err(),
+        "a pane parked on an unanswered trust dialog took a delivery. It has to be refused for \
+         want of a pane, which the hub answers `accepted: false` (Tier 1.5)",
+    );
+    let roster: Vec<PaneId> = up.registry.roster().into_iter().map(|e| e.pane).collect();
+    assert!(!roster.contains(&up.pane), "a refused pane is not on the fleet's roster");
+
+    up.registry.kill_all();
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// **The control.** The same fake pane, one word different, is woken and announced.
+///
+/// Without it the arm above would pass against a `wake` that refused every pane it
+/// was ever handed — and a codex pane that can never come up is a fleet with no
+/// codex in it.
+#[test]
+fn a_pane_that_paints_something_that_is_not_the_gate_is_announced() {
+    let root = scratch("not-gate");
+    let up = paint_and_bring_up(&root, "Do you trust the contents of this repository?");
+    up.outcome.clone().expect(
+        "one word differs from the gate's own words and this pane was refused anyway, so the \
+         detector is matching something looser than the dialog itself",
+    );
+    assert!(
+        up.registry.write_paste(up.pane, "addressable").is_ok(),
+        "a pane that painted no gate and then fell silent is a woken pane, and #47 may not \
+         change that",
+    );
+    up.registry.kill_all();
+    std::fs::remove_dir_all(&root).ok();
+}
+
 /// The registry's own map is the only thing that decides addressability, and a
 /// spec's bring-up answer never reaches a delivery.
 ///
@@ -291,7 +409,21 @@ fn nothing_on_the_delivery_path_reads_a_pane_s_bring_up() {
             .unwrap_or(body.len());
         let body = &body[..end];
         let mut found = HashMap::new();
-        for banned in ["bring_up", "BringUp", "waking", "painted", "sleep(WAKE", "QUIET_SAMPLE"] {
+        // `TRUST_GATE` and `GateScanner` joined the list with #47. The gate check
+        // is readiness of exactly the kind this tripwire exists to keep off the
+        // message path: a `writable` that refused a pane sitting on a dialog would
+        // behave identically to holding it out of the map, and only one of them is
+        // legal. It belongs to `wake` and to the pump, and to nothing else.
+        for banned in [
+            "bring_up",
+            "BringUp",
+            "waking",
+            "painted",
+            "sleep(WAKE",
+            "QUIET_SAMPLE",
+            "TRUST_GATE",
+            "GateScanner",
+        ] {
             if body.contains(banned) {
                 found.insert(banned, ());
             }

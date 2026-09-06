@@ -54,15 +54,27 @@
 //! with nothing listening. No turn is ever completed, and every assertion holds on
 //! a machine with no network. #38 is the only ticket authorized to spend money.
 //!
-//! ## Why this file does not use [`BringUp::AfterWaking`]
+//! ## This file now runs the production configuration (#47)
 //!
-//! The wake #42 added presses `\r` until the pane goes quiet, and `1. Yes,
-//! continue` is the gate's **pre-selected** option — a wake would answer the
-//! dialog, which is both a decision FLEETOR would be making blindly and the end of
-//! the control arm. So every pane here is spawned under a spec that differs from
-//! `CODEX_SPEC` in exactly one field, [`BringUp::AtOnce`], and nothing is ever
-//! written to it. The subject is what the *seed* does to the gate; bring-up is
-//! `codex_bringup.rs`'s question.
+//! It did not, and said so. The wake #42 added presses `\r` until the pane goes
+//! quiet, `1. Yes, continue` is the gate's **pre-selected** option, so #30 spawned
+//! every pane here under `BringUp::AtOnce` to keep its control arm from being
+//! answered out from under it — and named the discrepancy rather than letting it
+//! pass, because it meant codex's own bring-up was the untested one.
+//!
+//! #47 measured what that keypress actually does and it was worse than assumed:
+//! the wake's second `\r` dismissed the dialog, the pane reached its composer
+//! looking perfectly healthy, and the vendor **persisted** `trust_level =
+//! "trusted"` for the directory into the pane's own `config.toml`. So the wake now
+//! refuses a gate instead of pressing through it, and these arms run under
+//! `CODEX_SPEC` — the spec a real pane is placed with.
+//!
+//! **The control got stronger rather than weaker.** Under `AtOnce` it could only
+//! say "the gate was painted". Under `AfterWaking` it says three things: the gate
+//! was painted, `spawn` **refused** and named the directory, and the pane wrote no
+//! trust row it was not seeded with. That last is the actual property #47 is about
+//! — a pane whose seeding failed is not silently trusted — and it was unassertable
+//! from here before.
 //!
 //! ## Cost, stated (D-081)
 //!
@@ -78,8 +90,7 @@ use std::time::{Duration, Instant};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use fleetor_core::pane::PaneId;
 use fleetor_shell::placement::codex::{codex, CODEX_SPEC, OPERATOR_DIR};
-use fleetor_shell::placement::harness::BringUp;
-use fleetor_shell::placement::{HarnessSpec, Seed};
+use fleetor_shell::placement::Seed;
 use fleetor_shell::pty::{out_channel, Emit, PaneRegistry};
 use portable_pty::CommandBuilder;
 use toml_edit::{DocumentMut, Item, Table, Value};
@@ -103,8 +114,23 @@ const COLS: u16 = 120;
 /// seconds of it; this is the budget before "neither marker" becomes a verdict.
 const TO_A_VERDICT: Duration = Duration::from_secs(20);
 
-/// The same spec codex ships with, one field changed — see the header.
-static NEVER_WOKEN: HarnessSpec = HarnessSpec { bring_up: BringUp::AtOnce, ..CODEX_SPEC };
+/// The `[projects."…"]` keys a seeded `CODEX_HOME` carries right now.
+///
+/// Read **after** a pane has run, because the question #47 asks is whether the pane
+/// added one: codex persists the answer to its trust dialog into this same file, so
+/// a key that was not seeded is a directory FLEETOR trusted on the operator's
+/// behalf. A line scan rather than a TOML parse — the file is the vendor's to
+/// shape, and a malformed one is a thing to see rather than to fail parsing.
+fn trust_keys_in(seeded: &Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(seeded.join("config.toml")) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter_map(|line| {
+            Some(line.trim().strip_prefix("[projects.")?.strip_suffix(']')?.to_string())
+        })
+        .collect()
+}
 
 // --- the instrument -----------------------------------------------------------
 
@@ -305,12 +331,25 @@ fn init_repo(dir: &Path) {
 
 // --- the arm -------------------------------------------------------------------
 
-/// Boot one real codex pane on a real pty and watch it until it says which side
-/// of the gate it is on.
+/// What one pane's bring-up produced: which side of the gate it ended on, what
+/// `PaneRegistry::spawn` answered, and what it painted.
+struct Reading {
+    verdict: Verdict,
+    /// **The production bring-up's own answer** (#47). `Ok` is a pane that woke and
+    /// was announced; `Err` is the wake refusing to press through a trust dialog,
+    /// and the string is what the operator reads in the pane itself.
+    spawned: Result<(), String>,
+    screen: String,
+}
+
+/// Boot one real codex pane on a real pty, **through codex's own bring-up**, and
+/// watch it until it says which side of the gate it is on.
 ///
-/// Nothing is typed into it and nothing ever will be: the pane is killed the
-/// moment a marker appears.
-fn verdict(vendor: &Path, seeded: &Path, fixture: &Fixture) -> (Verdict, String) {
+/// The only thing ever written to it is `BringUp::AfterWaking`'s wake key, by the
+/// registry, on the bring-up path — which is the configuration a placed pane runs
+/// and the one #30 could not use. Nothing is typed into the composer, and no arm
+/// completes a turn.
+fn verdict(vendor: &Path, seeded: &Path, fixture: &Fixture) -> Reading {
     // A loopback port with nothing listening. The pane never completes a turn —
     // it never starts one — and this is the belt to that brace.
     let dead_port = {
@@ -353,7 +392,10 @@ fn verdict(vendor: &Path, seeded: &Path, fixture: &Fixture) -> (Verdict, String)
     let pane = PaneId::Worker(1);
     let painted = Painted::watching(pane);
     let registry = PaneRegistry::new(painted.emitter(), fixture.root.join("panes.pids"));
-    registry.spawn(pane, cmd, &NEVER_WOKEN, ROWS, COLS).expect("a codex pane");
+    // Under `AfterWaking` this blocks for the length of the bring-up: about two
+    // seconds for a pane that settles, about three for one that meets the gate and
+    // is refused. Both are the pane's own pace, not a budget.
+    let spawned = registry.spawn(pane, cmd, &CODEX_SPEC, ROWS, COLS);
 
     let deadline = Instant::now() + TO_A_VERDICT;
     let mut verdict = Verdict::Inconclusive;
@@ -371,7 +413,7 @@ fn verdict(vendor: &Path, seeded: &Path, fixture: &Fixture) -> (Verdict, String)
     }
     let screen = painted.screen();
     registry.kill_all();
-    (verdict, screen)
+    Reading { verdict, spawned, screen }
 }
 
 /// `libtest` captures `println!` and `eprintln!` on a passing test, so a skip
@@ -442,32 +484,72 @@ fn a_codex_pane_booted_below_its_worktree_is_trusted_and_show_toplevel_alone_gat
             fixture.repo.display(),
         );
 
-        let (fix, screen) = verdict(&vendor, &seeded, &fixture);
+        let fix = verdict(&vendor, &seeded, &fixture);
         assert_eq!(
-            fix,
+            fix.verdict,
             Verdict::Trusted,
             "{name}: a pane seeded by FLEETOR and booted in {} did not reach its composer. \
              Either the main-repository key is missing — check it is the parent of \
              `--git-common-dir` and not `--show-toplevel` — or the vendor changed; re-measure \
              against {RECORDED_BUILD} with `python3 examples/codex-spike/trust_probe.py`.\n\
-             What it painted:\n{screen}",
+             What it painted:\n{}",
             fixture.deep.display(),
+            fix.screen,
+        );
+        // **The normal path is unaffected** (#47). A correctly seeded pane meets no
+        // gate, so the wake settles it and it is announced exactly as before.
+        assert!(
+            fix.spawned.is_ok(),
+            "{name}: a correctly seeded pane was refused by its own bring-up: {:?}. #47 may \
+             only refuse a pane that is actually sitting on the dialog — refusing a healthy \
+             one is a fleet with no codex in it.",
+            fix.spawned,
         );
 
-        let control = fixture.seed_the_show_toplevel_mistake("pane-config-control");
-        let (control, screen) = verdict(&vendor, &control, &fixture);
+        let control_seed = fixture.seed_the_show_toplevel_mistake("pane-config-control");
+        let before = trust_keys_in(&control_seed);
+        let control = verdict(&vendor, &control_seed, &fixture);
         assert_eq!(
-            control,
+            control.verdict,
             Verdict::Gated,
             "{name}: the control did not gate. A key for the worktree root is supposed to \
              leave {} untrusted (C34, row 11); if it no longer does, the arm above proves \
-             nothing and this file's whole claim needs re-measuring.\nWhat it painted:\n{screen}",
+             nothing and this file's whole claim needs re-measuring.\nWhat it painted:\n{}",
             fixture.deep.display(),
+            control.screen,
+        );
+
+        // **The ticket, in the production configuration** (#47). The wake met the
+        // dialog and refused it by name rather than pressing the pre-selected
+        // `1. Yes, continue`.
+        let refusal = control.spawned.clone().expect_err(&format!(
+            "{name}: a pane sitting on its trust dialog was brought up successfully, which \
+             means the wake answered it. That is FLEETOR trusting {} on the operator's \
+             behalf — measured, and the vendor writes it to disk.",
+            fixture.deep.display(),
+        ));
+        assert!(
+            refusal.contains(&fixture.deep.display().to_string())
+                || refusal.contains(
+                    &std::fs::canonicalize(&fixture.deep).expect("the cwd resolves").display().to_string()
+                ),
+            "{name}: the refusal did not name the directory that was not trusted: {refusal}",
+        );
+
+        // **And it wrote nothing.** This is the half that was unassertable while
+        // these arms ran under `AtOnce`: codex persists the answer to its own
+        // dialog, so an unchanged projects table is the evidence that no answer was
+        // given.
+        assert_eq!(
+            trust_keys_in(&control_seed),
+            before,
+            "{name}: the control pane's config.toml gained a trust key it was not seeded \
+             with, so something answered the dialog and the vendor persisted it (#47)",
         );
 
         announce(&[format!(
-            "codex trust gate, {name}: seeded pane below its worktree = trusted, \
-             --show-toplevel alone = gated."
+            "codex trust gate, {name}: seeded pane below its worktree = trusted and announced, \
+             --show-toplevel alone = gated, refused by name, and no trust written."
         )]);
     }
 }
