@@ -913,13 +913,28 @@ body,
 .terminal-jump:hover { color: var(--fg); background: var(--bg-3); }
 
 /* the explicit spend gate, over the whole workspace until the fleet is started */
+/* The overlay scrolls, and it centres *safely*. Two separate bugs live here
+   and both only appear once the card is taller than the window, which the
+   50rem widening made reachable on a laptop.
+
+   `overflow-y: auto` is the obvious half. The other half is `safe`: with a
+   plain `align-items: center`, an overflowing flex item is centred by
+   *overflowing in both directions*, so the top of the card goes above the
+   scroll origin and is unreachable even with a scrollbar — the operator can
+   scroll down to the Start button but never back up to the title. `safe`
+   falls back to `start` alignment the moment the item would overflow, which
+   is what keeps the top edge inside the scrollable area. `overscroll-behavior`
+   stops a scroll that runs off the end of the gate from moving the terminal
+   grid underneath it. */
 .pane-gate {
   position: absolute;
   inset: 0;
   display: flex;
-  align-items: center;
+  align-items: safe center;
   justify-content: center;
   padding: 1.25rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   background: color-mix(in srgb, var(--bg-1) 90%, transparent);
   z-index: 5;
 }
@@ -937,6 +952,12 @@ body,
 .pane-gate__card {
   max-width: 50rem;
   width: 100%;
+  /* Belt and braces for `align-items: safe center`: a browser that does not
+     understand the `safe` keyword drops the whole declaration and falls back
+     to plain `center`, which is the unreachable-top bug above. `margin: auto`
+     centres a flex item that fits and pins it to the start when it does not,
+     with no keyword support required. */
+  margin: auto;
   background: var(--bg-2);
   border: 1px solid var(--border);
   border-radius: var(--radius);
