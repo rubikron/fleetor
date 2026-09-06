@@ -410,6 +410,95 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// **Checkpoint 12 for codex, driven through the sweep the app actually
+    /// calls.** Everything above proves the mechanism against `sweep_at_named`
+    /// and a stand-in suffix; this is the only test that puts a process the
+    /// *registered* harnesses would confirm in front of `sweep_at`, so it is
+    /// what fails the day codex's `OrphanNames` answer stops reaching the
+    /// sweep — a literal creeping back into `confirmable_comm_suffixes`, a
+    /// harness dropping out of `registered()`, or the union being read
+    /// per-harness instead of across all of them (C11, C33).
+    ///
+    /// **Two processes identical in everything the sweep can observe, and only
+    /// the recorded one is signalled.** The survivor stands for the operator's
+    /// own codex, which is safe not because the sweep declines to match its
+    /// name — it matches perfectly, and the guard below asserts that it does —
+    /// but because its pid was never in the registry FLEETOR wrote. C29 named
+    /// this property and left it asserted only against a stand-in suffix; this
+    /// is it asserted for codex specifically, against codex's real answer.
+    ///
+    /// The stand-in is a **symlink** to an unmodified `/bin/sleep`, never a
+    /// renamed copy: the process executes the signed system inode, so
+    /// codesigning has nothing to object to, while `comm` reports the path it
+    /// was invoked by and therefore ends in `codex`. A copy renamed `codex`
+    /// loses its signature and macOS SIGKILLs it, which would make this test
+    /// pass for a reason that has nothing to do with the sweep.
+    #[cfg(unix)]
+    #[test]
+    fn a_recorded_codex_is_reaped_and_the_operators_own_codex_is_left_alone() {
+        use std::os::unix::process::CommandExt;
+
+        let dir =
+            std::env::temp_dir().join(format!("fleetor-orphans-codex-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let stand_in = dir.join("codex");
+        std::os::unix::fs::symlink("/bin/sleep", &stand_in).unwrap();
+
+        let spawn_own_session = || {
+            let mut command = std::process::Command::new(&stand_in);
+            command.arg("300");
+            unsafe {
+                command.pre_exec(|| {
+                    libc::setsid();
+                    Ok(())
+                });
+            }
+            command.spawn().unwrap()
+        };
+        let mut recorded = spawn_own_session();
+        let mut operators_own = spawn_own_session();
+
+        // The guard that keeps the survival assertion from going vacuous: if
+        // this machine ever stopped reporting a `comm` the registered suffixes
+        // confirm, "left alone" would be true of a process the sweep could
+        // never have touched, and the test would prove nothing.
+        assert!(
+            process_is_named(operators_own.id() as i32, &confirmable_comm_suffixes()),
+            "a process whose comm ends in `codex` is not confirmable by the registered \
+             harnesses' comm suffixes — codex's checkpoint 12 answer is not reaching the sweep, \
+             and until it does nothing below is a test of the sweep's restraint"
+        );
+
+        let registry = dir.join("panes.pids");
+        write_registry(&registry, &[recorded.id()]);
+
+        sweep_at(&registry);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut recorded_exited = false;
+        while std::time::Instant::now() < deadline && !recorded_exited {
+            recorded_exited = matches!(recorded.try_wait(), Ok(Some(_)));
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            recorded_exited,
+            "a crashed codex pane FLEETOR recorded was left running with no terminal — codex's \
+             checkpoint 12 answer is not reaching the sweep"
+        );
+        assert!(
+            matches!(operators_own.try_wait(), Ok(None)),
+            "the sweep signalled a codex process FLEETOR never recorded — this is the operator's \
+             own codex being killed by a cleanup more dangerous than the leak"
+        );
+
+        let _ = recorded.kill();
+        let _ = recorded.wait();
+        let _ = operators_own.kill();
+        let _ = operators_own.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Checkpoint 12 answers with a *list* of suffixes — more than one wherever a
     /// harness runs under an interpreter and the bare interpreter name must never
     /// match alone. Every one of them has to be able to confirm a pid, not just
