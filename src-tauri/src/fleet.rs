@@ -448,7 +448,11 @@ impl StartVerdict {
             .refusals
             .iter()
             .map(|refused| {
-                format!("{} is on `{}`, which {}", refused.seat, refused.harness, refused.reason)
+                // An em dash rather than "which": the vendor's own line is a whole
+                // sentence ("~/.claude.json records no completed `claude` login"),
+                // and a conjunction in front of one reads as a grammar bug in the
+                // gate rather than as a quotation of the harness.
+                format!("{} is on `{}` — {}", refused.seat, refused.harness, refused.reason)
             })
             .collect();
         Some(format!(
@@ -467,7 +471,7 @@ impl StartVerdict {
 /// repeated here because a stored selection can outlive the build that stored it.
 fn refusal_for(reading: Option<&harness::HarnessReadiness>) -> Option<String> {
     match reading {
-        None => Some("is not a harness this build can place".to_string()),
+        None => Some("no harness by that name is registered in this build".to_string()),
         Some(reading) => reading.refusal(),
     }
 }

@@ -441,8 +441,8 @@ export function StartGate({ config, onStart, onTargetChanged }: StartGateProps) 
             the interface is the courtesy, the backend is the rule. */}
         {(gate?.verdict.refusals ?? []).map((refused) => (
           <p key={refused.seat} className="pane-gate__error">
-            {refused.seat} is on <span className="mono">{refused.harness}</span>, which{" "}
-            {refused.reason} Nothing will spawn until that seat can take one — log in and press
+            {refused.seat} is on <span className="mono">{refused.harness}</span> —{" "}
+            {refused.reason} Nothing will spawn until that seat can take one: log in and press
             Re-check logins, or put it on another harness.
           </p>
         ))}
@@ -483,7 +483,7 @@ export function StartGate({ config, onStart, onTargetChanged }: StartGateProps) 
 
 /// One refusal as a single line, for the disabled button's tooltip.
 function oneLine(refused: StartRefusal): string {
-  return `${refused.seat} is on ${refused.harness}, which ${refused.reason}`;
+  return `${refused.seat} is on ${refused.harness} — ${refused.reason}`;
 }
 
 /// Each distinct harness this fleet is about to spend, once.
