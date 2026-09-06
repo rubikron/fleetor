@@ -193,8 +193,8 @@ use toml_edit::{DocumentMut, Item, Table, Value};
 use super::harness::{
     AccountShape, BriefCarrier, CommandChannel, ConfigAndCredentialIsolation, ConfigDir,
     Credentials, GaugeSource, GuardrailInstall, Harness, HarnessReadiness, HarnessSpec, LoginState,
-    ModelChoice, OrphanNames, Outbound, Posture, ProjectIdentityAndTrust, Program, ResolvedPosture,
-    Seat, Seed, Transcript, Transport, TypingProfile,
+    ModelChoice, OrphanNames, Outbound, Posture, PostureExpectation, ProjectIdentityAndTrust,
+    Program, ResolvedPosture, Seat, Seed, Transcript, Transport, TypingProfile,
 };
 
 // --- the vendor's own shape ----------------------------------------------------
@@ -503,6 +503,44 @@ pub const CODEX_SPEC: HarnessSpec = HarnessSpec {
         // FLEETOR writes over an operator's answer gets an Activity feed line;
         // see `install`.
         sandbox_keys: &[("sandbox_mode", "workspace-write"), ("approval_policy", "never")],
+        // **What those keys must be seen to become** (#37, C8). Measured on
+        // `codex-cli 0.153.4` by running its own `doctor` with each value applied
+        // and with each alternative applied, so every word below is discriminating
+        // rather than merely present:
+        //
+        // | written | filesystem | network | approval |
+        // |---|---|---|---|
+        // | the trio above | `restricted` | `enabled` | `Never` |
+        // | `sandbox_mode = "danger-full-access"` | **`unrestricted`** | `enabled` | `Never` |
+        // | `network_access = false` | `restricted` | **`restricted`** | `Never` |
+        // | `approval_policy = "on-request"` | `restricted` | `restricted` | **`OnRequest`** |
+        //
+        // The `network` row is the one this arc most needed: it is the setting eight
+        // of nine verbs depend on, and `restricted` there is a fleet of workers that
+        // spawn clean and cannot reach the socket — the arc's signature failure,
+        // which until now nothing on screen would have said.
+        verified_as: &[
+            PostureExpectation {
+                row: "filesystem",
+                written_key: "sandbox_mode",
+                resolved: "restricted",
+            },
+            PostureExpectation {
+                row: "network",
+                written_key: "sandbox_workspace_write.network_access",
+                resolved: "enabled",
+            },
+            PostureExpectation {
+                row: "approval",
+                written_key: "approval_policy",
+                resolved: "Never",
+            },
+        ],
+        // `doctor` stamps `"schemaVersion": 1` on the report all three rows above
+        // were read out of. It is a number in the document and a string here,
+        // because the pin is an identity rather than an ordering: this arc does not
+        // understand schema 2 better for its being larger.
+        verified_against_schema: Some("1"),
     },
 
     // 4 — config dir and its seeding. The two seed keys are this ticket's own and
@@ -2040,6 +2078,49 @@ fn rewrite_value(value: &mut Value, relocate: &impl Fn(&str) -> Option<String>) 
 /// state, the account shape, the provider and the resolved posture.
 const DOCTOR: [&str; 2] = ["doctor", "--json"];
 
+/// **The diagnostic, asked about the configuration FLEETOR writes rather than the
+/// one the operator's shell happens to carry** (WP-25 #37; C8).
+///
+/// **The gap this closes, and it is the whole of #37's design.** #34's probe ran
+/// bare, so what it read back was the posture the *operator's* `~/.codex` resolves.
+/// FLEETOR does not write there — it writes the trio into each pane's own
+/// `CODEX_HOME` — so comparing that reading against [`Posture::sandbox_keys`] would
+/// have compared two different machines and refused every fleet on earth. Measured:
+/// a bare `doctor` on the machine this was written on reports `OnRequest` and a
+/// `restricted` network, and neither is what a pane runs under.
+///
+/// **`-c` is the vendor's own override, and it is what makes the reading a pane's.**
+/// A pane's `config.toml` is a snapshot of the operator's with these exact keys
+/// written over it; `-c` applies the same keys over the same base document in the
+/// same resolution order. Measured on `0.153.4`: the trio moves `approval policy` to
+/// `Never` and `network sandbox` to `enabled` while `auth.credentials` goes on
+/// reading the operator's real `~/.codex/auth.json` — which is the reason this rides
+/// the existing call instead of needing a second one against a fabricated home, and
+/// the reason C14's login reading is untouched by it.
+///
+/// **Still no extra vendor call** (acceptance criterion 5). This is the same two
+/// `doctor` invocations C47 already required, with argv in front of them. Zero
+/// tokens: overriding a sandbox key asks for no completion.
+///
+/// **And a retired key stays visible rather than becoming an error.** Measured: an
+/// unknown `-c` key leaves `doctor` emitting an ordinary report and silently drops
+/// the override, so the row falls back to whatever the base document said — which
+/// is exactly the disagreement [`HarnessReadiness::posture_disagreements`] fires on,
+/// and exactly what a pane seeded with that key would have done in silence.
+fn doctor_resolving_what_fleetor_writes() -> Vec<String> {
+    containment_keys(&CODEX_SPEC)
+        .iter()
+        .flat_map(|(key, value)| {
+            // The spelling the seeder writes into the document, rendered back
+            // through the vendor's own flag — `toml_value` is `seeded_document`'s,
+            // so `"true"` is the boolean and `workspace-write` is the quoted string,
+            // and neither is respelled here.
+            ["-c".to_string(), format!("{key}={}", toml_value(value).to_string().trim())]
+        })
+        .chain(DOCTOR.iter().map(|arg| (*arg).to_string()))
+        .collect()
+}
+
 /// The vendor's own catalog resolution.
 ///
 /// **`debug models`, never `models.json`** (C2). The operator's own configuration
@@ -2107,7 +2188,8 @@ pub fn diagnose(at: &Installation<'_>) -> HarnessReadiness {
     let invoked: PathBuf =
         at.binary.map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from(CODEX_SPEC.program.bin));
 
-    let Some(through_path) = run_json(&invoked, &DOCTOR, at) else {
+    let doctor = doctor_resolving_what_fleetor_writes();
+    let Some(through_path) = run_json(&invoked, &doctor, at) else {
         return HarnessReadiness::not_installed(&CODEX_SPEC);
     };
     let through_path = match through_path {
@@ -2126,7 +2208,7 @@ pub fn diagnose(at: &Installation<'_>) -> HarnessReadiness {
     // that is what a pane's process becomes. The wrapper's reading is kept only to
     // compare.
     let (reading, from) = match &resolved {
-        Some(vendor) => match run_json(vendor, &DOCTOR, at) {
+        Some(vendor) => match run_json(vendor, &doctor, at) {
             Some(Ok(report)) => (report, vendor.clone()),
             // A resolved binary that will not answer is not a reason to refuse the
             // machine: the name on PATH already answered, and that is what the
@@ -2140,6 +2222,11 @@ pub fn diagnose(at: &Installation<'_>) -> HarnessReadiness {
         filesystem: detail(&reading, "sandbox.helpers", "filesystem sandbox"),
         network: detail(&reading, "sandbox.helpers", "network sandbox"),
         approval: detail(&reading, "sandbox.helpers", "approval policy"),
+        // The stamp on the document the three rows above were read out of, so the
+        // gate can refuse a shape it has never seen rather than trust three
+        // readings taken from it. A number in the report and a string here, per
+        // `Posture::verified_against_schema`.
+        schema: schema_version(&reading),
     };
     let provider = detail(&reading, "network.websocket_reachability", "provider name")
         .or_else(|| detail(&reading, "config.load", "model provider"));
@@ -2156,7 +2243,11 @@ pub fn diagnose(at: &Installation<'_>) -> HarnessReadiness {
         && detail(&through_path, "sandbox.helpers", "network sandbox") == posture.network
         && detail(&through_path, "sandbox.helpers", "approval policy") == posture.approval
         && detail(&through_path, "config.load", "model") == detail(&reading, "config.load", "model")
-        && through_path["codexVersion"].as_str() == reading["codexVersion"].as_str();
+        && through_path["codexVersion"].as_str() == reading["codexVersion"].as_str()
+        // A wrapper whose report is a different *shape* is the loudest possible
+        // disagreement, and it would otherwise be invisible: every field read above
+        // could match while the two documents mean different things by them.
+        && schema_version(&through_path) == posture.schema;
 
     HarnessReadiness {
         harness: &CODEX_SPEC,
@@ -2279,7 +2370,7 @@ fn listed_models(report: &serde_json::Value) -> Vec<ModelChoice> {
 /// the gate exists to show.
 fn run_json(
     binary: &Path,
-    args: &[&str; 2],
+    args: &[impl AsRef<std::ffi::OsStr> + std::fmt::Display],
     at: &Installation<'_>,
 ) -> Option<Result<serde_json::Value, String>> {
     let mut command = std::process::Command::new(binary);
@@ -2300,11 +2391,29 @@ fn run_json(
     };
     Some(serde_json::from_slice(&out.stdout).map_err(|e| {
         let said = String::from_utf8_lossy(&out.stderr);
-        format!("`{} {}` did not emit JSON ({e}){}", binary.display(), args.join(" "), match said.trim() {
+        let argv =
+            args.iter().map(ToString::to_string).collect::<Vec<_>>().join(" ");
+        format!("`{} {argv}` did not emit JSON ({e}){}", binary.display(), match said.trim() {
             "" => String::new(),
             text => format!(": {}", text.lines().next().unwrap_or(text)),
         })
     }))
+}
+
+/// The report's own schema stamp, as a string.
+///
+/// **Read through both spellings on purpose.** `0.153.4` emits `"schemaVersion": 1`
+/// as a JSON number; a vendor that starts emitting `"1"` or `"2.0"` has not changed
+/// its schema by doing so, and a reader that saw only one spelling would report a
+/// schema change that had not happened — refusing every fleet, at the gate, for a
+/// quoting difference. `None` is a report with no stamp at all, which is itself a
+/// shape this arc did not measure and is refused as such.
+fn schema_version(report: &serde_json::Value) -> Option<String> {
+    match &report["schemaVersion"] {
+        serde_json::Value::String(text) => Some(text.clone()),
+        serde_json::Value::Number(number) => Some(number.to_string()),
+        _ => None,
+    }
 }
 
 /// One `details` field off one check, or `None` — the shape of every reading above.

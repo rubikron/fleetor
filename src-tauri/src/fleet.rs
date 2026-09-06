@@ -394,7 +394,7 @@ impl StartVerdict {
                 harness: orch.harness.clone(),
                 sentence: orchestrator_cost(&orch.harness, orch_reading),
             }];
-        if let Some(reason) = refusal_for(orch_reading) {
+        for reason in refusal_for(orch_reading).into_iter().chain(posture_refusal(orch_reading)) {
             refusals.push(StartRefusal {
                 seat: seat_label(PaneId::Orch),
                 harness: orch.harness.clone(),
@@ -415,7 +415,7 @@ impl StartVerdict {
                     None => grouped.push((seat.harness.clone(), vec![slot])),
                 }
                 let reading = reading_for(readings, &seat.harness);
-                if let Some(reason) = refusal_for(reading) {
+                for reason in refusal_for(reading).into_iter().chain(posture_refusal(reading)) {
                     refusals.push(StartRefusal {
                         seat: seat_label(PaneId::Worker(slot)),
                         harness: seat.harness.clone(),
@@ -474,6 +474,46 @@ fn refusal_for(reading: Option<&harness::HarnessReadiness>) -> Option<String> {
         None => Some("no harness by that name is registered in this build".to_string()),
         Some(reading) => reading.refusal(),
     }
+}
+
+/// **Why a seat on this harness would spawn under a containment nobody chose, or
+/// `None`** (WP-25 #37; C8).
+///
+/// The posture tripwire's one call site. Everything it knows is
+/// [`harness::HarnessReadiness::posture_disagreements`]'s; what this adds is the
+/// decision that a disagreement is a **refusal** rather than a warning, and the
+/// reason is the failure class the whole arc is shaped around: a fleet that spawns
+/// clean and cannot talk, or can talk and cannot write, with nothing on screen to
+/// say so. By the time a pane is up, the only evidence is silence.
+///
+/// **One sentence per seat, not one per key.** Every disagreeing key is named
+/// inside it — that is acceptance criterion 4 and it is the actionable half — but
+/// three keys times five seats would be fifteen refusals for one broken vendor
+/// release, and a refusal nobody reads to the end of is a refusal that did not
+/// happen.
+///
+/// **It goes through `StartRefusal` rather than beside it**, so the interface needs
+/// no new wire: `StartGate.tsx` already renders every refusal and disables Start on
+/// a non-empty list, and [`fleet_bootstrap`] already refuses on the same list. A
+/// second channel would have been a second implementation of "may this fleet start",
+/// which is the disagreement M15 exists to prevent.
+///
+/// **A harness this build does not register produces nothing here**, because
+/// [`refusal_for`] has already refused it by name and a second sentence about a
+/// fleet that is already stopped tells the operator nothing new.
+fn posture_refusal(reading: Option<&harness::HarnessReadiness>) -> Option<String> {
+    let reading = reading?;
+    let disagreements = reading.posture_disagreements();
+    if disagreements.is_empty() {
+        return None;
+    }
+    let each: Vec<String> =
+        disagreements.iter().map(harness::PostureDisagreement::sentence).collect();
+    Some(format!(
+        "the containment FLEETOR writes is not the containment `{}` resolved. {}",
+        reading.invoked,
+        each.join(" "),
+    ))
 }
 
 /// **A model the harness's own catalog does not list, replaced by the seat's own
@@ -2794,6 +2834,152 @@ mod tests {
             workers.workers,
         );
         assert!(quiet.is_empty());
+    }
+
+    // --- the posture tripwire (WP-25 #37; C8) ---------------------------------
+
+    /// The posture a harness's own spec says the vendor must be seen to resolve.
+    ///
+    /// **Built from the spec rather than typed**, so this helper cannot drift from
+    /// the thing it is describing: if `verified_as` gains a row, the `_` arm panics
+    /// here rather than the test quietly asserting about two rows out of four.
+    fn as_the_spec_expects(name: &str) -> harness::ResolvedPosture {
+        let spec = spec_of(name);
+        let mut posture = harness::ResolvedPosture {
+            schema: spec.posture.verified_against_schema.map(str::to_string),
+            ..Default::default()
+        };
+        for expectation in spec.posture.verified_as {
+            let word = Some(expectation.resolved.to_string());
+            match expectation.row {
+                "filesystem" => posture.filesystem = word,
+                "network" => posture.network = word,
+                "approval" => posture.approval = word,
+                other => panic!("#37's tripwire grew a `{other}` row this helper cannot set"),
+            }
+        }
+        posture
+    }
+
+    /// A codex reading whose vendor resolved exactly what FLEETOR writes.
+    fn resolving_what_fleetor_writes() -> HarnessReadiness {
+        HarnessReadiness {
+            posture: as_the_spec_expects("codex"),
+            ..logged_in("codex", AccountShape::SubscriptionPlan { plan: None })
+        }
+    }
+
+    /// **#37, and the property #35 could not see.** A vendor that resolved a
+    /// containment other than the one FLEETOR wrote stops the fleet *at the gate*,
+    /// naming the key — rather than spawning five panes that come up looking healthy
+    /// and cannot reach the socket.
+    ///
+    /// **This is the test the ticket exists for.** A source tripwire proves the code
+    /// says the right thing, not that it runs: #35's fifteen checks all passed on a
+    /// screen that could never load. So every assertion below runs the real
+    /// `StartVerdict::for_seats` against a machine a value *describes*, and the first
+    /// thing it establishes is the negative control — that a machine whose vendor
+    /// agrees starts. A tripwire that fires on everything is worse than none, because
+    /// it reads as coverage right up until somebody deletes the rule it was guarding.
+    #[test]
+    fn a_containment_the_vendor_did_not_resolve_refuses_the_start() {
+        let seats = seats_on("codex", "codex");
+
+        // The negative control, first and deliberately: agreement starts a fleet.
+        let agrees = vec![resolving_what_fleetor_writes()];
+        assert_eq!(
+            StartVerdict::for_seats(&seats, &agrees, true, Vec::new()).why_it_will_not_start(),
+            None,
+            "a vendor that resolved what FLEETOR wrote must not be refused",
+        );
+
+        // **One flip per key, and each must name its own.** The words below are the
+        // spec's own, negated — never respelled — so this stays a test of the
+        // comparison rather than of a string typed twice.
+        for expectation in spec_of("codex").posture.verified_as {
+            let mut broken = resolving_what_fleetor_writes();
+            let elsewhere = Some(format!("not-{}", expectation.resolved));
+            match expectation.row {
+                "filesystem" => broken.posture.filesystem = elsewhere,
+                "network" => broken.posture.network = elsewhere,
+                "approval" => broken.posture.approval = elsewhere,
+                other => panic!("#37's tripwire grew a `{other}` row this test cannot flip"),
+            }
+
+            let refused = StartVerdict::for_seats(&seats, &[broken], true, Vec::new());
+            let why = refused
+                .why_it_will_not_start()
+                .unwrap_or_else(|| panic!("`{}` disagreeing must stop the fleet", expectation.row));
+            assert!(
+                why.contains(expectation.written_key),
+                "the refusal has to name which key disagreed (criterion 4), not merely \
+                 that one did: {why}",
+            );
+            assert!(
+                why.contains(expectation.resolved) && why.contains(&format!("not-{}", expectation.resolved)),
+                "and it has to say both what was expected and what the vendor said: {why}",
+            );
+            assert_eq!(
+                refused.refusals.len(),
+                1 + fleetor_core::pane::WORKER_SLOTS.len(),
+                "every seat on the harness is named, exactly once — three broken keys \
+                 must not become fifteen sentences nobody reads to the end of",
+            );
+        }
+
+        // **A row the vendor stopped reporting is the loudest case**, because that is
+        // what a retired key looks like: measured on `0.153.4`, an unknown `-c` key
+        // leaves `doctor` emitting an ordinary report with the override silently
+        // dropped. Nothing else in the reading changes.
+        let mut retired = resolving_what_fleetor_writes();
+        retired.posture.network = None;
+        let why = StartVerdict::for_seats(&seats, &[retired], true, Vec::new())
+            .why_it_will_not_start()
+            .expect("a row the vendor no longer reports must stop the fleet");
+        assert!(
+            why.contains("sandbox_workspace_write.network_access") && why.contains("no such row"),
+            "a retired key is named and said to be missing rather than wrong: {why}",
+        );
+
+        // **Criterion 3.** A report shape this arc has not measured stops the fleet
+        // too — and produces *one* sentence naming `schemaVersion`, not three about
+        // keys whose readings came out of a document this build cannot read.
+        let mut moved = resolving_what_fleetor_writes();
+        moved.posture.schema = Some("2".to_string());
+        let refused = StartVerdict::for_seats(&seats, &[moved], true, Vec::new());
+        let why = refused.why_it_will_not_start().expect("a schema this arc does not understand");
+        assert!(why.contains("schemaVersion"), "the schema refusal names the stamp: {why}");
+        for expectation in spec_of("codex").posture.verified_as {
+            assert!(
+                !why.contains(expectation.written_key),
+                "a schema change must not also report three key disagreements — the one \
+                 fact that explains all of them would be buried: {why}",
+            );
+        }
+
+        // **The three states that must *not* be refused** (C14). `Unreadable` is a
+        // working installation this build could not parse and `NotInstalled` has no
+        // posture at all; refusing either here would stop a fleet on the strength of
+        // something that is not evidence, which is the failure C14's narrowness
+        // exists to avoid. `NoCredential` is already refused by `refusal_for`, and a
+        // second sentence about a fleet that is stopped tells nobody anything.
+        for quiet in [
+            LoginState::Unreadable { why: "an unknown report format".into() },
+            LoginState::NotInstalled,
+        ] {
+            let reading = reading("codex", quiet);
+            assert!(
+                posture_refusal(Some(&reading)).is_none(),
+                "the tripwire may only speak about a machine that answered: {:?}",
+                reading.login,
+            );
+        }
+
+        // And a harness with nothing to read back says nothing, which is not a pass.
+        assert!(
+            posture_refusal(Some(&logged_in("claude-code", AccountShape::ApiKey))).is_none(),
+            "a harness that publishes no resolved posture has nothing to disagree about",
+        );
     }
 
     /// The `.env` parse tolerates quotes/comments and ignores an empty value, so a

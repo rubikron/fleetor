@@ -219,6 +219,66 @@ pub struct Posture {
     /// and nothing else — one pass over dotted paths into the harness's own
     /// configuration document (C36).
     pub sandbox_keys: &'static [(&'static str, &'static str)],
+    /// **What the vendor must be seen to have resolved from those keys** (WP-25
+    /// #37; C8).
+    ///
+    /// Writing `sandbox_keys` proves nothing about the fence. A release that
+    /// retires one of them keeps parsing the configuration and silently ignores
+    /// the row — measured on `codex-cli 0.153.4`, where an unknown `-c` key leaves
+    /// `doctor` emitting an ordinary report — so the pane comes up unfenced with
+    /// nothing anywhere saying so. This is the read-back: one entry per key, naming
+    /// the row of [`ResolvedPosture`] that key decides and the word the vendor
+    /// reports having resolved from the value `sandbox_keys` and
+    /// [`Outbound::reachability_keys`] write.
+    ///
+    /// **The keys are bound here, not respelled.** `tests/gate_posture_tripwire.rs`
+    /// fails if this list and those two ever name different keys, in either
+    /// direction — a fourth containment key added without a row here would be a key
+    /// nothing reads back, which is the state this field exists to end.
+    ///
+    /// Empty for a harness with no such diagnostic, which is a real answer rather
+    /// than a gap: Claude Code publishes nothing that reports a resolved posture,
+    /// so there is nothing to compare and the gate says nothing about it.
+    pub verified_as: &'static [PostureExpectation],
+    /// **The diagnostic report schema [`Self::verified_as`] was measured against**
+    /// (WP-25 #37, acceptance criterion 3).
+    ///
+    /// Every word in that list is a reading off one report shape. A vendor that
+    /// bumps this has changed the document those readings were taken from, and a
+    /// posture compared across that change is a comparison of two different things
+    /// that happen to have the same field names. So the arc refuses the fleet and
+    /// says which version it understands, rather than reporting a green fence it
+    /// can no longer justify.
+    ///
+    /// `None` for a harness with no schema to pin, which is every harness with an
+    /// empty [`Self::verified_as`].
+    pub verified_against_schema: Option<&'static str>,
+}
+
+/// **One row of the posture tripwire: a key FLEETOR writes, and the word the vendor
+/// must be seen to have resolved from it** (WP-25 #37; C8).
+///
+/// **Every `resolved` here is a measurement, never a guess.** They were read off
+/// `codex-cli 0.153.4` by running its own diagnostic with the trio applied and with
+/// each alternative applied, so the words are discriminating rather than merely
+/// present: `sandbox_mode` moves `filesystem` between `restricted` and
+/// `unrestricted`, `network_access` moves `network` between `restricted` and
+/// `enabled`, and `approval_policy` moves `approval` between `Never` and
+/// `OnRequest`. A row whose word never changes would be a tripwire that cannot
+/// fire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PostureExpectation {
+    /// Which row of [`ResolvedPosture`] this is about, spelled the way
+    /// [`ResolvedPosture::rows`] spells it: `filesystem`, `network`, `approval`.
+    pub row: &'static str,
+    /// The configuration key that decides it, spelled exactly as
+    /// [`Posture::sandbox_keys`] or [`Outbound::reachability_keys`] spells it.
+    /// **This is what the refusal names**, because "the posture disagreed" is not
+    /// something an operator can act on and "`approval_policy` disagreed" is.
+    pub written_key: &'static str,
+    /// The word the vendor reports having resolved, when that key carries the value
+    /// those lists write.
+    pub resolved: &'static str,
 }
 
 /// **Checkpoint 4 — configuration directory and its seeding.**
@@ -1056,6 +1116,13 @@ pub const CLAUDE_CODE_SPEC: HarnessSpec = HarnessSpec {
         model_flag: None,
         permission_flag: Some("--permission-mode"),
         sandbox_keys: &[],
+        // **Nothing to read back, which is an answer rather than a gap** (#37).
+        // Claude Code has no sandbox of its own and publishes no diagnostic that
+        // reports a resolved containment, so there is no vendor reading to compare
+        // an empty `sandbox_keys` against. An expectation invented here would be a
+        // tripwire with no measurement behind it.
+        verified_as: &[],
+        verified_against_schema: None,
     },
 
     // 4 — config dir and its seeding. `spawn::seed_config_dir`.
@@ -1573,6 +1640,18 @@ pub struct ResolvedPosture {
     /// What it resolved for asking a human — the row that matters most to a fenced
     /// pane, because a worker has no human and a posture that asks one parks.
     pub approval: Option<String>,
+    /// **The version the vendor stamped on the report the three rows above were read
+    /// out of** (WP-25 #37).
+    ///
+    /// Here rather than beside [`HarnessReadiness::version`] because it is not a
+    /// fact about the vendor, it is a fact about *this reading*: the same binary can
+    /// change this the day it changes its report shape, and the three rows above
+    /// mean whatever that shape says they mean. It is compared against
+    /// [`Posture::verified_against_schema`], and a difference stops the fleet.
+    ///
+    /// `None` on a harness that stamps no version, and on every reading taken before
+    /// the vendor answered at all.
+    pub schema: Option<String>,
 }
 
 impl ResolvedPosture {
@@ -1587,6 +1666,66 @@ impl ResolvedPosture {
         .into_iter()
         .filter_map(|(name, value)| value.map(|v| (name, v)))
         .collect()
+    }
+
+    /// One row by the name [`Self::rows`] gives it, or `None`.
+    ///
+    /// **`None` has two meanings and they are the same refusal.** Either the vendor
+    /// reported no such row — what a retired key looks like — or this build asked
+    /// for a row name that does not exist, which is a [`PostureExpectation`] written
+    /// against a shape [`Self`] no longer has. Both are "the reading this build
+    /// wanted is not there", and both must stop a fleet rather than pass quietly.
+    pub fn row(&self, name: &str) -> Option<&str> {
+        self.rows().into_iter().find(|(row, _)| *row == name).map(|(_, value)| value)
+    }
+}
+
+/// **One key the vendor did not resolve the way FLEETOR wrote it** (WP-25 #37).
+///
+/// **A value rather than a formatted string**, so the gate's sentence and a test's
+/// assertion read the same fields. The one thing every field exists to serve is
+/// acceptance criterion 4: the operator is told *which key* disagreed, because "the
+/// posture is wrong" is not something anyone can act on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PostureDisagreement {
+    /// The key that disagreed, as FLEETOR spells it in the configuration it
+    /// writes — or `schemaVersion` for the report's own stamp, which FLEETOR reads
+    /// rather than writes.
+    pub key: &'static str,
+    /// The row of [`ResolvedPosture`] it decides, for the operator who has to find
+    /// it in the vendor's own output.
+    pub row: &'static str,
+    /// The value FLEETOR writes under that key. `None` for the schema stamp.
+    pub wrote: Option<&'static str>,
+    /// What this arc measured that value resolving to.
+    pub expected: &'static str,
+    /// What the vendor reported instead. **`None` is the loud case**: the row is not
+    /// in the report at all, which is exactly what a retired key looks like.
+    pub found: Option<String>,
+}
+
+impl PostureDisagreement {
+    /// The operator's sentence — the key first, because that is the actionable half.
+    pub fn sentence(&self) -> String {
+        let found = match &self.found {
+            Some(word) => format!("reports `{word}`"),
+            None => "reports no such row at all".to_string(),
+        };
+        match self.wrote {
+            Some(wrote) => format!(
+                "`{}` disagrees: FLEETOR writes it as `{wrote}`, this build measured that \
+                 resolving to `{}` in the `{}` row, and the vendor {found}. A pane would \
+                 spawn under a containment nobody chose.",
+                self.key, self.expected, self.row,
+            ),
+            None => format!(
+                "`{}` disagrees: this build measured the containment rows against report \
+                 schema `{}`, and the vendor {found}. They were read out of a document \
+                 shape it no longer recognises, so it cannot say what a pane would spawn \
+                 under.",
+                self.key, self.expected,
+            ),
+        }
     }
 }
 
@@ -1624,6 +1763,86 @@ impl HarnessReadiness {
             LoginState::NotInstalled => Some(not_on_the_path(&self.invoked)),
             LoginState::LoggedIn(_) | LoginState::Unreadable { .. } => None,
         }
+    }
+
+    /// **Which of the keys FLEETOR writes the vendor did not resolve the way it was
+    /// written** — empty when they all agree (WP-25 #37; C8).
+    ///
+    /// **This is the posture tripwire, and it is the whole of it.** [`ResolvedPosture`]
+    /// is what the vendor said it resolved; [`Posture::sandbox_keys`] and
+    /// [`Outbound::reachability_keys`] are what FLEETOR wrote; and
+    /// [`Posture::verified_as`] is the measured bridge between them. Every key with
+    /// a row here is read back, and a disagreement stops the fleet at the gate
+    /// through [`crate::fleet`]'s `StartVerdict` — before any pane spawns, which is
+    /// the only moment at which a mute fleet is still a sentence instead of five
+    /// panes that answer nothing.
+    ///
+    /// **The schema is checked first and short-circuits.** Once the report shape has
+    /// changed, the three rows are readings out of a different document; reporting
+    /// three key disagreements as well would bury the one fact that explains all of
+    /// them. So a schema change produces exactly one disagreement, naming
+    /// `schemaVersion`.
+    ///
+    /// **It runs only on a machine that is logged in, and that is C14's narrowness
+    /// rather than an omission.** `NotInstalled` and `NoCredential` already refuse
+    /// the seat and have no posture to compare — adding a second sentence about a
+    /// fleet that is already stopped tells the operator nothing. `Unreadable` is a
+    /// *working* installation whose report this build could not parse, and refusing
+    /// it here would stop a fleet on a parse error, which is precisely the failure
+    /// [`LoginState::Unreadable`] exists to avoid. The state this defends is the one
+    /// that otherwise passes silently: a vendor that answers, authenticates, and
+    /// quietly ignores a key it used to honour.
+    ///
+    /// Empty for a harness with no [`Posture::verified_as`] rows, which is not a
+    /// pass — it is the honest "nothing to compare" of a harness that publishes no
+    /// resolved posture at all.
+    pub fn posture_disagreements(&self) -> Vec<PostureDisagreement> {
+        if !matches!(self.login, LoginState::LoggedIn(_)) {
+            return Vec::new();
+        }
+        if let Some(understood) = self.harness.posture.verified_against_schema {
+            if self.posture.schema.as_deref() != Some(understood) {
+                return vec![PostureDisagreement {
+                    key: "schemaVersion",
+                    row: "report schema",
+                    wrote: None,
+                    expected: understood,
+                    found: self.posture.schema.clone(),
+                }];
+            }
+        }
+        self.harness
+            .posture
+            .verified_as
+            .iter()
+            .filter_map(|expectation| {
+                let found = self.posture.row(expectation.row).map(str::to_string);
+                (found.as_deref() != Some(expectation.resolved)).then(|| PostureDisagreement {
+                    key: expectation.written_key,
+                    row: expectation.row,
+                    wrote: self.written_value(expectation.written_key),
+                    expected: expectation.resolved,
+                    found,
+                })
+            })
+            .collect()
+    }
+
+    /// The value FLEETOR writes under one containment key, read out of the spec
+    /// rather than respelled (C36's two lists, in the order the seeder reads them).
+    ///
+    /// `None` is impossible for any key `tests/gate_posture_tripwire.rs` allows, and
+    /// is rendered by [`PostureDisagreement::sentence`] as the schema case rather
+    /// than being unwrapped — a tripwire that panicked on its own bookkeeping would
+    /// be worse than the failure it guards.
+    fn written_value(&self, key: &str) -> Option<&'static str> {
+        self.harness
+            .posture
+            .sandbox_keys
+            .iter()
+            .chain(self.harness.outbound.reachability_keys)
+            .find(|(written, _)| *written == key)
+            .map(|(_, value)| *value)
     }
 
     /// **What the operator is told, for the Activity feed** (WP-25 #34).
@@ -2059,6 +2278,7 @@ mod tests {
                 filesystem: Some("restricted".to_string()),
                 network: Some("restricted".to_string()),
                 approval: Some("never".to_string()),
+                schema: None,
             },
         }
     }
