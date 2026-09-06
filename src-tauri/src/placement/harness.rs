@@ -1253,7 +1253,7 @@ static CLAUDE_CODE: ClaudeCode = ClaudeCode;
 /// runs one pass per entry, end to end through [`place`](super::place), and it
 /// refuses the answers a half-implemented harness would give — that is what makes
 /// that line the registration and not a declaration.
-static REGISTERED: [&dyn Harness; 1] = [&CLAUDE_CODE];
+static REGISTERED: [&dyn Harness; 2] = [&CLAUDE_CODE, &super::codex::CODEX];
 
 /// Every harness a pane may run.
 pub fn registered() -> &'static [&'static dyn Harness] {
@@ -1294,28 +1294,37 @@ pub fn by_name(name: &str) -> Option<&'static dyn Harness> {
 mod tests {
     use super::*;
 
-    /// **The one-harness pin, kept** (C20, C25, C53).
+    /// **The registry pin, now holding two** (C20, C25, C53, C54, C57).
     ///
-    /// It held from #14 through #32 as phase 1's exit condition and phase 2's
-    /// standing invariant, #33 established that it holds one ticket longer — the
-    /// flip was gated on #39, because checkpoint 13 refused a harness whose
-    /// transcript is a live database until the harvest had a mechanism for one —
-    /// and **#39 has landed that mechanism** (C54). Codex now passes all fourteen
-    /// checkpoints, so this pin is no longer waiting on evidence, only on two
-    /// lines being typed deliberately. A second entry here without a conformance
-    /// pass behind it is still the "half-implemented harness compiles quietly"
-    /// failure this exists to prevent, which is why the assertion stays until the
-    /// flip rather than being softened in anticipation of it.
+    /// The count held at one from #14 through #39 — phase 1's exit condition and
+    /// phase 2's standing invariant — because a suite with one registered harness
+    /// is the point rather than a limitation: a suite built against a second
+    /// vendor while that vendor is the only thing describing it is a description
+    /// of that vendor wearing an abstraction's clothes. #33 registered codex,
+    /// found six checkpoints shaped around Claude Code, reshaped them, and
+    /// reverted the flip because checkpoint 13 correctly refused a harness whose
+    /// transcript is a live database. #39 landed that mechanism and observed all
+    /// fourteen green over both harnesses; this is the flip it earned.
     ///
-    /// **What #33 added is the second half**, which the count alone never said:
-    /// every entry is a distinct, nameable harness that [`by_name`] resolves back
-    /// to the identical spec. That half is what the follow-up keeps once the count
-    /// changes, so it is written now rather than at the flip.
+    /// **The count is no longer the assertion — the properties are.** Every entry
+    /// is a distinct, nameable harness that [`by_name`] resolves back to the
+    /// identical spec, and Claude Code is still among them. A registry that swapped
+    /// one sole harness for another would be a description again, which is why
+    /// both names are asserted rather than only the new one.
     #[test]
-    fn exactly_one_harness_is_registered_and_it_is_claude_code() {
+    fn the_registry_holds_two_distinct_harnesses_and_names_resolve() {
         let all = registered();
-        assert_eq!(all.len(), 1, "the flip to two is #39's follow-up, not something that drifts");
-        assert_eq!(all[0].spec().name, "claude-code");
+        assert_eq!(all.len(), 2, "codex joined at #39's follow-up; a third is its own arc");
+        assert!(
+            all.iter().any(|h| h.spec().name == "claude-code"),
+            "Claude Code stays — a registry that swapped its sole harness for another \
+             would be a description again rather than a suite",
+        );
+        assert!(
+            all.iter().any(|h| h.spec().name == "codex"),
+            "codex is registered; a ticket that drops it back out fails here rather than \
+             quietly shrinking the suite to one pass",
+        );
 
         let mut names: Vec<&str> = all.iter().map(|h| h.spec().name).collect();
         names.sort_unstable();

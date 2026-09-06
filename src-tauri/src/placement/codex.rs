@@ -2284,14 +2284,18 @@ args = ["--root", "~/notes"]
     /// lines — `harness::REGISTERED` and this test — and nothing in front of
     /// them.
     #[test]
-    fn codex_is_implemented_and_still_not_registered() {
-        assert_eq!(registered().len(), 1);
-        assert_eq!(registered()[0].spec().name, "claude-code");
+    fn codex_is_registered_and_the_seam_holds_two_harnesses() {
+        assert_eq!(registered().len(), 2);
         assert!(
-            !registered().iter().any(|h| h.spec().name == CODEX_SPEC.name),
-            "codex joins the registry once #39 gives the harvest a mechanism for a live \
-             database — checkpoint 13 is what refuses it until then, and that assertion is \
-             the gate rather than this one",
+            registered().iter().any(|h| h.spec().name == CODEX_SPEC.name),
+            "codex is registered — the pin is inverted rather than deleted, so a later \
+             ticket that drops codex back out of the registry fails here rather than \
+             quietly shrinking the suite to one pass",
+        );
+        assert!(
+            registered().iter().any(|h| h.spec().name == "claude-code"),
+            "and Claude Code stays — a suite that swapped one sole harness for another \
+             would be a description again rather than a suite",
         );
         assert_eq!(codex().spec(), &CODEX_SPEC);
     }
