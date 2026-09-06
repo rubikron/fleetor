@@ -22,8 +22,8 @@ import "@xterm/xterm/css/xterm.css";
 import { warmTheme, warmThemeLight } from "../theme";
 import { onPaneExit, onPaneOutput, resizePane, spawnPane, writePane } from "../fleet/api";
 import { statusTone, STATUS_LABEL } from "../lib/statusTone";
-import { gaugeTone, gaugeLabel, gaugeTitle } from "../lib/contextGaugeTone";
-import type { ContextGauge, PaneId, PaneStatus } from "../fleet/types";
+import { PaneGauge } from "./PaneGauge";
+import type { GaugeReading, PaneId, PaneStatus } from "../fleet/types";
 import type { Theme } from "../ui/useTheme";
 
 // Raw pty bytes arrive base64-encoded so escape sequences and multibyte UTF-8
@@ -58,11 +58,12 @@ interface TerminalPaneProps {
   status: PaneStatus;
   /// The model running this pane, shown alongside the label when known.
   model?: string;
-  /// This pane's live context gauge (WP-04) — absent for orch always (its
-  /// transcript is the operator's own, out of scope), and for a worker until
-  /// its own transcript has a completed turn. Never rendered as 0%; absent
-  /// means unknown, so the pane head simply shows nothing for it.
-  gauge?: ContextGauge;
+  /// What this pane's rail says about its context (WP-04, #48) — a reading,
+  /// not a gauge. Never rendered as 0%, and an absent figure is no longer
+  /// rendered as nothing: `unavailable` says the word, `pending` says the
+  /// pane has not been asked yet, and only the orchestrator — out of scope by
+  /// construction — shows nothing at all. `undefined` means `pending`.
+  gauge?: GaugeReading;
   /// xterm's fontSize in px, driven by the app-wide zoom factor
   /// (TERMINAL_FONT_SIZE_PX * zoom — see ui/useZoom.ts). Read once as the
   /// initial value at mount; changes afterward are applied by a separate
@@ -346,14 +347,7 @@ export function TerminalPane({
         <span className={`dot dot--${statusTone(status)}`} />
         <span className="mono pane__title">{label}</span>
         {model && <span className="mono pane__meta">{model}</span>}
-        {gauge && (
-          <span
-            className={`mono pane__meta pane__gauge pane__gauge--${gaugeTone(gauge.pct)}`}
-            title={gaugeTitle(gauge)}
-          >
-            {gaugeLabel(gauge)} ctx
-          </span>
-        )}
+        <PaneGauge reading={gauge} block="pane__gauge" className="mono pane__meta" />
         <span className="grow" style={{ flex: "1 1 auto" }} />
         <span className="pane__status">{STATUS_LABEL[status]}</span>
         {started && onRestart && (

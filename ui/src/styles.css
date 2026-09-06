@@ -856,6 +856,11 @@ body,
    "needs you," and an approximate, honestly-labeled figure is not that. */
 .pane__gauge--muted { color: var(--fg-mute); }
 .pane__gauge--gold { color: var(--gold); }
+/* `unavailable` — a reading that was attempted and produced nothing (#48).
+   Italic and dimmer than muted, so it reads as an absent figure rather than
+   a small one, and is never mistaken for the `pending` state beside it. Still
+   not coral: an instrument that cannot be read is not "needs you". */
+.pane__gauge--absent { color: var(--fg-mute); font-style: italic; opacity: 0.8; }
 .pane__ctl {
   font-family: var(--mono);
   font-size: var(--t-label);
@@ -1211,6 +1216,9 @@ body,
 .tab__gauge { font-size: var(--t-label); }
 .tab__gauge--muted { color: var(--fg-mute); }
 .tab__gauge--gold { color: var(--gold); }
+/* Same `absent` treatment as `.pane__gauge--absent`, and for the same reason:
+   the two places must agree about a pane whose usage could not be read. */
+.tab__gauge--absent { color: var(--fg-mute); font-style: italic; opacity: 0.8; }
 /* unread-output marker: presence only, no count. Gold (awareness/unread),
    never the accent — coral is reserved for the focused-pane frame in this
    pass (see .terminal-pane--focused). */

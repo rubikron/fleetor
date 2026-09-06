@@ -12,7 +12,7 @@
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { TerminalPane } from "./TerminalPane";
 import { statusTone, STATUS_LABEL } from "../lib/statusTone";
-import { gaugeTone, gaugeLabel, gaugeTitle } from "../lib/contextGaugeTone";
+import { PaneGauge } from "./PaneGauge";
 import {
   ORCH,
   WORKER_SLOTS,
@@ -21,7 +21,7 @@ import {
   type PaneId,
   type PaneStatus,
 } from "../fleet/types";
-import type { ContextGaugeMap } from "../fleet/useContextGauge";
+import { OUT_OF_SCOPE, type ContextGaugeMap } from "../fleet/useContextGauge";
 import type { Theme } from "../ui/useTheme";
 
 /// The orchestrator is the operator's own session and the one they read back
@@ -53,9 +53,10 @@ interface TerminalGridProps {
   /// Registers each pane's `focus()` callback with App.tsx, for the
   /// Cmd+1..5 pane-jump shortcut.
   onRegisterFocus: (pane: PaneId, focus: () => void) => void;
-  /// Each pane's live context gauge (WP-04) — absent for orch always, and
-  /// for a worker until its transcript has a completed turn. Threaded down
-  /// to both the pane head and the tab strip so they never drift apart.
+  /// What each pane's rail says about its context (WP-04, #48). Threaded
+  /// down to both the pane head and the tab strip, which render it through
+  /// the one `PaneGauge` so they never drift apart — including on the states
+  /// that carry no figure.
   gauges: ContextGaugeMap;
 }
 
@@ -92,7 +93,10 @@ export function TerminalGrid({
           onStatus={onStatus}
           onRestart={() => onRestart(ORCH)}
           onFocusReady={(focus) => onRegisterFocus(ORCH, focus)}
-          gauge={gauges[ORCH]}
+          // Not a lookup: the orchestrator's transcript is the operator's
+          // own and has no gauge to be unavailable, so it says so from the
+          // first frame rather than reading `pending` until a poll lands.
+          gauge={OUT_OF_SCOPE}
         />
       </Panel>
       <PanelResizeHandle className="divider">
@@ -117,14 +121,7 @@ export function TerminalGrid({
                   <span className={`dot dot--${statusTone(status)}`} />
                   <span className="mono">worker-{slot}</span>
                   <span className="tab__status">{STATUS_LABEL[status]}</span>
-                  {gauge && (
-                    <span
-                      className={`tab__gauge tab__gauge--${gaugeTone(gauge.pct)}`}
-                      title={gaugeTitle(gauge)}
-                    >
-                      {gaugeLabel(gauge)}
-                    </span>
-                  )}
+                  <PaneGauge reading={gauge} block="tab__gauge" />
                   {!isSelected && unreadWorkers.has(slot) && (
                     <span className="tab__unread" title="new output" aria-label="new output" />
                   )}

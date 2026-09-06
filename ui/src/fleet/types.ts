@@ -410,6 +410,48 @@ export interface ContextGauge {
   pct: number;
 }
 
+/// What this pane's rail has to say about its context, as four distinct
+/// answers rather than a gauge-or-nothing (#48).
+///
+/// **Absence was three different facts wearing one costume.** Before this,
+/// the map held `ContextGauge | undefined` and every consumer guarded on bare
+/// truthiness, so a pane whose usage *could not be read* rendered exactly what
+/// a pane nobody had asked about yet rendered, which is exactly what the
+/// orchestrator — which has no gauge by construction — rendered: nothing. The
+/// rule that predates this arc is that an unavailable gauge **says**
+/// unavailable (D-054, M22, C12), and silence does not say it: it is
+/// indistinguishable from "nothing to report", which is what a healthy idle
+/// pane looks like too.
+///
+/// Nothing here is synthesized. `unavailable` carries no number and none is
+/// computed for it — `Option::None` on the Rust side still means unavailable,
+/// never zero (C24, C65).
+export type GaugeReading =
+  /// The backend answered with a figure it read off the pane's own vendor.
+  | { kind: "sampled"; gauge: ContextGauge }
+  /// The backend answered *about this pane* and had no figure: `context: None`
+  /// on its roster row. The same state the CLI renders as `—`.
+  | { kind: "unavailable" }
+  /// Nothing has answered about this pane yet — the fleet is not polling, or
+  /// the first poll has not landed. Distinct from `unavailable`, because
+  /// "not asked yet" and "asked, no reading" are different facts and the
+  /// operator can act on only one of them (wait vs. don't trust the rail).
+  | { kind: "pending" }
+  /// This pane has no gauge to be unavailable — the orchestrator, whose
+  /// transcript is the operator's own and deliberately out of scope (WP-04).
+  /// Renders nothing at all, which is the one place silence is honest.
+  | { kind: "out-of-scope" };
+
+/// The reading for a pane nothing has answered about yet. Exported so a
+/// consumer holding `undefined` resolves it through one shared constant
+/// instead of each deciding for itself what absence meant.
+export const PENDING: GaugeReading = { kind: "pending" };
+
+/// The orchestrator's reading, which is not a reading. Held here beside the
+/// others so the one pane that legitimately shows nothing says so in the same
+/// vocabulary as the panes that show something.
+export const OUT_OF_SCOPE: GaugeReading = { kind: "out-of-scope" };
+
 /// The backend's own lifecycle state for a pane, exactly as
 /// `fleetor_core::pane::PaneState` serializes it — **not** the same set as
 /// `PaneStatus` above, which the shell derives from its own pty channels and
