@@ -55,10 +55,38 @@
 //!    rather than as an absence (C27, C30).
 //!
 //! The fleet's key itself is in none of those: it arrives on the pane's
-//! environment through [`FLEET_KEY_ENV`], so **nothing under `pane-config/` ever
-//! holds a credential** — neither the fleet's nor the operator's, whose `auth.json`
-//! and provider bearer tokens are excluded from the snapshot by
-//! [`SNAPSHOT_ENTRIES`] and [`strike_provider_credentials`].
+//! environment through [`FLEET_KEY_ENV`], so **nothing under a fenced pane's
+//! `pane-config/` ever holds a credential** — not the fleet's, and not the
+//! operator's, whose `auth.json` and provider bearer tokens are kept out of a
+//! worker's snapshot by [`OPERATORS_OWN_ENTRIES`] and
+//! [`strike_provider_credentials`].
+//!
+//! ## The seat decides whose login travels (#44, C9, C43)
+//!
+//! The paragraph above is a **worker's** answer, and for one turn it was every
+//! seat's. It should not have been: a codex login lives *inside the directory this
+//! module replaces* (C6 — `CODEX_HOME` alone determines configuration and login),
+//! so a snapshot that strikes the credential on every seat hands the orchestrator
+//! a pane with no login at all. Measured on `codex-cli 0.153.4`, that pane's
+//! `codex doctor --json` reports `auth.credentials` as **`fail` — "no Codex
+//! credentials were found"**, which contradicts D-030/D-052 and C9: the
+//! orchestrator is the operator's own pane, on their own login, spending their own
+//! credential.
+//!
+//! So the credential strike is **seat-conditional, exactly as the selection above
+//! already is**, and it branches on the same [`Seed::operators_own_seat`]:
+//!
+//! | | worker (`false`, the default) | orchestrator (`true`) |
+//! |---|---|---|
+//! | `auth.json` | never copied | copied — [`OPERATORS_OWN_ENTRIES`] |
+//! | `[model_providers.*]` credentials | struck | inherited |
+//! | `model_provider` | FLEETOR's | the operator's |
+//!
+//! **Copying the credential *in* is not writing *out*.** C6's snapshot-not-symlink
+//! rule is untouched: the pane's `CODEX_HOME` is still never written back, and the
+//! operator's real installation is still never written to — the copy is one-way,
+//! and `the_operators_installation_is_never_written_to` seeds an orchestrator as
+//! well as four workers to say so.
 //!
 //! ## Checkpoint 2 is a file in this directory, not a flag (#27, C3)
 //!
@@ -165,8 +193,11 @@ pub const OPERATOR_DIR: &str = ".codex";
 ///
 /// What is **not** here, and why, measured against a real installation:
 ///
-///  - `auth.json` — the operator's credential. #29's job, and a worker holds the
-///    fleet's credential rather than the operator's regardless (C9, D-062).
+///  - `auth.json` — the operator's credential, which is **not on every seat's
+///    snapshot and is on the orchestrator's**. It is [`OPERATORS_OWN_ENTRIES`],
+///    below: a worker holds the fleet's credential and never the operator's (C9,
+///    D-062), and the operator's own pane holds their own login because that is
+///    what the seat is (#44, C43).
 ///  - `packages/` (**275 MB**) — the vendor's own downloaded release binaries.
 ///    Four panes' worth is a gigabyte of the same bytes, and `codex` is on the
 ///    pane's `PATH` already.
@@ -196,8 +227,34 @@ const SNAPSHOT_ENTRIES: &[&str] = &[
     "prompts",
 ];
 
+/// **What the snapshot carries in on the operator's own seat, and on no other**
+/// (#44, C9, C43).
+///
+/// A second list rather than a flag on [`SNAPSHOT_ENTRIES`]'s rows, and rather
+/// than a spec field, for [`WORKER_PROVIDER_SELECTION`]'s reason (C31, C41(b)):
+/// the two lists answer different questions. `SNAPSHOT_ENTRIES` is *what a codex
+/// pane needs to be the operator's pane* — preferences, catalog, skills, prompts —
+/// and it is the same list on every seat. This is *what only the operator's own
+/// seat may hold*, and it is the credential file. Folding them into one list of
+/// `(name, seat)` pairs would make every future preference answer a question it
+/// does not have — which is the shape a spec field would have forced too.
+///
+/// One name today, and a list rather than a constant because the vendor's
+/// credential storage is a directory whose shape it owns: `auth storage mode` is
+/// reported by `codex doctor --json` as `File` on this build, and a build that
+/// splits the file is one name added here rather than a mechanism.
+///
+/// **The direction is the whole safety argument.** This copies *in*; nothing here
+/// or anywhere in this module writes into the operator's installation, so C6's
+/// snapshot-not-symlink rule holds exactly as it did — a pane that refreshes its
+/// own token rewrites its own copy, and the operator's `~/.codex` never learns
+/// about it. Cost, stated: the reverse is also true, so a plan token refreshed
+/// inside the pane is not carried back to the operator's own installation, and a
+/// re-seed overwrites the pane's copy with the operator's again.
+const OPERATORS_OWN_ENTRIES: &[&str] = &["auth.json"];
+
 /// Per-provider keys that carry, or reach, the operator's own credential — struck
-/// from every `[model_providers.*]` table on the way in (C9).
+/// from every `[model_providers.*]` table on a **fenced** seat's way in (C9, C43).
 ///
 /// `experimental_bearer_token` is the operator's key in plaintext; the real
 /// installation has one. `env_key` is subtler and is here for L2's reason: it
@@ -210,6 +267,16 @@ const SNAPSHOT_ENTRIES: &[&str] = &[
 /// at [`FLEET_KEY_ENV`], a variable only [`spawn::worker_command_with`] sets and
 /// only on a fenced seat. The order in [`install`] is what makes that true —
 /// FLEETOR's keys are written last, so they win.
+///
+/// **Not struck on the operator's own seat** (#44, C43). The orchestrator keeps
+/// the provider it inherited (C2 as C9 amended it), and a provider entry with its
+/// credential removed is an inherited provider that cannot authenticate — which is
+/// the third auth shape C14 requires, since the operator's own installation is a
+/// third-party endpoint with its own bearer token. That seat is also the one seat
+/// `scrubbed_env` is not applied to (`spawn::worker_command_with` is the only
+/// caller of `scrub`), so an inherited `env_key` still finds the variable the
+/// operator's own shell exported — which is what makes keeping the name correct
+/// there and dangerous on a fenced pane.
 const PROVIDER_CREDENTIAL_KEYS: &[&str] = &["experimental_bearer_token", "env_key"];
 
 /// **The variable a codex worker's fleet credential arrives in** (#29, C9, D-062).
@@ -657,10 +724,17 @@ fn install(
 
     let source = seed.operator_home.map(|home| home.join(OPERATOR_DIR)).filter(|d| d.is_dir());
 
-    // 1. The tree.
+    // 1. The tree. The same entries on every seat — and the operator's login on
+    // theirs alone, because a codex login lives inside the directory this module
+    // replaces (C6), so a seat that does not carry it has none at all (#44, C43).
     if let Some(source) = &source {
         for entry in SNAPSHOT_ENTRIES {
             copy_into(&source.join(entry), &dir.join(entry))?;
+        }
+        if seed.operators_own_seat {
+            for entry in OPERATORS_OWN_ENTRIES {
+                copy_into(&source.join(entry), &dir.join(entry))?;
+            }
         }
     }
 
@@ -670,7 +744,7 @@ fn install(
         (true, Ok(text)) => {
             text.parse::<DocumentMut>().map_err(|e| format!("parse {}: {e}", installed.display()))?
         }
-        _ => seeded_document(source.as_deref(), dir)?,
+        _ => seeded_document(source.as_deref(), dir, seed.operators_own_seat)?,
     };
 
     // 3. FLEETOR's keys, last so they win.
@@ -733,9 +807,12 @@ static CODEX: CodexCli = CodexCli;
 ///
 /// Three transforms, in this order, and each one is a measurement:
 ///
-/// 1. **The credential comes out** (C9). Every `[model_providers.*]` table loses
-///    [`PROVIDER_CREDENTIAL_KEYS`], and `auth.json` was never in
-///    [`SNAPSHOT_ENTRIES`] to begin with.
+/// 1. **The credential comes out on a fenced seat** (C9, C43). Every
+///    `[model_providers.*]` table loses [`PROVIDER_CREDENTIAL_KEYS`], and
+///    `auth.json` is not among the entries a fenced seat's snapshot carries. On
+///    the operator's own seat neither happens: that pane is their own, on their
+///    own login, and `operators_own_seat` is the one question deciding both halves
+///    (#44).
 /// 2. **Tildes are expanded against the operator's `HOME`.** This is the trap: a
 ///    `~` resolves against the *pane's* private home at spawn, so
 ///    `model_catalog_json = "~/.codex/models.json"` names a file that is not
@@ -752,7 +829,11 @@ static CODEX: CodexCli = CodexCli;
 /// operator `HOME`, or an operator who has never run codex. The pane gets a clean
 /// document, which is a working pane without the operator's preferences rather
 /// than a fleet that refuses to start.
-fn seeded_document(source: Option<&Path>, pane_dir: &Path) -> Result<DocumentMut, String> {
+fn seeded_document(
+    source: Option<&Path>,
+    pane_dir: &Path,
+    operators_own_seat: bool,
+) -> Result<DocumentMut, String> {
     let Some(source) = source else {
         return Ok(DocumentMut::new());
     };
@@ -764,7 +845,9 @@ fn seeded_document(source: Option<&Path>, pane_dir: &Path) -> Result<DocumentMut
         .parse::<DocumentMut>()
         .map_err(|e| format!("parse the operator's {}: {e}", file.display()))?;
 
-    strike_provider_credentials(&mut doc);
+    if !operators_own_seat {
+        strike_provider_credentials(&mut doc);
+    }
 
     let operator_home = source.parent().map(Path::to_path_buf);
     rewrite_item(doc.as_item_mut(), &|raw| {
@@ -777,6 +860,11 @@ fn seeded_document(source: Option<&Path>, pane_dir: &Path) -> Result<DocumentMut
 /// Every `[model_providers.*]` table loses the keys that carry or reach the
 /// operator's credential. The provider itself stays: C2 says it is inherited and
 /// displayed, and #29 is what gives a worker seat the fleet's own instead.
+///
+/// **Called on a fenced seat only** (#44, C43) — the caller branches, rather than
+/// this function taking the seat, so the one place a seat is read stays
+/// [`install`] and `seeded_document`'s three transforms and this function's one
+/// job each keep a single subject.
 fn strike_provider_credentials(doc: &mut DocumentMut) {
     let Some(providers) = doc.get_mut("model_providers").and_then(Item::as_table_like_mut) else {
         return;
@@ -995,7 +1083,7 @@ const CREDENTIAL_WHY: &str =
     "a worker holds the fleet's credential and never yours (D-062). This pane runs on \
      FLEETOR's own provider entry, authenticated with the fleet's key from `.env`, so your \
      codex login stays out of a fenced pane and a worker cannot spend your plan. Your \
-     orchestrator keeps the provider you configured — it is your own pane";
+     orchestrator keeps the provider and the login you configured — it is your own pane";
 
 /// Why the four features are off, and the one seat they are not off on.
 const FEATURES_WHY: &str =
@@ -1076,8 +1164,9 @@ fn narrowing_notice(
         .collect::<Vec<_>>()
         .join(", ");
     let tail = if operators_own_seat {
-        "Your codex provider, login and feature flags are untouched on this seat — it is \
-         your own pane."
+        "Your codex provider, login and feature flags travel with this seat — it is your own \
+         pane, and it runs on your own credential. The snapshot is still never written back, \
+         so nothing here reaches your `~/.codex`."
             .to_string()
     } else {
         format!(
@@ -1558,6 +1647,64 @@ args = ["--root", "~/notes"]
     }
 
     #[test]
+    fn the_operators_own_seat_carries_the_login_a_fenced_seat_is_denied() {
+        // **The asymmetry the arc applies at every layer, at the snapshot** (#44,
+        // C9, C43). One installation, two seats, and the difference between them
+        // is `Seed::operators_own_seat` and nothing else:
+        //
+        //  - the orchestrator is the operator's own pane on their own login, which
+        //    is the entire point of the seat (D-030, D-052, C9, C15) — and a codex
+        //    login lives *inside* the directory this module replaces (C6), so a
+        //    seat that does not carry it in has none at all;
+        //  - the worker is unchanged, and the test above is what says so: it scans
+        //    every byte under the pane directory for the operator's key.
+        let machine = Machine::new("seat-credential");
+        a_full_installation(&machine);
+        let worker = machine.seed("worker-1").expect("seed");
+        let orch = machine.seed_for_the_operator("orch").expect("seed");
+
+        assert_eq!(
+            std::fs::read_to_string(orch.join("auth.json")).ok().as_deref(),
+            Some(r#"{"OPENAI_API_KEY":"sk-OPERATORS-OWN-KEY"}"#),
+            "the operator's own pane arrived with no login, which is what #44 is",
+        );
+        assert!(
+            !worker.join("auth.json").exists(),
+            "a fenced pane holds the fleet's credential and never the operator's (D-062)",
+        );
+
+        // The inherited provider keeps the credential that makes it usable — the
+        // third auth shape C14 names, and the operator's own installation is that
+        // shape (a third-party endpoint with its own bearer token).
+        let inherited = machine.seeded("orch");
+        let provider = &inherited["model_providers"]["deepseek"];
+        assert_eq!(
+            provider["experimental_bearer_token"].as_str(),
+            Some("sk-OPERATORS-OWN-KEY"),
+            "the orchestrator's inherited provider was struck of the key it authenticates with",
+        );
+        assert_eq!(
+            provider["env_key"].as_str(),
+            Some("OPERATORS_SHELL_KEY"),
+            "and of the variable the operator's own shell exports it in — that seat is not \
+             scrubbed, so the name still resolves there",
+        );
+        assert_eq!(
+            inherited["model_provider"].as_str(),
+            Some("deepseek"),
+            "the orchestrator inherits and displays its provider; there is no picker (C2, C9)",
+        );
+
+        // The FLEETOR entry still lands on every codex pane, orchestrator included:
+        // a provider nothing selects is inert (C41(a), C42(b)), and this ticket
+        // changes which credential a seat holds, not which entries it carries.
+        assert_eq!(
+            inherited["model_providers"][FLEET_PROVIDER]["env_key"].as_str(),
+            Some(FLEET_KEY_ENV),
+        );
+    }
+
+    #[test]
     fn no_seeded_value_resolves_against_the_panes_private_home() {
         // **The measured trap** (C6). `model_catalog_json = "~/.codex/models.json"`
         // is the operator's real value, and a `~` resolves against the *pane's*
@@ -1641,6 +1788,11 @@ args = ["--root", "~/notes"]
         for slot in 1..=4 {
             machine.seed(&format!("worker-{slot}")).expect("seed");
         }
+        // **And the seat that carries the operator's login** (#44, C43). That seat
+        // copies `auth.json` *in*, which is the one arm of this module that touches
+        // a credential file at all — so it is the arm most able to turn C6's
+        // one-way snapshot into a two-way one without anyone noticing.
+        machine.seed_for_the_operator("orch").expect("seed");
         assert_eq!(
             before,
             contents(&machine.operator_dir()),
@@ -1962,8 +2114,15 @@ args = ["--root", "~/notes"]
             .find(|(level, _)| *level == NoticeLevel::Info)
             .expect("the orchestrator gets one too — the trio is still FLEETOR's");
         assert!(
-            line.1.contains("untouched"),
-            "the orchestrator's line has to say its flags are the operator's: {}",
+            line.1.contains("your own pane") && line.1.contains("your own credential"),
+            "the orchestrator's line has to say the provider, the flags and the login on this \
+             seat are the operator's (#44, C43): {}",
+            line.1,
+        );
+        assert!(
+            line.1.contains("never written back"),
+            "and that carrying the login in did not turn C6's one-way snapshot into a \
+             two-way one: {}",
             line.1,
         );
         for (key, _) in WORKER_FEATURE_OVERRIDES {

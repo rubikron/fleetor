@@ -1191,3 +1191,295 @@ fn the_vendor_resolves_a_worker_to_fleetors_provider_and_refuses_the_operators_k
 
     fs::remove_dir_all(&root).ok();
 }
+
+/// **The operator's own seat is logged in, and the vendor is what says so** (WP-25
+/// phase 2, #44; C6, C9, C14, C43).
+///
+/// The arm above proves a *worker* runs on FLEETOR's provider. This one proves the
+/// other half of the same asymmetry, and it is the half that was missing: a codex
+/// login lives **inside the directory this seeder replaces** (C6 — `CODEX_HOME`
+/// alone determines configuration and login), so striking the credential on every
+/// seat handed the orchestrator a pane with no login at all. That failure is the
+/// arc's signature shape — a configuration that loads, a pane that starts, and a
+/// seat that cannot authenticate — so it is asserted against the vendor's own
+/// reading rather than inferred from `auth.json` being on disk.
+///
+/// **All three auth shapes C14 names, because the copy has to survive all three**
+/// (measured on `codex-cli 0.153.4`, each one a distinct `auth.credentials`
+/// reading):
+///
+/// | shape | where the credential lives | what `doctor` says on the operator's seat |
+/// |---|---|---|
+/// | subscription plan | `auth.json` ChatGPT tokens | `stored auth mode = chatgpt` |
+/// | API key | `auth.json` API key | `stored auth mode = api_key` |
+/// | named custom provider | `config.toml` `env_key` / bearer token | `provider auth env var … (present)` |
+///
+/// The third is the operator's own installation on the machine this was written
+/// on, which is why a copy that handled only the first two would pass here and
+/// fail there.
+///
+/// **The negative control is the load-bearing arm.** The same seeded orchestrator
+/// with its `auth.json` removed reports `fail` — *"no Codex credentials were
+/// found"* — which is exactly what #26 shipped and what this ticket fixes. Without
+/// it, every assertion above passes just as well on a machine whose ambient
+/// environment happened to be logged in.
+///
+/// Zero tokens, and zero non-loopback traffic: each fabricated provider is
+/// `127.0.0.1` and carries `requires_openai_auth`, so the shapes that consult
+/// `auth.json` do so without the vendor's default endpoint being dialled at all.
+#[test]
+fn the_operators_own_seat_authenticates_and_a_fenced_seat_holds_nothing_of_the_operators() {
+    use fleetor_shell::placement::codex::{codex, CODEX_SPEC, OPERATOR_DIR};
+    use fleetor_shell::placement::Seed;
+
+    /// One string, in every shape's credential, so a worker's pane directory can be
+    /// scanned for the operator's key as bytes rather than as a key name.
+    const SENTINEL: &str = "sk-operator-CREDENTIAL-SENTINEL";
+    /// The variable the operator's *own* shell exports their key in — scrubbed on a
+    /// fenced seat, and not on theirs.
+    const OPERATORS_SHELL_VAR: &str = "OPERATORS_SHELL_KEY";
+
+    let fleet_key_env = CODEX_SPEC
+        .credentials
+        .token_env
+        .expect("codex carries the fleet's key in a variable its provider entry names");
+
+    let Some(vendor) = on_path(VENDOR_BIN) else {
+        announce(&[
+            format!("SKIPPED: the codex orchestrator-login arm — `{VENDOR_BIN}` is not on PATH."),
+            format!("  Recorded against {RECORDED_BUILD}. Nothing below was measured:"),
+            "    plan-shape-survives, api-key-shape-survives, provider-shape-survives,".into(),
+            "    a-seat-without-the-copy-has-no-login (#44, C14, C43)".into(),
+            "  The in-crate tests still prove the operator's `auth.json` and provider".into(),
+            "  credential reach their own seat and no other. Only the vendor can say".into(),
+            "  whether what reached it counts as being logged in.".into(),
+        ]);
+        return;
+    };
+
+    let root = std::env::temp_dir().join(format!(
+        "fleetor-codex-seat-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("a clock")
+            .as_millis()
+    ));
+    let pane_home = root.join("pane-home");
+    let cwd = root.join("worktree");
+    fs::create_dir_all(&pane_home).expect("the Fence's private HOME");
+    fs::create_dir_all(&cwd).expect("a pane worktree");
+
+    // A fabricated operator installation. Never `~/.codex`: `Seed::operator_home`
+    // arrives as a value, which is the mechanism that makes the operator's real
+    // installation unreachable from here even by accident.
+    let installation = |name: &str, config: &str, auth: Option<&str>| -> PathBuf {
+        let home = root.join(name);
+        let dir = home.join(OPERATOR_DIR);
+        fs::create_dir_all(&dir).expect("a fabricated operator installation");
+        fs::write(dir.join("config.toml"), config).expect("operator config");
+        if let Some(body) = auth {
+            fs::write(dir.join("auth.json"), body).expect("operator credential");
+        }
+        home
+    };
+
+    let seed_into = |dir: &Path, operator_home: &Path, operators_own: bool| {
+        let seed = Seed::new(dir, &cwd, Some(operator_home)).with_brief("a pane's brief");
+        let seed = if operators_own { seed.for_the_operator() } else { seed };
+        codex().seed_config_dir(&seed).expect("seeding a pane's CODEX_HOME");
+    };
+
+    let said = |out: &std::process::Output| {
+        format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
+    };
+    // `doctor`, with a controlled environment: everything checkpoint 5 scrubs, the
+    // fleet's variable and the operator's own shell variable are all removed unless
+    // an arm puts one back, so nothing this machine exports can decide a result.
+    let auth = |codex_home: &Path, env: &[(&str, &str)]| -> serde_json::Value {
+        let mut command = Command::new(&vendor);
+        command
+            .args(["doctor", "--json"])
+            .env("HOME", &pane_home)
+            .env("CODEX_HOME", codex_home)
+            .current_dir(&cwd);
+        for name in CODEX_SPEC.credentials.scrubbed_env {
+            command.env_remove(name);
+        }
+        command.env_remove(fleet_key_env);
+        command.env_remove(OPERATORS_SHELL_VAR);
+        for (name, value) in env {
+            command.env(name, value);
+        }
+        let out =
+            command.output().unwrap_or_else(|e| panic!("could not run {}: {e}", vendor.display()));
+        let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+            panic!("`{VENDOR_BIN} doctor --json` stopped emitting JSON ({e}):\n{}", said(&out))
+        });
+        report["checks"]["auth.credentials"].clone()
+    };
+
+    // A provider whose endpoint is loopback and which still requires the vendor's
+    // own auth — the shape that lets the two `auth.json` arms be read without the
+    // default endpoint being dialled.
+    let plan_provider = "[model_providers.operators-plan]\n\
+                         name = \"the operator's plan\"\n\
+                         base_url = \"http://127.0.0.1:9/v1\"\n\
+                         wire_api = \"responses\"\n\
+                         requires_openai_auth = true\n";
+    let selects_plan = format!("model_provider = \"operators-plan\"\n{plan_provider}");
+
+    // --- shape 1: a subscription plan ---------------------------------------
+    //
+    // The ChatGPT token set, in the vendor's own `auth.json` shape. The id token
+    // is a syntactically real JWT carrying a plan type — the vendor parses it, and
+    // a malformed one is reported as `stored credentials could not be read`, which
+    // would pass an "is it logged in" assertion written less carefully.
+    let plan_auth = format!(
+        "{{\"auth_mode\":\"chatgpt\",\"OPENAI_API_KEY\":null,\"tokens\":{{\
+           \"id_token\":\"eyJhbGciOiAibm9uZSIsICJ0eXAiOiAiSldUIn0.\
+           eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfcGxhbl90eXBlIjogInBybyIsICJj\
+           aGF0Z3B0X2FjY291bnRfaWQiOiAiYWNjdC0xMjMiLCAiY2hhdGdwdF91c2VyX2lkIjogInVzZXItMSJ9LCAi\
+           ZW1haWwiOiAib3BlcmF0b3JAZXhhbXBsZS5jb20ifQ.c2ln\",\
+           \"access_token\":\"{SENTINEL}\",\"refresh_token\":\"{SENTINEL}-refresh\",\
+           \"account_id\":\"acct-123\"}},\"last_refresh\":\"2026-09-05T00:00:00Z\"}}"
+    );
+    let plan = installation("operator-plan", &selects_plan, Some(&plan_auth));
+    let plan_orch = root.join("plan-orch");
+    let plan_worker = root.join("plan-worker-1");
+    seed_into(&plan_orch, &plan, true);
+    seed_into(&plan_worker, &plan, false);
+
+    let logged_in = auth(&plan_orch, &[]);
+    assert_eq!(
+        logged_in["status"].as_str(),
+        Some("ok"),
+        "the operator's own seat is not logged in. A codex login lives inside the directory \
+         this seeder replaces (C6), so the seat that does not carry it in has none at all — \
+         which is #44: {logged_in}",
+    );
+    assert_eq!(
+        logged_in["details"]["stored auth mode"].as_str(),
+        Some("chatgpt"),
+        "a subscription plan did not survive the copy: {logged_in}",
+    );
+    assert_eq!(
+        logged_in["details"]["stored ChatGPT tokens"].as_str(),
+        Some("true"),
+        "the plan's token set did not survive the copy: {logged_in}",
+    );
+
+    // The negative control, and the reason the assertion above measures anything:
+    // the identical seat with the copied credential taken back out is what #26
+    // shipped, and the vendor calls it what it is.
+    let without = root.join("plan-orch-no-login");
+    seed_into(&without, &plan, true);
+    fs::remove_file(without.join("auth.json")).expect("the copied credential is a file");
+    let not_logged_in = auth(&without, &[]);
+    assert_eq!(
+        not_logged_in["status"].as_str(),
+        Some("fail"),
+        "an orchestrator with no credential file reported healthy auth, so the arm above \
+         measured the machine rather than the copy: {not_logged_in}",
+    );
+    assert!(
+        not_logged_in["summary"].as_str().unwrap_or_default().contains("no Codex credentials"),
+        "the vendor stopped naming a missing login as one, so the negative control no longer \
+         reproduces the failure #44 fixes: {not_logged_in}",
+    );
+
+    // --- shape 2: an API key -------------------------------------------------
+    let key_auth = format!("{{\"auth_mode\":\"apikey\",\"OPENAI_API_KEY\":\"{SENTINEL}\"}}");
+    let keyed = installation("operator-key", &selects_plan, Some(&key_auth));
+    let key_orch = root.join("key-orch");
+    let key_worker = root.join("key-worker-1");
+    seed_into(&key_orch, &keyed, true);
+    seed_into(&key_worker, &keyed, false);
+
+    let with_a_key = auth(&key_orch, &[]);
+    assert_eq!(
+        with_a_key["status"].as_str(),
+        Some("ok"),
+        "an API-key login did not survive the copy: {with_a_key}",
+    );
+    assert_eq!(
+        with_a_key["details"]["stored auth mode"].as_str(),
+        Some("api_key"),
+        "the stored key arrived in a shape the vendor does not read as a login: {with_a_key}",
+    );
+
+    // --- shape 3: a named custom provider ------------------------------------
+    //
+    // The operator's own installation is this shape, and it is the one that lives
+    // in `config.toml` rather than in `auth.json` — so it is the strike, not the
+    // snapshot allowlist, that decides whether it survives.
+    let custom = format!(
+        "model_provider = \"operators-own\"\n\
+         [model_providers.operators-own]\n\
+         name = \"the operator's own\"\n\
+         base_url = \"http://127.0.0.1:9/\"\n\
+         wire_api = \"responses\"\n\
+         env_key = \"{OPERATORS_SHELL_VAR}\"\n\
+         experimental_bearer_token = \"{SENTINEL}\"\n"
+    );
+    let third_party = installation("operator-custom", &custom, None);
+    let custom_orch = root.join("custom-orch");
+    let custom_worker = root.join("custom-worker-1");
+    seed_into(&custom_orch, &third_party, true);
+    seed_into(&custom_worker, &third_party, false);
+
+    let inherited = auth(&custom_orch, &[(OPERATORS_SHELL_VAR, "sk-the-operators-own")]);
+    assert_eq!(
+        inherited["details"]["provider auth env var"].as_str(),
+        Some(format!("{OPERATORS_SHELL_VAR} (present)").as_str()),
+        "the orchestrator's inherited provider lost the variable it authenticates through. \
+         That seat is not scrubbed, so the operator's own shell variable is the one the \
+         vendor is supposed to follow there (C2 as amended by C9): {inherited}",
+    );
+    assert_eq!(
+        inherited["status"].as_str(),
+        Some("ok"),
+        "the inherited provider resolved to a name and then would not authenticate: \
+         {inherited}",
+    );
+    // The bearer token is the other spelling of the same shape, and `doctor` has no
+    // reading for it — measured: a table with one and a table with none produce the
+    // identical `auth.credentials`. So this half is asserted off the document the
+    // vendor loaded, and it is stated as what it is rather than dressed up as a
+    // vendor reading.
+    let orch_document =
+        fs::read_to_string(custom_orch.join("config.toml")).expect("the orchestrator's seed");
+    assert!(
+        orch_document.contains(SENTINEL),
+        "the orchestrator's inherited provider was struck of its bearer token:\n{orch_document}",
+    );
+
+    // --- and the fence, on all three -----------------------------------------
+    //
+    // #29's byte scan, at this tier: whatever shape the operator's credential took,
+    // none of it is anywhere under a fenced pane's directory.
+    for worker in [&plan_worker, &key_worker, &custom_worker] {
+        assert!(
+            !worker.join("auth.json").exists(),
+            "a fenced pane holds the fleet's credential and never the operator's (D-062): {}",
+            worker.display(),
+        );
+        let mut stack = vec![worker.clone()];
+        while let Some(at) = stack.pop() {
+            for entry in fs::read_dir(&at).expect("a seeded pane directory").flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                let bytes = fs::read(&path).unwrap_or_default();
+                assert!(
+                    !String::from_utf8_lossy(&bytes).contains(SENTINEL),
+                    "the operator's credential reached a fenced pane through {}",
+                    path.display(),
+                );
+            }
+        }
+    }
+
+    fs::remove_dir_all(&root).ok();
+}
