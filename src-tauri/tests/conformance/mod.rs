@@ -53,11 +53,16 @@
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
+use base64::{engine::general_purpose::STANDARD, Engine};
 use fleetor_core::pane::PaneId;
 use fleetor_shell::placement::harness::{registered, Harness};
 use fleetor_shell::placement::{self, HarnessSpec, Host, Layout, PaneSpec, Placed};
 use fleetor_shell::prompts::PaneContext;
+use fleetor_shell::pty::{Emit, PaneRegistry};
+use fleetor_shell::runs;
 
 // --- the values a pass hands in ------------------------------------------------
 
@@ -277,6 +282,178 @@ impl Pass {
             placement::place(PaneSpec::Worker(WORKER_SLOT), &self.layout, &self.host, &other, &self.context)
                 .expect("placing the same worker after a target switch");
         (other, placed)
+    }
+
+    // --- what checkpoints 8–14 needed the pass to carry -------------------------
+
+    /// Place the attended seat against a machine that has **no `fleet` binary**,
+    /// for the half of checkpoint 8 that is about a pane which cannot talk.
+    ///
+    /// Everything else about the machine is this pass's own, so the only thing
+    /// that can differ between this placement and [`Pass::orch`] is the one fact
+    /// being varied.
+    pub fn place_orch_without_fleet_bin(&self) -> Placed {
+        let host = Host {
+            fleet_bin: None,
+            api_key: Some(WORKER_KEY.to_string()),
+            ..Host::bare()
+        };
+        placement::place(PaneSpec::Orch, &self.layout, &host, &self.target, &self.context)
+            .expect("placing the operator's own seat on a machine with no fleet binary")
+    }
+
+    /// The directory a placed pane's transcripts live in: checkpoint 13's `subdir`
+    /// under the configuration directory the pane was **actually pointed at**, for
+    /// the same reason [`Pass::config_dir`] reads that off the command.
+    ///
+    /// It does not exist after a placement, and that is correct rather than a bug:
+    /// `place` makes the config dir and seeds it, and the harness's own process
+    /// makes this one when it first writes a transcript. A checkpoint that wants a
+    /// transcript to exist plants it.
+    pub fn transcript_dir(&self, placed: &Placed) -> PathBuf {
+        self.config_dir(placed).join(self.spec.transcript.subdir)
+    }
+
+    /// Plant one transcript file where a pane of this harness would leave it, and
+    /// return where it was put.
+    ///
+    /// `slug` stands in for whatever the harness names its per-project directory.
+    /// **That naming is deliberately not re-derived here**: it is not one of the
+    /// fourteen answers, so a test that computed it would be encoding one vendor's
+    /// rule as though it were the seam's. What the harvest is asserted on is the
+    /// two things that *are* spec'd — the subdirectory and the extension.
+    pub fn plant_transcript(&self, placed: &Placed, slug: &str, file: &str, body: &str) -> PathBuf {
+        let dir = self.transcript_dir(placed).join(slug);
+        std::fs::create_dir_all(&dir).expect("a scratch transcript directory");
+        let path = dir.join(file);
+        std::fs::write(&path, body).expect("a scratch transcript");
+        path
+    }
+
+    /// Rotate this pass's layout into an archive, and return the run directory
+    /// that was written — the public path to checkpoint 13's harvest.
+    ///
+    /// A previous run has to exist for rotation to archive one, so one is put
+    /// there. It is deliberately **not** a real database: rotation's documented
+    /// fallback is that a log which cannot be opened must still be archivable,
+    /// which is exactly what a checkpoint about transcripts wants — the harvest
+    /// runs, and nothing here depends on the log itself.
+    pub fn harvest_into_a_run(&self) -> PathBuf {
+        let shell = self.layout.shell();
+        std::fs::create_dir_all(&shell).expect("the layout's own shell directory");
+        std::fs::write(shell.join("state.db"), b"not a database; rotation archives it anyway")
+            .expect("a previous run for rotation to archive");
+
+        let runs_root = self.root.join("runs");
+        runs::rotate(&shell, &runs_root, 1_700_000_000_000);
+
+        let mut archived: Vec<PathBuf> = std::fs::read_dir(&runs_root)
+            .expect("rotation makes the runs directory")
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect();
+        assert_eq!(
+            archived.len(),
+            1,
+            "rotation must archive exactly one run for the harvest to be readable: {archived:?}",
+        );
+        archived.pop().expect("the archived run")
+    }
+
+    /// Type `body` into a **real pty** the way the hub types every message, and
+    /// return what the process on the far end read back, plus how long the write
+    /// itself took.
+    ///
+    /// **This is the one thing on `Pass` that is not a placement**, because
+    /// checkpoint 9 is not a property of a command — it is a property of the bytes
+    /// that are later written into one. It still starts at
+    /// [`placement::place`]: the pane is placed exactly as this pass's worker is,
+    /// against the same layout, with the one documented difference that the machine
+    /// carries a stand-in pane program. That override is checkpoint 1's own escape
+    /// hatch — it is a fact about the machine rather than about the harness, which
+    /// is why it lives on [`Host`] — and it is what buys a real process on the far
+    /// end of a real pty for no tokens. Measuring the framing against the *vendor's*
+    /// own binary is C13's tier, not this one.
+    ///
+    /// The stand-in is a plain shell, so it echoes the paste markers back as
+    /// ordinary characters and only ever prints a line it was given as a
+    /// **submitted** one — which is what makes both halves of the profile visible
+    /// from outside.
+    pub fn echo_of_a_paste(&self, body: &str) -> (String, Duration) {
+        let seen: Arc<Mutex<String>> = Arc::default();
+        let sink = seen.clone();
+        let emit: Emit = Arc::new(move |_channel: &str, payload: String| {
+            let bytes = STANDARD.decode(&payload).unwrap_or_default();
+            if let Ok(mut text) = sink.lock() {
+                text.push_str(&String::from_utf8_lossy(&bytes));
+            }
+        });
+
+        // `inherited_path` is the one field here that must be the machine's truth
+        // rather than a scratch value: the stand-in's `#!/usr/bin/env bash` has to
+        // find a real `bash`. It is *read* to describe the machine and handed in as
+        // a value — nothing here sets an environment variable, and the placement
+        // still computes the pane's PATH itself. `tests/panes.rs` makes the same
+        // exception, for the same sentence's worth of reason.
+        let host = Host {
+            fleet_bin: Some(self.root.join("fleet")),
+            api_key: Some(WORKER_KEY.to_string()),
+            pane_program: Some(stand_in_pane_program().display().to_string()),
+            inherited_path: std::env::var("PATH").unwrap_or_default(),
+            ..Host::bare()
+        };
+        let placed = placement::place(
+            PaneSpec::Worker(WORKER_SLOT),
+            &self.layout,
+            &host,
+            &self.target,
+            &self.context,
+        )
+        .expect("placing a worker against a machine whose pane program is the stand-in");
+
+        let pane = PaneId::Worker(WORKER_SLOT);
+        let registry = PaneRegistry::new(emit, self.root.join("pane-pids.json"));
+        registry.spawn(pane, placed.command, 24, 80).expect("a real pty for the stand-in");
+        wait_until(&seen, "ready");
+
+        let started = Instant::now();
+        let written = registry.write_paste(pane, body);
+        let elapsed = started.elapsed();
+        written.expect("a live pane accepts a paste");
+
+        // Waited for on the stand-in's *own* marker, never on the body: a tty echoes
+        // what was written to it long before the process on the far end has read a
+        // line, so waiting for the body would return while only the echo had
+        // arrived. Whatever arrives, arrives — a profile that never submits produces
+        // no reply at all, and that has to fail as the checkpoint's own assertion
+        // with the collected text in hand rather than as a timeout in here.
+        wait_until(&seen, "echo: ");
+        let text = seen.lock().map(|t| t.clone()).unwrap_or_default();
+        registry.kill_all();
+        (text, elapsed)
+    }
+}
+
+/// How long a stand-in pane gets to start and echo on a loaded machine — long
+/// enough not to flake, short enough that a real failure does not look like a
+/// hang. `tests/panes.rs`'s number, for its reason.
+const PATIENCE: Duration = Duration::from_secs(10);
+
+/// A pane that is not the harness's own binary: a real process on the far end of
+/// a real pty, spending nothing. The same stand-in `tests/panes.rs` drives.
+fn stand_in_pane_program() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fake-pane/fake-pane.sh")
+}
+
+/// Poll until `needle` shows up, or give up quietly and let the caller assert.
+fn wait_until(seen: &Arc<Mutex<String>>, needle: &str) {
+    let deadline = Instant::now() + PATIENCE;
+    while Instant::now() < deadline {
+        if seen.lock().is_ok_and(|text| text.contains(needle)) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
 
