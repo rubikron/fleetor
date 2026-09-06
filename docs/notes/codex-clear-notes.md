@@ -128,9 +128,16 @@ them; a bare `pty.fork()` never does, so codex waits them out. Answering the fiv
 from the probe — and setting a window size, because `pty.fork()` leaves the terminal 0x0
 and codex renders empty frames into a 0x0 terminal — is what let the fixed sleeps go away.
 
-This is the mechanism behind C22's table, and it is measured here rather than inferred:
-`probe.py`'s 6 s startup wait failed and its 12 s wait worked because 12 s was long enough
-for the query timeouts to expire, not because the pane needed 12 s to be ready.
+**This does not settle C22's table, and it is worth being exact about that.** Three things
+changed together before this probe stopped needing a startup sleep — the window size, the
+five query answers, and the splash keypress — and which of them explains why `probe.py`'s
+6 s wait failed and its 12 s wait worked was **not** isolated. C22's numbers stand as
+recorded.
+
+What *is* settled is narrower and still worth having: a startup sleep here was standing in
+for conditions that can be **detected**, and once they are detected the sleep is not needed
+at all. That is the case C26 makes for refusing a `startup_wait` field, arrived at from a
+second direction.
 
 **A fresh `CODEX_HOME` opens on an animated splash that ends on a keypress, not on a
 timer.** Left alone it was still animating after 75 seconds. This is what swallowed the
