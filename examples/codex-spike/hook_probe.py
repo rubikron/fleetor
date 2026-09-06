@@ -369,5 +369,86 @@ def real_arm():
               f"pane={rec.get('pane')!r} tool={rec.get('tool')!r} paths={rec.get('paths')!r}")
 
 
+# --- the same instrument, pointed at a CODEX_HOME FLEETOR seeded (#46, C49) ------
+
+
+def fleet_seeded(argv):
+    """Drive a **fleet-seeded** pane: the model is still this file, the witness is still
+    the filesystem, and everything else is production's.
+
+        hook_probe.py --fleet-seeded --home H --cwd W --outside O --binary B [--arg A]...
+
+    `src-tauri/tests/vendor_binary_tier.rs` seeds `H` through `Harness::seed_config_dir`
+    and `Harness::install_guardrail`, and passes the argv `Harness::command_args` composed
+    — so the hook table, the guardrail's command line and the hook-trust bypass all come
+    from production code rather than from anything typed here. This function supplies the
+    two things a Rust test cannot: a model that emits a real `exec_command`, and a target
+    outside the worktree to aim it at.
+
+    **The seeded `config.toml` is never edited.** The provider redirect and the sandbox
+    relaxation are `-c` session flags, which are a *higher* layer, so the document under
+    test is used byte for byte as FLEETOR wrote it. `sandbox_mode` is relaxed for
+    `build_scratch`'s reason — C7's seatbelt would refuse the write on its own, and a
+    skipped hook would then look exactly like a firing one. The fence itself is measured
+    by its own arm; this one measures the guardrail alone.
+
+    Prints one JSON object and exits 0. The verdict is the Rust test's to reach.
+    """
+    global OUTSIDE, WT
+    opts = {}
+    args = []
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--arg":
+            args.append(argv[i + 1])
+        else:
+            opts[argv[i].lstrip("-")] = argv[i + 1]
+        i += 2
+
+    home, WT, OUTSIDE, binary = opts["home"], opts["cwd"], opts["outside"], opts["binary"]
+    if os.path.exists(OUTSIDE):
+        os.unlink(OUTSIDE)
+
+    catalog = json.loads(
+        subprocess.run([binary, "debug", "models"], capture_output=True, text=True).stdout
+    )
+    entry = dict(catalog["models"][0])
+    entry.update(slug="probe-model", display_name="Probe")
+    json.dump({"models": [entry]}, open(home + "/models.json", "w"))
+
+    Handler.n = 0
+    threading.Thread(target=serve, daemon=True).start()
+    overrides = [
+        'model="probe-model"',
+        'model_provider="probe"',
+        'model_catalog_json="%s/models.json"' % home,
+        'sandbox_mode="danger-full-access"',
+        'model_providers.probe.name="probe"',
+        'model_providers.probe.base_url="http://127.0.0.1:%d"' % PORT,
+        'model_providers.probe.wire_api="responses"',
+        'model_providers.probe.experimental_bearer_token="sk-probe"',
+    ]
+    cmd = [binary, "exec", "--skip-git-repo-check", *args]
+    for over in overrides:
+        cmd += ["-c", over]
+    cmd.append("go")
+    timed_out = False
+    try:
+        subprocess.run(cmd, input="", text=True, cwd=WT,
+                       env={**os.environ, "CODEX_HOME": home},
+                       capture_output=True, timeout=180)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+    print(json.dumps({
+        "wrote_outside": os.path.exists(OUTSIDE),
+        "model_was_asked": Handler.n > 0,
+        "timed_out": timed_out,
+        "binary": binary,
+    }))
+    return 0
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--fleet-seeded":
+        sys.exit(fleet_seeded(sys.argv[2:]))
     sys.exit(main())

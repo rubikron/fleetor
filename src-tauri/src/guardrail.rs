@@ -130,6 +130,21 @@ pub fn roots_for(cwd: &Path, shell: &Path, extra: &[String]) -> Vec<PathBuf> {
 /// [`Harness`]: crate::placement::harness::Harness
 #[derive(Debug, Clone, Copy)]
 pub struct GuardrailPlacement<'a> {
+    /// **Whether this is the operator's own pane** — the same question
+    /// [`Seed::operators_own_seat`] asks, one layer over, and deliberately the
+    /// same field rather than a second seat concept (#46, C49, C50).
+    ///
+    /// A harness whose hook trust cannot be established per-hook may answer it by
+    /// **owning the pane's whole hook table on a seat FLEETOR drives** and
+    /// trusting the result — which is only sound because what is then trusted is
+    /// the fleet's own artifact. On the operator's own seat their hooks are
+    /// inherited untouched and nothing is trusted on their behalf.
+    ///
+    /// **`false` is the default answer** for the same reason it is on `Seed`: a
+    /// seat nobody thought about is fenced rather than trusted.
+    ///
+    /// [`Seed::operators_own_seat`]: crate::placement::harness::Seed::operators_own_seat
+    pub operators_own_seat: bool,
     /// Which pane this is, for the refusal text and the journal line.
     pub pane: PaneId,
     /// The pane's own configuration directory. The script and the settings file
@@ -369,6 +384,7 @@ mod tests {
         shell: &Path,
     ) -> Vec<(NoticeLevel, String)> {
         cc().install_guardrail(&GuardrailPlacement {
+            operators_own_seat: false,
             pane,
             config_dir: dir,
             roots,

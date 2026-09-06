@@ -793,11 +793,16 @@ pub trait Harness: std::fmt::Debug + Send + Sync + 'static {
     /// implementation of this method has no way to widen them — which is
     /// `building.md` §9.2 held structurally rather than by review.
     ///
-    /// Merge, never clobber: D-062 explicitly invites the operator to populate
-    /// `pane-config/orch/` themselves, and their own hooks living in this file is
-    /// the obvious way to do it.
+    /// Merge, never clobber — **on the operator's own seat** (C49). D-062
+    /// explicitly invites them to populate `pane-config/orch/` themselves, and
+    /// their own hooks living in this file is the obvious way to do it. On a seat
+    /// FLEETOR drives, a harness that cannot establish trust for a single hook may
+    /// instead **own the pane's whole hook table** and trust the result, which
+    /// narrows what the pane may execute rather than widening it: see
+    /// [`GuardrailPlacement::operators_own_seat`].
     ///
     /// [`GuardrailPlacement::roots`]: crate::guardrail::GuardrailPlacement::roots
+    /// [`GuardrailPlacement::operators_own_seat`]: crate::guardrail::GuardrailPlacement::operators_own_seat
     fn install_guardrail(
         &self,
         at: &crate::guardrail::GuardrailPlacement<'_>,
@@ -810,7 +815,19 @@ pub trait Harness: std::fmt::Debug + Send + Sync + 'static {
     /// `permission_mode` is `None` for the operator's own seat, which is watched
     /// by a human who approves its calls, and `Some` for the unattended ones. That
     /// asymmetry is the product (D-030, D-052), so it is the caller's to state.
-    fn command_args(&self, brief: &str, permission_mode: Option<&str>) -> Vec<String>;
+    ///
+    /// **`operators_own_seat` is the same question [`Seed::operators_own_seat`]
+    /// asks and is not derivable from `permission_mode`** (#46, C49, C50): the
+    /// evaluator and the Critic both carry a posture *and* are seats FLEETOR
+    /// drives, so inferring one from the other would hand the orchestrator's
+    /// answer to two panes that must not have it. A harness with no per-seat argv
+    /// ignores it, exactly as Claude Code's implementation does.
+    fn command_args(
+        &self,
+        brief: &str,
+        permission_mode: Option<&str>,
+        operators_own_seat: bool,
+    ) -> Vec<String>;
 }
 
 // --- Claude Code --------------------------------------------------------------
@@ -1029,7 +1046,12 @@ impl Harness for ClaudeCode {
         Ok(notices)
     }
 
-    fn command_args(&self, brief: &str, permission_mode: Option<&str>) -> Vec<String> {
+    fn command_args(
+        &self,
+        brief: &str,
+        permission_mode: Option<&str>,
+        _operators_own_seat: bool,
+    ) -> Vec<String> {
         let spec = self.spec();
         let mut args: Vec<String> =
             spec.program.base_args.iter().map(|a| (*a).to_string()).collect();
@@ -1129,9 +1151,9 @@ mod tests {
         // brief alone, every unattended seat gets the permission flag first.
         let cc = claude_code();
         assert_eq!(cc.spec().program.bin, "claude");
-        assert_eq!(cc.command_args("BRIEF", None), vec!["--system-prompt", "BRIEF"]);
+        assert_eq!(cc.command_args("BRIEF", None, true), vec!["--system-prompt", "BRIEF"]);
         assert_eq!(
-            cc.command_args("BRIEF", Some("auto")),
+            cc.command_args("BRIEF", Some("auto"), false),
             vec!["--permission-mode", "auto", "--system-prompt", "BRIEF"]
         );
     }

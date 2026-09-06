@@ -151,7 +151,7 @@ model side named `exec_command` arrives as `"tool_name": "Bash"`, with
 `cwd`, `hook_event_name`, `model`, `permission_mode`, `session_id`, `tool_input`,
 `tool_name`, `tool_use_id`, `transcript_path` and `turn_id`.
 
-## One unverified lead, named rather than chased
+## One unverified lead, named rather than chased  — **settled negative by #46 (C50)**
 
 `strings` over the native binary
 (`node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex`) turns up a
@@ -192,3 +192,97 @@ which of the two situations they are in.
 A codex build that gates hooks by document rather than by entry, or that grows a
 configuration-level trust surface — the note to re-run is the command at the top of this
 file, and the version stamp is what makes the drift visible.
+
+
+---
+
+# Appended by #46 (C50): the lead is settled, and so is the config twin
+
+**Same build (`codex-cli 0.153.4`), same instrument, zero tokens.** Findings append rather
+than replace, per `building.md` §4 — nothing above is edited except the heading that called
+the `managed` lead unverified.
+
+## `managed` does not reach a fleet-spawned pane
+
+The trust state is real; the way in is not. `managed` hooks are named by **`hooks.managed_dir`**,
+and that field lives in a **requirements** layer, not a config layer. `HookSource` in the binary
+enumerates `system | project | mdm | session_flags | plugin | cloud_requirements |
+cloud_managed_config | legacy_managed_config_file | legacy_managed_config_mdm`, and the
+requirements layers this build reads are `/etc/codex/requirements.toml` (absent on this
+machine, root-owned), macOS MDM managed preferences, and cloud. All three are **machine-global
+and not writable by FLEETOR**, which places panes as the operator with no `sudo`.
+
+That disqualifies it before the measurement even matters: the guardrail's command line carries
+the **pane id and that pane's own roots**, so one machine-global managed hooks directory cannot
+serve five workers with five different root sets, and writing outside the pane's `CODEX_HOME`
+breaks `placement`'s rule that every byte a seed writes lands under the pane's own directory.
+
+Measured anyway, because a bounded probe is cheaper than an argument: a `requirements.toml`
+inside `CODEX_HOME` naming a managed hooks dir, with `hooks.json`, `hooks.toml` and
+`config.toml` spellings inside it, left the hook **unrun** and the out-of-worktree write on
+disk. The control in the same run reproduced C48's `config.toml`-untrusted reading exactly.
+
+## `bypass_hook_trust` — the config twin — does not exist as a config key
+
+C48 read the literal out of the binary and inferred `-c bypass_hook_trust=true`. **Four
+spellings, all accepted without error, all ignored:**
+
+| delivery | fired | wrote outside |
+|---|---|---|
+| `bypass_hook_trust = true` in `config.toml` | no | yes |
+| `-c bypass_hook_trust=true` | no | yes |
+| `-c hooks.bypass_hook_trust=true` | no | yes |
+| `-c features.bypass_hook_trust=true` | no | yes |
+
+The attribution was wrong rather than the literal. The binary's own message is
+`` `bypass_hook_trust` override must be a boolean `` and it sits in **`app-server/`** — it is a
+**newThread override for the app-server protocol**, not a config key the TUI a fleet pane runs
+reads. Accepted-and-ignored, which is this arc's recurring failure mode.
+
+## And neither does a document-written trust state
+
+Two more spellings, same run, both skipped and both let the write land:
+
+```toml
+[hooks.state."<CODEX_HOME>/config.toml:pre_tool_use:0:0"]
+state = "managed"   # and, separately, state = "trusted", with no trusted_hash
+```
+
+## The positive control is what makes those six readings measurements
+
+`--dangerously-bypass-hook-trust` fired and denied in the same run against the same scratch
+installation. Six negatives beside a live positive is a measurement; six negatives alone would
+have been a broken instrument.
+
+## What ships
+
+`--dangerously-bypass-hook-trust`, in argv, **on a seat FLEETOR drives only**, and only because
+`install_guardrail` replaces a fenced pane's **whole `hooks` table** first — every event, since
+the flag does not distinguish between them, plus the inherited `hooks.state` record. The
+vendor's own help for the flag reads *"Intended only for automation that already vets hook
+sources."* Owning the table is what vetting means here.
+
+## The instrument grew one mode
+
+`hook_probe.py --fleet-seeded --home H --cwd W --outside O --binary B [--arg A]...` drives a
+`CODEX_HOME` that **FLEETOR seeded**, with the argv `Harness::command_args` composed, and prints
+one JSON reading. The seeded `config.toml` is used **byte for byte**: the loopback provider and
+the sandbox relaxation are `-c` session flags, a higher layer than the document under test.
+`src-tauri/tests/vendor_binary_tier.rs::a_fleet_seeded_codex_worker_is_refused_a_write_outside_its_worktree`
+is the caller.
+
+## Both readings, per C47 — and the negative control reproduced C47 in passing
+
+A fleet-seeded worker's out-of-worktree write is **refused under both binaries**, with two
+witnesses each: the absent file, and the journal line naming `pane="worker-1"`.
+
+With the bypass removed from the argv and nothing else changed:
+
+| binary | refuses with our argv | negative control |
+|---|---|---|
+| `/opt/homebrew/bin/codex` | yes | **the same write lands** — the refusal is attributable |
+| the PATH `codex` (cmux shim) | yes | the write still does not land — **inconclusive**, because the shim injects the flag itself (C48) |
+
+So the arm requires the control on the resolved vendor binary and reports it as inconclusive on
+a wrapper, instead of pretending both readings say the same thing. This is C47's rule earning
+itself a second time.

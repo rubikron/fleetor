@@ -733,10 +733,15 @@ impl Harness for CodexCli {
     ///    operator who had turned hooks off would otherwise get five panes whose
     ///    guardrail is a well-formed table nothing loads. It lands on **every**
     ///    seat including the operator's own, because checkpoint 7 is every pane's.
-    /// 2. **The hook entry**, under `hooks.PreToolUse`, merged: the operator's own
-    ///    entries survive and exactly one of ours is left.
+    /// 2. **The hook table**, and this is where the seat decides (#46, C49). On the
+    ///    operator's own seat it is *merged*, exactly as it always was: their
+    ///    entries survive and one of ours is left. On a seat FLEETOR drives, the
+    ///    whole `hooks` table is **replaced** by ours alone — see
+    ///    [`fleet_owns_the_hook_table`].
     /// 3. **The trust record**, which is the whole reason this ticket had a spike
-    ///    in it — see [`hook_trust_key`].
+    ///    in it — see [`hook_trust_key`]. Still unwritable, and on a fenced seat no
+    ///    longer needed: [`CodexCli::command_args`] carries the bypass instead,
+    ///    which is sound only because of what step 2 just did.
     fn install_guardrail(
         &self,
         at: &crate::guardrail::GuardrailPlacement<'_>,
@@ -752,8 +757,22 @@ impl Harness for CodexCli {
     /// by [`install_brief`] out of [`Seed::brief`] (#27, C3). The argument is
     /// ignored here rather than at the call site, because which of the two
     /// carriers a harness uses is [`BriefCarrier`]'s answer and not the caller's.
-    fn command_args(&self, _brief: &str, _permission_mode: Option<&str>) -> Vec<String> {
-        self.spec().program.base_args.iter().map(|a| (*a).to_string()).collect()
+    ///
+    /// **The one argument this harness does add is the hook-trust bypass, and only
+    /// on a seat FLEETOR drives** — see [`BYPASS_HOOK_TRUST`] for what makes that
+    /// narrow rather than wide, and why it is argv rather than a config key.
+    fn command_args(
+        &self,
+        _brief: &str,
+        _permission_mode: Option<&str>,
+        operators_own_seat: bool,
+    ) -> Vec<String> {
+        let mut args: Vec<String> =
+            self.spec().program.base_args.iter().map(|a| (*a).to_string()).collect();
+        if !operators_own_seat {
+            args.push(BYPASS_HOOK_TRUST.to_string());
+        }
+        args
     }
 }
 
@@ -907,30 +926,179 @@ fn install_guardrail(
     let path: Vec<&str> = HOOKS_FEATURE.split('.').collect();
     set_owned(&mut doc, &path, Value::from(true), &seat, HOOKS_WHY, &mut notices);
 
-    // 2. The entry, merged. Ours is recognised by the hook file's name — the
-    // fleet's for every harness — so a relaunch replaces it and an operator's own
-    // hooks are left exactly where they are.
-    let mut entries: Vec<Value> = existing_hook_entries(&doc, install)
-        .into_iter()
-        .filter(|entry| !entry_is_ours(entry, install))
-        .collect();
-    // **Where ours lands is load-bearing, not cosmetic**: the trust record is
-    // filed under this entry's *index*, so the index has to be read off the merge
-    // rather than assumed to be zero. An operator with two hooks of their own and
-    // a trust record pointing at slot 0 would be trusting one of theirs and
-    // leaving ours untrusted — a guardrail that is installed, enabled and silent.
-    let ours = entries.len();
-    entries.push(our_hook_entry(&command));
-    set_path(&mut doc, &["hooks", install.hook_event], Value::Array(entries.into_iter().collect()));
+    // 2 and 3. **The hook table, and the seat is what decides** (#46, C49).
+    if at.operators_own_seat {
+        // The entry, merged. Ours is recognised by the hook file's name — the
+        // fleet's for every harness — so a relaunch replaces it and an operator's
+        // own hooks are left exactly where they are.
+        let mut entries: Vec<Value> = existing_hook_entries(&doc, install)
+            .into_iter()
+            .filter(|entry| !entry_is_ours(entry, install))
+            .collect();
+        // **Where ours lands is load-bearing, not cosmetic**: the trust record is
+        // filed under this entry's *index*, so the index has to be read off the
+        // merge rather than assumed to be zero. An operator with two hooks of their
+        // own and a trust record pointing at slot 0 would be trusting one of theirs
+        // and leaving ours untrusted — a guardrail that is installed, enabled and
+        // silent.
+        let ours = entries.len();
+        entries.push(our_hook_entry(&command));
+        set_path(
+            &mut doc,
+            &["hooks", install.hook_event],
+            Value::Array(entries.into_iter().collect()),
+        );
 
-    // 3. **The trust record, which FLEETOR cannot write — so it says so, loudly.**
-    // See `UNTRUSTED_WHY` and `hook_trust_key`. A wrong hash is worse than none:
-    // codex reads it as `modified` and the entry looks tampered with rather than
-    // unreviewed.
-    notices.push((NoticeLevel::Error, untrusted_notice(&seat, at.config_dir, install, ours)));
+        // **The trust record, which FLEETOR cannot write — so it says so, loudly.**
+        // See `UNTRUSTED_WHY` and `hook_trust_key`. A wrong hash is worse than
+        // none: codex reads it as `modified` and the entry looks tampered with
+        // rather than unreviewed. This seat keeps the Error, and keeps it honestly:
+        // it is the one pane whose hooks are the operator's, so it is the one pane
+        // FLEETOR may not answer the trust question on behalf of.
+        notices.push((NoticeLevel::Error, untrusted_notice(&seat, at.config_dir, install, ours)));
+    } else {
+        notices.extend(fleet_owns_the_hook_table(&mut doc, install, &command, &seat));
+    }
 
     crate::guardrail::install_document(install, at.config_dir, &doc.to_string())?;
     Ok(notices)
+}
+
+// --- FLEETOR owns a worker's hook table (#46, C49) ------------------------------
+
+/// The sub-table of `hooks` that is not an event: codex files its trust records
+/// under `hooks.state."<key>"` ([`hook_trust_key`]).
+const HOOK_STATE_TABLE: &str = "state";
+
+/// **The argument that makes the guardrail fire, and the measurement that says it
+/// has to be an argument.**
+///
+/// C49's order of attack named `bypass_hook_trust` — the *config twin* — so that
+/// the bypass would land in the seeded document beside every other key FLEETOR
+/// owns. **Measured against `codex-cli 0.153.4` and it does not exist there.**
+/// Four spellings were driven through `hook_probe.py`'s loopback provider, each
+/// with a real `exec_command` and the filesystem as witness, and all four left the
+/// hook skipped and the out-of-worktree write on disk: `bypass_hook_trust = true`
+/// in `config.toml`, the same key as `-c bypass_hook_trust=true`, and the nested
+/// `hooks.bypass_hook_trust` and `features.bypass_hook_trust`. None *errored* —
+/// they are accepted and ignored, which is the failure mode this arc keeps
+/// meeting. The literal is real; the binary's own string is `` `bypass_hook_trust`
+/// override must be a boolean `` and it sits in `app-server/`, so it is a
+/// **newThread override for the app-server protocol**, not a config key the TUI a
+/// fleet pane runs reads. Two document-resident trust routes were measured in the
+/// same run and also failed: `hooks.state."<key>" = { state = "managed" }` and the
+/// same with `"trusted"` and no hash. The positive control — this flag — fired and
+/// denied in that same run, which is what makes the four readings measurements
+/// rather than a broken instrument.
+///
+/// **So it ships as argv, and what makes that narrow rather than wide is
+/// [`fleet_owns_the_hook_table`]**, which runs first. The flag trusts every hook in
+/// the document; on a seat FLEETOR drives, every hook in the document is
+/// FLEETOR's. The vendor's own help for it reads *"Intended only for automation
+/// that already vets hook sources"* — vetting the sources is precisely what owning
+/// the table does, and it is why C46's surviving objection does not apply here.
+///
+/// **Never on the operator's own seat.** Their hooks are inherited untouched
+/// there, so this would trust something FLEETOR did not write.
+const BYPASS_HOOK_TRUST: &str = "--dangerously-bypass-hook-trust";
+
+/// **On a seat FLEETOR drives, the `hooks` table is the fleet's outright** — the
+/// asymmetry C7 applies to the sandbox keys, C21 to the four features, C9 to the
+/// provider and C43 to the credential strike, applied to hooks (#46, C49).
+///
+/// The whole table is replaced rather than merged into: our one `PreToolUse`
+/// entry, and nothing else. That covers three things a merge would have left
+/// behind, all of which [`BYPASS_HOOK_TRUST`] would then have executed unverified —
+/// the operator's own `PreToolUse` entries, their hooks on *other* events
+/// (`SessionStart` and the rest, which the bypass trusts just the same), and any
+/// [`HOOK_STATE_TABLE`] record their snapshot carried in, whose keys name their
+/// `config.toml` and mean nothing in a pane.
+///
+/// **This narrows the pane's executable surface and does not widen it**, which is
+/// the property C49 said to check rather than assume: before this, a fenced pane's
+/// document could name an operator hook FLEETOR never read; after it, every hook a
+/// fenced pane can run is one this file wrote. Tier 1.7 is untouched — no root
+/// moves, and the command line still comes from
+/// [`crate::guardrail::GuardrailPlacement::roots`].
+///
+/// **The one thing that does newly execute, said plainly rather than glossed:** the
+/// fleet's own guardrail. Before #46 the document named hooks and codex ran *none*
+/// of them, ours included; now it names one and runs it. That is a capability
+/// removed rather than added — the script's only power is to **refuse** a tool call
+/// (D-065), it has been on disk unrun since #31, and it is the same artifact a
+/// Claude Code pane has run all along. Nothing an operator's hook could have done
+/// is reachable from a fenced pane any more.
+///
+/// **The cost is real and is said out loud** (C21's rule): an operator's own
+/// `PreToolUse` hook does not run on a worker, and they are told so by name.
+fn fleet_owns_the_hook_table(
+    doc: &mut DocumentMut,
+    install: &GuardrailInstall,
+    command: &str,
+    seat: &str,
+) -> Vec<(NoticeLevel, String)> {
+    let dropped = inherited_hooks(doc, install);
+
+    let mut hooks = toml_edit::Table::new();
+    hooks.insert(
+        install.hook_event,
+        Item::Value(Value::Array([our_hook_entry(command)].into_iter().collect())),
+    );
+    doc.as_table_mut().insert("hooks", Item::Table(hooks));
+
+    let mut notices = vec![(
+        NoticeLevel::Info,
+        format!(
+            "{seat}: FLEETOR owns this pane's `hooks` table — it runs exactly one hook, the \
+             fleet's write guardrail, and codex is told to run it without a persisted trust \
+             record ({BYPASS_HOOK_TRUST}). That is not a wider pane: the bypass trusts every \
+             hook in the document, and every hook in this document is one FLEETOR wrote. Your \
+             own pane is the exception and keeps your hooks and your trust decisions.",
+        ),
+    )];
+    if !dropped.is_empty() {
+        notices.push((
+            NoticeLevel::Warn,
+            format!(
+                "{seat}: your codex hooks did not apply here — {} — because a fenced pane runs \
+                 only hooks the fleet authored, and trusting the document is what makes the \
+                 write guardrail fire at all. They are untouched on your own seat and in your \
+                 `~/.codex`.",
+                dropped.join(", "),
+            ),
+        ));
+    }
+    notices
+}
+
+/// The operator's own hooks in this document, as `event (count)`, for the line
+/// that tells them what a fenced pane dropped.
+///
+/// **Ours are not counted**, because a relaunch re-reads a document this function
+/// already owns and an operator told "PreToolUse (1) did not apply" about the
+/// fleet's own guardrail would be told a falsehood.
+fn inherited_hooks(doc: &DocumentMut, install: &GuardrailInstall) -> Vec<String> {
+    let Some(hooks) = doc.as_table().get("hooks").and_then(Item::as_table_like) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for (event, item) in hooks.iter() {
+        if event == HOOK_STATE_TABLE {
+            continue;
+        }
+        let entries: Vec<Value> = match item {
+            Item::ArrayOfTables(tables) => {
+                tables.iter().map(|t| Value::InlineTable(t.clone().into_inline_table())).collect()
+            }
+            Item::Value(Value::Array(array)) => array.iter().cloned().collect(),
+            _ => continue,
+        };
+        let theirs = entries.iter().filter(|entry| !entry_is_ours(entry, install)).count();
+        if theirs > 0 {
+            found.push(format!("{event} ({theirs})"));
+        }
+    }
+    found
 }
 
 /// Every entry already under `hooks.<event>`, in order, whether the operator wrote
@@ -1033,20 +1201,29 @@ fn our_hook_entry(command: &str) -> Value {
 ///    to decide, not a builder's (`building.md` §9.2), and it is also the wrong
 ///    shape: it would trust *every* hook in the document, including one an
 ///    operator's own snapshot carried in, where a record trusts exactly the line
-///    FLEETOR wrote.
+///    FLEETOR wrote. **Decided since, and the shape objection is answered rather
+///    than waived** (#46, C49): on a seat FLEETOR drives, every hook in the
+///    document is one FLEETOR wrote, because [`fleet_owns_the_hook_table`] made it
+///    so. See [`BYPASS_HOOK_TRUST`]. On the operator's own seat the objection still
+///    stands in full and nothing below has changed there.
 ///  - **A guessed hash was not written.** A wrong one reads back as `modified`,
 ///    which is the vendor's word for *tampered with* rather than *unreviewed*.
 ///  - **The install was not skipped.** The entry, the script and the feature are
 ///    all correct and in place, so the day the hash is known this is one function.
 ///
-/// What ships instead is [`untrusted_notice`]: an `Error` on the Activity feed, on
-/// every codex pane, saying the guardrail will not fire. That is the module's own
-/// existing rule for the missing interpreter — *a guardrail that quietly does
-/// nothing is worse than no guardrail, because the operator believes in it* — and
-/// it turns this arc's signature failure from a silent one into a loud one.
+/// What ships instead **on the operator's own seat** is [`untrusted_notice`]: an
+/// `Error` on the Activity feed saying the guardrail will not fire. That is the
+/// module's own existing rule for the missing interpreter — *a guardrail that
+/// quietly does nothing is worse than no guardrail, because the operator believes
+/// in it* — and it turns this arc's signature failure from a silent one into a loud
+/// one. A fenced seat no longer carries it, because there the guardrail genuinely
+/// fires: measured against both binaries in
+/// `tests/vendor_binary_tier.rs::a_fleet_seeded_codex_worker_is_refused_a_write_outside_its_worktree`,
+/// with the bypass removed from the argv as the negative control.
 const UNTRUSTED_WHY: &str = "codex will not run a hook it has no trust record for";
 
-/// The `Error` every codex pane carries until the trust record can be written.
+/// The `Error` the operator's own codex pane carries until the trust record can be
+/// written — theirs alone since #46, since a fenced pane's guardrail fires.
 ///
 /// It names the key codex expects, so an operator who wants the guardrail today
 /// has a documented manual route — start the pane's codex once and answer *Trust
@@ -2940,11 +3117,11 @@ args = ["--root", "~/notes"]
         // the two harnesses differ in transport and in nothing else.
         let cc = registered()[0];
         let flag = cc.spec().brief.argv_flag.expect("Claude Code briefs through argv");
-        let argv = cc.command_args(&rendered, Some("acceptEdits"));
+        let argv = cc.command_args(&rendered, Some("acceptEdits"), false);
         let at = argv.iter().position(|a| a == flag).expect("the flag is there");
         assert_eq!(argv[at + 1], rendered);
         assert!(
-            codex().command_args(&rendered, Some("acceptEdits")).iter().all(|a| a != &rendered),
+            codex().command_args(&rendered, Some("acceptEdits"), false).iter().all(|a| a != &rendered),
             "and codex's argv carries no brief at all — its carrier is the config key",
         );
     }
@@ -3070,11 +3247,31 @@ args = ["--root", "~/notes"]
     // --- checkpoint 7, into TOML (#31, C4, C32) ---------------------------------
 
     impl Machine {
-        /// Install this pane's guardrail the way `place` does, after seeding it.
+        /// Install a **fenced** pane's guardrail the way `place` does, after
+        /// seeding it — the ordinary seat, which is why it is the short name.
         fn guard(&self, pane: &str, roots: &[PathBuf]) -> Vec<(NoticeLevel, String)> {
+            self.guard_at(pane, roots, false)
+        }
+
+        /// The same, on the operator's own seat (#46, C49).
+        fn guard_for_the_operator(
+            &self,
+            pane: &str,
+            roots: &[PathBuf],
+        ) -> Vec<(NoticeLevel, String)> {
+            self.guard_at(pane, roots, true)
+        }
+
+        fn guard_at(
+            &self,
+            pane: &str,
+            roots: &[PathBuf],
+            operators_own_seat: bool,
+        ) -> Vec<(NoticeLevel, String)> {
             let dir = self.pane_dir(pane);
             codex()
                 .install_guardrail(&crate::guardrail::GuardrailPlacement {
+                    operators_own_seat,
                     pane: fleetor_core::pane::PaneId::Worker(1),
                     config_dir: &dir,
                     roots,
@@ -3119,18 +3316,24 @@ args = ["--root", "~/notes"]
     }
 
     /// **The whole install, in codex's own document** — and the one thing it is
-    /// honest about not having done.
+    /// honest about not having done, **on the seat where that is still true**.
     ///
     /// The script is on disk, the feature is on and the entry names it with this
     /// pane's own roots. The trust record is **absent**, because the hash codex
     /// signs a declaration with is not reproducible from the declaration (C4's
     /// named unknown, measured), and the pane says so as an `Error` rather than
     /// looking healthy.
+    ///
+    /// **This is the orchestrator's arm now** (#46, C49). It is the pane whose
+    /// hooks are the operator's, so it is the pane FLEETOR may not answer the trust
+    /// question for — see
+    /// `a_fenced_seat_runs_only_hooks_the_fleet_wrote_and_therefore_trusts_them`
+    /// for the other half.
     #[test]
     fn the_guardrail_lands_in_config_toml_and_says_plainly_that_it_will_not_fire() {
         let machine = Machine::new("cp7-install");
-        machine.seed("worker-1").expect("seed");
-        let notices = machine.guard("worker-1", &a_root(&machine));
+        machine.seed_for_the_operator("worker-1").expect("seed");
+        let notices = machine.guard_for_the_operator("worker-1", &a_root(&machine));
 
         let dir = machine.pane_dir("worker-1");
         assert!(dir.join(crate::guardrail::HOOK_FILE).is_file(), "the decision itself is on disk");
@@ -3176,9 +3379,15 @@ args = ["--root", "~/notes"]
         );
     }
 
-    /// **The operator's own hooks survive, and so does everything else they wrote.**
-    /// D-062 invites them to populate this directory; a guardrail install that ate
-    /// their configuration would be the invitation withdrawn.
+    /// **The operator's own hooks survive on their own seat, and so does
+    /// everything else they wrote.** D-062 invites them to populate this directory;
+    /// a guardrail install that ate their configuration would be the invitation
+    /// withdrawn.
+    ///
+    /// **On their seat, and only there** (#46, C49): a fenced pane's hooks are
+    /// FLEETOR's outright, which is what makes trusting the document narrow rather
+    /// than wide. The two arms use the same fabricated operator installation on
+    /// purpose, so the difference is the seat and nothing else.
     #[test]
     fn the_operators_own_hooks_and_settings_survive_the_install() {
         let machine = Machine::new("cp7-merge");
@@ -3197,8 +3406,8 @@ args = ["--root", "~/notes"]
              type = \"command\"\n\
              command = \"/usr/bin/false\"\n",
         );
-        machine.seed("worker-1").expect("seed");
-        let notices = machine.guard("worker-1", &a_root(&machine));
+        machine.seed_for_the_operator("worker-1").expect("seed");
+        let notices = machine.guard_for_the_operator("worker-1", &a_root(&machine));
 
         let doc = machine.seeded("worker-1");
         assert_eq!(doc["model"].as_str(), Some("gpt-5"), "an unrelated setting survived");
@@ -3236,6 +3445,130 @@ args = ["--root", "~/notes"]
         );
     }
 
+    /// **The assertion C49 turns on: a fenced pane's `hooks` table holds only
+    /// hooks FLEETOR wrote** (#46).
+    ///
+    /// The bypass this seat's argv carries trusts *every hook in the document*, so
+    /// "the document is ours" is not a nicety — it is the entire reason trusting it
+    /// is narrow. The operator installation here is deliberately loud: a
+    /// `PreToolUse` hook, a hook on a *second* event that a `PreToolUse`-only merge
+    /// would have left behind, and a stale trust record whose key names their own
+    /// `config.toml`.
+    ///
+    /// **The direction is asserted, not assumed.** The same seed on the same
+    /// machine is measured before and after, and what a fenced pane may execute
+    /// comes out strictly smaller.
+    #[test]
+    fn a_fenced_seat_runs_only_hooks_the_fleet_wrote_and_therefore_trusts_them() {
+        let machine = Machine::new("cp7-owns");
+        machine.operator_file(
+            "config.toml",
+            "model = \"gpt-5\"\n\
+             [[hooks.PreToolUse]]\n\
+             matcher = \"shell\"\n\
+             [[hooks.PreToolUse.hooks]]\n\
+             type = \"command\"\n\
+             command = \"/usr/bin/true\"\n\
+             [[hooks.SessionStart]]\n\
+             [[hooks.SessionStart.hooks]]\n\
+             type = \"command\"\n\
+             command = \"/usr/bin/false\"\n\
+             [hooks.state.\"/home/them/.codex/config.toml:pre_tool_use:0:0\"]\n\
+             state = \"trusted\"\n",
+        );
+        machine.seed("worker-1").expect("seed");
+
+        // What the pane could have executed before checkpoint 7 ran: the seed is a
+        // snapshot of the operator's, so their two hooks are in it.
+        let inherited = inherited_hooks(&machine.seeded("worker-1"), &CODEX_SPEC.guardrail);
+        assert_eq!(
+            inherited.len(),
+            2,
+            "the fixture has to actually carry hooks or this test proves nothing: {inherited:#?}",
+        );
+
+        let notices = machine.guard("worker-1", &a_root(&machine));
+        let doc = machine.seeded("worker-1");
+
+        // **The whole table is ours.** Every entry under every event, not just
+        // `PreToolUse`: the bypass does not distinguish between events.
+        let hooks = doc.as_table().get("hooks").and_then(Item::as_table_like).expect("a table");
+        for (event, _) in hooks.iter() {
+            assert_eq!(
+                event, CODEX_SPEC.guardrail.hook_event,
+                "a fenced pane's hooks table carries only our event: {doc}",
+            );
+        }
+        let entries = machine.hook_entries("worker-1");
+        assert_eq!(entries.len(), 1, "exactly one entry, and it is ours: {entries:#?}");
+        assert!(entry_is_ours(&entries[0], &CODEX_SPEC.guardrail));
+        assert!(machine.our_command("worker-1").contains(crate::guardrail::HOOK_FILE));
+        assert!(
+            inherited_hooks(&doc, &CODEX_SPEC.guardrail).is_empty(),
+            "nothing of theirs is left for the bypass to trust: {doc}",
+        );
+
+        // Their stale trust record went with it: its key names *their* config.toml
+        // and it would be a record about a hook this pane does not have.
+        assert!(
+            hooks.get(HOOK_STATE_TABLE).is_none(),
+            "the inherited trust record is gone too: {doc}",
+        );
+
+        // **The surface narrowed rather than widened**, which is the property C49
+        // said to check rather than assume.
+        assert!(
+            entries.len() < 1 + inherited.len(),
+            "a fenced pane may now execute strictly fewer hooks than the seed carried",
+        );
+
+        // **No Error, and the reason is that the guardrail now fires** — #31's line
+        // is removed because the gap closed, not because it was inconvenient.
+        assert!(
+            !notices.iter().any(|(level, _)| *level == NoticeLevel::Error),
+            "the untrusted Error is gone on this seat: {notices:#?}",
+        );
+        assert!(
+            notices.iter().any(|(level, text)| *level == NoticeLevel::Info
+                && text.contains("owns this pane's `hooks` table")
+                && text.contains(BYPASS_HOOK_TRUST)),
+            "the override gets its Activity feed line, like every other one (C21): {notices:#?}",
+        );
+
+        // **And the cost is stated to the operator by name** — their hooks do not
+        // run here, and that is a real loss of a real feature.
+        assert!(
+            notices.iter().any(|(level, text)| *level == NoticeLevel::Warn
+                && text.contains("your codex hooks did not apply")
+                && text.contains("PreToolUse (1)")
+                && text.contains("SessionStart (1)")),
+            "the dropped hooks are named: {notices:#?}",
+        );
+
+        // The argv half. Without it the table would be owned and still silent.
+        assert!(
+            codex().command_args("", None, false).iter().any(|a| a == BYPASS_HOOK_TRUST),
+            "a fenced seat's codex is told to run its hooks without a trust record",
+        );
+    }
+
+    /// **The orchestrator gets no bypass** (#46, C49). It keeps its own trust
+    /// decisions because there is a human in it to answer codex's prompt, and
+    /// because its hooks are the operator's rather than the fleet's — trusting the
+    /// document there would trust something FLEETOR did not write.
+    #[test]
+    fn the_operators_own_seat_is_never_handed_the_bypass() {
+        assert!(
+            codex().command_args("", None, true).iter().all(|a| a != BYPASS_HOOK_TRUST),
+            "the operator's own pane answers hook trust itself",
+        );
+        // And the asymmetry is the seat's, not the posture's: the evaluator and the
+        // Critic carry a permission mode *and* are seats FLEETOR drives.
+        assert!(
+            codex().command_args("", Some("acceptEdits"), false).iter().any(|a| a == BYPASS_HOOK_TRUST),
+        );
+    }
+
     /// A relaunch must not accumulate a copy of our hook per launch — every one of
     /// them would run, and the operator would read five identical refusals.
     #[test]
@@ -3254,6 +3587,15 @@ args = ["--root", "~/notes"]
         machine.seed("worker-1").expect("re-seed");
         machine.guard("worker-1", &a_root(&machine));
         assert_eq!(machine.hook_entries("worker-1").len(), 1);
+
+        // **On the operator's own seat too, which is the one that still merges**
+        // (#46, C49) — and therefore the one where accumulation was ever possible.
+        machine.seed_for_the_operator("orch").expect("seed");
+        for _ in 0..3 {
+            machine.guard_for_the_operator("orch", &a_root(&machine));
+        }
+        assert_eq!(machine.hook_entries("orch").len(), 1, "three installs, one hook");
+        machine.our_command("orch");
     }
 
     /// **Tier 1.7, at the seam that could break it.** The roots are the caller's,

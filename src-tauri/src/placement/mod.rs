@@ -597,7 +597,7 @@ fn place_orch(
             .with_brief(&rendered)
             .for_the_operator(),
     )?);
-    notices.extend(guardrail_notices(harness, layout, pane, &config_dir, target, context)?);
+    notices.extend(guardrail_notices(harness, layout, pane, &config_dir, target, context, true)?);
 
     // One Activity line per pane launch (WP-04's spawn-time "Loadout" counter):
     // the size of the brief this pane was just handed, estimated from text already
@@ -702,7 +702,7 @@ fn place_worker(
         None => None,
     };
 
-    notices.extend(guardrail_notices(harness, layout, pane, &config_dir, &cwd, context)?);
+    notices.extend(guardrail_notices(harness, layout, pane, &config_dir, &cwd, context, false)?);
 
     // The WP-04 spawn-time "Loadout" counter, from text already in memory.
     let rendered = fleetor_core::brief::render_worker(
@@ -797,7 +797,7 @@ fn place_evaluator(
     let mut notices = harness.seed_config_dir(
         &Seed::new(&config_dir, &cwd, host.operator_home.as_deref()).with_brief(&brief),
     )?;
-    notices.extend(guardrail_notices(harness, layout, pane, &config_dir, &cwd, context)?);
+    notices.extend(guardrail_notices(harness, layout, pane, &config_dir, &cwd, context, false)?);
 
     let command = spawn::evaluator_command_with(
         harness,
@@ -867,7 +867,7 @@ fn place_critic(
     let mut notices = harness.seed_config_dir(
         &Seed::new(&config_dir, &cwd, host.operator_home.as_deref()).with_brief(&brief),
     )?;
-    notices.extend(guardrail_notices(harness, layout, pane, &config_dir, &cwd, context)?);
+    notices.extend(guardrail_notices(harness, layout, pane, &config_dir, &cwd, context, false)?);
 
     let command = spawn::critic_command_with(
         harness,
@@ -1085,6 +1085,7 @@ fn guardrail_notices(
     config_dir: &Path,
     cwd: &Path,
     context: &PaneContext,
+    operators_own_seat: bool,
 ) -> Result<Vec<(NoticeLevel, String)>, String> {
     let shell = layout.shell();
     // **A pane that reads a run gets roots narrower than any pane's,
@@ -1114,6 +1115,12 @@ fn guardrail_notices(
     // `install_guardrail` is handed anything it could widen them with, which is
     // Tier 1.7 held structurally rather than by review.
     harness.install_guardrail(&guardrail::GuardrailPlacement {
+        // **The same boolean the seeder branches on** (#28, C21, C43, C49). It is
+        // handed down rather than derived here, so a harness whose hook trust is
+        // all-or-nothing can own a fenced pane's hook table without ever guessing
+        // which seat it is on — and so the orchestrator's own hooks are never
+        // touched.
+        operators_own_seat,
         pane,
         config_dir,
         roots: &roots,

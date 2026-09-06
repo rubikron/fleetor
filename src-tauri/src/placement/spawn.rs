@@ -190,6 +190,10 @@ pub(super) fn orch_command_with(
         &harness.command_args(
             &render_orch(&ctx.orch_template, &roster(), &cwd.display().to_string()),
             None,
+            // **The operator's own seat, said here in the same breath as the
+            // posture** (#28, C43, C49). It is what keeps this pane's hooks and its
+            // own trust decisions its own.
+            true,
         ),
     );
     cmd.cwd(cwd);
@@ -246,7 +250,7 @@ pub(super) fn evaluator_command_with(
     path: &str,
 ) -> CommandBuilder {
     let mut cmd =
-        base_command_with(harness, program, &harness.command_args(brief, Some(permission_mode)));
+        base_command_with(harness, program, &harness.command_args(brief, Some(permission_mode), false));
     cmd.cwd(cwd);
     apply_pane_env(&mut cmd, PaneId::Evaluator, socket, path.to_string());
     apply_attended_config(&mut cmd, harness.spec(), config_dir);
@@ -302,7 +306,7 @@ pub(super) fn critic_command_with(
     path: &str,
 ) -> CommandBuilder {
     let mut cmd =
-        base_command_with(harness, program, &harness.command_args(brief, Some(permission_mode)));
+        base_command_with(harness, program, &harness.command_args(brief, Some(permission_mode), false));
     cmd.cwd(cwd);
     apply_pane_env(&mut cmd, PaneId::Critic, socket, path.to_string());
     apply_attended_config(&mut cmd, harness.spec(), config_dir);
@@ -364,6 +368,7 @@ pub(super) fn worker_command_with(
         &harness.command_args(
             &render_worker(&ctx.worker_template, pane, &roster(), &cwd.display().to_string()),
             Some(&ctx.launch.worker_permission_mode),
+            false,
         ),
     );
     cmd.cwd(cwd);

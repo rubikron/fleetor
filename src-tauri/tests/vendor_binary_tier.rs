@@ -65,6 +65,15 @@ use std::process::Command;
 /// header. `grep -rn "codex" src-tauri/src/` is expected to find nothing.
 const VENDOR_BIN: &str = "codex";
 
+/// **The vendor binary, resolved absolutely** (C47).
+///
+/// The `codex` on PATH here is a cmux shim that injects flags, and #31 found the
+/// case where the two verdicts differ absolutely. So any arm measuring hooks, flags
+/// or config precedence takes both readings, and this is the one that can be
+/// reasoned about. Absent on a machine installed elsewhere, in which case the PATH
+/// reading is the only one and the arm says so.
+const VENDOR_ABSOLUTE: &str = "/opt/homebrew/bin/codex";
+
 /// The interpreter the probe is written in.
 const INTERPRETER: &str = "python3";
 
@@ -1482,4 +1491,249 @@ fn the_operators_own_seat_authenticates_and_a_fenced_seat_holds_nothing_of_the_o
     }
 
     fs::remove_dir_all(&root).ok();
+}
+
+/// **The write guardrail actually refuses a real codex tool call, in a pane
+/// FLEETOR seeded** (#46, C49; D-065, WP-17).
+///
+/// This is the arm the whole of #31, #45 and #46 exists to make possible. Every
+/// piece of it except the model comes from production code:
+///
+///  - the pane's `CODEX_HOME` is written by `Harness::seed_config_dir`;
+///  - the hook, its command line and the ownership of the `hooks` table are
+///    written by `Harness::install_guardrail`, from roots this test computes the
+///    way `placement::guardrail_notices` does;
+///  - the argv — **including the hook-trust bypass** — is whatever
+///    `Harness::command_args` composes for a seat FLEETOR drives. If that flag ever
+///    stops being emitted, this arm goes red rather than the assertion being
+///    edited.
+///
+/// **The model is `examples/codex-spike/hook_probe.py`** (C13: the probe is suite
+/// infrastructure, not a throwaway). It answers the first request of the turn with
+/// a canned `exec_command` writing outside the worktree, so a real tool call really
+/// happens and the filesystem is the witness. Zero tokens, loopback only.
+///
+/// **Both binaries, per C47.** This arm measures hooks, flags and config
+/// precedence, which is exactly the class where the PATH `codex` and the vendor
+/// binary have been observed to disagree absolutely — so it resolves the vendor
+/// path and reports both readings, and both must refuse.
+///
+/// **Two witnesses, because neither alone is enough.** The absent file says the
+/// write did not happen; the journal line says *the guardrail* is why. A seatbelt
+/// refusal would produce the first and not the second, which is why the probe
+/// relaxes `sandbox_mode` for this arm alone — C7's fence has its own.
+#[test]
+fn a_fleet_seeded_codex_worker_is_refused_a_write_outside_its_worktree() {
+    use fleetor_shell::guardrail::GuardrailPlacement;
+    use fleetor_shell::placement::codex::{codex, OPERATOR_DIR};
+    use fleetor_shell::placement::Seed;
+
+    const HOOK_PROBE: &str = "examples/codex-spike/hook_probe.py";
+    const BYPASS: &str = "--dangerously-bypass-hook-trust";
+
+    let root = repo_root();
+    let probe = root.join(HOOK_PROBE);
+    assert!(probe.is_file(), "the instrument is committed infrastructure: {}", probe.display());
+
+    // **The two readings C47 requires**, resolved rather than assumed: whatever
+    // `codex` means on PATH, and the vendor binary behind it. On a machine where
+    // they are the same file this measures it twice and says so.
+    let vendor_abs = Path::new(VENDOR_ABSOLUTE).to_path_buf();
+    // `true` marks the reading taken through the resolved vendor binary — the one
+    // the negative control below can attribute a refusal on. A wrapper cannot be
+    // attributed on, and C48 measured why.
+    let mut binaries: Vec<(PathBuf, bool)> = Vec::new();
+    if vendor_abs.is_file() {
+        binaries.push((vendor_abs.clone(), true));
+    }
+    if let Some(on) = on_path(VENDOR_BIN) {
+        if !binaries.iter().any(|(p, _)| *p == on) {
+            let is_vendor = binaries.is_empty();
+            binaries.push((on, is_vendor));
+        }
+    }
+    if binaries.is_empty() {
+        announce(&[
+            format!("SKIPPED: the codex write-guardrail arm — no `{VENDOR_BIN}` to drive."),
+            format!("  Recorded against {RECORDED_BUILD}. Nothing below was measured:"),
+            "    the-guardrail-refuses-a-real-tool-call, and-files-the-journal-line,".into(),
+            "    under-both-the-vendor-binary-and-the-PATH-codex (#46, C47, C49).".into(),
+            "  The in-crate tests still prove FLEETOR owns the pane's hooks table and".into(),
+            "  emits the bypass. Only the vendor can say whether the hook then fires.".into(),
+        ]);
+        return;
+    }
+    let Some(python) = on_path(INTERPRETER) else {
+        announce(&["SKIPPED: the codex write-guardrail arm — no `python3` to be the model.".into()]);
+        return;
+    };
+
+    for (binary, is_vendor) in binaries {
+        let scratch = std::env::temp_dir().join(format!(
+            "fleetor-codex-guardrail-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("a clock")
+                .as_nanos()
+        ));
+        let operator_home = scratch.join("operator");
+        let cwd = scratch.join("worktree");
+        let shell = scratch.join("_shell");
+        let seeded = scratch.join("pane-config").join("worker-1");
+        let outside = scratch.join("outside").join("loot.txt");
+        for dir in [&operator_home.join(OPERATOR_DIR), &cwd, &shell, &seeded] {
+            fs::create_dir_all(dir).expect("the scratch layout");
+        }
+        fs::create_dir_all(outside.parent().expect("a parent")).expect("a target outside");
+
+        // **The operator brings a hook of their own**, which is the case C49 turns
+        // on: a merge would have carried it in, and the bypass would then have run
+        // it unverified inside a fenced worker. It must not be in the seeded
+        // document at all.
+        let theirs = scratch.join("theirs-ran");
+        fs::write(
+            operator_home.join(OPERATOR_DIR).join("config.toml"),
+            format!(
+                "[[hooks.PreToolUse]]\n\
+                 [[hooks.PreToolUse.hooks]]\n\
+                 type = \"command\"\n\
+                 command = \"/usr/bin/touch {}\"\n",
+                theirs.display(),
+            ),
+        )
+        .expect("the operator's own config");
+
+        let seed = Seed::new(&seeded, &cwd, Some(&operator_home)).with_brief("do the work");
+        codex().seed_config_dir(&seed).expect("seeding a worker's CODEX_HOME");
+
+        let journal = fleetor_shell::guardrail::journal_path(&shell);
+        let roots = fleetor_shell::guardrail::roots_for(&cwd, &shell, &[]);
+        codex()
+            .install_guardrail(&GuardrailPlacement {
+                operators_own_seat: false,
+                pane: fleetor_core::pane::PaneId::Worker(1),
+                config_dir: &seeded,
+                roots: &roots,
+                policy: &fleetor_shell::guardrail::policy_dir(&shell),
+                journal: &journal,
+            })
+            .expect("installing a worker's guardrail");
+
+        // The argv is production's, and the flag being in it is the half that makes
+        // the hook run at all.
+        let argv = codex().command_args("do the work", Some("never"), false);
+        assert!(
+            argv.iter().any(|a| a == BYPASS),
+            "a fenced codex seat's argv carries the hook-trust bypass: {argv:?}",
+        );
+
+        let drive = |args: &[String]| {
+            let mut command = Command::new(&python);
+            command.arg(&probe).arg("--fleet-seeded");
+            command.args(["--home", &seeded.to_string_lossy()]);
+            command.args(["--cwd", &cwd.to_string_lossy()]);
+            command.args(["--outside", &outside.to_string_lossy()]);
+            command.args(["--binary", &binary.to_string_lossy()]);
+            for arg in args {
+                command.args(["--arg", arg]);
+            }
+            let out = command
+                .current_dir(&root)
+                .output()
+                .unwrap_or_else(|e| panic!("could not run the probe: {e}"));
+            let said = format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr),
+            );
+            let reading =
+                String::from_utf8_lossy(&out.stdout).lines().last().unwrap_or_default().to_string();
+            (reading, said)
+        };
+
+        let (reading, said) = drive(&argv);
+
+        // The probe has to have been the model, or the arm proved nothing: a turn
+        // that never asked for a tool call cannot be refused one.
+        assert!(
+            reading.contains("\"model_was_asked\": true"),
+            "the loopback model was never reached, so no tool call happened under {}:\n{said}",
+            binary.display(),
+        );
+
+        // **Witness one: the write did not land.**
+        assert!(
+            !outside.exists(),
+            "a fleet-spawned codex worker wrote outside its worktree under {}.\n{said}",
+            binary.display(),
+        );
+        assert!(
+            reading.contains("\"wrote_outside\": false"),
+            "the probe's own reading disagrees under {}:\n{said}",
+            binary.display(),
+        );
+
+        // **Witness two: the guardrail is why**, and it reached the Activity feed.
+        // Without this a seatbelt refusal would pass witness one.
+        let lines = fs::read_to_string(&journal).unwrap_or_default();
+        let refused = lines.lines().find(|l| l.contains("\"pane\"")).unwrap_or_else(|| {
+            panic!(
+                "no refusal reached the journal under {} — the write did not land, but \
+                 nothing says the guardrail is why.\n{said}",
+                binary.display(),
+            )
+        });
+        assert!(refused.contains("worker-1"), "the journal line names the pane: {refused}");
+
+        // **And the operator's own hook did not run**, because it is not in the
+        // document the bypass trusted. This is C49's whole claim, at the vendor.
+        assert!(
+            !theirs.exists(),
+            "an operator's own hook executed inside a fenced worker under {} — the \
+             bypass widened the pane instead of narrowing it, which is the outcome \
+             C49 says must not happen",
+            binary.display(),
+        );
+
+        // --- the negative control, which is the load-bearing arm -----------------
+        //
+        // **Everything above passes on a machine where the tool call never
+        // happened.** So the identical pane is driven once more with the bypass
+        // taken out of the argv and nothing else changed: the hook is then
+        // untrusted, codex skips it silently (C48), and the same write must land.
+        // Without this, "the file is not there" is not evidence about the
+        // guardrail — it is evidence about nothing in particular.
+        let without: Vec<String> = argv.iter().filter(|a| *a != BYPASS).cloned().collect();
+        let (control, control_said) = drive(&without);
+        let control_wrote = control.contains("\"wrote_outside\": true") && outside.exists();
+        let attribution = if is_vendor {
+            assert!(
+                control_wrote,
+                "the negative control did not write either, so this arm is measuring the \
+                 instrument rather than the guardrail, under {}:\n{control_said}",
+                binary.display(),
+            );
+            format!("negative control without {BYPASS}: the same write landed")
+        } else if control_wrote {
+            format!("negative control without {BYPASS}: the same write landed")
+        } else {
+            // **C47, and it is the case that rule exists for.** This binary is a
+            // wrapper, and C48 read the wrapper's own arg stream: it injects
+            // `--dangerously-bypass-hook-trust` alongside its `-c hooks.*` flags. So
+            // removing *our* copy changes nothing here and the control cannot
+            // discriminate. The refusal above is real and is reported; it is
+            // attributed on the vendor binary, which is the other reading.
+            format!(
+                "negative control inconclusive: this binary is a wrapper that injects \
+                 {BYPASS} of its own (C47, C48), so the refusal is attributed on {VENDOR_ABSOLUTE}"
+            )
+        };
+        fs::remove_file(&outside).ok();
+
+        announce(&[format!(
+            "codex write guardrail: REFUSED an out-of-worktree write under {}\n  ({attribution})",
+            binary.display(),
+        )]);
+        fs::remove_dir_all(&scratch).ok();
+    }
 }
