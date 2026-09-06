@@ -1266,6 +1266,54 @@ fn placing_a_critic_on_an_archived_run_refuses_and_writes_nothing() {
     );
 }
 
+/// **Checkpoint 5's scrub comes back as data, and the asymmetry is what it
+/// reports** (WP-25, #29; C27, C30, D-062).
+///
+/// C27 recorded the gap this closes: `env_remove` deletes a `CommandBuilder` entry
+/// rather than marking it, so on a finished command a name that was scrubbed and a
+/// name this machine never exported are the same observation. C30 fixed it by
+/// putting the removal on [`Placed::scrubbed`], returned by the same call that
+/// performed it — so the promise is assertable with **nothing in the process
+/// environment**, which is what lets this sit in an ordinary test rather than in
+/// the one place `tests/placement.rs` deliberately mutates the environment.
+///
+/// Harness-generic on purpose: it reads the names off the spec the placement came
+/// back with rather than naming a vendor's variable, so it asserts the same
+/// property about codex the moment #33 registers it (C25).
+///
+/// The empty half is not a missing answer. An attended seat runs the operator's
+/// own login (D-030, D-052) and has nothing to remove, and that emptiness is the
+/// product decision made caller-observable.
+#[test]
+fn a_workers_placement_reports_what_it_removed_and_an_attended_seat_reports_nothing() {
+    let bench = common::Bench::new("scrub-as-data");
+
+    let worker = bench.place(PaneSpec::Worker(1));
+    assert_eq!(
+        worker.scrubbed, worker.harness.credentials.scrubbed_env,
+        "the names reported are checkpoint 5's, from the call that removed them",
+    );
+    assert!(
+        !worker.scrubbed.is_empty(),
+        "a fenced pane inherits the app's environment, so a scrub that removes nothing is \
+         checkpoint 5 stubbed",
+    );
+    for name in worker.scrubbed {
+        assert!(
+            worker.command.get_env(name).is_none(),
+            "{name} was reported as removed and is on the command",
+        );
+    }
+
+    for attended in [PaneSpec::Orch, PaneSpec::Critic { run: RunSource::Live }] {
+        let pane = attended.pane();
+        assert!(
+            bench.place(attended).scrubbed.is_empty(),
+            "{pane} is the operator's own seat and has no credential to remove",
+        );
+    }
+}
+
 /// The rendered Critic brief, off the command placement built.
 ///
 /// Found by its opening sentence rather than by argument position, so a change to

@@ -13,27 +13,52 @@
 //! [`CODEX_SPEC`] answers all fourteen checkpoints because [`HarnessSpec`] has no
 //! [`Default`] — the compiler is the checklist, and there is no way to write "the
 //! four this ticket owns" and stop. So every field below is filled from a
-//! measurement in `docs/notes/codex-spike-notes.md`, **except four lists that are
-//! empty on purpose and name the ticket that fills them**:
+//! measurement in `docs/notes/codex-spike-notes.md`, and **the four lists that
+//! were left empty on purpose are now all four filled**:
 //!
 //! | field | checkpoint | filled by |
 //! |---|---|---|
-//! | [`Posture::sandbox_keys`] | 3 | **#28 — filled**: the sandbox trio's first two rows |
-//! | [`Credentials::provider_keys`] | 5 | #29 — the FLEETOR provider |
+//! | [`Posture::sandbox_keys`] | 3 | #28 — the sandbox trio's first two rows |
+//! | [`Credentials::provider_keys`] | 5 | #29 — the FLEETOR provider entry |
 //! | [`Credentials::scrubbed_env`] | 5 | #29 — the same ticket, the other half |
-//! | [`Outbound::reachability_keys`] | 8 | **#28 — filled**: the socket lever, the trio's third |
+//! | [`Outbound::reachability_keys`] | 8 | #28 — the socket lever, the trio's third |
 //!
-//! Two of the four are filled as of #28, and they needed **no new mechanism, only
-//! rows** — which is the shape C36 predicted when it left the reader for the
-//! ticket that would first have something to write. What #28 did add is a *seat*:
+//! None of the four needed **any new mechanism, only rows** — which is the shape
+//! C36 predicted when it left the reader for the ticket that would first have
+//! something to write. What those tickets added instead is a *seat*:
 //! [`Seed::operators_own_seat`], because four of codex's 47 default-on features
-//! reach past the fence and are turned off on every pane FLEETOR drives, while the
-//! orchestrator inherits the operator's flags untouched (C21).
+//! reach past the fence and are turned off on every pane FLEETOR drives (C21), and
+//! because a worker runs on the fleet's provider while the orchestrator keeps its
+//! own (C9). The orchestrator inherits both, untouched, and that asymmetry is the
+//! product rather than an omission.
 //!
-//! An empty list here is not a stub that will pass quietly: the conformance suite
-//! refuses an empty `scrubbed_env` and refuses a harness whose spec answers
-//! nothing, which is exactly why **codex is not registered yet** and why #33 is
-//! the single moment it joins [`registered`](super::harness::registered).
+//! An empty list here would not have been a stub that passed quietly: the
+//! conformance suite refuses an empty `scrubbed_env` and refuses a harness whose
+//! spec answers nothing. **Codex is still not registered** — #33 is the single
+//! moment it joins [`registered`](super::harness::registered) (C25).
+//!
+//! ## Checkpoint 5 is a table, a selection and a removal (#29, C9, D-062)
+//!
+//! **A codex worker holds the fleet's credential, never the operator's**, which is
+//! not new policy — it is the policy a Claude Code worker already runs under, and
+//! it lands here in three pieces that are deliberately in three different places:
+//!
+//!  - **The entry** — [`Credentials::provider_keys`], four rows, on *every* codex
+//!    pane. A provider nothing selects is inert (measured), so this is a fact
+//!    about how the fleet's endpoint is spelled rather than a decision about a
+//!    seat.
+//!  - **The selection** — [`WORKER_PROVIDER_SELECTION`], on every seat but the
+//!    operator's. This is the seat decision, and it is C2 as C9 amended it.
+//!  - **The removal** — [`Credentials::scrubbed_env`], applied by
+//!    `spawn::worker_command_with` and returned on
+//!    [`Placed::scrubbed`](super::Placed::scrubbed) so it is assertable as data
+//!    rather than as an absence (C27, C30).
+//!
+//! The fleet's key itself is in none of those: it arrives on the pane's
+//! environment through [`FLEET_KEY_ENV`], so **nothing under `pane-config/` ever
+//! holds a credential** — neither the fleet's nor the operator's, whose `auth.json`
+//! and provider bearer tokens are excluded from the snapshot by
+//! [`SNAPSHOT_ENTRIES`] and [`strike_provider_credentials`].
 //!
 //! ## Checkpoint 2 is a file in this directory, not a flag (#27, C3)
 //!
@@ -179,7 +204,71 @@ const SNAPSHOT_ENTRIES: &[&str] = &[
 /// names an environment variable the vendor will read the key out of, so a value
 /// that survives points a fenced pane straight at whatever the operator exported
 /// in their shell profile. Naming a variable is not a secret, and following it is.
+/// **FLEETOR writes its own `env_key` back, after the strike** (#29, C9). That is
+/// not a contradiction: the strike removes a name *the operator* chose, which
+/// points at whatever their shell profile exported; the row FLEETOR writes points
+/// at [`FLEET_KEY_ENV`], a variable only [`spawn::worker_command_with`] sets and
+/// only on a fenced seat. The order in [`install`] is what makes that true —
+/// FLEETOR's keys are written last, so they win.
 const PROVIDER_CREDENTIAL_KEYS: &[&str] = &["experimental_bearer_token", "env_key"];
+
+/// **The variable a codex worker's fleet credential arrives in** (#29, C9, D-062).
+///
+/// Named once and read twice — as [`Credentials::token_env`], which is the line in
+/// [`spawn::worker_command_with`] that sets it from the `.env` walk, and as the
+/// `env_key` of the FLEETOR provider entry below, which is what tells the vendor
+/// to read it. Two spellings of one variable is the failure this constant exists
+/// to make impossible, and `the_two_halves_of_the_credential_channel_name_one_variable`
+/// is the test that says so.
+///
+/// **The key is never written into the pane's configuration file.** Codex's
+/// provider table has two credential mechanisms and this is the one that keeps the
+/// secret out of a file on disk: `experimental_bearer_token` would put the fleet's
+/// key in plaintext inside `pane-config/worker-N/config.toml`, and `env_key` names
+/// a variable instead. It is also the exact mirror of what a Claude Code worker
+/// gets — `ANTHROPIC_AUTH_TOKEN`, set on the command by the same function on the
+/// same line — which is C9's whole argument made mechanical.
+///
+/// Measured on `codex-cli 0.153.4`: with this row present, `codex doctor --json`
+/// reports `auth.credentials` as `auth is provided by the active model provider`
+/// and names the variable; with the variable unset it **fails** rather than
+/// falling back, *even when the operator's own `CODEX_API_KEY` is present in the
+/// environment*. The fleet's provider entry cannot be satisfied by the operator's
+/// key, by construction rather than by the scrub.
+const FLEET_KEY_ENV: &str = "FLEETOR_CODEX_KEY";
+
+/// What FLEETOR's own `[model_providers.*]` table is called.
+///
+/// The table's name is load-bearing twice — in the dotted paths of
+/// [`Credentials::provider_keys`] and in the value of
+/// [`WORKER_PROVIDER_SELECTION`] — and a pane whose `model_provider` names a table
+/// that does not exist dies at configuration load. `fleetor` rather than the
+/// vendor's or the provider's name, because the point of the entry is *whose it
+/// is*: an operator reading their pane's `config.toml` should be able to tell at a
+/// glance which provider row FLEETOR wrote.
+const FLEET_PROVIDER: &str = "fleetor";
+
+/// **The one row that says a pane runs on the fleet's provider rather than the
+/// operator's** (#29, C2 as amended by C9).
+///
+/// The *table* is [`Credentials::provider_keys`] and lands on every codex pane,
+/// because that is what a spec key list means (C41(a)) and because a defined
+/// provider nothing selects is inert — measured: an unselected
+/// `[model_providers.fleetor]` whose `env_key` variable is absent resolves
+/// perfectly. The *selection* is this, and it is the seat's rather than the
+/// harness's, so it lives here for [`WORKER_FEATURE_OVERRIDES`]'s reason (C31,
+/// C41(b)): a spec field for "the key set on every seat but the operator's" is a
+/// field every other harness answers with an empty list.
+///
+/// **The orchestrator keeps the provider it inherited, and that is the whole of
+/// C9's amendment to C2.** The provider is displayed as a fact on the operator's
+/// own seat, where their own login is the entire point (D-030, D-052); on a seat
+/// FLEETOR drives, FLEETOR owns it. There is no picker anywhere and C24 keeps it
+/// that way.
+///
+/// Cost, stated rather than hidden: a codex worker cannot spend an operator's
+/// subscription plan even when that is what they wanted.
+const WORKER_PROVIDER_SELECTION: &[(&str, &str)] = &[("model_provider", FLEET_PROVIDER)];
 
 /// **The four default-on features FLEETOR turns off on every seat but the
 /// operator's own** (#28, C21) — five rows, because `browser_use` carries a
@@ -320,15 +409,54 @@ pub const CODEX_SPEC: HarnessSpec = HarnessSpec {
         seed_merges: true,
     },
 
-    // 5 — credential wiring and the scrub. **Both halves are #29's**, and empty
-    // here rather than guessed: codex's worker credential is a FLEETOR-written
-    // `[model_providers.fleetor]` in the seeded config (C9), which is a
-    // `provider_keys` answer, not an environment one.
+    // 5 — credential wiring and the scrub (#29, C9, D-062). **A codex worker holds
+    // the fleet's credential, never the operator's**, and both halves below are
+    // what makes that true.
+    //
+    // The channel is *both* config and environment, because codex's provider table
+    // splits them: the four `provider_keys` rows are the FLEETOR entry — a table
+    // the vendor reads out of the seeded `config.toml` — and its `env_key` names
+    // `FLEET_KEY_ENV`, which `spawn::worker_command_with` sets from the `.env` walk
+    // on the same line it sets a Claude Code worker's `ANTHROPIC_AUTH_TOKEN`. So
+    // the endpoint is written down and **the secret never is**.
+    //
+    // `base_url_env` stays `None` because codex has no endpoint variable for a
+    // provider it did not define; the endpoint is a row in the table. That is the
+    // one place the fleet's endpoint is spelled twice — see the `base_url` row.
     credentials: Credentials {
         base_url_env: None,
-        token_env: None,
-        provider_keys: &[],
-        scrubbed_env: &[],
+        // Read by `spawn::worker_command_with` and by nothing else, so a fenced
+        // seat gets it and the three attended seats do not — which is why the
+        // provider entry below is inert on the operator's own pane even though the
+        // table is written there too.
+        token_env: Some(FLEET_KEY_ENV),
+        // **The FLEETOR provider entry**, written into every codex pane's seeded
+        // `config.toml` as four dotted paths, each exactly what would have been
+        // typed after `-c` (C39(b)). Only `WORKER_PROVIDER_SELECTION` selects it.
+        //
+        // `base_url` and `wire_api` are C9's measured pair. The base URL is the
+        // fleet's own endpoint **in its `responses`-wire spelling**, which is not
+        // the `.../anthropic` suffix `LaunchConfig::worker_base_url` carries for
+        // Claude Code — same vendor, two wire protocols, two paths. It is a
+        // literal here rather than a value off `LaunchConfig` because there is no
+        // launch key that holds it; an operator who repoints `worker.base_url`
+        // repoints their Claude Code workers and not their codex ones, and the
+        // thing that would reverse that is a second launch key, not a change here.
+        provider_keys: &[
+            ("model_providers.fleetor.name", "FLEETOR"),
+            ("model_providers.fleetor.base_url", "https://api.deepseek.com/"),
+            ("model_providers.fleetor.wire_api", "responses"),
+            ("model_providers.fleetor.env_key", FLEET_KEY_ENV),
+        ],
+        // **Removed from the inherited environment, not merely left unset** — the
+        // half that is easier to get wrong, and the reason `Placed::scrubbed`
+        // exists (C27, C30). Both names are codex's own: `doctor` reports them
+        // under `auth env vars present`, so an operator with either in a shell
+        // profile is an operator whose personal credential authenticates a fenced
+        // pane. That the FLEETOR entry's `env_key` refuses to fall back to them
+        // was measured and is the belt; this is the braces, and it is what makes
+        // the removal assertable as data on every seat that gets one.
+        scrubbed_env: &["OPENAI_API_KEY", "CODEX_API_KEY"],
     },
 
     // 6 — config and credential isolation (C17). The measurement that renamed this
@@ -556,11 +684,21 @@ fn install(
         let path: Vec<&str> = key.split('.').collect();
         set_owned(&mut doc, &path, toml_value(value), &seat, CONTAINMENT_WHY, &mut notices);
     }
-    // The rows that are the *seat's* rather than the harness's (C21). The
-    // orchestrator is the operator's own pane and inherits their flags untouched;
-    // every other seat is one FLEETOR drives, and `operators_own_seat` defaults to
-    // `false` so a seat nobody thought about is fenced rather than trusted.
+    // The rows that are the *seat's* rather than the harness's (C9, C21). The
+    // orchestrator is the operator's own pane and inherits their provider and
+    // their flags untouched; every other seat is one FLEETOR drives, and
+    // `operators_own_seat` defaults to `false` so a seat nobody thought about is
+    // fenced rather than trusted.
     if !seed.operators_own_seat {
+        // Checkpoint 5's seat half: the entry went into every pane above, and this
+        // is the line that makes a pane run on it. Written here rather than in
+        // `checkpoint_keys` precisely because it is not a harness answer — it is
+        // the answer for one seat, and putting it in the spec would make the
+        // orchestrator run on the fleet's credential too (C2, as amended by C9).
+        for (key, value) in WORKER_PROVIDER_SELECTION {
+            let path: Vec<&str> = key.split('.').collect();
+            set_owned(&mut doc, &path, toml_value(value), &seat, CREDENTIAL_WHY, &mut notices);
+        }
         for (key, value) in WORKER_FEATURE_OVERRIDES {
             let path: Vec<&str> = key.split('.').collect();
             set_owned(&mut doc, &path, toml_value(value), &seat, FEATURES_WHY, &mut notices);
@@ -804,6 +942,22 @@ fn checkpoint_keys(spec: &'static HarnessSpec) -> Vec<(&'static str, &'static st
         .collect()
 }
 
+/// The two of the three that are *containment* — checkpoint 3's fence and
+/// checkpoint 8's socket lever — for the sentence that names them (#29).
+///
+/// Split out from [`checkpoint_keys`] when checkpoint 5 filled its list, because
+/// the two lists answer different questions and the unconditional notice quotes
+/// only one of them: `sandbox_mode` is what a pane may do, and
+/// `model_providers.fleetor.base_url` is who it talks to. Reciting the provider
+/// entry under the word "containment" would be a sentence that is wrong about the
+/// most consequential row in it.
+///
+/// The writer still reads all three in one pass, which is C36's whole point. This
+/// is a reader for the notice and nothing else.
+fn containment_keys(spec: &'static HarnessSpec) -> Vec<(&'static str, &'static str)> {
+    spec.posture.sandbox_keys.iter().chain(spec.outbound.reachability_keys).copied().collect()
+}
+
 /// A key list's value, by **codex's own documented rule** for `-c key=value`:
 /// parsed as TOML, and the raw string used as a literal when that fails.
 ///
@@ -829,6 +983,19 @@ const CONTAINMENT_WHY: &str =
     "a codex pane's containment is the fleet's on every seat: a pane FLEETOR did not fence \
      is not a worker, and one whose sandbox cannot reach the fleet socket is a pane that \
      looks alive and cannot talk";
+
+/// Why a worker's provider is FLEETOR's, and the one seat it is not (#29, C9).
+///
+/// The sentence an operator most needs is the *cost*, so it is stated rather than
+/// implied: this pane cannot spend their plan. C21's rule is that every override
+/// gets a feed line, and this is the override most likely to be read as a bug —
+/// an operator whose codex is pointed at their own provider will otherwise find a
+/// worker talking to a different endpoint with no explanation anywhere.
+const CREDENTIAL_WHY: &str =
+    "a worker holds the fleet's credential and never yours (D-062). This pane runs on \
+     FLEETOR's own provider entry, authenticated with the fleet's key from `.env`, so your \
+     codex login stays out of a fenced pane and a worker cannot spend your plan. Your \
+     orchestrator keeps the provider you configured — it is your own pane";
 
 /// Why the four features are off, and the one seat they are not off on.
 const FEATURES_WHY: &str =
@@ -903,18 +1070,21 @@ fn narrowing_notice(
     seat: &str,
     operators_own_seat: bool,
 ) -> (NoticeLevel, String) {
-    let containment = checkpoint_keys(spec)
+    let containment = containment_keys(spec)
         .into_iter()
         .map(|(key, value)| format!("{key}={value}"))
         .collect::<Vec<_>>()
         .join(", ");
     let tail = if operators_own_seat {
-        "Your codex feature flags are untouched on this seat — it is your own pane.".to_string()
+        "Your codex provider, login and feature flags are untouched on this seat — it is \
+         your own pane."
+            .to_string()
     } else {
         format!(
-            "Four default-on features are off here — {} — because the sandbox does not bound \
-             a pane driving a browser or a desktop, or one fanning out into threads the run \
-             manifest never sees.",
+            "This pane runs on FLEETOR's own provider and the fleet's key, never yours, so it \
+             cannot spend your plan. Four default-on features are off here — {} — because the \
+             sandbox does not bound a pane driving a browser or a desktop, or one fanning out \
+             into threads the run manifest never sees.",
             WORKER_FEATURE_OVERRIDES
                 .iter()
                 .map(|(key, _)| key.trim_start_matches("features."))
@@ -1591,7 +1761,10 @@ args = ["--root", "~/notes"]
             .collect();
         if !seat_is_the_operators {
             rows.extend(
-                WORKER_FEATURE_OVERRIDES.iter().map(|(k, v)| (k.to_string(), v.to_string())),
+                WORKER_PROVIDER_SELECTION
+                    .iter()
+                    .chain(WORKER_FEATURE_OVERRIDES)
+                    .map(|(k, v)| (k.to_string(), v.to_string())),
             );
         }
         rows
@@ -1757,14 +1930,31 @@ args = ["--root", "~/notes"]
             .iter()
             .find(|(level, _)| *level == NoticeLevel::Info)
             .expect("every codex pane gets one");
-        for (key, value) in fleetor_owned(false) {
-            let named = if key.starts_with("features.") {
-                key.trim_start_matches("features.").to_string()
-            } else {
-                format!("{key}={value}")
-            };
+        // The containment rows are quoted as `key=value`, read off the spec so a row
+        // added to either list appears without anyone editing the sentence.
+        for (key, value) in containment_keys(&CODEX_SPEC) {
+            let named = format!("{key}={value}");
             assert!(line.1.contains(&named), "the line does not name {named}: {}", line.1);
         }
+        // The four features are named by their bare vendor name.
+        for (key, _) in WORKER_FEATURE_OVERRIDES {
+            let named = key.trim_start_matches("features.");
+            assert!(line.1.contains(named), "the line does not name {named}: {}", line.1);
+        }
+        // Checkpoint 5 is named in prose rather than as a row: `provider_keys` is
+        // four keys of plumbing and one *fact*, which is whose credential this pane
+        // spends — and reciting the entry under the word "containment" would be a
+        // sentence that is wrong about the most consequential thing in it (#29, C9).
+        assert!(
+            line.1.contains("fleet's key") && line.1.contains("cannot spend your plan"),
+            "the line has to state the cost of a worker running on FLEETOR's provider: {}",
+            line.1,
+        );
+        assert!(
+            !line.1.contains(FLEET_KEY_ENV),
+            "the Activity feed names the variable a credential travels in: {}",
+            line.1,
+        );
 
         let orch = machine.notices_for_the_operator("orch");
         let line = orch
@@ -1943,18 +2133,18 @@ args = ["--root", "~/notes"]
     }
 
     #[test]
-    fn the_spec_leaves_exactly_the_two_lists_its_own_ticket_still_owes() {
+    fn the_spec_leaves_none_of_the_four_lists_phase_two_owed() {
         // A reminder in test form, so #33 cannot register codex while a checkpoint
         // is still empty: the conformance suite refuses an empty `scrubbed_env` and
-        // an empty `seed_keys`. #26 wrote this pinning **four** empty lists; #28
-        // filled two of them, and the pin is updated rather than deleted so it
-        // still names exactly what phase 2 owes — which is now #29's two.
-        assert!(CODEX_SPEC.credentials.provider_keys.is_empty(), "#29 fills the provider");
-        assert!(CODEX_SPEC.credentials.scrubbed_env.is_empty(), "#29 fills the scrub");
-        // And the two #28 filled are filled, so a later edit cannot empty them back
-        // out without this going red — a codex worker with an empty `sandbox_keys`
-        // is an unfenced pane, and one with an empty `reachability_keys` is a mute
-        // one.
+        // an empty `seed_keys`. #26 wrote this pinning **four** empty lists, #28
+        // filled two and #29 filled the last two — so the pin inverts rather than
+        // being deleted, and now says the thing worth saying next: none of the four
+        // may go back to empty. An empty `sandbox_keys` is an unfenced pane, an
+        // empty `reachability_keys` is a mute one, an empty `provider_keys` is a
+        // pane with no way to authenticate, and an empty `scrubbed_env` is a fenced
+        // pane holding the operator's own credential.
+        assert!(!CODEX_SPEC.credentials.provider_keys.is_empty(), "#29 filled the provider");
+        assert!(!CODEX_SPEC.credentials.scrubbed_env.is_empty(), "#29 filled the scrub");
         assert!(!CODEX_SPEC.posture.sandbox_keys.is_empty(), "#28 filled the sandbox trio");
         assert!(!CODEX_SPEC.outbound.reachability_keys.is_empty(), "#28 filled the socket lever");
         // Everything else is answered from a measurement.
@@ -1965,6 +2155,290 @@ args = ["--root", "~/notes"]
         const { assert!(CODEX_SPEC.isolation.private_home, "the Fence still wants one") };
         const { assert!(!CODEX_SPEC.transcript.file_move_is_safe, "WAL-mode: never `cp`") };
         assert!(!CODEX_SPEC.config_dir.seed_keys.is_empty());
+    }
+
+    // --- checkpoint 5 (#29, C2, C9, C27, C30, D-062) ---------------------------
+
+    /// One fabricated operator installation with a **real credential in it**, for
+    /// the tests that have to prove none of it reaches a fenced pane.
+    ///
+    /// The sentinels are distinct strings that appear nowhere else in this file, so
+    /// a test asserting their absence is asserting about the operator's credential
+    /// and not about a substring some unrelated value happens to contain. The shape
+    /// is the operator's real one, read off the spike: a third-party provider with
+    /// its own bearer token, selected by `model_provider`, plus an `env_key`
+    /// naming a variable out of their shell profile.
+    const OPERATORS_TOKEN: &str = "sk-operator-CREDENTIAL-SENTINEL";
+    const OPERATORS_KEY_VAR: &str = "OPERATORS_OWN_SHELL_KEY_SENTINEL";
+    const OPERATORS_PROVIDER: &str = "operators-deepseek";
+
+    fn with_the_operators_credential(machine: &Machine) {
+        machine.operator_file(
+            CONFIG_FILE,
+            &format!(
+                "model_provider = \"{OPERATORS_PROVIDER}\"\n\
+                 [model_providers.{OPERATORS_PROVIDER}]\n\
+                 name = \"the operator's own\"\n\
+                 base_url = \"https://api.deepseek.com/\"\n\
+                 wire_api = \"responses\"\n\
+                 experimental_bearer_token = \"{OPERATORS_TOKEN}\"\n\
+                 env_key = \"{OPERATORS_KEY_VAR}\"\n",
+            ),
+        );
+    }
+
+    /// **The entry is written on every codex pane; only a seat FLEETOR drives runs
+    /// on it** (C2 as amended by C9).
+    ///
+    /// The split is the whole of checkpoint 5's seat half. The *table* is a spec key
+    /// list, so it lands everywhere for C41(a)'s reason and is inert where nothing
+    /// selects it. The *selection* is [`WORKER_PROVIDER_SELECTION`], and it is the
+    /// one row that decides whose credential a pane spends — which is why the
+    /// orchestrator's own `model_provider` surviving is asserted here rather than
+    /// left to be true by omission.
+    #[test]
+    fn a_worker_runs_on_the_fleets_provider_and_the_operator_keeps_their_own() {
+        let machine = Machine::new("provider-seat");
+        with_the_operators_credential(&machine);
+
+        machine.seed("worker-1").expect("seed");
+        machine.seed_for_the_operator("orch").expect("seed");
+
+        let worker = machine.seeded("worker-1");
+        let orch = machine.seeded("orch");
+
+        // The entry itself, on both seats and spelled off the spec so a row that
+        // changed goes red here rather than in review.
+        for seat in [&worker, &orch] {
+            for (key, value) in CODEX_SPEC.credentials.provider_keys {
+                let path: Vec<&str> = key.split('.').collect();
+                assert_eq!(
+                    value_at(seat, &path).as_deref(),
+                    Some(format!("\"{value}\"").as_str()),
+                    "the FLEETOR provider entry is a spec key list, so it lands on every \
+                     codex pane: {key}",
+                );
+            }
+        }
+
+        // The selection, which is the seat's.
+        assert_eq!(
+            worker["model_provider"].as_str(),
+            Some(FLEET_PROVIDER),
+            "a worker holds the fleet's credential, never the operator's (D-062)",
+        );
+        assert_eq!(
+            orch["model_provider"].as_str(),
+            Some(OPERATORS_PROVIDER),
+            "the orchestrator runs on the operator's own login and inherited provider — \
+             that seat being their own pane is the entire point (D-030, D-052)",
+        );
+
+        // And the override is announced, because an operator who finds a worker
+        // talking to an endpoint they did not configure is owed the sentence (C21).
+        let said = machine.notices("worker-2");
+        let warned: Vec<&String> = said
+            .iter()
+            .filter(|(level, _)| *level == NoticeLevel::Warn)
+            .map(|(_, text)| text)
+            .filter(|text| text.contains("model_provider"))
+            .collect();
+        assert_eq!(
+            warned.len(),
+            1,
+            "the provider a worker did not keep gets exactly one Warn: {said:#?}",
+        );
+        assert!(
+            warned[0].contains(OPERATORS_PROVIDER) && warned[0].contains(FLEET_PROVIDER),
+            "the line names what lost and what won: {}",
+            warned[0],
+        );
+        assert!(
+            !machine
+                .notices_for_the_operator("orch-2")
+                .iter()
+                .any(|(_, text)| text.contains("model_provider")),
+            "nothing was overridden on the operator's own seat, so nothing is announced",
+        );
+    }
+
+    /// **The criterion that fails by looking healthy** (#29's acceptance criterion
+    /// 2): nothing anywhere under a worker's configuration directory carries the
+    /// operator's credential.
+    ///
+    /// A seeded pane with the operator's bearer token in it boots, reaches its
+    /// prompt, answers, and is spending the operator's plan from inside the Fence —
+    /// there is no symptom to notice. So the assertion is over the **whole
+    /// directory as bytes**, not over the keys the seeder happens to know about: a
+    /// snapshot entry added later that carried a credential in would go red here
+    /// without anyone remembering that this test exists.
+    ///
+    /// Both sentinels matter and for different reasons. The token is the credential
+    /// itself. The variable *name* is not a secret — following it is (L2), and a
+    /// surviving `env_key` points a fenced pane straight at whatever the operator
+    /// exported in their shell profile.
+    #[test]
+    fn a_workers_seeded_directory_carries_no_credential_of_the_operators() {
+        let machine = Machine::new("no-operator-credential");
+        with_the_operators_credential(&machine);
+        // Something the snapshot *does* carry, so a green result cannot come from a
+        // seeding that copied nothing at all.
+        machine.operator_file("models.json", "{\"models\":[]}");
+
+        let dir = machine.seed("worker-1").expect("seed");
+        assert!(dir.join("models.json").is_file(), "the snapshot ran");
+
+        for (name, bytes) in contents(&dir) {
+            let text = String::from_utf8_lossy(&bytes);
+            assert!(
+                !text.contains(OPERATORS_TOKEN),
+                "{name} in a fenced pane's config dir carries the operator's own key. This is \
+                 the failure with no symptom: the pane boots, answers, and spends their plan.",
+            );
+            assert!(
+                !text.contains(OPERATORS_KEY_VAR),
+                "{name} names the variable the operator's key is exported in, so the vendor \
+                 will read the key out of the pane's inherited environment (L2).",
+            );
+        }
+
+        // The strike is not a deletion of the provider *table* — the pane keeps the
+        // operator's preferences, minus the credential — so assert the thing that
+        // would make the two indistinguishable is not what happened.
+        let seeded = machine.seeded("worker-1");
+        assert!(
+            value_at(&seeded, &["model_providers", OPERATORS_PROVIDER, "base_url"]).is_some(),
+            "the operator's provider row survived; only its credential fields are struck",
+        );
+    }
+
+    /// **The fleet's own key is not written down either**, and the two halves of
+    /// the channel that carries it name one variable.
+    ///
+    /// Codex's provider table offers two credential mechanisms and this is the
+    /// decision between them: `experimental_bearer_token` would put the fleet's key
+    /// in plaintext inside `pane-config/worker-N/config.toml`, and
+    /// [`FLEET_KEY_ENV`] names a variable `spawn::worker_command_with` sets on the
+    /// command instead — the same line, in the same function, that sets a Claude
+    /// Code worker's `ANTHROPIC_AUTH_TOKEN`.
+    ///
+    /// The second half is the disagreement guard: `env_key` and
+    /// [`Credentials::token_env`] are two independent spellings of one variable, and
+    /// a pane whose provider reads `A` while placement sets `B` fails at its first
+    /// turn with an authentication error that names neither.
+    #[test]
+    fn the_two_halves_of_the_credential_channel_name_one_variable() {
+        assert_eq!(
+            CODEX_SPEC.credentials.token_env,
+            Some(FLEET_KEY_ENV),
+            "the variable placement sets is the variable the provider entry reads",
+        );
+        let declared: Vec<&str> = CODEX_SPEC
+            .credentials
+            .provider_keys
+            .iter()
+            .filter(|(key, _)| key.ends_with(".env_key"))
+            .map(|(_, value)| *value)
+            .collect();
+        assert_eq!(declared, [FLEET_KEY_ENV], "the entry reads exactly one variable, and it is ours");
+
+        // The selection names the table that was actually written.
+        for (_, provider) in WORKER_PROVIDER_SELECTION {
+            assert!(
+                CODEX_SPEC
+                    .credentials
+                    .provider_keys
+                    .iter()
+                    .any(|(key, _)| key.starts_with(&format!("model_providers.{provider}."))),
+                "`model_provider = {provider}` names a table nothing defines, which is a pane \
+                 that dies at configuration load",
+            );
+        }
+
+        // And no row in the entry is a secret: every value is either a name, an
+        // endpoint or a wire protocol. `experimental_bearer_token` is the row that
+        // would put the fleet's key on disk, and it is deliberately not here.
+        assert!(
+            !CODEX_SPEC
+                .credentials
+                .provider_keys
+                .iter()
+                .any(|(key, _)| key.ends_with(".experimental_bearer_token")),
+            "the fleet's key would be written into every pane's config.toml in plaintext",
+        );
+    }
+
+    /// **The scrub, asserted as removal rather than as absence** (C27, C30).
+    ///
+    /// `env_remove` deletes a `CommandBuilder` entry rather than marking it, so on
+    /// the finished command a name that was scrubbed and a name this machine never
+    /// exported are the same observation — which is exactly why `Placed::scrubbed`
+    /// exists. The list comes back from the call that performed the removal, so it
+    /// cannot claim a scrub the command did not get, and asserting it needs nothing
+    /// in the process environment.
+    ///
+    /// **Both names are codex's own**: `doctor` reports them under `auth env vars
+    /// present`, so an operator with either in a shell profile is an operator whose
+    /// personal credential would authenticate a fenced pane.
+    ///
+    /// The attended half is the asymmetry made observable (D-030, D-052, D-062):
+    /// `spawn` builds a worker's command through the one function that scrubs and
+    /// returns a `Worker`, and the three attended seats through functions that
+    /// return a bare command and carry `Placed::scrubbed = &[]` — so an attended
+    /// codex seat has nothing removed and nothing to report, and is also never
+    /// handed the fleet's key.
+    #[test]
+    fn a_fenced_codex_worker_reports_the_scrub_and_an_attended_seat_has_none_to_report() {
+        use crate::prompts::PaneContext;
+
+        let context = PaneContext::baked();
+        let worker = crate::placement::spawn::worker_command_with(
+            codex(),
+            1,
+            Path::new("/tmp"),
+            Path::new("/tmp/home"),
+            Path::new("/tmp/cfg"),
+            Path::new("/tmp/s.sock"),
+            "sk-the-fleets-own-key",
+            None,
+            &context,
+            None,
+            "/usr/bin",
+        );
+
+        assert_eq!(
+            worker.scrubbed, CODEX_SPEC.credentials.scrubbed_env,
+            "the names reported are the names checkpoint 5 declares, from the one call that \
+             removed them",
+        );
+        assert!(!worker.scrubbed.is_empty(), "a scrub that removes nothing is checkpoint 5 stubbed");
+        assert_eq!(
+            worker.command.get_env(FLEET_KEY_ENV).map(|v| v.to_string_lossy().into_owned()),
+            Some("sk-the-fleets-own-key".to_string()),
+            "the fenced pane authenticates with the fleet's key, through the variable the \
+             provider entry reads",
+        );
+
+        let orch = crate::placement::spawn::orch_command_with(
+            codex(),
+            Path::new("/tmp"),
+            Path::new("/tmp/s.sock"),
+            Path::new("/tmp/cfg-orch"),
+            &context,
+            None,
+            "/usr/bin",
+        );
+        assert!(
+            orch.get_env(FLEET_KEY_ENV).is_none(),
+            "the operator's own seat runs their login, not the fleet's credential",
+        );
+        for name in CODEX_SPEC.credentials.scrubbed_env {
+            assert!(
+                orch.get_env(name).is_none(),
+                "{name} was set on an attended seat's command; the attended seats set nothing \
+                 and remove nothing",
+            );
+        }
     }
 
     // --- checkpoint 2 (#27, C3, C37) ------------------------------------------

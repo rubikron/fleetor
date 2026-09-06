@@ -355,3 +355,50 @@ that is the measurement that would reopen it.
 Also observed while reading the socket flags: `codex sandbox -C <dir>` **requires**
 `--permission-profile <NAME>`, which is the newer generation. Another reason the legacy
 keys are what ship (C7).
+
+---
+
+## Appended by #29 — the credential channel, and the two names codex calls auth
+
+Measured on the same build, `codex-cli 0.153.4`, with `codex doctor --json` and
+nothing else. All four are gated in `src-tauri/tests/vendor_binary_tier.rs`'s
+credential arm rather than only written down. Zero tokens: `doctor` requests no
+completion, and its provider *reachability* probe is read from nowhere.
+
+**`checks["auth.credentials"]` is the instrument, and it names the variable.** With
+a `[model_providers.*]` carrying `env_key = "X"` selected by `model_provider`, the
+check reports `auth is provided by the active model provider` and
+`details["provider auth env var"] = "X (present)"` or `"X (missing)"`. A provider
+with `experimental_bearer_token` instead reports `ok` and names no variable. Both
+mechanisms work; the first is the one that keeps the secret out of a file.
+
+**The fleet's entry cannot be satisfied by the operator's own key.** With
+`env_key = "FLEETOR_CODEX_KEY"` selected and that variable **absent**, `doctor`
+fails with `active model provider auth env var is missing` — *even with
+`CODEX_API_KEY` present in the environment*, which the same report lists under
+`auth env vars present`. There is no fallback from a named `env_key` to an ambient
+auth variable. This is the property that makes checkpoint 5's scrub the second line
+of defence rather than the only one, and it is the middle arm of the tier's
+credential test for exactly that reason: without it, the positive arm passes just as
+well on a seeder that quietly authenticated off the environment.
+
+**Codex recognises two ambient auth variables, by name: `OPENAI_API_KEY` and
+`CODEX_API_KEY`.** Probed by setting eight candidates at once against a
+`CODEX_HOME` on the default provider; `doctor` listed exactly those two under
+`auth env vars present` and ignored `AZURE_OPENAI_API_KEY`, `OPENAI_TOKEN`,
+`CHATGPT_API_KEY`, `OPENAI_ACCESS_TOKEN`, `CODEX_TOKEN` and `OPENAI_BASE_URL`.
+Those two are `Credentials::scrubbed_env`.
+
+**An unselected provider table is inert.** A `CODEX_HOME` defining
+`[model_providers.fleetor]` with `env_key` naming an absent variable, while
+`model_provider` names something else, resolves clean — no failure attributable to
+the unused table. That is what lets the FLEETOR entry be a spec key list written on
+**every** codex pane (C41(a)) while only a fenced seat's `model_provider` selects it.
+
+**Caveat, restated because it now matters twice:** `doctor` reports *reachability*,
+not authorization — its probe returned HTTP 401 against a live provider and still
+passed, and a provider table with **no** credential field at all reports
+`OpenAI auth is not required for the active model provider` and passes. So a seat
+whose inherited provider had its credential struck out looks healthy here. That is
+the shape of the orchestrator question #33 inherits, written down rather than
+discovered later.
