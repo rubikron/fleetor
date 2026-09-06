@@ -44,6 +44,22 @@
 //! this module responsible for: `cwd` is passed into the renderer as well as onto
 //! the command, because CC's `# Environment` section carried the working directory
 //! and that section is gone.
+//!
+//! ## Where the vendor's answers come from now (WP-25)
+//!
+//! **Checkpoints 1, 2, 3 and 5 are read off the harness spec here, not spelled as
+//! literals.** The program and its base arguments, the flag the brief travels
+//! behind, the model and permission channels, and the names scrubbed out of a
+//! worker's inherited environment all come from
+//! [`Harness`](crate::placement::Harness) — one lookup, in
+//! [`place`](crate::placement::place), handed down to every builder below. What
+//! did *not* move onto the spec is the asymmetry itself: which seat gets a
+//! posture, a model and a credential at all is this module's to state, because it
+//! is the product (D-030, D-052) rather than a fact about a vendor.
+//!
+//! The literals that remain belong to checkpoints this batch does not own —
+//! `CLAUDE_CONFIG_DIR` and `CLAUDE_SECURESTORAGE_CONFIG_DIR` are 4 and 6,
+//! `CLAUDE_CODE_MAX_CONTEXT_TOKENS` is 11 — and are the next batches' to move.
 
 use std::path::{Path, PathBuf};
 
@@ -51,6 +67,7 @@ use fleetor_core::brief::{render_orch, render_worker};
 use fleetor_core::pane::{PaneId, WORKER_SLOTS};
 use portable_pty::CommandBuilder;
 
+use super::harness::Harness;
 use crate::prompts::PaneContext;
 
 /// Overrides the program every pane runs. Set by `src-tauri/tests/panes.rs` to
@@ -114,6 +131,7 @@ fn roster() -> Vec<PaneId> {
 /// left is one implementation with one entry point, and the two process reads
 /// live on [`Host`](crate::placement::Host) where a test can supply them.
 pub(super) fn orch_command_with(
+    harness: &'static dyn Harness,
     cwd: &Path,
     socket: &Path,
     config_dir: &Path,
@@ -121,12 +139,17 @@ pub(super) fn orch_command_with(
     program: Option<&str>,
     path: &str,
 ) -> CommandBuilder {
+    // Checkpoints 1, 2 and 3, off the spec (WP-25): the program, the base
+    // arguments, and the brief behind whichever flag carries it. `None` is the
+    // permission posture, and it is the asymmetry rather than an omission — this
+    // seat is watched by a human who approves its calls (D-030, D-052).
     let mut cmd = base_command_with(
+        harness,
         program,
-        &[
-            "--system-prompt".to_string(),
-            render_orch(&ctx.orch_template, &roster(), &cwd.display().to_string()),
-        ],
+        &harness.command_args(
+            &render_orch(&ctx.orch_template, &roster(), &cwd.display().to_string()),
+            None,
+        ),
     );
     cmd.cwd(cwd);
     apply_pane_env(&mut cmd, PaneId::Orch, socket, path.to_string());
@@ -171,7 +194,9 @@ pub(super) fn orch_command_with(
 /// as for [`orch_command_with`]. The `PATH` it is given is `orch`'s — this pane is
 /// the operator's own `claude` and gets their tool rungs — never a worker's fenced
 /// one.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn evaluator_command_with(
+    harness: &'static dyn Harness,
     cwd: &Path,
     socket: &Path,
     config_dir: &Path,
@@ -180,15 +205,8 @@ pub(super) fn evaluator_command_with(
     program: Option<&str>,
     path: &str,
 ) -> CommandBuilder {
-    let mut cmd = base_command_with(
-        program,
-        &[
-            "--permission-mode".to_string(),
-            permission_mode.to_string(),
-            "--system-prompt".to_string(),
-            brief.to_string(),
-        ],
-    );
+    let mut cmd =
+        base_command_with(harness, program, &harness.command_args(brief, Some(permission_mode)));
     cmd.cwd(cwd);
     apply_pane_env(&mut cmd, PaneId::Evaluator, socket, path.to_string());
     cmd.env("CLAUDE_CONFIG_DIR", config_dir);
@@ -233,7 +251,9 @@ pub(super) fn evaluator_command_with(
 /// `cwd` (L1), and the `CLAUDE_SECURESTORAGE_CONFIG_DIR` pairing is `orch`'s
 /// (D-062): set and empty, so the operator's own login is found rather than an
 /// empty credential namespace keyed by a hash of the config dir.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn critic_command_with(
+    harness: &'static dyn Harness,
     cwd: &Path,
     socket: &Path,
     config_dir: &Path,
@@ -242,15 +262,8 @@ pub(super) fn critic_command_with(
     program: Option<&str>,
     path: &str,
 ) -> CommandBuilder {
-    let mut cmd = base_command_with(
-        program,
-        &[
-            "--permission-mode".to_string(),
-            permission_mode.to_string(),
-            "--system-prompt".to_string(),
-            brief.to_string(),
-        ],
-    );
+    let mut cmd =
+        base_command_with(harness, program, &harness.command_args(brief, Some(permission_mode)));
     cmd.cwd(cwd);
     apply_pane_env(&mut cmd, PaneId::Critic, socket, path.to_string());
     cmd.env("CLAUDE_CONFIG_DIR", config_dir);
@@ -282,8 +295,15 @@ pub(super) fn critic_command_with(
 /// The sibling of [`orch_command_with`], and everything the two do differently is
 /// the Fence: a private `HOME`, a PATH with no operator rung, the fleet's own
 /// toolchain homes, and four variables removed rather than merely not set.
+///
+/// **It returns a [`Worker`] rather than a bare command** (WP-25, C27), because
+/// the last of those four is the one a caller could not see: `env_remove` deletes
+/// an entry, so on the finished command a scrubbed name and a name the machine
+/// never exported are indistinguishable. The names go back with the command, from
+/// the same call that removed them.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn worker_command_with(
+    harness: &'static dyn Harness,
     slot: u8,
     cwd: &Path,
     home: &Path,
@@ -294,16 +314,19 @@ pub(super) fn worker_command_with(
     ctx: &PaneContext,
     program: Option<&str>,
     path: &str,
-) -> CommandBuilder {
+) -> Worker {
+    let spec = harness.spec();
     let pane = PaneId::Worker(slot);
+    // Checkpoints 1, 2 and 3, off the spec (WP-25): the program, the base
+    // arguments, the brief behind its carrier, and — unlike the attended seats —
+    // a permission posture, because nobody is watching this one.
     let mut cmd = base_command_with(
+        harness,
         program,
-        &[
-            "--permission-mode".to_string(),
-            ctx.launch.worker_permission_mode.clone(),
-            "--system-prompt".to_string(),
-            render_worker(&ctx.worker_template, pane, &roster(), &cwd.display().to_string()),
-        ],
+        &harness.command_args(
+            &render_worker(&ctx.worker_template, pane, &roster(), &cwd.display().to_string()),
+            Some(&ctx.launch.worker_permission_mode),
+        ),
     );
     cmd.cwd(cwd);
     apply_pane_env(&mut cmd, pane, socket, path.to_string());
@@ -328,9 +351,24 @@ pub(super) fn worker_command_with(
     // `user.name`/`user.email` and WP-06's receipt points at nothing.
     cmd.env("HOME", home);
     cmd.env("CLAUDE_CONFIG_DIR", config_dir);
-    cmd.env("ANTHROPIC_BASE_URL", &ctx.launch.worker_base_url);
-    cmd.env("ANTHROPIC_AUTH_TOKEN", api_key);
-    cmd.env("ANTHROPIC_MODEL", &ctx.launch.worker_model);
+    // Checkpoint 5's first half, off the spec (WP-25): the endpoint a worker talks
+    // to and the fleet's own key, which is the whole of D-062 — a worker holds the
+    // fleet's credential, never the operator's. `None` on either is a harness that
+    // does not take it that way, not a worker that goes without: checkpoint 5's
+    // `provider_keys` is the config-dir channel for one that is configured
+    // instead, and the conformance suite refuses a harness with neither.
+    if let Some(var) = spec.credentials.base_url_env {
+        cmd.env(var, &ctx.launch.worker_base_url);
+    }
+    if let Some(var) = spec.credentials.token_env {
+        cmd.env(var, api_key);
+    }
+    // Checkpoint 3's model channel. The attended seats get no model at all — that
+    // asymmetry is the product (D-030, D-052) and is why this is here rather than
+    // in `base_command_with`.
+    if let Some(var) = spec.posture.model_env {
+        cmd.env(var, &ctx.launch.worker_model);
+    }
     // CC does not recognize the worker model name and would assume a 200k
     // window, auto-compacting early (WP-02 finding). Export the fleet's own
     // stated window instead — the same constant the context gauge divides by,
@@ -339,18 +377,48 @@ pub(super) fn worker_command_with(
         "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
         crate::context_gauge::WORKER_WINDOW_TOKENS.to_string(),
     );
+    // Checkpoint 5's second half, and the half that is easier to get wrong.
+    //
     // Not "don't set it" — *unset* it. The worker inherits the operator's
     // environment, and an `ANTHROPIC_API_KEY` sitting in their shell profile is
-    // enough to park the pane on an api-key approval prompt forever (L2).
-    cmd.env_remove("ANTHROPIC_API_KEY");
-    cmd.env_remove("ANTHROPIC_DEFAULT_OPUS_MODEL");
-    cmd.env_remove("ANTHROPIC_DEFAULT_SONNET_MODEL");
-    // The Fence again (WP-14): orch sets this to reach the operator's own Keychain
-    // entry, and a worker inherits the app's environment. Unset rather than
-    // not-set, so a worker can never be handed the key to the operator's login —
-    // it has `ANTHROPIC_AUTH_TOKEN` and needs nothing from the keychain.
-    cmd.env_remove(ENV_CC_SECURESTORAGE_DIR);
-    cmd
+    // enough to park the pane on an api-key approval prompt forever (L2). The
+    // same is true of `CLAUDE_SECURESTORAGE_CONFIG_DIR` for a different reason
+    // (WP-14): `orch` sets it, empty, to reach the operator's own Keychain entry,
+    // and removing it here is what stops a fenced pane ever being handed the key
+    // to the operator's login — it has the fleet's token and needs nothing from
+    // the keychain.
+    let scrubbed = scrub(&mut cmd, spec.credentials.scrubbed_env);
+    Worker { command: cmd, scrubbed }
+}
+
+/// What building one worker's command produced: the command, and **the names it
+/// removed from the inherited environment** (WP-25, C27).
+///
+/// The second field exists because `env_remove` deletes an entry rather than
+/// marking it, so on the finished command a name that was scrubbed and a name the
+/// machine never exported are the same observation — which is what left the
+/// conformance suite able to assert checkpoint 5's scrub only as absence. Both
+/// fields come out of the one call that performed the removal, so they cannot
+/// disagree with each other.
+pub(super) struct Worker {
+    /// What the registry will spawn.
+    pub(super) command: CommandBuilder,
+    /// Checkpoint 5's scrub, as data: the credential names this command had
+    /// removed from the environment it inherited. Attended seats scrub nothing,
+    /// and that emptiness is the asymmetry rather than a missing answer.
+    pub(super) scrubbed: &'static [&'static str],
+}
+
+/// Remove `names` from the inherited environment, and report what was removed.
+///
+/// One function so that "which names were scrubbed" is answered by the act of
+/// scrubbing rather than beside it — a caller that wants the list cannot get one
+/// that the command does not match.
+fn scrub(cmd: &mut CommandBuilder, names: &'static [&'static str]) -> &'static [&'static str] {
+    for name in names {
+        cmd.env_remove(name);
+    }
+    names
 }
 
 // --- shared -------------------------------------------------------------------
@@ -364,11 +432,19 @@ pub(super) fn worker_command_with(
 /// seam. They are gone (D-075): nothing in this module reads the process to build a
 /// command any more, and there is one implementation per pane kind with one entry
 /// point each.
-fn base_command_with(program: Option<&str>, args: &[String]) -> CommandBuilder {
+fn base_command_with(
+    harness: &'static dyn Harness,
+    program: Option<&str>,
+    args: &[String],
+) -> CommandBuilder {
     if let Some(stand_in) = program.map(str::trim).filter(|s| !s.is_empty()) {
         return CommandBuilder::new(stand_in);
     }
-    let mut cmd = CommandBuilder::new("claude");
+    // Checkpoint 1 (WP-25): the program is the harness's, not this module's. The
+    // base arguments are already at the head of `args` — `Harness::command_args`
+    // puts them there, before anything per-seat — so there is one place that
+    // decides argument order rather than one per pane kind.
+    let mut cmd = CommandBuilder::new(harness.spec().program.bin);
     for arg in args {
         cmd.arg(arg);
     }
@@ -821,7 +897,15 @@ mod tests {
         config_dir: &Path,
         ctx: &PaneContext,
     ) -> CommandBuilder {
-        orch_command_with(cwd, socket, config_dir, ctx, pane_program().as_deref(), &augmented_path())
+        orch_command_with(
+            super::super::harness::claude_code(),
+            cwd,
+            socket,
+            config_dir,
+            ctx,
+            pane_program().as_deref(),
+            &augmented_path(),
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -837,6 +921,7 @@ mod tests {
     ) -> CommandBuilder {
         let cargo_bin = toolchain.map(|t| t.cargo_home.join("bin"));
         worker_command_with(
+            super::super::harness::claude_code(),
             slot,
             cwd,
             home,
@@ -848,6 +933,7 @@ mod tests {
             pane_program().as_deref(),
             &worker_augmented_path(cargo_bin.as_deref()),
         )
+        .command
     }
 
     fn temp_dir(tag: &str) -> PathBuf {

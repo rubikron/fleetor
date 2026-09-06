@@ -486,6 +486,22 @@ pub struct Placed {
     /// the manifest finds it already carried, rather than having to thread it back
     /// through four arms.
     pub harness: &'static HarnessSpec,
+    /// **Checkpoint 5's scrub, as data:** the credential names placement removed
+    /// from the environment this pane's command inherited (WP-25, C27).
+    ///
+    /// Empty for every attended seat, and that emptiness is the asymmetry rather
+    /// than a missing answer — the operator's own seat runs their login and has
+    /// nothing to scrub. A fenced worker's is
+    /// [`Credentials::scrubbed_env`](harness::Credentials::scrubbed_env).
+    ///
+    /// **Returned because `env_remove` deletes rather than marks.** On the
+    /// finished command a name that was scrubbed and a name the machine never
+    /// exported are the same observation, so "this pane had the operator's key
+    /// removed" was not a thing a caller could see without first putting one in
+    /// the process environment. It is not the *whole* of what a placement removes
+    /// — `CLAUDE_CODE_CHILD_SESSION` goes from every pane as terminal hygiene, and
+    /// is nobody's checkpoint — it is checkpoint 5's scrub and nothing else.
+    pub scrubbed: &'static [&'static str],
 }
 
 // --- placing ------------------------------------------------------------------
@@ -568,6 +584,7 @@ fn place_orch(
     notices.push((NoticeLevel::Info, orch_config_dir_notice(&config_dir)));
 
     let command = spawn::orch_command_with(
+        harness,
         target,
         &layout.socket(),
         &config_dir,
@@ -578,7 +595,7 @@ fn place_orch(
 
     // `orch` is not on the live gauge: the Loadout counter is a per-run budget line
     // for the panes doing the work, and the gauge samples worker transcripts.
-    Ok(Placed { command, notices, gauge: None, harness: harness.spec() })
+    Ok(Placed { command, notices, gauge: None, harness: harness.spec(), scrubbed: &[] })
 }
 
 /// One fenced worker: its own checkout of the target, its own `HOME`, the fleet's
@@ -668,7 +685,8 @@ fn place_worker(
     ));
 
     let cargo_bin = toolchain.as_ref().map(|t| t.cargo_home.join("bin"));
-    let command = spawn::worker_command_with(
+    let worker = spawn::worker_command_with(
+        harness,
         slot,
         &cwd,
         &home,
@@ -685,10 +703,11 @@ fn place_worker(
     // the process exists** — a `fleet roster` landing before this pane's first turn
     // samples the not-yet-there transcript as absent, never a stale pane's numbers.
     Ok(Placed {
-        command,
+        command: worker.command,
         notices,
         gauge: Some(TranscriptSource { config_dir, cwd }),
         harness: harness.spec(),
+        scrubbed: worker.scrubbed,
     })
 }
 
@@ -743,6 +762,7 @@ fn place_evaluator(
     let notices = guardrail_notices(layout, pane, &config_dir, &cwd, context)?;
 
     let command = spawn::evaluator_command_with(
+        harness,
         &cwd,
         &layout.socket(),
         &config_dir,
@@ -754,7 +774,7 @@ fn place_evaluator(
 
     // Not on the live gauge, for `orch`'s reason: the gauge samples the transcripts
     // of the panes doing the work, and this pane is not one of them.
-    Ok(Placed { command, notices, gauge: None, harness: harness.spec() })
+    Ok(Placed { command, notices, gauge: None, harness: harness.spec(), scrubbed: &[] })
 }
 
 /// The Critic (WP-20, D-076): the operator's own `claude` in the run it is
@@ -810,6 +830,7 @@ fn place_critic(
     let notices = guardrail_notices(layout, pane, &config_dir, &cwd, context)?;
 
     let command = spawn::critic_command_with(
+        harness,
         &cwd,
         &layout.socket(),
         &config_dir,
@@ -822,7 +843,7 @@ fn place_critic(
     // Not on the live gauge, for `orch`'s reason and the evaluator's: the gauge
     // samples the transcripts of the panes doing the work, and this pane is not
     // one of them.
-    Ok(Placed { command, notices, gauge: None, harness: harness.spec() })
+    Ok(Placed { command, notices, gauge: None, harness: harness.spec(), scrubbed: &[] })
 }
 
 /// What placing a Critic on an archived run answers with, until the ticket that
