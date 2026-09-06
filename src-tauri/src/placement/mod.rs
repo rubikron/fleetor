@@ -404,13 +404,32 @@ impl Host {
 /// field and the TypeScript mirror. This is internal, and each kind carries its
 /// own inputs, so a future pane kind costs one variant rather than another
 /// argument two of the three arms discard.
+/// **Which harness a seat runs travels on the two variants that get a choice, and
+/// on neither judge** (WP-25 #33, C15, C23).
+///
+/// That is the shape of C15 rather than a check that enforces it: the gate offers
+/// a harness on the orchestrator row and the workers row, and the evaluator and
+/// the Critic both judge the fleet's work — a judge running the same harness as
+/// the judged is a variable worth not introducing in a first mixed run. Written as
+/// a field on the two variants that have one, there is nowhere for a caller to put
+/// an answer the judges must not have.
 #[derive(Clone, Debug)]
 pub enum PaneSpec {
-    /// The operator's own `claude`, in the target itself.
-    Orch,
+    /// The operator's own pane, in the target itself.
+    Orch {
+        /// Which harness this seat runs. Named by the caller — until #35's picker
+        /// there is one call site and it says [`harness::claude_code`].
+        harness: &'static dyn Harness,
+    },
     /// One fenced worker, by slot: its own worktree of the target, its own
     /// private `HOME`, and the fleet's toolchain rather than the operator's.
-    Worker(u8),
+    Worker {
+        /// Which slot.
+        slot: u8,
+        /// Which harness this seat runs — the row C23 says expands into four, so
+        /// two workers of one fleet may differ.
+        harness: &'static dyn Harness,
+    },
     /// The evaluator (WP-15), in a snapshot of the live run.
     ///
     /// It carries no inputs of its own, and that is D2 rather than an omission:
@@ -445,11 +464,21 @@ pub enum RunSource {
 }
 
 impl PaneSpec {
+    /// The operator's own seat, on the harness the caller names.
+    pub fn orch(harness: &'static dyn Harness) -> Self {
+        PaneSpec::Orch { harness }
+    }
+
+    /// One fenced worker, on the harness the caller names.
+    pub fn worker(slot: u8, harness: &'static dyn Harness) -> Self {
+        PaneSpec::Worker { slot, harness }
+    }
+
     /// The wire identity this spec places.
     pub fn pane(&self) -> PaneId {
         match self {
-            PaneSpec::Orch => PaneId::Orch,
-            PaneSpec::Worker(slot) => PaneId::Worker(*slot),
+            PaneSpec::Orch { .. } => PaneId::Orch,
+            PaneSpec::Worker { slot, .. } => PaneId::Worker(*slot),
             PaneSpec::Evaluator => PaneId::Evaluator,
             PaneSpec::Critic { .. } => PaneId::Critic,
         }
@@ -464,13 +493,16 @@ impl PaneSpec {
     /// of the same run, which rules out [`Host`] (what the *machine* has) and
     /// [`Layout`] (a path and nothing else).
     ///
-    /// It ignores `self` today because exactly one harness is registered, and
-    /// registering a second is a later ticket's work rather than something this
-    /// method should pretend to already do. What it buys now is that
-    /// [`place`] and every arm below it hold the answer as a value, so a call site
-    /// that migrates onto [`HarnessSpec`] finds it already in scope.
+    /// **The two judges answer Claude Code and have no field to say otherwise**
+    /// (C15). Both the evaluator and the Critic judge the fleet's work, and a
+    /// judge running the same harness as the judged is a variable worth not
+    /// introducing in a first mixed run — so this is not a default the gate could
+    /// later override by accident, it is the absence of a place to put one.
     pub fn harness(&self) -> &'static dyn Harness {
-        harness::claude_code()
+        match self {
+            PaneSpec::Orch { harness } | PaneSpec::Worker { harness, .. } => *harness,
+            PaneSpec::Evaluator | PaneSpec::Critic { .. } => harness::claude_code(),
+        }
     }
 }
 
@@ -543,8 +575,8 @@ pub fn place(
     // answer per placement by construction.
     let harness = spec.harness();
     match spec {
-        PaneSpec::Orch => place_orch(harness, layout, host, target, context),
-        PaneSpec::Worker(slot) => place_worker(harness, slot, layout, host, target, context),
+        PaneSpec::Orch { .. } => place_orch(harness, layout, host, target, context),
+        PaneSpec::Worker { slot, .. } => place_worker(harness, slot, layout, host, target, context),
         PaneSpec::Evaluator => place_evaluator(harness, layout, host, target, context),
         PaneSpec::Critic { run } => place_critic(harness, run, layout, host, context),
     }
@@ -1216,6 +1248,40 @@ mod tests {
                 path.starts_with("/scratch/fleet"),
                 "{} escaped the layout it was derived from",
                 path.display()
+            );
+        }
+    }
+
+    /// **The two judges run Claude Code, and there is nowhere to say otherwise**
+    /// (C15, WP-25 #33).
+    ///
+    /// Issue #12's reasoning, unchanged: both the evaluator and the Critic judge
+    /// the fleet's work, and a judge running the same harness as the judged is a
+    /// variable worth not introducing in a first mixed run. The gate offers a
+    /// harness on the orchestrator row and the workers row (C23) and on neither
+    /// judge.
+    ///
+    /// Held by the shape rather than by a check — `PaneSpec::Evaluator` and
+    /// `PaneSpec::Critic` have no field for a harness — so this test asserts what
+    /// that shape produces, and the compiler asserts the shape. A later ticket
+    /// that gives a judge a harness field has to delete this test to do it.
+    #[test]
+    fn the_judges_run_claude_code_and_carry_no_harness_of_their_own() {
+        let claude_code = harness::claude_code().spec();
+        for judge in [PaneSpec::Evaluator, PaneSpec::Critic { run: RunSource::Live }] {
+            let pane = judge.pane();
+            assert!(
+                std::ptr::eq(judge.harness().spec(), claude_code),
+                "{pane} is a judge and was offered a harness of its own",
+            );
+        }
+
+        // And the two seats that *are* offered one really carry it, so this is an
+        // asymmetry rather than a registry with one usable entry.
+        for spec in [PaneSpec::orch(codex::codex()), PaneSpec::worker(1, codex::codex())] {
+            assert!(
+                std::ptr::eq(spec.harness().spec(), codex::codex().spec()),
+                "the seat did not keep the harness the caller named",
             );
         }
     }

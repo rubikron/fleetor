@@ -29,7 +29,7 @@ use fleetor_shell::deliver::spawn_delivery;
 use fleetor_shell::pty::{exit_channel, out_channel, Emit, PaneRegistry};
 use fleetor_shell::placement::spawn;
 use fleetor_shell::placement::{self, Host, Layout, PaneSpec, RunSource};
-use fleetor_shell::prompts::PaneContext;
+use fleetor_shell::placement::harness::claude_code;use fleetor_shell::prompts::PaneContext;
 use fleetor_server::{AppCommand, Hub};
 use portable_pty::CommandBuilder;
 use tokio::sync::{mpsc, oneshot};
@@ -167,8 +167,8 @@ fn fleet_with_registry_path() -> (Arc<PaneRegistry>, Arc<Transcript>, PathBuf) {
     let host = stand_in_host();
     let ctx = PaneContext::baked();
 
-    let mut specs = vec![PaneSpec::Orch];
-    specs.extend(WORKER_SLOTS.iter().map(|slot| PaneSpec::Worker(*slot)));
+    let mut specs = vec![PaneSpec::orch(claude_code())];
+    specs.extend(WORKER_SLOTS.iter().map(|slot| PaneSpec::worker(*slot, claude_code())));
     for spec in specs {
         let pane = spec.pane();
         let placed = placement::place(spec, &layout, &host, &target, &ctx)
@@ -354,7 +354,7 @@ fn a_killed_pane_can_be_spawned_again() {
 
     let (layout, repo) = scratch_installation();
     let placed = placement::place(
-        PaneSpec::Worker(4),
+        PaneSpec::worker(4, claude_code()),
         &layout,
         &stand_in_host(),
         &repo,
@@ -667,7 +667,7 @@ impl Interviewed {
 
         let host = stand_in_host();
         let ctx = PaneContext::baked();
-        for spec in [PaneSpec::Orch, PaneSpec::Critic { run: RunSource::Live }] {
+        for spec in [PaneSpec::orch(claude_code()), PaneSpec::Critic { run: RunSource::Live }] {
             let pane = spec.pane();
             let placed = placement::place(spec, &layout, &host, &target, &ctx)
                 .unwrap_or_else(|e| panic!("placing {pane}: {e}"));

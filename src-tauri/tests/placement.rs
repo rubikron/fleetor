@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use fleetor_core::event::NoticeLevel;
 use fleetor_core::pane::PaneId;
 use fleetor_shell::placement::{self, Host, Layout, PaneSpec, RunSource};
-use fleetor_shell::prompts::PaneContext;
+use fleetor_shell::placement::harness::claude_code;use fleetor_shell::prompts::PaneContext;
 
 /// The whole-installation fixture, shared with `tests/write_guardrail.rs` rather
 /// than retyped in both — see that module for what the four preconditions are.
@@ -217,7 +217,7 @@ fn a_worker_with_no_key_is_told_where_the_key_was_looked_for() {
     };
 
     let why = placement::place(
-        PaneSpec::Worker(1),
+        PaneSpec::worker(1, claude_code()),
         &scratch.layout,
         &host,
         &scratch.target,
@@ -235,7 +235,7 @@ fn a_worker_with_no_key_is_told_where_the_key_was_looked_for() {
     // And a host nobody discovered degrades to the general sentence rather than
     // naming a path it invented.
     let bare = placement::place(
-        PaneSpec::Worker(1),
+        PaneSpec::worker(1, claude_code()),
         &scratch.layout,
         &Host::bare(),
         &scratch.target,
@@ -302,7 +302,7 @@ fn the_orchestrator_may_write_in_its_target_and_the_fleets_own_state_root() {
     let host = host_with_fleet_bin(&scratch.root.join("fleet"));
 
     placement::place(
-        PaneSpec::Orch,
+        PaneSpec::orch(claude_code()),
         &scratch.layout,
         &host,
         &scratch.target,
@@ -341,7 +341,7 @@ fn the_operators_extra_write_roots_reach_the_orchestrator() {
     context.launch.fence_allow = vec![extra.display().to_string()];
 
     placement::place(
-        PaneSpec::Orch,
+        PaneSpec::orch(claude_code()),
         &scratch.layout,
         &host_with_fleet_bin(&scratch.root.join("fleet")),
         &scratch.target,
@@ -368,7 +368,7 @@ fn placing_the_orchestrator_returns_the_notices_the_operator_should_read() {
     let scratch = Scratch::new("notices");
 
     let placed = placement::place(
-        PaneSpec::Orch,
+        PaneSpec::orch(claude_code()),
         &scratch.layout,
         &host_with_fleet_bin(&scratch.root.join("fleet")),
         &scratch.target,
@@ -416,7 +416,7 @@ fn a_machine_with_no_fleet_binary_is_warned_about_first() {
     let scratch = Scratch::new("no-fleet-bin");
 
     let placed = placement::place(
-        PaneSpec::Orch,
+        PaneSpec::orch(claude_code()),
         &scratch.layout,
         &Host::bare(),
         &scratch.target,
@@ -465,7 +465,7 @@ fn placing_against_a_scratch_layout_writes_inside_it_and_nowhere_else() {
     std::fs::create_dir_all(&canary).unwrap();
 
     placement::place(
-        PaneSpec::Orch,
+        PaneSpec::orch(claude_code()),
         &scratch.layout,
         &host_with_fleet_bin(&scratch.root.join("fleet")),
         &scratch.target,
@@ -474,7 +474,7 @@ fn placing_against_a_scratch_layout_writes_inside_it_and_nowhere_else() {
     .expect("placing orch against a scratch layout");
 
     placement::place(
-        PaneSpec::Worker(1),
+        PaneSpec::worker(1, claude_code()),
         &scratch.layout,
         &host_for_worker(&scratch.root.join("fleet")),
         &scratch.target,
@@ -548,7 +548,7 @@ fn switching_targets_re_seeds_the_worker_and_keeps_the_first_targets_trust() {
     let host = host_for_worker(&scratch.root.join("fleet"));
 
     let one = placement::place(
-        PaneSpec::Worker(1),
+        PaneSpec::worker(1, claude_code()),
         &scratch.layout,
         &host,
         first,
@@ -557,7 +557,7 @@ fn switching_targets_re_seeds_the_worker_and_keeps_the_first_targets_trust() {
     .expect("placing worker-1 against the first target");
 
     let two = placement::place(
-        PaneSpec::Worker(1),
+        PaneSpec::worker(1, claude_code()),
         &scratch.layout,
         &host,
         &second,
@@ -609,7 +609,7 @@ fn a_workers_command_carries_the_private_home_and_no_inherited_api_key() {
     std::env::set_var("ANTHROPIC_API_KEY", "sk-the-operators-own-key");
 
     let placed = placement::place(
-        PaneSpec::Worker(3),
+        PaneSpec::worker(3, claude_code()),
         &scratch.layout,
         &host_for_worker(&scratch.root.join("fleet")),
         &scratch.target,
@@ -662,7 +662,7 @@ fn a_machine_with_no_toolchain_gets_no_toolchain_settings_at_all() {
     assert!(host.toolchain.is_none(), "the host under test has no rustup");
 
     let placed = placement::place(
-        PaneSpec::Worker(2),
+        PaneSpec::worker(2, claude_code()),
         &scratch.layout,
         &host,
         &scratch.target,
@@ -708,7 +708,7 @@ fn a_target_that_is_not_a_repository_falls_back_and_says_what_review_loses() {
     // case the fallback exists for.
 
     let placed = placement::place(
-        PaneSpec::Worker(4),
+        PaneSpec::worker(4, claude_code()),
         &scratch.layout,
         &host_for_worker(&scratch.root.join("fleet")),
         &scratch.target,
@@ -767,7 +767,7 @@ fn a_worker_gets_its_own_worktree_and_branch_in_a_real_repository() {
     init_repo(&scratch.target);
 
     let placed = placement::place(
-        PaneSpec::Worker(1),
+        PaneSpec::worker(1, claude_code()),
         &scratch.layout,
         &host_for_worker(&scratch.root.join("fleet")),
         &scratch.target,
@@ -820,7 +820,7 @@ fn the_config_seed_is_keyed_to_the_target_the_pane_will_run_in() {
     let scratch = Scratch::new("seed-key");
 
     placement::place(
-        PaneSpec::Orch,
+        PaneSpec::orch(claude_code()),
         &scratch.layout,
         &host_with_fleet_bin(&scratch.root.join("fleet")),
         &scratch.target,
@@ -879,7 +879,7 @@ fn the_evaluators_write_roots_are_its_own_directory_alone_and_no_pane_is_narrowe
 
     // The comparison that makes "narrower" mean something: the same layout, the same
     // context, a pane that is doing the work.
-    bench.place(PaneSpec::Orch);
+    bench.place(PaneSpec::orch(claude_code()));
     let orch_roots = bench.guardrail_roots(PaneId::Orch);
     assert_eq!(
         orch_roots,
@@ -1105,7 +1105,7 @@ fn the_critic_is_given_a_socket_and_is_still_not_a_member_of_the_fleet() {
     let bench = common::Bench::new("critic-socket");
 
     let critic = bench.place(PaneSpec::Critic { run: RunSource::Live }).command;
-    let orch = bench.place(PaneSpec::Orch).command;
+    let orch = bench.place(PaneSpec::orch(claude_code())).command;
 
     // The comparison. Both get both, and they are the same socket.
     let socket = Some(bench.layout.socket().display().to_string());
@@ -1184,7 +1184,7 @@ fn the_critics_write_roots_are_its_own_directory_alone_and_orch_is_wider() {
         "the Critic writes in the run it was given and nowhere else",
     );
 
-    bench.place(PaneSpec::Orch);
+    bench.place(PaneSpec::orch(claude_code()));
     let orch_roots = bench.guardrail_roots(PaneId::Orch);
     assert_eq!(
         orch_roots,
@@ -1288,7 +1288,7 @@ fn placing_a_critic_on_an_archived_run_refuses_and_writes_nothing() {
 fn a_workers_placement_reports_what_it_removed_and_an_attended_seat_reports_nothing() {
     let bench = common::Bench::new("scrub-as-data");
 
-    let worker = bench.place(PaneSpec::Worker(1));
+    let worker = bench.place(PaneSpec::worker(1, claude_code()));
     assert_eq!(
         worker.scrubbed, worker.harness.credentials.scrubbed_env,
         "the names reported are checkpoint 5's, from the call that removed them",
@@ -1305,7 +1305,7 @@ fn a_workers_placement_reports_what_it_removed_and_an_attended_seat_reports_noth
         );
     }
 
-    for attended in [PaneSpec::Orch, PaneSpec::Critic { run: RunSource::Live }] {
+    for attended in [PaneSpec::orch(claude_code()), PaneSpec::Critic { run: RunSource::Live }] {
         let pane = attended.pane();
         assert!(
             bench.place(attended).scrubbed.is_empty(),

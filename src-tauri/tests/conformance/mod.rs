@@ -174,10 +174,10 @@ impl Pass {
             ..Host::bare()
         };
 
-        let orch = placement::place(PaneSpec::Orch, &layout, &host, &target, &context)
+        let orch = placement::place(PaneSpec::orch(harness), &layout, &host, &target, &context)
             .expect("placing the operator's own seat against a scratch layout");
         let worker =
-            placement::place(PaneSpec::Worker(WORKER_SLOT), &layout, &host, &target, &context)
+            placement::place(PaneSpec::worker(WORKER_SLOT, harness), &layout, &host, &target, &context)
                 .expect("placing a fenced worker against the same scratch layout");
 
         // The worker really is in its own checkout rather than the announced
@@ -207,12 +207,14 @@ impl Pass {
 
     /// **Every seat was placed as the harness this pass is for.**
     ///
-    /// Today this is trivially true, because exactly one harness is registered and
-    /// `PaneSpec::harness` answers it for every pane. That is deliberate: this
-    /// assertion is what fails, loudly and in every checkpoint at once, on the day
-    /// a second harness is registered without `place` being able to be told which
-    /// one to place. It is the seam's own tripwire, and it is here rather than in
-    /// one checkpoint because it is a precondition of all of them.
+    /// It was trivially true while exactly one harness was registered, and it was
+    /// written to be the thing that failed — loudly, in every checkpoint at once —
+    /// on the day a second one was registered without `place` being able to be
+    /// told which to place. That day is #33: [`PaneSpec::orch`] and
+    /// [`PaneSpec::worker`] carry the answer, so this is now the assertion that a
+    /// pass really did drive its own harness rather than the first one in the
+    /// registry. It is here rather than in one checkpoint because it is a
+    /// precondition of all of them.
     fn assert_placed_as_the_harness_under_test(&self) {
         for (seat, placed) in self.seats() {
             assert!(
@@ -279,7 +281,7 @@ impl Pass {
         let other = self.root.join(name);
         init_repo(&other);
         let placed =
-            placement::place(PaneSpec::Worker(WORKER_SLOT), &self.layout, &self.host, &other, &self.context)
+            placement::place(PaneSpec::worker(WORKER_SLOT, self.harness), &self.layout, &self.host, &other, &self.context)
                 .expect("placing the same worker after a target switch");
         (other, placed)
     }
@@ -298,8 +300,46 @@ impl Pass {
             api_key: Some(WORKER_KEY.to_string()),
             ..Host::bare()
         };
-        placement::place(PaneSpec::Orch, &self.layout, &host, &self.target, &self.context)
+        placement::place(PaneSpec::orch(self.harness), &self.layout, &host, &self.target, &self.context)
             .expect("placing the operator's own seat on a machine with no fleet binary")
+    }
+
+    /// Place both seats against a machine that **has** an operator installation,
+    /// and return where that installation is along with the two placements.
+    ///
+    /// **Checkpoint 6's second machine, and #33 is why it exists.** The pass's own
+    /// machine deliberately has nothing on it, which is what makes "the isolated
+    /// directory is created fresh rather than snapshotted" a thing a test can say
+    /// rather than assume. That was the whole story while every registered harness
+    /// answered `seeds_from_operator: false`; a harness that answers `true` needs
+    /// the other machine too, or the checkpoint can only refuse it.
+    ///
+    /// The operator's `HOME` here is a scratch directory under this pass's own
+    /// root. It is never the machine's real one — [`Host::bare`] carries `None`
+    /// and this suite sets no environment variable — so a seeder that walks it
+    /// cannot reach the operator's own installation even by accident, which is the
+    /// property `Seed::operator_home` was made a value for.
+    pub fn place_against_an_operator_installation(&self) -> (PathBuf, Placed, Placed) {
+        let home = self.root.join("an-operators-home");
+        std::fs::create_dir_all(&home).expect("a scratch operator home");
+        let host = Host {
+            fleet_bin: self.host.fleet_bin.clone(),
+            api_key: Some(WORKER_KEY.to_string()),
+            operator_home: Some(home.clone()),
+            ..Host::bare()
+        };
+        let orch =
+            placement::place(PaneSpec::orch(self.harness), &self.layout, &host, &self.target, &self.context)
+                .expect("placing the attended seat against a machine with an operator home");
+        let worker = placement::place(
+            PaneSpec::worker(WORKER_SLOT, self.harness),
+            &self.layout,
+            &host,
+            &self.target,
+            &self.context,
+        )
+        .expect("placing a fenced seat against the same machine");
+        (home, orch, worker)
     }
 
     /// The directory a placed pane's transcripts live in: checkpoint 13's `subdir`
@@ -435,7 +475,7 @@ impl Pass {
             ..Host::bare()
         };
         let placed = placement::place(
-            PaneSpec::Worker(WORKER_SLOT),
+            PaneSpec::worker(WORKER_SLOT, self.harness),
             &self.layout,
             &host,
             &self.target,
@@ -446,7 +486,20 @@ impl Pass {
         let pane = PaneId::Worker(WORKER_SLOT);
         let registry = PaneRegistry::new(emit, self.root.join("pane-pids.json"));
         registry.spawn(pane, placed.command, placed.harness, 24, 80).expect("a real pty for the stand-in");
-        wait_until(&seen, "ready");
+        wait_until(&seen, "ready", 0);
+
+        // **Everything already on the far end is the *previous* conversation, and a
+        // harness that has to be woken has one.** `BringUp::AfterWaking` presses a
+        // key into the pane before it is announced (#42, C26), and the stand-in —
+        // which submits on any newline — answers that press with an `echo: ` of its
+        // own. Waiting for the marker from position zero would therefore return on
+        // the *wake's* reply, before the write under test had produced anything,
+        // and every assertion below would be made against a transcript that did not
+        // contain it yet. The floor is taken here, so what is waited for is a reply
+        // this write caused. Claude Code's `AtOnce` panes start at zero and are
+        // unaffected — which is exactly the shape of thing registering a second
+        // harness exists to surface.
+        let from = seen.lock().map(|t| t.len()).unwrap_or(0);
 
         let started = Instant::now();
         let written = write(&registry, pane);
@@ -459,8 +512,8 @@ impl Pass {
         // arrived. Whatever arrives, arrives — a profile that never submits produces
         // no reply at all, and that has to fail as the checkpoint's own assertion
         // with the collected text in hand rather than as a timeout in here.
-        wait_until(&seen, "echo: ");
-        let text = seen.lock().map(|t| t.clone()).unwrap_or_default();
+        wait_until(&seen, "echo: ", from);
+        let text = seen.lock().map(|t| t[from.min(t.len())..].to_string()).unwrap_or_default();
         registry.kill_all();
         (text, elapsed)
     }
@@ -477,11 +530,16 @@ fn stand_in_pane_program() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fake-pane/fake-pane.sh")
 }
 
-/// Poll until `needle` shows up, or give up quietly and let the caller assert.
-fn wait_until(seen: &Arc<Mutex<String>>, needle: &str) {
+/// Poll until `needle` shows up **after byte `from`**, or give up quietly and let
+/// the caller assert.
+///
+/// The offset is what makes this usable twice against one pane: a harness whose
+/// bring-up types into the pane before it is announced has already produced
+/// output, and "has the far end replied" has to mean "since the moment I asked".
+fn wait_until(seen: &Arc<Mutex<String>>, needle: &str, from: usize) {
     let deadline = Instant::now() + PATIENCE;
     while Instant::now() < deadline {
-        if seen.lock().is_ok_and(|text| text.contains(needle)) {
+        if seen.lock().is_ok_and(|text| text.len() > from && text[from.min(text.len())..].contains(needle)) {
             return;
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -534,6 +592,63 @@ pub fn roots_in(settings_text: &str) -> Vec<String> {
         }
     }
     roots
+}
+
+/// **The one reader of the three checkpoint key lists** — [`Posture::sandbox_keys`],
+/// [`Credentials::provider_keys`] and [`Outbound::reachability_keys`] — asking
+/// whether a pane's configuration directory actually states `key = value`.
+/// Returns the file that states it.
+///
+/// **Reshaped in #33, and this is what it was shaped around** (C36, C41). The
+/// three lists are *dotted paths* — each row is exactly what would have been typed
+/// after `-c` — and the assertion that read them searched the config dir for the
+/// **whole dotted key** as a literal substring. That is only ever true of a
+/// document that renders a path as one flat string, which the sole registered
+/// harness's did, because its own three lists were empty and nothing had rendered
+/// a path at all. A seeder writes a nested path as *structure*: codex's
+/// `model_providers.fleetor.base_url` arrives as the table header
+/// `[model_providers.fleetor]` and the leaf `base_url = "…"`, and the whole dotted
+/// key is nowhere in the file.
+///
+/// **Matching the last segment alone would have been the loosening**, and it is
+/// what this deliberately is not: a harness that wrote `base_url` at top level,
+/// under the wrong table, or in a different file entirely would pass that. What is
+/// required instead is all three of —
+///
+///  1. **every segment of the path present**, so the tables the leaf hangs under
+///     were really created;
+///  2. **the leaf and the value on one line**, so the key holds *this* value
+///     rather than the value appearing somewhere else in the document; and
+///  3. **both in the same file**, which the old assertion did not require either —
+///     it called `files_containing` twice and never compared the answers.
+///
+/// So the reshape is strictly stronger than what it replaced, and it still fails
+/// against a stub: a harness that writes nothing states nothing.
+pub fn config_states(dir: &Path, key: &str, value: &str) -> Option<PathBuf> {
+    let segments: Vec<&str> = key.split('.').collect();
+    let leaf = *segments.last().unwrap_or(&key);
+
+    let mut stack = vec![dir.to_path_buf()];
+    let mut found: Vec<PathBuf> = Vec::new();
+    while let Some(next) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&next) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            if !segments.iter().all(|segment| text.contains(segment)) {
+                continue;
+            }
+            if text.lines().any(|line| line.contains(leaf) && line.contains(value)) {
+                found.push(path);
+            }
+        }
+    }
+    found.sort();
+    found.into_iter().next()
 }
 
 /// Every file under `dir` whose text contains `needle`, as paths relative to it.

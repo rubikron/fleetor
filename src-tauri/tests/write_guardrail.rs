@@ -42,7 +42,7 @@ use std::process::{Command, Stdio};
 use fleetor_core::pane::PaneId;
 use fleetor_shell::guardrail;
 use fleetor_shell::placement::PaneSpec;
-
+use fleetor_shell::placement::harness::claude_code;
 /// One whole installation in a scratch directory — the four arguments `place` takes,
 /// shared with `tests/placement.rs` rather than retyped here.
 mod common;
@@ -206,7 +206,7 @@ impl Pane {
 #[test]
 fn the_allowlist_holds_for_the_work_a_worker_actually_does() {
     let bench = common::Bench::new("holds");
-    let pane = bench.pane(PaneSpec::Worker(1));
+    let pane = bench.pane(PaneSpec::worker(1, claude_code()));
     let worktree = &pane.cwd;
 
     for allowed in [
@@ -242,7 +242,7 @@ fn the_allowlist_holds_for_the_work_a_worker_actually_does() {
 #[test]
 fn a_write_outside_the_roots_is_refused_with_a_reason_a_pane_can_act_on() {
     let bench = common::Bench::new("refusal");
-    let pane = bench.pane(PaneSpec::Worker(1));
+    let pane = bench.pane(PaneSpec::worker(1, claude_code()));
 
     let why = pane
         .bash("echo notes > /Users/somebody/notes.txt")
@@ -290,8 +290,8 @@ fn a_write_outside_the_roots_is_refused_with_a_reason_a_pane_can_act_on() {
 #[test]
 fn orch_gets_the_target_repo_and_a_worker_gets_only_its_own_worktree() {
     let bench = common::Bench::new("per-pane");
-    let orch = bench.pane(PaneSpec::Orch);
-    let worker = bench.pane(PaneSpec::Worker(2));
+    let orch = bench.pane(PaneSpec::orch(claude_code()));
+    let worker = bench.pane(PaneSpec::worker(2, claude_code()));
     assert_eq!(orch.cwd, bench.target, "orch works in the target itself");
     assert_ne!(worker.cwd, bench.target, "and a worker got a checkout of its own");
 
@@ -320,7 +320,7 @@ fn orch_gets_the_target_repo_and_a_worker_gets_only_its_own_worktree() {
 #[test]
 fn no_pane_may_write_its_own_policy_even_though_it_is_inside_a_root() {
     let bench = common::Bench::new("policy");
-    let pane = bench.pane(PaneSpec::Worker(1));
+    let pane = bench.pane(PaneSpec::worker(1, claude_code()));
     // The file placement actually wrote, not a path shaped like one.
     let settings = bench.config_dir(PaneId::Worker(1)).join("settings.json");
     assert!(settings.is_file(), "{} is the guardrail this pane is running", settings.display());
@@ -352,7 +352,7 @@ fn no_pane_may_write_its_own_policy_even_though_it_is_inside_a_root() {
 #[test]
 fn a_root_the_operator_added_is_a_root_the_pane_can_write_in() {
     let mut bench = common::Bench::new("extended");
-    let plain = bench.pane(PaneSpec::Worker(1));
+    let plain = bench.pane(PaneSpec::worker(1, claude_code()));
     let scratch = bench.root.join("operator-scratch");
     let write = format!("echo hi > {}/notes.txt", scratch.display());
     assert!(plain.bash(&write).is_some(), "not a root until the operator says so");
@@ -360,7 +360,7 @@ fn a_root_the_operator_added_is_a_root_the_pane_can_write_in() {
     // The operator edits `prompts/launch.conf` and the fleet is relaunched: the same
     // placement, with `[fence] allow` set.
     assert_eq!(bench.operator_allows("operator-scratch"), scratch);
-    let extended = bench.pane(PaneSpec::Worker(1));
+    let extended = bench.pane(PaneSpec::worker(1, claude_code()));
     assert_eq!(extended.bash(&write), None, "and a root once they do");
     assert!(
         extended.bash("echo hi > /Users/somebody/else").is_some(),
@@ -376,7 +376,7 @@ fn a_root_the_operator_added_is_a_root_the_pane_can_write_in() {
 #[test]
 fn the_two_unnamed_writes_a_pane_cannot_work_without_are_allowed() {
     let bench = common::Bench::new("unnamed");
-    let pane = bench.pane(PaneSpec::Worker(1));
+    let pane = bench.pane(PaneSpec::worker(1, claude_code()));
 
     // Measured: writes 54 files into the worktree's own target/ and one into the
     // operator's ~/.cargo/registry, and names neither.
@@ -417,7 +417,7 @@ fn the_evaluator_may_write_in_the_run_it_was_given_and_in_nothing_else() {
     // `orch` is the comparison, and it is the exact one: its three roots are these
     // three directories, so every assertion below is the *asymmetry* between the two
     // panes rather than a fence in general.
-    let orch = bench.pane(PaneSpec::Orch);
+    let orch = bench.pane(PaneSpec::orch(claude_code()));
     let evaluator = bench.pane(PaneSpec::Evaluator);
     assert_eq!(evaluator.cwd, bench.retro_dir(), "it works in the snapshot of the run");
 

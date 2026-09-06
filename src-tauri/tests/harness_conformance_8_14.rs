@@ -28,7 +28,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use conformance::{
-    argv_of, env_on, files_containing, for_each_registered, pane_of, WORKER_SLOT,
+    argv_of, config_states, env_on, files_containing, for_each_registered, pane_of, WORKER_SLOT,
 };
 use fleetor_core::pane::PaneId;
 use fleetor_core::{Command, ALLOWED_COMMANDS};
@@ -102,8 +102,7 @@ fn checkpoint_8_every_seat_is_given_the_fleets_own_socket_and_a_fleet_binary_to_
         for (key, value) in outbound.reachability_keys {
             let dir = pass.config_dir(&pass.worker);
             assert!(
-                !files_containing(&dir, key).is_empty()
-                    && !files_containing(&dir, value).is_empty(),
+                config_states(&dir, key, value).is_some(),
                 "{}: reachability key {key} = {value} is in the spec and not in {}",
                 pass.spec.name,
                 dir.display(),
@@ -559,11 +558,20 @@ fn checkpoint_12_the_sweep_can_confirm_the_program_every_seat_is_actually_launch
 fn checkpoint_13_transcripts_live_under_the_panes_config_dir_and_the_harvest_moves_them() {
     for_each_registered("cp13", |pass| {
         let transcript = &pass.spec.transcript;
-        for (what, value) in [
-            ("subdir", transcript.subdir),
-            ("file_ext", transcript.file_ext),
-            ("format", transcript.format),
-        ] {
+        // **`subdir` is no longer required to be non-empty, and that is a
+        // reshape rather than a loosening** (#33). What this trio is for is a
+        // Critic reading a run cold: it has to be able to *find* a transcript and
+        // to *name* what it is holding, and those are `file_ext` and `format`.
+        // `subdir` is neither — it is a path fragment under the pane's own
+        // configuration directory, and the empty string is a real answer meaning
+        // "the configuration directory itself". Claude Code keeps its sessions in
+        // `projects/`, so requiring a non-empty subdirectory read as a general
+        // rule while it was the only registered harness; it is that vendor's
+        // layout. The property the assertion was reaching for is asserted below
+        // and unchanged: wherever the directory is, it is *under* the
+        // configuration directory this pane was pointed at, hence inside the
+        // layout.
+        for (what, value) in [("file_ext", transcript.file_ext), ("format", transcript.format)] {
             assert!(
                 !value.trim().is_empty(),
                 "{}: checkpoint 13's {what} is empty, and a run whose transcripts cannot be \
@@ -727,8 +735,8 @@ fn checkpoint_14_the_key_is_the_panes_own_directory_and_the_first_run_gate_is_se
             }
 
             let text = pass.config_text(placed, identity.trust_file);
-            let recorded: serde_json::Value = serde_json::from_str(&text).unwrap_or_else(|e| {
-                panic!("{}/{seat}: {} is not readable: {e}", pass.spec.name, identity.trust_file)
+            let recorded = document(&text).unwrap_or_else(|why| {
+                panic!("{}/{seat}: {} is not readable: {why}", pass.spec.name, identity.trust_file)
             });
 
             let record = record_under(&recorded, &key).unwrap_or_else(|| {
@@ -755,19 +763,34 @@ fn checkpoint_14_the_key_is_the_panes_own_directory_and_the_first_run_gate_is_se
                 );
             }
 
-            if identity.exact_path_match && seat != "orch" {
-                // The worker is in its own checkout, so the target is a *parent* of
-                // its cwd and a harness resolving trust by repository root would
-                // have written that one instead.
-                let by_repository = pass.harness.project_key(&pass.target);
-                assert_ne!(by_repository, key, "the pass needs a worker outside the target");
-                assert!(
-                    record_under(&recorded, &by_repository).is_none(),
-                    "{}/{seat}: this harness matches a project key exactly, and the seed \
-                     wrote a record under the repository root {by_repository} — a row it \
-                     will never read",
-                    pass.spec.name,
-                );
+            if identity.exact_path_match {
+                // **Every directory this seed trusted is one placement was handed**
+                // (#33). This assertion used to be narrower and wrong: it said a
+                // record under the *repository root* proved the harness had
+                // resolved trust by root instead of by cwd, and had written a row
+                // it will never read. That is true of a harness that records one
+                // key. Codex records two — the canonicalized cwd and the git root
+                // that cwd resolves to — and for a linked worktree the second is
+                // the main repository, which it does read (C34, row 11): a pane
+                // whose seed carries only the worktree key parks on the first-run
+                // gate the moment its cwd is one directory below it.
+                //
+                // So what the old form actually caught — the positive, that this
+                // pane's own directory is recorded — is asserted above and
+                // unchanged, and this is the containment property it was reaching
+                // for and did not state: a trust record is a directory a pane may
+                // start in without a human, so a harness that trusted the
+                // operator's home, or `/`, would have passed the old assertion and
+                // fails this one.
+                for (recorded_key, _) in trusted_directories(&recorded, identity.trust_keys) {
+                    assert!(
+                        pass.is_contained(Path::new(&recorded_key)),
+                        "{}/{seat}: the seed recorded trust for {recorded_key}, which is \
+                         outside the layout and the target placement was handed — a first-run \
+                         gate answered for a directory nobody asked about",
+                        pass.spec.name,
+                    );
+                }
             }
         }
 
@@ -778,9 +801,8 @@ fn checkpoint_14_the_key_is_the_panes_own_directory_and_the_first_run_gate_is_se
         let (other, placed) = pass.place_worker_against("cp14-second-repo");
         let moved_to = pass.layout.worktree(&other, WORKER_SLOT);
         let moved_to = if moved_to.join(".git").exists() { moved_to } else { other };
-        let after: serde_json::Value =
-            serde_json::from_str(&pass.config_text(&placed, identity.trust_file))
-                .expect("the trust file is still readable after a target switch");
+        let after = document(&pass.config_text(&placed, identity.trust_file))
+            .expect("the trust file is still readable after a target switch");
         let key = pass.harness.project_key(&moved_to);
         let record = record_under(&after, &key).unwrap_or_else(|| {
             panic!(
@@ -797,6 +819,105 @@ fn checkpoint_14_the_key_is_the_panes_own_directory_and_the_first_run_gate_is_se
             );
         }
     });
+}
+
+/// **This harness's trust file, as a value that can be searched** — whatever
+/// document format it is in.
+///
+/// **Reshaped in #33, and this is the shape it was in.** It was
+/// `serde_json::from_str`, which is not a checkpoint answer: `trust_file` names a
+/// *file*, and which document format that file is in is the vendor's — Claude
+/// Code's is JSON and codex's is the same `config.toml` the rest of its seed goes
+/// into. A checkpoint that could only read one of them was asserting one vendor's
+/// format under a general name, and would have failed a correct harness on its
+/// first line.
+///
+/// Both are parsed into the same `serde_json::Value`, so everything below —
+/// [`record_under`], [`is_affirmative`], [`trusted_directories`] — stays one
+/// implementation rather than one per format. That is the point: what a checkpoint
+/// asserts is *what the record says*, and the encoding it says it in is not a
+/// property of the seam.
+fn document(text: &str) -> Result<serde_json::Value, String> {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
+        return Ok(value);
+    }
+    let doc =
+        text.parse::<toml_edit::DocumentMut>().map_err(|e| format!("neither JSON nor TOML: {e}"))?;
+    Ok(as_value(doc.as_item()))
+}
+
+/// One TOML item as the same `serde_json::Value` a JSON document would parse to.
+///
+/// Written out rather than reached for through a serde bridge because the mapping
+/// is three lines and the alternative is a feature flag on a production
+/// dependency, turned on for a test. Only the shapes a trust record can be in
+/// matter: tables become objects, arrays become arrays, and a scalar becomes
+/// whatever [`is_affirmative`] can judge.
+fn as_value(item: &toml_edit::Item) -> serde_json::Value {
+    use toml_edit::{Item, Value as Toml};
+    match item {
+        Item::None => serde_json::Value::Null,
+        Item::Value(Toml::String(s)) => serde_json::Value::String(s.value().clone()),
+        Item::Value(Toml::Integer(i)) => serde_json::Value::from(*i.value()),
+        Item::Value(Toml::Float(f)) => serde_json::Value::from(*f.value()),
+        Item::Value(Toml::Boolean(b)) => serde_json::Value::Bool(*b.value()),
+        Item::Value(Toml::Datetime(d)) => serde_json::Value::String(d.value().to_string()),
+        Item::Value(Toml::Array(array)) => serde_json::Value::Array(
+            array.iter().map(|v| as_value(&Item::Value(v.clone()))).collect(),
+        ),
+        Item::Value(Toml::InlineTable(table)) => serde_json::Value::Object(
+            table.iter().map(|(k, v)| (k.to_string(), as_value(&Item::Value(v.clone())))).collect(),
+        ),
+        Item::Table(table) => serde_json::Value::Object(
+            table.iter().map(|(k, v)| (k.to_string(), as_value(v))).collect(),
+        ),
+        Item::ArrayOfTables(tables) => serde_json::Value::Array(
+            tables.iter().map(|t| as_value(&Item::Table(t.clone()))).collect(),
+        ),
+    }
+}
+
+/// Every directory this document has recorded a trust answer for, with the record.
+///
+/// **Found by the trust keys rather than by walking a named path**, for
+/// [`record_under`]'s reason: which object a harness keeps its per-project records
+/// in is not one of the fourteen answers, so a checkpoint that navigated to one
+/// would be asserting a vendor's file layout. What *is* an answer is
+/// `trust_keys` — so any object that answers one of them is a trust record, and
+/// the name it hangs under is the directory it trusts.
+fn trusted_directories(
+    value: &serde_json::Value,
+    trust_keys: &[&str],
+) -> Vec<(String, serde_json::Value)> {
+    let mut found = Vec::new();
+    collect_trusted(value, trust_keys, &mut found);
+    found
+}
+
+fn collect_trusted(
+    value: &serde_json::Value,
+    trust_keys: &[&str],
+    found: &mut Vec<(String, serde_json::Value)>,
+) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (name, nested) in map {
+                let answers = nested
+                    .as_object()
+                    .is_some_and(|record| trust_keys.iter().any(|key| record.contains_key(*key)));
+                if answers && Path::new(name).is_absolute() {
+                    found.push((name.clone(), nested.clone()));
+                }
+                collect_trusted(nested, trust_keys, found);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_trusted(item, trust_keys, found);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The object this document records under `key`, wherever it keeps it.

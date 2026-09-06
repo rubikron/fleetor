@@ -758,6 +758,71 @@ impl<'a> Seed<'a> {
     }
 }
 
+/// Everything building one pane's argv is allowed to look at — checkpoints 1, 2
+/// and 3's inputs (WP-25 #33, C39).
+///
+/// **A struct rather than a fourth positional argument, for the reason [`Seed`] is
+/// one.** `command_args` began as `(brief, permission_mode)`, grew
+/// `operators_own_seat` in #46, and grows the model here — checkpoint 3 declares
+/// *two* channels for it, [`Posture::model_env`] and [`Posture::model_flag`], and
+/// only the first had a call site. Claude Code takes its model in the
+/// environment, so nothing was broken; codex names it in argv, so a harness that
+/// answers `model_flag` could not be registered until this argument existed. C39
+/// settled the shape the last time this happened: a ticket adds a field here, not
+/// a fourth argument at three call sites.
+///
+/// **The seat asymmetry is the caller's to state, and every field says so.** The
+/// operator's own pane runs their account, their model and their approval, so it
+/// arrives with the brief alone; the two judges carry a posture and no model
+/// (D-030, D-052); a worker carries both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Seat<'a> {
+    /// This pane's rendered brief, for a harness whose
+    /// [`BriefCarrier::argv_flag`] carries it. One whose carrier is a config key
+    /// ignores it here and reads [`Seed::brief`] instead.
+    pub brief: &'a str,
+    /// The model this pane runs, for a harness that names it in argv.
+    ///
+    /// `None` on every attended seat, and that is the product rather than an
+    /// omission. A harness whose channel is [`Posture::model_env`] ignores it:
+    /// the variable is set beside the command, not in it.
+    pub model: Option<&'a str>,
+    /// The permission posture, for the seats that get one. `None` for the
+    /// operator's own, which is watched by a human who approves its calls.
+    pub permission_mode: Option<&'a str>,
+    /// **Whether this is the operator's own pane** — the same question
+    /// [`Seed::operators_own_seat`] asks, and not derivable from
+    /// [`permission_mode`](Self::permission_mode) (#46, C49, C50): the evaluator
+    /// and the Critic both carry a posture *and* are seats FLEETOR drives, so
+    /// inferring one from the other would hand the orchestrator's answer to two
+    /// panes that must not have it.
+    pub operators_own_seat: bool,
+}
+
+impl<'a> Seat<'a> {
+    /// One unattended seat with nothing but its brief. The narrow answer is the
+    /// default, exactly as [`Seed::new`]'s is.
+    pub fn new(brief: &'a str) -> Self {
+        Self { brief, model: None, permission_mode: None, operators_own_seat: false }
+    }
+
+    /// The same seat, running the model the caller named.
+    pub fn with_model(self, model: &'a str) -> Self {
+        Self { model: Some(model), ..self }
+    }
+
+    /// The same seat, bounded by the posture the caller named.
+    pub fn with_permission_mode(self, permission_mode: &'a str) -> Self {
+        Self { permission_mode: Some(permission_mode), ..self }
+    }
+
+    /// The same seat, for the one pane the operator sits at. Said affirmatively
+    /// and in exactly one place, so the default stays the narrow answer.
+    pub fn for_the_operator(self) -> Self {
+        Self { operators_own_seat: true, ..self }
+    }
+}
+
 /// A registered harness: its fourteen answers, plus the three checkpoints that
 /// are functions rather than values (M23).
 ///
@@ -852,25 +917,14 @@ pub trait Harness: std::fmt::Debug + Send + Sync + 'static {
     ) -> Result<Vec<(NoticeLevel, String)>, String>;
 
     /// **Checkpoints 1, 2 and 3's behavioural half:** the argv one pane is
-    /// launched with, given its brief and — for the seats that get one — its
-    /// permission posture.
+    /// launched with, given everything about that seat a command may look at.
     ///
-    /// `permission_mode` is `None` for the operator's own seat, which is watched
-    /// by a human who approves its calls, and `Some` for the unattended ones. That
-    /// asymmetry is the product (D-030, D-052), so it is the caller's to state.
-    ///
-    /// **`operators_own_seat` is the same question [`Seed::operators_own_seat`]
-    /// asks and is not derivable from `permission_mode`** (#46, C49, C50): the
-    /// evaluator and the Critic both carry a posture *and* are seats FLEETOR
-    /// drives, so inferring one from the other would hand the orchestrator's
-    /// answer to two panes that must not have it. A harness with no per-seat argv
-    /// ignores it, exactly as Claude Code's implementation does.
-    fn command_args(
-        &self,
-        brief: &str,
-        permission_mode: Option<&str>,
-        operators_own_seat: bool,
-    ) -> Vec<String>;
+    /// Every asymmetry the seats carry is on [`Seat`] and stated by the caller,
+    /// because the caller is the only one that knows which seat this is (D-030,
+    /// D-052). A harness that has no use for a field ignores it, exactly as Claude
+    /// Code ignores [`Seat::model`] — its model travels in
+    /// [`Posture::model_env`] beside the command rather than inside it.
+    fn command_args(&self, seat: &Seat<'_>) -> Vec<String>;
 }
 
 // --- Claude Code --------------------------------------------------------------
@@ -1089,22 +1143,24 @@ impl Harness for ClaudeCode {
         Ok(notices)
     }
 
-    fn command_args(
-        &self,
-        brief: &str,
-        permission_mode: Option<&str>,
-        _operators_own_seat: bool,
-    ) -> Vec<String> {
+    /// Claude Code's model channel is [`Posture::model_env`], so
+    /// [`Seat::model`] is read here and produces nothing: `model_flag` is `None`,
+    /// and a flag this harness does not have is a flag it must not be given.
+    fn command_args(&self, seat: &Seat<'_>) -> Vec<String> {
         let spec = self.spec();
         let mut args: Vec<String> =
             spec.program.base_args.iter().map(|a| (*a).to_string()).collect();
-        if let (Some(flag), Some(mode)) = (spec.posture.permission_flag, permission_mode) {
+        if let (Some(flag), Some(model)) = (spec.posture.model_flag, seat.model) {
+            args.push(flag.to_string());
+            args.push(model.to_string());
+        }
+        if let (Some(flag), Some(mode)) = (spec.posture.permission_flag, seat.permission_mode) {
             args.push(flag.to_string());
             args.push(mode.to_string());
         }
         if let Some(flag) = spec.brief.argv_flag {
             args.push(flag.to_string());
-            args.push(brief.to_string());
+            args.push(seat.brief.to_string());
         }
         args
     }
@@ -1133,9 +1189,26 @@ fn mentions_our_hook(entry: &serde_json::Value, spec: &GuardrailInstall) -> bool
 
 static CLAUDE_CODE: ClaudeCode = ClaudeCode;
 
-/// Every registered harness. **Exactly one, and that is the point of this
-/// ticket:** the seam has to be green with one harness before a second exists, or
-/// it is not a seam, it is a description of the second one (C20).
+/// Every registered harness. **Still exactly one, and #33 established what it
+/// will take to make that two** (C20, C25, C53).
+///
+/// Phase 1 held this at one on purpose: a seam green with one harness before a
+/// second exists is a seam, and one written beside a second is a description of
+/// that second one. #33 flipped this line to two, ran the suite over both, and
+/// **found seven things the second pass was the only way to find** — six
+/// checkpoint assertions shaped around the one harness they were written against,
+/// all reshaped and landed here, and one that is not a reshape at all:
+/// checkpoint 13 refuses a harness whose transcript is a live database until the
+/// harvest has a mechanism for one, which is #39's. That refusal is correct, so
+/// the flip was reverted and the findings kept.
+///
+/// **The follow-up is two lines and is gated on #39**: this array, and the pin
+/// below. Everything else a second entry needs is already here.
+///
+/// **Nothing may be added here without a conformance pass behind it.** The suite
+/// runs one pass per entry, end to end through [`place`](super::place), and it
+/// refuses the answers a half-implemented harness would give — that is what makes
+/// that line the registration and not a declaration.
 static REGISTERED: [&dyn Harness; 1] = [&CLAUDE_CODE];
 
 /// Every harness a pane may run.
@@ -1143,9 +1216,10 @@ pub fn registered() -> &'static [&'static dyn Harness] {
     &REGISTERED
 }
 
-/// Claude Code, by name — the sole registered harness, and what
-/// [`PaneSpec::harness`](crate::placement::PaneSpec::harness) answers for every
-/// pane kind until the gate offers a choice.
+/// Claude Code, by name — the harness
+/// [`PaneSpec::harness`](crate::placement::PaneSpec::harness) answers for the two
+/// judges (C15), and the one every caller names until the gate offers a choice
+/// (#35).
 pub fn claude_code() -> &'static dyn Harness {
     &CLAUDE_CODE
 }
@@ -1176,15 +1250,46 @@ pub fn by_name(name: &str) -> Option<&'static dyn Harness> {
 mod tests {
     use super::*;
 
+    /// **The one-harness pin, kept** (C20, C25, C53).
+    ///
+    /// It held from #14 through #32 as phase 1's exit condition and phase 2's
+    /// standing invariant, and #33 established that it holds one ticket longer:
+    /// the registration flip is gated on #39, because checkpoint 13 refuses a
+    /// harness whose transcript is a live database until the harvest has a
+    /// mechanism for one. A second entry here without a conformance pass behind it
+    /// is the "half-implemented harness compiles quietly" failure this exists to
+    /// prevent, and right now codex would fail that pass on one checkpoint.
+    ///
+    /// **What #33 added is the second half**, which the count alone never said:
+    /// every entry is a distinct, nameable harness that [`by_name`] resolves back
+    /// to the identical spec. That half is what the follow-up keeps once the count
+    /// changes, so it is written now rather than at the flip.
     #[test]
     fn exactly_one_harness_is_registered_and_it_is_claude_code() {
-        // The seam is green with one harness before a second exists (C20). A
-        // second entry here without a conformance pass behind it is the
-        // "half-implemented harness compiles quietly" failure.
-        assert_eq!(registered().len(), 1);
-        assert_eq!(registered()[0].spec().name, "claude-code");
+        let all = registered();
+        assert_eq!(all.len(), 1, "the flip to two is #39's follow-up, not something that drifts");
+        assert_eq!(all[0].spec().name, "claude-code");
+
+        let mut names: Vec<&str> = all.iter().map(|h| h.spec().name).collect();
+        names.sort_unstable();
+        let unique = {
+            let mut u = names.clone();
+            u.dedup();
+            u
+        };
+        assert_eq!(names, unique, "two entries share a name, so `by_name` answers one of them");
+
+        for harness in all {
+            let name = harness.spec().name;
+            let found = by_name(name).unwrap_or_else(|| panic!("{name} is registered and unfindable"));
+            assert!(
+                std::ptr::eq(found.spec(), harness.spec()),
+                "{name} resolves by name to a different spec than the registry holds",
+            );
+            assert!(!name.trim().is_empty(), "a harness with no name cannot be written down");
+        }
+
         assert_eq!(claude_code().spec(), &CLAUDE_CODE_SPEC);
-        assert!(by_name("claude-code").is_some());
         assert!(by_name("nothing-registered-under-this-name").is_none());
     }
 
@@ -1194,10 +1299,21 @@ mod tests {
         // brief alone, every unattended seat gets the permission flag first.
         let cc = claude_code();
         assert_eq!(cc.spec().program.bin, "claude");
-        assert_eq!(cc.command_args("BRIEF", None, true), vec!["--system-prompt", "BRIEF"]);
         assert_eq!(
-            cc.command_args("BRIEF", Some("auto"), false),
+            cc.command_args(&Seat::new("BRIEF").for_the_operator()),
+            vec!["--system-prompt", "BRIEF"]
+        );
+        assert_eq!(
+            cc.command_args(&Seat::new("BRIEF").with_permission_mode("auto")),
             vec!["--permission-mode", "auto", "--system-prompt", "BRIEF"]
+        );
+        // Checkpoint 3's second channel, and the reason it now exists: this
+        // harness names its model in the environment, so a seat that carries one
+        // adds nothing to argv. A harness whose `model_flag` is set gets the flag
+        // from the same call — see codex's own test.
+        assert_eq!(
+            cc.command_args(&Seat::new("BRIEF").with_model("a-model").with_permission_mode("auto")),
+            vec!["--permission-mode", "auto", "--system-prompt", "BRIEF"],
         );
     }
 

@@ -544,6 +544,60 @@ mod tests {
         assert!(rt.block_on(answer).expect("the ack must arrive").is_empty());
     }
 
+    /// **The roster is harness-free, and a mixed fleet is exactly when that
+    /// stops being free** (M25, WP-25 #33).
+    ///
+    /// Panes are named; what they run is not. A worker that can see which peer is
+    /// "weaker" starts routing work on that belief, and nothing in this design
+    /// wants that behaviour introduced as a side effect of a compatibility
+    /// feature — the operator's rail shows the harness, the panes are never told.
+    ///
+    /// Asserted **on the serialized answer** rather than on the type, because that
+    /// is what a pane actually receives: a field added to `PaneEntry` would
+    /// satisfy any assertion written against the fields this test knows about, and
+    /// fails this one. Every registered harness's name is searched for, so the day
+    /// a third is registered it is covered without anyone remembering to add it.
+    #[test]
+    fn the_roster_never_tells_a_pane_which_harness_a_peer_runs() {
+        let rt = runtime();
+        let (tx, rx) = mpsc::unbounded_channel();
+        let registry = registry();
+        spawn_delivery(&rt, registry, rx, store(), gauges());
+
+        let (ack, answer) = oneshot::channel();
+        tx.send(AppCommand::Roster { ack }).unwrap();
+        let roster = rt.block_on(answer).expect("the ack must arrive");
+
+        // A roster of live panes would be better, and it is not what makes this
+        // assertion worth anything: what is being asserted is the *shape* of a
+        // row, so a row for every pane kind is built here rather than spawned.
+        let rows: Vec<fleetor_core::pane::PaneEntry> = if roster.is_empty() {
+            fleetor_core::pane::PaneId::roster(&fleetor_core::pane::WORKER_SLOTS)
+                .into_iter()
+                .map(|pane| {
+                    fleetor_core::pane::PaneEntry::new(pane, fleetor_core::pane::PaneState::Live)
+                })
+                .collect()
+        } else {
+            roster
+        };
+        let wire = serde_json::to_string(&rows).expect("the roster serializes");
+
+        for harness in crate::placement::harness::registered() {
+            let spec = harness.spec();
+            assert!(
+                !wire.contains(spec.name),
+                "the roster names the harness {}: {wire}",
+                spec.name,
+            );
+            assert!(
+                !wire.contains(spec.program.bin),
+                "the roster names the program {} a pane runs: {wire}",
+                spec.program.bin,
+            );
+        }
+    }
+
     // --- the context gauge on the roster (WP-04) --------------------------------
 
     fn temp_dir(tag: &str) -> std::path::PathBuf {

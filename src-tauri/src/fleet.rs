@@ -42,7 +42,7 @@ use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, oneshot, Notify};
 
 use crate::context_gauge::GaugeSources;
-use crate::placement::{self, Host, Layout, PaneSpec, RunSource};
+use crate::placement::{self, harness, Host, Layout, PaneSpec, RunSource};
 use crate::prompts::PaneContext;
 use crate::pty::PaneRegistry;
 use crate::{deliver, dev, evaluator, guardrail, prompts, runs, testbed};
@@ -406,9 +406,16 @@ pub(crate) fn spawn_pane(
     // Every kind but one is placed. Matched exhaustively rather than with a
     // wildcard, so a new pane kind has to say what places it instead of silently
     // getting somebody else's arm.
+    //
+    // **Which harness each seat runs is named here, and both name Claude Code**
+    // (WP-25 #33). Two are registered as of this ticket and the seam carries the
+    // choice per pane, but nothing yet *asks* the operator for one — that is the
+    // start gate's picker (#35, C23). Said out loud at the one call site rather
+    // than defaulted inside `PaneSpec`, so the picker is one line to wire and the
+    // fleet cannot acquire a second harness by accident on the way there.
     let spec = match pane {
-        PaneId::Orch => PaneSpec::Orch,
-        PaneId::Worker(slot) => PaneSpec::Worker(slot),
+        PaneId::Orch => PaneSpec::orch(harness::claude_code()),
+        PaneId::Worker(slot) => PaneSpec::worker(slot, harness::claude_code()),
         PaneId::Evaluator => PaneSpec::Evaluator,
         // **The live run, because that is the only run this name can mean here**
         // (D-076). `pty_spawn` carries a pane and nothing else, so a Critic

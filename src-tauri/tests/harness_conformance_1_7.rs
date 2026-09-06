@@ -25,8 +25,9 @@ mod conformance;
 use std::path::Path;
 
 use conformance::{
-    arg_after, argv_of, env_on, files_containing, for_each_registered, is_non_empty_dir, roots_in,
-    ORCH_BRIEF_MARK, WORKER_BASE_URL, WORKER_BRIEF_MARK, WORKER_KEY, WORKER_MODEL, WORKER_POSTURE,
+    arg_after, argv_of, config_states, env_on, files_containing, for_each_registered,
+    is_non_empty_dir, roots_in, ORCH_BRIEF_MARK, WORKER_BASE_URL, WORKER_BRIEF_MARK, WORKER_KEY,
+    WORKER_MODEL, WORKER_POSTURE,
 };
 use fleetor_shell::placement::harness::registered;
 
@@ -260,12 +261,13 @@ fn checkpoint_3_the_model_and_the_posture_reach_the_unattended_seat_alone() {
 
         // Tier 1.7 reads these: whatever a harness puts here narrows what a pane
         // may do, so they have to have actually been written where the pane will
-        // read them.
+        // read them. `config_states` is what asks — see its doc for why looking
+        // for the whole dotted key was an assertion shaped around a harness whose
+        // list was empty.
         for (key, value) in pass.spec.posture.sandbox_keys {
             let dir = pass.config_dir(&pass.worker);
             assert!(
-                !files_containing(&dir, key).is_empty()
-                    && !files_containing(&dir, value).is_empty(),
+                config_states(&dir, key, value).is_some(),
                 "{}: sandbox key {key} = {value} is in the spec and not in {}",
                 pass.spec.name,
                 dir.display(),
@@ -406,9 +408,8 @@ fn checkpoint_5_the_worker_holds_the_fleets_credential_and_the_operators_is_remo
         for (key, value) in creds.provider_keys {
             let dir = pass.config_dir(&pass.worker);
             assert!(
-                !files_containing(&dir, key).is_empty()
-                    && !files_containing(&dir, value).is_empty(),
-                "{}: provider key {key} is in the spec and not in {}",
+                config_states(&dir, key, value).is_some(),
+                "{}: provider key {key} = {value} is in the spec and not in {}",
                 pass.spec.name,
                 dir.display(),
             );
@@ -536,14 +537,6 @@ fn checkpoint_6_configuration_and_credentials_are_isolated_by_the_named_mechanis
             "the pass places against a machine with nothing, which is what the next \
              assertion is worth anything for",
         );
-        if isolation.seeds_from_operator {
-            panic!(
-                "{}: this harness seeds its isolated directory from the operator's own, \
-                 and the driver places against a machine that has none — give \
-                 `conformance::Pass` an operator directory to snapshot before registering it",
-                pass.spec.name,
-            );
-        }
         for (seat, placed) in pass.seats() {
             let dir = pass.config_dir(placed);
             assert!(
@@ -551,6 +544,58 @@ fn checkpoint_6_configuration_and_credentials_are_isolated_by_the_named_mechanis
                 "{}/{seat}: the isolated directory was created fresh and left empty, so the \
                  pane has nothing to boot on",
                 pass.spec.name,
+            );
+        }
+
+        // **The machine that *has* an operator installation** (#33). This half
+        // used to be a `panic!`: a harness answering `seeds_from_operator: true`
+        // was refused registration outright, because the driver placed against a
+        // machine with nothing and there was no second machine to place against.
+        // That was a checkpoint shaped around the answer the sole registered
+        // harness gave — Claude Code creates its directory fresh and reaches the
+        // operator's login through the keychain instead — and it is the thing this
+        // ticket exists to find. The refusal is replaced by the two properties a
+        // snapshot has to hold, both asserted through `place`.
+        if isolation.seeds_from_operator {
+            let (home, orch, worker) = pass.place_against_an_operator_installation();
+            let before = tree_of(&home);
+
+            for (seat, placed) in [("orch", &orch), ("worker", &worker)] {
+                // 1. Configuration is still relocated *into the layout*. A
+                //    snapshot is a copy taken from the operator's tree, never a
+                //    pane pointed at it — a harness that pointed `config_env` at
+                //    the operator's own directory would seed a pane by editing
+                //    their installation, and it would look identical from the
+                //    outside until the first pane wrote to it.
+                let dir = env_on(placed, isolation.config_env).unwrap_or_else(|| {
+                    panic!("{}/{seat}: {} is not on the command", pass.spec.name, isolation.config_env)
+                });
+                assert!(
+                    pass.is_contained(Path::new(&dir)),
+                    "{}/{seat}: this harness snapshots the operator's installation, and it \
+                     pointed the pane at {dir}, which is outside the layout — a pane editing \
+                     the operator's own configuration",
+                    pass.spec.name,
+                );
+                assert!(
+                    is_non_empty_dir(Path::new(&dir)),
+                    "{}/{seat}: the snapshot produced an empty directory",
+                    pass.spec.name,
+                );
+            }
+
+            // 2. **The operator's own tree is untouched.** The snapshot is a read.
+            //    This is the property that makes seeding from the operator safe at
+            //    all, and it is the one a test can state without knowing which
+            //    subdirectory of a `HOME` this harness reads.
+            assert_eq!(
+                tree_of(&home),
+                before,
+                "{}: seeding wrote into the operator's own tree at {} — the snapshot is a \
+                 read, and a harness that writes back changes the operator's installation \
+                 every time a fleet starts",
+                pass.spec.name,
+                home.display(),
             );
         }
     });
@@ -662,4 +707,36 @@ fn checkpoint_7_every_seat_gets_the_write_guardrail_with_roots_no_wider_than_its
             }
         }
     });
+}
+
+/// Every path under `dir` with its bytes, sorted — a whole tree as one comparable
+/// value.
+///
+/// Checkpoint 6's "the snapshot is a read" is asserted by taking this before and
+/// after a placement, so a harness that writes a single byte back into the
+/// operator's installation fails with the file named. What it cannot state is
+/// *which* subdirectory of that `HOME` a harness reads — that is not one of the
+/// fourteen answers, so a checkpoint that planted a marker there would be
+/// encoding one vendor's directory name under a general name. The positive half —
+/// that the operator's preferences really do arrive in the pane, and that their
+/// credential really does not — is asserted where the layout is known, in
+/// `placement::codex`'s own tests. The same discipline checkpoints 11 and 13 apply
+/// to the gaps they cannot reach.
+fn tree_of(dir: &Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    let mut found = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(next) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&next) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let bytes = std::fs::read(&path).unwrap_or_default();
+            found.push((path.strip_prefix(dir).unwrap_or(&path).to_path_buf(), bytes));
+        }
+    }
+    found.sort();
+    found
 }

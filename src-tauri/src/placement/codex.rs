@@ -193,7 +193,7 @@ use toml_edit::{DocumentMut, Item, Table, Value};
 use super::harness::{
     BriefCarrier, CommandChannel, ConfigAndCredentialIsolation, ConfigDir, Credentials, GaugeSource,
     GuardrailInstall, Harness, HarnessSpec, OrphanNames, Outbound, Posture,
-    ProjectIdentityAndTrust, Program, Seed, Transcript, TypingProfile,
+    ProjectIdentityAndTrust, Program, Seat, Seed, Transcript, TypingProfile,
 };
 
 // --- the vendor's own shape ----------------------------------------------------
@@ -805,18 +805,32 @@ impl Harness for CodexCli {
     /// ignored here rather than at the call site, because which of the two
     /// carriers a harness uses is [`BriefCarrier`]'s answer and not the caller's.
     ///
+    /// **The model is an argv flag for this harness, and it is the reason
+    /// [`Seat`] exists** (#33). Checkpoint 3 declares two model channels and
+    /// Claude Code answers the environment one, so `model_flag` had no call site
+    /// through the whole of phase 1 — a harness that names its model in argv could
+    /// not have been registered. `--model` is written from
+    /// [`Seat::model`], which is `Some` on the fenced seat alone: the operator's
+    /// own pane and the two judges run the operator's own account and model.
+    ///
+    /// **There is no permission flag at all** and that is checkpoint 3's other
+    /// half: codex's containment is the seatbelt, which is *configured* — the trio
+    /// on [`Posture::sandbox_keys`] and [`Outbound::reachability_keys`], written
+    /// into the seeded document. [`Seat::permission_mode`] is therefore read and
+    /// produces nothing, exactly as [`Seat::brief`] is.
+    ///
     /// **The one argument this harness does add is the hook-trust bypass, and only
     /// on a seat FLEETOR drives** — see [`BYPASS_HOOK_TRUST`] for what makes that
     /// narrow rather than wide, and why it is argv rather than a config key.
-    fn command_args(
-        &self,
-        _brief: &str,
-        _permission_mode: Option<&str>,
-        operators_own_seat: bool,
-    ) -> Vec<String> {
+    fn command_args(&self, seat: &Seat<'_>) -> Vec<String> {
+        let spec = self.spec();
         let mut args: Vec<String> =
-            self.spec().program.base_args.iter().map(|a| (*a).to_string()).collect();
-        if !operators_own_seat {
+            spec.program.base_args.iter().map(|a| (*a).to_string()).collect();
+        if let (Some(flag), Some(model)) = (spec.posture.model_flag, seat.model) {
+            args.push(flag.to_string());
+            args.push(model.to_string());
+        }
+        if !seat.operators_own_seat {
             args.push(BYPASS_HOOK_TRUST.to_string());
         }
         args
@@ -1323,12 +1337,20 @@ fn hook_trust_key(config_dir: &Path, install: &GuardrailInstall, group: usize) -
     )
 }
 
-/// Codex, by name. Not in the registry — #33 puts it there.
+/// Codex, by name. **Not in the registry**: #33 flipped it in, ran the
+/// conformance suite over both harnesses, and found that checkpoint 13 refuses a
+/// harness whose transcript is a live database until the harvest has a mechanism
+/// for one — so the flip is a follow-up gated on #39 and the findings landed
+/// without it (C53).
+///
+/// `pub(super)` on the static, so that the follow-up adds this entry to
+/// [`registered`](super::harness::registered) rather than a second unit struct
+/// that happens to be equal to it.
 pub fn codex() -> &'static dyn Harness {
     &CODEX
 }
 
-static CODEX: CodexCli = CodexCli;
+pub(super) static CODEX: CodexCli = CodexCli;
 
 // --- the snapshot --------------------------------------------------------------
 
@@ -2230,17 +2252,32 @@ args = ["--root", "~/notes"]
         machine.operator_file("packages/standalone/current/bin/codex", "a 275 MB binary");
     }
 
+    /// **The pin that says "not yet", and #33 established exactly what "yet"
+    /// costs** (C25, C53).
+    ///
+    /// Through #26–#32 this held phase 1's exit condition as a standing invariant
+    /// so that registration would be a real test of the seam rather than a
+    /// formality. It was: #33 flipped the registry to two, ran the suite over both
+    /// harnesses, and the flip surfaced six checkpoint assertions shaped around
+    /// the one harness they were written against — every one of them reshaped and
+    /// landed — plus one that is not a reshape. Checkpoint 13 refuses a harness
+    /// whose transcript is a live database, because the harvest takes transcripts
+    /// with a plain rename and a WAL database is `db` + `-wal` + `-shm`: renaming
+    /// the `.sqlite` alone leaves committed transactions behind. That refusal is
+    /// correct and the mechanism is #39's, so the flip was reverted and this pin
+    /// stayed.
+    ///
+    /// **What it is waiting for is named rather than left open**: #39, then two
+    /// lines — `harness::REGISTERED` and this test.
     #[test]
     fn codex_is_implemented_and_still_not_registered() {
-        // Phase 1's exit condition holds through every phase-2 ticket: the
-        // conformance suite is green with exactly one registered harness, and #33
-        // is the single moment that changes (C25). `grep -rn "codex" src/` now
-        // finds this module; the registry still does not.
         assert_eq!(registered().len(), 1);
         assert_eq!(registered()[0].spec().name, "claude-code");
         assert!(
             !registered().iter().any(|h| h.spec().name == CODEX_SPEC.name),
-            "codex must not join the registry before #33",
+            "codex joins the registry once #39 gives the harvest a mechanism for a live \
+             database — checkpoint 13 is what refuses it until then, and that assertion is \
+             the gate rather than this one",
         );
         assert_eq!(codex().spec(), &CODEX_SPEC);
     }
@@ -3451,11 +3488,12 @@ args = ["--root", "~/notes"]
         // the two harnesses differ in transport and in nothing else.
         let cc = registered()[0];
         let flag = cc.spec().brief.argv_flag.expect("Claude Code briefs through argv");
-        let argv = cc.command_args(&rendered, Some("acceptEdits"), false);
+        let seat = Seat::new(&rendered).with_permission_mode("acceptEdits");
+        let argv = cc.command_args(&seat);
         let at = argv.iter().position(|a| a == flag).expect("the flag is there");
         assert_eq!(argv[at + 1], rendered);
         assert!(
-            codex().command_args(&rendered, Some("acceptEdits"), false).iter().all(|a| a != &rendered),
+            codex().command_args(&seat).iter().all(|a| a != &rendered),
             "and codex's argv carries no brief at all — its carrier is the config key",
         );
     }
@@ -3881,7 +3919,7 @@ args = ["--root", "~/notes"]
 
         // The argv half. Without it the table would be owned and still silent.
         assert!(
-            codex().command_args("", None, false).iter().any(|a| a == BYPASS_HOOK_TRUST),
+            codex().command_args(&Seat::new("")).iter().any(|a| a == BYPASS_HOOK_TRUST),
             "a fenced seat's codex is told to run its hooks without a trust record",
         );
     }
@@ -3893,13 +3931,16 @@ args = ["--root", "~/notes"]
     #[test]
     fn the_operators_own_seat_is_never_handed_the_bypass() {
         assert!(
-            codex().command_args("", None, true).iter().all(|a| a != BYPASS_HOOK_TRUST),
+            codex().command_args(&Seat::new("").for_the_operator()).iter().all(|a| a != BYPASS_HOOK_TRUST),
             "the operator's own pane answers hook trust itself",
         );
         // And the asymmetry is the seat's, not the posture's: the evaluator and the
         // Critic carry a permission mode *and* are seats FLEETOR drives.
         assert!(
-            codex().command_args("", Some("acceptEdits"), false).iter().any(|a| a == BYPASS_HOOK_TRUST),
+            codex()
+                .command_args(&Seat::new("").with_permission_mode("acceptEdits"))
+                .iter()
+                .any(|a| a == BYPASS_HOOK_TRUST),
         );
     }
 

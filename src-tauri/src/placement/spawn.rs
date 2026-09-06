@@ -79,7 +79,7 @@ use fleetor_core::brief::{render_orch, render_worker};
 use fleetor_core::pane::{PaneId, WORKER_SLOTS};
 use portable_pty::CommandBuilder;
 
-use super::harness::{Harness, HarnessSpec, Seed};
+use super::harness::{Harness, HarnessSpec, Seat, Seed};
 use crate::prompts::PaneContext;
 
 /// Overrides the program every pane runs. Set by `src-tauri/tests/panes.rs` to
@@ -187,13 +187,13 @@ pub(super) fn orch_command_with(
     let mut cmd = base_command_with(
         harness,
         program,
+        // **The operator's own seat, said here in the same breath as the absent
+        // posture and the absent model** (#28, C43, C49). It is what keeps this
+        // pane's hooks and its own trust decisions its own, and — checkpoint 3's
+        // asymmetry — it runs their account and their model, so it names neither.
         &harness.command_args(
-            &render_orch(&ctx.orch_template, &roster(), &cwd.display().to_string()),
-            None,
-            // **The operator's own seat, said here in the same breath as the
-            // posture** (#28, C43, C49). It is what keeps this pane's hooks and its
-            // own trust decisions its own.
-            true,
+            &Seat::new(&render_orch(&ctx.orch_template, &roster(), &cwd.display().to_string()))
+                .for_the_operator(),
         ),
     );
     cmd.cwd(cwd);
@@ -249,8 +249,13 @@ pub(super) fn evaluator_command_with(
     program: Option<&str>,
     path: &str,
 ) -> CommandBuilder {
-    let mut cmd =
-        base_command_with(harness, program, &harness.command_args(brief, Some(permission_mode), false));
+    // A judge: a posture because nobody is watching it, and no model because it
+    // runs the operator's own account (D-030, D-052).
+    let mut cmd = base_command_with(
+        harness,
+        program,
+        &harness.command_args(&Seat::new(brief).with_permission_mode(permission_mode)),
+    );
     cmd.cwd(cwd);
     apply_pane_env(&mut cmd, PaneId::Evaluator, socket, path.to_string());
     apply_attended_config(&mut cmd, harness.spec(), config_dir);
@@ -305,8 +310,12 @@ pub(super) fn critic_command_with(
     program: Option<&str>,
     path: &str,
 ) -> CommandBuilder {
-    let mut cmd =
-        base_command_with(harness, program, &harness.command_args(brief, Some(permission_mode), false));
+    // The evaluator's shape exactly: a posture, and the operator's own model.
+    let mut cmd = base_command_with(
+        harness,
+        program,
+        &harness.command_args(&Seat::new(brief).with_permission_mode(permission_mode)),
+    );
     cmd.cwd(cwd);
     apply_pane_env(&mut cmd, PaneId::Critic, socket, path.to_string());
     apply_attended_config(&mut cmd, harness.spec(), config_dir);
@@ -365,10 +374,21 @@ pub(super) fn worker_command_with(
     let mut cmd = base_command_with(
         harness,
         program,
+        // Checkpoint 3's **both** channels, on the one seat that gets either. The
+        // model is named here because a harness may take it in argv
+        // (`Posture::model_flag`, codex's answer) and the `model_env` half below
+        // is for one that takes it in the environment (Claude Code's). One seat,
+        // one value, two possible carriers — never both at once, which is what
+        // the conformance suite's checkpoint 3 refuses.
         &harness.command_args(
-            &render_worker(&ctx.worker_template, pane, &roster(), &cwd.display().to_string()),
-            Some(&ctx.launch.worker_permission_mode),
-            false,
+            &Seat::new(&render_worker(
+                &ctx.worker_template,
+                pane,
+                &roster(),
+                &cwd.display().to_string(),
+            ))
+            .with_model(&ctx.launch.worker_model)
+            .with_permission_mode(&ctx.launch.worker_permission_mode),
         ),
     );
     cmd.cwd(cwd);

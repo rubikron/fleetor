@@ -1527,7 +1527,7 @@ fn a_fleet_seeded_codex_worker_is_refused_a_write_outside_its_worktree() {
     use fleetor_shell::guardrail::GuardrailPlacement;
     use fleetor_shell::placement::codex::{codex, OPERATOR_DIR};
     use fleetor_shell::placement::Seed;
-
+    use fleetor_shell::placement::harness::Seat;
     const HOOK_PROBE: &str = "examples/codex-spike/hook_probe.py";
     const BYPASS: &str = "--dangerously-bypass-hook-trust";
 
@@ -1621,7 +1621,9 @@ fn a_fleet_seeded_codex_worker_is_refused_a_write_outside_its_worktree() {
 
         // The argv is production's, and the flag being in it is the half that makes
         // the hook run at all.
-        let argv = codex().command_args("do the work", Some("never"), false);
+        let argv = codex().command_args(
+            &Seat::new("do the work").with_permission_mode("never"),
+        );
         assert!(
             argv.iter().any(|a| a == BYPASS),
             "a fenced codex seat's argv carries the hook-trust bypass: {argv:?}",

@@ -534,8 +534,11 @@ mod tests {
                     ) -> Result<Vec<(fleetor_core::event::NoticeLevel, String)>, String> {
                         claude_code().install_guardrail(at)
                     }
-                    fn command_args(&self, brief: &str, mode: Option<&str>, own: bool) -> Vec<String> {
-                        claude_code().command_args(brief, mode, own)
+                    fn command_args(
+                        &self,
+                        seat: &crate::placement::harness::Seat<'_>,
+                    ) -> Vec<String> {
+                        claude_code().command_args(seat)
                     }
                 }
             };
