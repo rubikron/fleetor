@@ -44,6 +44,7 @@ Each is stamped with the Claude Code version it measured; re-measure on a CC upd
 | [`codex-spike-notes.md`](./notes/codex-spike-notes.md) | What codex honours as a brief, what its sandbox refuses, and the one key that reaches the hub (C3, C5, C7, C22) — **re-runnable**: `examples/codex-spike/probe.py` | `codex-cli 0.153.4` |
 | [`codex-clear-notes.md`](./notes/codex-clear-notes.md) | Whether the brief carried as `model_instructions_file` survives a `/clear` — yes, on both carriers; and what C22's "startup wait" actually was (C37) — **re-runnable**: `examples/codex-spike/probe_clear.py` | `codex-cli 0.153.4` |
 | [`codex-trust-key-notes.md`](./notes/codex-trust-key-notes.md) | How codex resolves the project trust key — canonical cwd or git root, matched exactly; what a linked worktree resolves to; what an unseeded pane parks on (C34) — **re-runnable**: `examples/codex-spike/trust_probe.py` | `codex-cli 0.153.4` |
+| [`codex-usage-notes.md`](./notes/codex-usage-notes.md) | Whether per-turn token usage is in codex's thread store — **no**; where the vendor does write it, and the window it reports being 5% under its own catalog (C61) — **re-runnable, and the one probe that spends real money**: `examples/codex-spike/usage_probe.py` | `codex-cli 0.153.4` |
 
 ## Roadmap (`docs/roadmap/`)
 
