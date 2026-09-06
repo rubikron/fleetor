@@ -151,3 +151,141 @@ The keychain half needs no probe:
 security list-keychains
 env HOME=/tmp/somewhere-else security list-keychains
 ```
+
+---
+
+# WP-25 (#49), part 2 — the credential cannot be handed in either, for two independent reasons
+
+**Verdict: the env-var route is not viable, and it fails worse than the route it
+was meant to replace.** §4's three routes stand unchanged; this is not a fourth.
+
+§4 listed planting a credential *file* in the pane's config dir as the narrowest
+way out, and flagged that it puts a token on disk inside a fenced worktree —
+exactly what D-062 forbids and what #29's byte-scan exists to catch. The operator
+asked the better question: **why copy it at all — can it not be read once, before
+the sandbox exists, and handed in?** Nothing written, nothing surviving the
+process, no token in a worktree or a backup. And it reuses plumbing that already
+exists: `Credentials::token_env` is `ANTHROPIC_AUTH_TOKEN`
+(`harness.rs:1162`), which is how a fenced worker receives the fleet's metered key
+today (`spawn::worker_command_with`).
+
+Measured, not inferred, against the same interactive `claude` **2.1.263** at
+`~/.local/bin/claude` on macOS 24.6.0 that §1 used — the same build, so §1's
+table is a live comparison set rather than a stale one.
+
+It does not work. **Two blockers, and they are independent**: either one alone
+kills the route, so removing one buys nothing.
+
+Zero tokens were spent. The pty arms never submit — spawn, watch the screen for
+twelve seconds, SIGKILL, as `probe.py` does. The one network arm sends a
+deliberately malformed body and reads only the HTTP status, so no inference is
+ever requested.
+
+## 6. The arms
+
+`examples/plan-worker-spike/probe_env_token.py`, a sibling of `probe.py` and not
+an edit to it. Same conventions: fresh seeded `CLAUDE_CONFIG_DIR` per arm (L1),
+fresh private `HOME` (D-052), loud PASS/FAIL, exit code is the failure count,
+loud skip when the binary or the keychain entry is absent.
+
+| Arm | `HOME` | `ANTHROPIC_AUTH_TOKEN` | Prompt? | `Not logged in`? | Mode line |
+|---|---|---|---|---|---|
+| `control-unfenced` | operator's | — | yes | no | **`Opus 5 (1M context) · Claude Max`** |
+| `control-fenced` | private | — | yes | **yes** | `Opus 5 (1M context) · API Usage Billing` |
+| `fenced-oauth-access` | private | access token alone | yes | **no** | `Opus 5 (1M context) · API Usage Billing` |
+| `fenced-oauth-blob` | private | `claudeAiOauth` as JSON | yes | **no** | `Opus 5 (1M context) · API Usage Billing` |
+
+The two controls reproduce §1's `unfenced-plan` and `fenced-plan` readings
+exactly, which is what makes the other two mean anything.
+
+## 7. Blocker 1 — `ANTHROPIC_AUTH_TOKEN` selects the metered path, and an OAuth token is the wrong credential for it
+
+**The answer to the operator's question is in the banner of the arms that carry
+the credential: `API Usage Billing`.** Handing the value in does not put the pane
+on the plan; the variable's *presence* is what chooses the metered path, and the
+pane then presents an OAuth access token on the API-key path. Those are the two
+different paths §1 already warned the boolean was conflating — measured here from
+the other side.
+
+**The mode line cannot see the difference, and that is the finding.**
+`fenced-oauth-access` and `fenced-oauth-blob` produced **byte-identical output —
+1537 bytes each**. A JSON document is not a bearer token by any reading, so a
+screen that renders it the same as a real access token is not reporting on the
+credential at all; it is reporting that the variable is set. Reaching the input
+box with no login warning is therefore not evidence of anything here, which is
+why this probe does not rest on it.
+
+What does settle it is a zero-token request to the credential's own issuer, with
+a body malformed on purpose so that nothing is billable:
+
+```
+POST https://api.anthropic.com/v1/messages   {"probe":"malformed-on-purpose"}
+  Authorization: Bearer <access token>   →  HTTP 401
+  x-api-key: <access token>              →  HTTP 401
+```
+
+401 is the credential being rejected before the body is ever looked at. Both
+spellings, with `anthropic-beta: oauth-2025-04-20` set. **Stated as a limit
+rather than glossed:** this arm has no known-good credential to prove its other
+branch with, so "a working credential would have returned 400" is reasoning from
+the vendor's documented status codes, not a reading taken here. It corroborates
+the banner; it is not independent of it.
+
+## 8. Blocker 2 — the lifetime, which would kill the route even if blocker 1 vanished
+
+The keychain item is **an OAuth credential blob, not a bare key**. Under
+`claudeAiOauth`: `accessToken`, `refreshToken`, `expiresAt`,
+`refreshTokenExpiresAt`, `scopes`, `subscriptionType`, `rateLimitTier`. Both
+tokens are 108 chars, `sk-ant-oat…`/`sk-ant-ort…` family. Measured at the time of
+writing:
+
+| | remaining |
+|---|---|
+| access token | **0.87 h** |
+| refresh token | **430.4 h (17.9 d)** |
+
+**A credential read at spawn is good for under an hour, and a fenced pane cannot
+reach the keychain to refresh it** — that is §2's finding, unchanged and now
+load-bearing in a second place. A refresh token exists and has an 18-day window,
+so a rotating design is *conceivable*, but it would need something outside the
+Fence holding the keychain and pushing new values into a running pane, which is
+not an environment variable and not this ticket.
+
+**This is D-062's failure mode delayed, not fixed, and delay is the expensive
+part.** §1 recorded that every arm reaches the input box and every `fleet send`
+reports `accepted` into a logged-out pane. Handing the token in makes that
+strictly worse: the `Not logged in · Run /login` string that made the failure
+*legible* on `control-fenced` is **absent** on both token arms. The route removes
+the only warning the previous route left behind, and would have removed it an
+hour into a run rather than at spawn.
+
+One sample gives the *remaining* lifetime, which is what the decision needs. It
+does not give the issue-to-expiry interval, so the access token's full TTL is
+**not measured here** and should not be quoted from this note.
+
+## 9. What was and was not touched
+
+The operator's `~/.claude` and their keychain were read only —
+`security find-generic-password -w` does not modify the item, and the fenced panes
+were verified to have written **no credential to disk** in their config dirs. No
+token material appears in this note, in the probe's output, or anywhere in the
+repository; `probe_env_token.py` enforces that through one `redact` function that
+every print path goes through, and the pty transcripts are filtered before they
+land. The probe's `work/` directory is gitignored, as `probe.py`'s already was.
+
+One thing worth carrying forward: **the keychain item holds more than Claude
+Code's own credential.** On this machine it also carries third-party MCP OAuth
+tokens (`mcpOAuth`, two servers, with their own access tokens, refresh tokens and
+a client secret). Any future design that hands "the keychain value" to a pane
+must hand the `claudeAiOauth` object and not the item — `fenced-oauth-blob`
+deliberately narrows to the former for exactly this reason.
+
+## 10. Reproducing
+
+```bash
+python3 examples/plan-worker-spike/probe_env_token.py --arm expiry            # instant
+python3 examples/plan-worker-spike/probe_env_token.py --arm http-401-or-400   # instant
+python3 examples/plan-worker-spike/probe_env_token.py --bin "$HOME/.local/bin/claude"
+```
+
+All arms are free. `--bin` for the same reason §5 gives.
