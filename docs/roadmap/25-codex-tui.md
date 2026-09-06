@@ -1,6 +1,6 @@
 # WP-25 — the `Harness` seam, and codex as the first harness through it
 
-status: not-started size: L
+status: landed size: L
 depends-on: 20 (placement, landed) blocks: 24 (cursor, re-scoped onto this seam)
 brief-cost: 0 — the briefs do not change. One `orch.md`, one `worker.md`, every harness (M4).
 
@@ -193,3 +193,85 @@ Exit: the checklist at the bottom of this doc.
 - [ ] The conformance suite is green with **one** registered harness before phase 2 opens.
 - [ ] This doc: status → landed, "How it landed" appended.
 - [ ] `00-index.md` status column updated — the last act of the session.
+
+---
+
+## How it landed
+
+**Landed across 43 commits on `codex-tui`, as 37 tickets (#14–#48).** The `Harness` seam holds two
+harnesses; the conformance suite runs all fourteen checkpoints over both, green. `src-tauri` went
+from 64 tests to 389. **The root workspace held at 226 through every single commit** — that number
+is Tier 1.4's evidence, and it never moved.
+
+The decision trail is `decisions.md` **C25–C68**, continuing C1–C24. Six entries carry in-place
+annotations where a later measurement falsified an earlier conclusion — **C14, C16, C46, C47, C49**
+— so a reader arriving at one is pointed forward instead of being misled.
+
+### The phase order paid for itself, and the receipt is six reshapes
+
+C20's rule was that the suite must be green with **one** registered harness before a second exists,
+or it is a description of that second vendor wearing an abstraction's clothes. The registry held at
+one from #14 through #39. When #33 finally registered codex, **six checkpoints turned out to be
+shaped around Claude Code, four of them invisible until a second pass ran**: the key-list assertion
+matched flat keys where codex's are nested; checkpoint 6 `panic!`d outright on a harness that
+snapshots from an operator directory; checkpoint 14 parsed the trust file as JSON when the format is
+the vendor's; checkpoint 14's negative forbade a record codex both writes *and reads*; checkpoint 13
+required a non-empty `subdir` when the empty string is a real answer; and the driver's `echo_of`
+waited from position zero, so for a harness that presses a key during bring-up (#42) checkpoints 9
+and 10 would have asserted against the wake's reply rather than the write under test.
+
+**So the arc's own claim — "adding a harness is a checklist rather than an archaeology project" — is
+now testable rather than asserted, and its first honest reading is six reshapes and two undiagnosed
+blockers** (#44, #39). Cheaper than archaeology, dearer than a checklist (C57).
+
+### What the spikes reversed
+
+Three recorded decisions were falsified by measurement rather than argued away.
+
+- **C16's "codex resolves trust by root" was wrong** (C34). It resolves by a **two-candidate exact
+  lookup** — canonicalized cwd *or* the git root — with no ancestor walk, and for a linked worktree
+  that root is the **main repository**. The obvious computation (`--show-toplevel`) produces the key
+  that does not cover subdirectories.
+- **C46's shim-clobber did not exist** (C48). `-c` and `config.toml` hooks compose; what replaces is
+  one `-c` by a *later* `-c`. And a `-c`-delivered hook does not fire untrusted either — trust is a
+  property of the hook, not of its delivery.
+- **C14's plan tier is not in `doctor`** (C58). It reports the auth *shape*; the tier lives inside
+  the stored id token.
+
+### Five defects the spec did not anticipate
+
+Each was found by an agent building the thing, and each shipped as its own ticket rather than a
+quiet fix.
+
+| | Found by | What it was |
+|---|---|---|
+| #42 | #24, by accident | A fresh `CODEX_HOME` opens on a splash that ends on a **keypress, not a timer**, and swallows the first message — `accepted` for a message nobody read |
+| #43 | #27 | The vendor tier **collided with itself**, reporting contention as a regression |
+| #44 | #29 | A codex orchestrator had **no login at all** — checkpoint 6 was shaped around a vendor whose credential is a keychain pointer |
+| #45/#46 | #31 | The write guardrail **installed correctly and never fired**; untrusted hooks are silently skipped |
+| #47 | #30 | The bring-up wake was **dismissing the trust gate and persisting `trust_level = "trusted"` to disk** |
+
+### Two costs stated rather than hidden
+
+**The write guardrail fires only under `--dangerously-bypass-hook-trust`, and only because FLEETOR
+owns a worker's `hooks` array outright** (C49, C50). A worker executes only hooks the fleet authored,
+so trusting them is trusting our own artifact and the pane's executable surface *narrows*. The price
+is real: an operator's own `PreToolUse` hook does not run on worker seats. The orchestrator inherits
+untouched and gets no bypass.
+
+**The vendor tier now costs 84–103 s** (was ~47 s), because `probe_clear.py` is finally gated
+(C67). D-081 chose default-on at a stated cost; this is that cost moving, stated.
+
+### One thing worth knowing before the next arc
+
+**A source-reading tripwire proves the code *says* the right thing, never that it *runs*** (C63).
+#35's gate pickers passed a 15-check tripwire with a working negative control while being
+**unreachable** — `fleet_gate` required a running fleet and the gate renders before bootstrap. That
+is the standing cost of C24's no-frontend-test-runner rule. Any ticket whose value is a *check* owes
+a behavioural test that the check **fires**.
+
+### Spend
+
+**One turn, 12,548 tokens** (#38, C61) — the arc's only authorized spend, against the native vendor
+binary. It answered *no*: codex does not persist per-turn usage in its thread store. It persists it
+**twice beside it**, so the gauge reads the vendor's own accounting rather than `unavailable`.
