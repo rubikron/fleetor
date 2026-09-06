@@ -1739,3 +1739,245 @@ fn a_fleet_seeded_codex_worker_is_refused_a_write_outside_its_worktree() {
         fs::remove_dir_all(&scratch).ok();
     }
 }
+
+/// **The gate's own probe, run against the real binary — three auth shapes, a live
+/// model list and the posture codex resolved** (WP-25 phase 3, #34; C8, C14, C47).
+///
+/// The arm above proves the vendor *reports* three distinct credential shapes. This
+/// one proves the code the operator's gate actually runs reads all three as a
+/// login, and it runs `placement::codex::diagnose` itself rather than a hand-typed
+/// `doctor` invocation — so a probe that stopped parsing one of the vendor's
+/// readings fails here instead of turning into a silently narrower gate.
+///
+/// **Nothing here touches the operator's installation.** Each shape is a fabricated
+/// `~/.codex` seeded into a scratch `CODEX_HOME` through
+/// `Harness::seed_config_dir`, and `Installation` is how the identical production
+/// function is pointed at it — the same move `Layout::under` makes for a placement.
+///
+/// **The negative control is `env_key`-shaped on purpose.** #29 measured that a
+/// selected provider naming an absent `env_key` fails *even with `CODEX_API_KEY`
+/// present in the environment* — there is no fallback from a named variable to an
+/// ambient one. A control built on a missing `auth.json` instead would pass on a
+/// developer's machine and fail on a CI runner that happens to export a key, which
+/// is a control that measures the machine rather than the code.
+///
+/// **Both readings, per C47**: the probe is handed the `codex` on PATH — a wrapper
+/// that injects flags on the machine this was written on — and resolves the vendor
+/// binary out of the report's own `runtime.provenance`. This is a measurement of
+/// resolved configuration, which is exactly the class where #31 found the two
+/// disagreeing absolutely.
+///
+/// Zero tokens, and zero non-loopback traffic: every fabricated provider is
+/// `127.0.0.1`, so `doctor`'s reachability probe dials nothing real. About 4 s.
+#[test]
+fn the_gates_probe_reads_all_three_auth_shapes_the_vendor_reports() {
+    use fleetor_shell::placement::codex::{codex, diagnose, Installation, OPERATOR_DIR};
+    use fleetor_shell::placement::harness::{AccountShape, LoginState};
+    use fleetor_shell::placement::Seed;
+
+    let Some(vendor) = on_path(VENDOR_BIN) else {
+        announce(&[
+            format!("SKIPPED: the codex gate-probe arm — `{VENDOR_BIN}` is not on PATH."),
+            format!("  Recorded against {RECORDED_BUILD}. Nothing below was measured:"),
+            "    plan-reads-as-a-login, api-key-reads-as-a-login,".into(),
+            "    custom-provider-reads-as-a-login, no-credential-is-the-one-refusal,".into(),
+            "    the-model-list-is-the-vendors-own, the-posture-is-read-back (#34, C8, C14)".into(),
+            "  The in-crate tests still prove the probe reads each recorded reading as".into(),
+            "  the shape it is. Only the vendor can say it still emits them.".into(),
+        ]);
+        return;
+    };
+
+    let root = std::env::temp_dir().join(format!(
+        "fleetor-codex-gate-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("a clock")
+            .as_millis()
+    ));
+    let pane_home = root.join("pane-home");
+    let cwd = root.join("worktree");
+    fs::create_dir_all(&pane_home).expect("a private HOME");
+    fs::create_dir_all(&cwd).expect("a pane worktree");
+
+    // A fabricated operator installation, seeded into an orchestrator's own
+    // `CODEX_HOME` — the seat C9 says carries the operator's login.
+    let seat = |name: &str, config: &str, auth: Option<&str>| -> PathBuf {
+        let operator = root.join(format!("{name}-operator"));
+        let dir = operator.join(OPERATOR_DIR);
+        fs::create_dir_all(&dir).expect("a fabricated operator installation");
+        fs::write(dir.join("config.toml"), config).expect("operator config");
+        if let Some(body) = auth {
+            fs::write(dir.join("auth.json"), body).expect("operator credential");
+        }
+        let seeded = root.join(name);
+        codex()
+            .seed_config_dir(
+                &Seed::new(&seeded, &cwd, Some(&operator))
+                    .with_brief("a pane's brief")
+                    .for_the_operator(),
+            )
+            .expect("seeding an orchestrator's CODEX_HOME");
+        seeded
+    };
+    let probe = |config_dir: &Path| {
+        diagnose(&Installation {
+            binary: Some(&vendor),
+            config_dir: Some(config_dir),
+            home: Some(&pane_home),
+            cwd: Some(&cwd),
+        })
+    };
+
+    // A loopback provider that still requires the vendor's own auth, so the two
+    // `auth.json` shapes are read without the real endpoint being dialled.
+    let plan_provider = "model_provider = \"operators-plan\"\n\
+                         [model_providers.operators-plan]\n\
+                         name = \"the operator's plan\"\n\
+                         base_url = \"http://127.0.0.1:9/v1\"\n\
+                         wire_api = \"responses\"\n\
+                         requires_openai_auth = true\n";
+
+    // --- shape 1: a subscription plan ---------------------------------------
+    let plan_auth = "{\"auth_mode\":\"chatgpt\",\"OPENAI_API_KEY\":null,\"tokens\":{\
+                       \"id_token\":\"eyJhbGciOiAibm9uZSIsICJ0eXAiOiAiSldUIn0.\
+                       eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfcGxhbl90eXBlIjogInBybyJ9fQ.c2ln\",\
+                       \"access_token\":\"sk-plan\",\"refresh_token\":\"sk-plan-refresh\",\
+                       \"account_id\":\"acct-123\"},\"last_refresh\":\"2026-09-05T00:00:00Z\"}";
+    let plan = probe(&seat("plan", plan_provider, Some(plan_auth)));
+    assert!(
+        matches!(plan.login, LoginState::LoggedIn(AccountShape::SubscriptionPlan { .. })),
+        "a subscription plan must count as logged in (C14). The orchestrator is the only \
+         codex seat that spends the operator's credential (C9), and refusing a plan there \
+         is story 9 — a supported feature looking unimplemented — at the gate: {:?}",
+        plan.login,
+    );
+
+    // --- shape 2: an API key -------------------------------------------------
+    let key_auth = "{\"auth_mode\":\"apikey\",\"OPENAI_API_KEY\":\"sk-stored\"}";
+    let keyed = probe(&seat("key", plan_provider, Some(key_auth)));
+    assert_eq!(
+        keyed.login,
+        LoginState::LoggedIn(AccountShape::ApiKey),
+        "a stored API key must count as logged in (C14)",
+    );
+
+    // --- shape 3: a named custom provider ------------------------------------
+    //
+    // The operator's own installation is this shape, which is why a probe handling
+    // only the first two would pass everywhere except on their machine.
+    // **`PATH` is the variable the entry names, and it is a deliberate choice.**
+    // The reading under test is the vendor's `provider auth env var = "X (present)"`,
+    // which needs a variable that really is in the environment the probe inherits —
+    // and that environment is the orchestrator seat's own shape, unscrubbed,
+    // because the operator's shell variable is the one the vendor is supposed to
+    // follow there (C9). Setting a variable of this test's own would mean mutating
+    // the process environment while `cargo test` runs other tests on other threads,
+    // which is unsound rather than merely untidy. `PATH` is present on every machine
+    // that can run this file at all, and codex treats a named `env_key` as opaque —
+    // #29 measured that it never falls back to an ambient auth variable, so nothing
+    // about the *name* changes what is being measured.
+    const OPERATORS_VAR: &str = "PATH";
+    /// The same entry naming a variable that is absent — the refusal control.
+    const ABSENT_VAR: &str = "FLEETOR_GATE_PROBE_KEY_34";
+    let custom_config = |env_key: &str| {
+        format!(
+            "model_provider = \"operators-own\"\n\
+             [model_providers.operators-own]\n\
+             name = \"the operator's own\"\n\
+             base_url = \"http://127.0.0.1:9/\"\n\
+             wire_api = \"responses\"\n\
+             env_key = \"{env_key}\"\n"
+        )
+    };
+    let named = probe(&seat("custom", &custom_config(OPERATORS_VAR), None));
+    assert_eq!(
+        named.login,
+        LoginState::LoggedIn(AccountShape::CustomProvider {
+            name: "the operator's own".to_string(),
+            env_var: Some(OPERATORS_VAR.to_string()),
+        }),
+        "a named custom provider must count as logged in and be named (C2, C9, C14)",
+    );
+    assert_eq!(
+        named.provider.as_deref(),
+        Some("the operator's own"),
+        "the provider is a fact displayed beside the model (C2): {:?}",
+        named.provider,
+    );
+
+    // --- the one refusal -----------------------------------------------------
+    //
+    // The same entry with its variable absent. #29 measured that a selected
+    // `env_key` has no fallback to an ambient auth variable, which is what makes
+    // this control independent of whatever the machine running it exports.
+    let refused = probe(&seat("refused", &custom_config(ABSENT_VAR), None));
+    assert!(
+        matches!(refused.login, LoginState::NoCredential { .. }),
+        "codex resolved no usable credential and the gate did not refuse. That is the \
+         one refusal C14 leaves, and without it the three arms above would pass on a \
+         probe that answered `logged in` unconditionally: {:?}",
+        refused.login,
+    );
+    assert_eq!(refused.login.caveat(), None, "nothing to caveat about a refusal");
+
+    // --- what the gate shows beside the shape --------------------------------
+    assert!(
+        !named.models.is_empty(),
+        "the model list is the vendor's own catalog resolution and it came back empty, \
+         so a picker would offer nothing (C2)",
+    );
+    assert!(
+        named.models.iter().all(|m| !m.slug.is_empty() && !m.display_name.is_empty()),
+        "every option needs the slug the argv takes and the name a human reads: {:?}",
+        named.models,
+    );
+    assert_eq!(
+        named.posture.filesystem.as_deref(),
+        Some("restricted"),
+        "the containment the vendor *resolved*, not the keys FLEETOR wrote (C8): {:?}",
+        named.posture,
+    );
+    assert!(named.posture.network.is_some() && named.posture.approval.is_some(), "{:?}", named.posture);
+    assert!(
+        named.version.as_deref().is_some_and(|v| RECORDED_BUILD.ends_with(v)),
+        "the build every reading here was recorded against is {RECORDED_BUILD}; the probe \
+         read {:?}. Re-measure before moving the constant.",
+        named.version,
+    );
+
+    // --- both readings, per C47 ----------------------------------------------
+    let resolved = named.resolved.clone().unwrap_or_else(|| {
+        panic!(
+            "the probe did not resolve a vendor binary behind `{}`. C47's rule is that an \
+             arm reading resolved configuration reports both readings, and this one now \
+             has only the wrapper's.",
+            named.invoked,
+        )
+    });
+    assert!(resolved.is_file(), "{} is not a file", resolved.display());
+    assert!(
+        named.readings_agree,
+        "the `{}` on PATH and the vendor binary at {} report different configurations. \
+         That is C47's case and the operator is told about it — but it also means every \
+         reading above describes the wrapper rather than what a pane runs under, so the \
+         arm is measuring the wrong binary.",
+        named.invoked,
+        resolved.display(),
+    );
+
+    // --- and the caveat reaches the operator ---------------------------------
+    let lines = named.notices();
+    assert!(
+        lines.iter().any(|(level, text)| {
+            *level == fleetor_core::event::NoticeLevel::Warn
+                && text.contains(fleetor_shell::placement::harness::REACHABILITY_NOT_AUTHORIZATION)
+        }),
+        "the reachability-not-authorization caveat did not reach the feed. `doctor` \
+         returned HTTP 401 against a live provider and still counted as reachable, so a \
+         revoked key clears this gate and fails on turn one — the operator has to be told \
+         that, not have it recorded in a decision file: {lines:#?}",
+    );
+
+    fs::remove_dir_all(&root).ok();
+}

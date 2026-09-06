@@ -402,3 +402,49 @@ passed, and a provider table with **no** credential field at all reports
 whose inherited provider had its credential struck out looks healthy here. That is
 the shape of the orchestrator question #33 inherits, written down rather than
 discovered later.
+
+---
+
+## Appended by #34 — the diagnostic as the gate's instrument (C8, C14, C47, C58)
+
+Measured on the same build, `codex-cli 0.153.4`, with `codex doctor --json` and
+`codex debug models` and nothing else. Gated in `src-tauri/tests/vendor_binary_tier.rs`'s
+gate-probe arm rather than only written down. Zero tokens; every fabricated provider is
+`127.0.0.1`.
+
+**`codex debug models` is the catalog resolution, and it is free.** `18 ms`, returning
+`{"models":[…]}` with `slug`, `display_name`, `visibility` and `priority` per entry —
+11 entries on a default `CODEX_HOME`, of which 6 are `visibility = "list"`. The `hide`
+entries are ones codex does not offer in its own picker. **This is why the model list is
+not read out of `models.json`:** the operator's own config points `model_catalog_json` at
+a file of theirs, that value may carry a `~` which resolves against whichever `HOME` the
+process runs under (the tilde trap above), and a reader would have to reimplement both
+rules to get the same answer.
+
+**`doctor` reports the auth *shape* and not the plan tier.** A fabricated `auth.json` in
+the ChatGPT shape, with a syntactically real id token carrying `chatgpt_plan_type: "pro"`,
+reads back `stored auth mode = chatgpt` and `stored ChatGPT tokens = true`. There is no
+`stored ChatGPT plan` field and the tier appears nowhere in the report. C14 said the gate
+would show "ChatGPT &lt;plan&gt;"; what it can honestly show is the shape, and C58 narrows
+it on that evidence rather than parsing the credential file.
+
+**The checks the gate reads, by name.** `auth.credentials.details` — `stored auth mode`,
+`provider auth env var` (with its `(present)`/`(missing)` suffix), `auth env vars present`.
+`sandbox.helpers.details` — `filesystem sandbox`, `network sandbox`, `approval policy`.
+`config.load.details` — `model`, `model provider`. `network.websocket_reachability.details`
+— `provider name`, which is the operator's own label for a custom provider.
+`runtime.provenance.details["current executable"]` — the vendor binary behind whatever was
+invoked.
+
+**`doctor` exits non-zero whenever any check fails**, including an unreachable provider or
+an update warning, so the exit status is ignored and the report is read. A gate that
+checked the status would discard exactly the reports it exists to show.
+
+**Both readings agree, on everything the gate displays (C47).** Run through the cmux shim
+and through the resolved vendor binary against the same `CODEX_HOME`: identical auth mode,
+model, provider, filesystem sandbox, network sandbox, approval policy and version. The one
+field that differs is `sandbox.helpers.details["execve wrapper helper"]`, a per-invocation
+temporary path that differs between two runs of the *same* binary — which is why the
+comparison is field-by-field over what the gate shows rather than document equality. The
+shim is also **3× slower** (0.44 s against 0.13 s on a loopback provider), being a node
+wrapper in front of a native binary.

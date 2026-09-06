@@ -191,9 +191,10 @@ use fleetor_core::event::NoticeLevel;
 use toml_edit::{DocumentMut, Item, Table, Value};
 
 use super::harness::{
-    BriefCarrier, CommandChannel, ConfigAndCredentialIsolation, ConfigDir, Credentials, GaugeSource,
-    GuardrailInstall, Harness, HarnessSpec, OrphanNames, Outbound, Posture,
-    ProjectIdentityAndTrust, Program, Seat, Seed, Transcript, Transport, TypingProfile,
+    AccountShape, BriefCarrier, CommandChannel, ConfigAndCredentialIsolation, ConfigDir,
+    Credentials, GaugeSource, GuardrailInstall, Harness, HarnessReadiness, HarnessSpec, LoginState,
+    ModelChoice, OrphanNames, Outbound, Posture, ProjectIdentityAndTrust, Program, ResolvedPosture,
+    Seat, Seed, Transcript, Transport, TypingProfile,
 };
 
 // --- the vendor's own shape ----------------------------------------------------
@@ -1982,6 +1983,297 @@ fn rewrite_value(value: &mut Value, relocate: &impl Fn(&str) -> Option<String>) 
             }
         }
         _ => {}
+    }
+}
+
+// --- the diagnostic probe (WP-25 #34; C8, C14, C47) -----------------------------
+
+/// The vendor's diagnostic, and the flag that makes it machine-readable.
+///
+/// **Measured, not guessed** (C8): it returns in about 1.4 s with `schemaVersion`,
+/// `codexVersion`, `overallStatus` and a `checks` map. One call answers the login
+/// state, the account shape, the provider and the resolved posture.
+const DOCTOR: [&str; 2] = ["doctor", "--json"];
+
+/// The vendor's own catalog resolution.
+///
+/// **`debug models`, never `models.json`** (C2). The operator's own configuration
+/// may point `model_catalog_json` at a file of theirs, and that value may carry a
+/// `~` which resolves against whichever `HOME` the process is running under (the
+/// tilde trap, `docs/notes/codex-spike-notes.md`). Asking the vendor is the only
+/// way a picker's options are what the harness would actually accept; reading the
+/// file would mean reimplementing both of those rules and being wrong quietly.
+/// Measured at **18 ms**, so it is free beside `doctor`.
+const CATALOG: [&str; 2] = ["debug", "models"];
+
+/// **Which installation a diagnosis is taken from** (WP-25 #34).
+///
+/// Defaults to this machine — a bare [`Installation`] is "whatever `codex` means on
+/// the PATH the app was launched with, reading whatever configuration it resolves".
+/// Every field exists so a **test can point the identical production code at a
+/// fabricated installation** instead of at the operator's own: the vendor tier
+/// already seeds a scratch `CODEX_HOME` through
+/// [`Harness::seed_config_dir`](super::harness::Harness::seed_config_dir) and runs
+/// `doctor` against it by hand, and this is that arrangement as a value.
+///
+/// It is the same move [`Layout::under`](super::Layout::under) is: the operator's
+/// real `~/.codex` becomes unreachable from a test by construction rather than by
+/// everyone remembering not to name it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Installation<'a> {
+    /// The binary to run. `None` runs checkpoint 1's [`Program::bin`] and lets the
+    /// operating system resolve it on `PATH`.
+    pub binary: Option<&'a Path>,
+    /// The `CODEX_HOME` to read — checkpoint 4's variable. `None` lets the vendor
+    /// resolve the operator's own.
+    pub config_dir: Option<&'a Path>,
+    /// The `HOME` to run under. `None` inherits the application's.
+    pub home: Option<&'a Path>,
+    /// The directory to run in, which decides the trust and project readings.
+    /// `None` inherits the application's.
+    pub cwd: Option<&'a Path>,
+}
+
+/// **Read what codex reports about this machine** (WP-25 #34; C8, C14, C47).
+///
+/// **The gate's probe, and never the spawn path's.** `doctor` makes a live provider
+/// *reachability* request, so a spawn path that called this would put a network
+/// round trip between a click and a pty — a different product. Its one production
+/// caller is [`Host::discover_for_the_gate`](super::Host::discover_for_the_gate),
+/// and `tests/placement_reads_nothing.rs` asserts that placement's own bring-up
+/// sequence never reaches it.
+///
+/// **Both readings, per C47.** The `codex` on this machine's PATH is a wrapper that
+/// injects flags, and this is a measurement of *resolved configuration* — exactly
+/// the class where #31 found the two disagreeing absolutely. So the probe runs once
+/// through the name, reads the vendor binary out of the report's own
+/// `runtime.provenance`, and runs again through that absolute path. What the gate
+/// displays is the second reading; whether the two agreed is
+/// [`HarnessReadiness::readings_agree`], which the operator is told about because
+/// they are the only one who can do anything about a wrapper.
+///
+/// **Zero tokens.** `doctor` requests no completion, and its reachability probe is
+/// a connection rather than a turn.
+///
+/// A machine with no codex answers [`HarnessReadiness::not_installed`] rather than
+/// failing: not having a vendor installed is an ordinary state of an ordinary
+/// machine, and the gate's job is to say so.
+pub fn diagnose(at: &Installation<'_>) -> HarnessReadiness {
+    let invoked: PathBuf =
+        at.binary.map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from(CODEX_SPEC.program.bin));
+
+    let Some(through_path) = run_json(&invoked, &DOCTOR, at) else {
+        return HarnessReadiness::not_installed(&CODEX_SPEC);
+    };
+    let through_path = match through_path {
+        Ok(report) => report,
+        Err(why) => return unreadable(&invoked, why),
+    };
+
+    // The vendor names its own executable, which is how the absolute path is
+    // resolved without this code owning a PATH walker or a hard-coded prefix — and
+    // how it keeps working on a machine whose `codex` is the real binary.
+    let resolved = detail(&through_path, "runtime.provenance", "current executable")
+        .map(PathBuf::from)
+        .filter(|p| p != &invoked && p.is_file());
+
+    // The authoritative reading is the vendor binary's where there is one, because
+    // that is what a pane's process becomes. The wrapper's reading is kept only to
+    // compare.
+    let (reading, from) = match &resolved {
+        Some(vendor) => match run_json(vendor, &DOCTOR, at) {
+            Some(Ok(report)) => (report, vendor.clone()),
+            // A resolved binary that will not answer is not a reason to refuse the
+            // machine: the name on PATH already answered, and that is what the
+            // operator's shell would run too.
+            _ => (through_path.clone(), invoked.clone()),
+        },
+        None => (through_path.clone(), invoked.clone()),
+    };
+
+    let posture = ResolvedPosture {
+        filesystem: detail(&reading, "sandbox.helpers", "filesystem sandbox"),
+        network: detail(&reading, "sandbox.helpers", "network sandbox"),
+        approval: detail(&reading, "sandbox.helpers", "approval policy"),
+    };
+    let provider = detail(&reading, "network.websocket_reachability", "provider name")
+        .or_else(|| detail(&reading, "config.load", "model provider"));
+    let login = login_state(&reading, provider.as_deref());
+    let version = reading["codexVersion"].as_str().map(str::to_string);
+
+    // Two readings agree when they agree about everything the gate shows. Not a
+    // whole-document comparison: `doctor` stamps a generated-at time and a
+    // per-invocation temporary path, so byte equality would report a disagreement
+    // on every machine and mean nothing.
+    let readings_agree = resolved.is_some()
+        && login_state(&through_path, provider.as_deref()) == login
+        && detail(&through_path, "sandbox.helpers", "filesystem sandbox") == posture.filesystem
+        && detail(&through_path, "sandbox.helpers", "network sandbox") == posture.network
+        && detail(&through_path, "sandbox.helpers", "approval policy") == posture.approval
+        && detail(&through_path, "config.load", "model") == detail(&reading, "config.load", "model")
+        && through_path["codexVersion"].as_str() == reading["codexVersion"].as_str();
+
+    HarnessReadiness {
+        harness: &CODEX_SPEC,
+        invoked: invoked.display().to_string(),
+        resolved,
+        readings_agree,
+        version,
+        login,
+        provider,
+        models: catalog(&from, at),
+        posture,
+    }
+}
+
+/// The three shapes, read off the vendor's own `auth.credentials` check (C14).
+///
+/// **The order of the arms is the measurement.** Each shape has a distinct reading
+/// on `codex-cli 0.153.4`, all three exercised by the vendor tier's
+/// `the_operators_own_seat_authenticates_and_a_fenced_seat_holds_nothing_of_the_operators`:
+///
+///  - a subscription plan is `stored auth mode = chatgpt`;
+///  - a stored key is `stored auth mode = api_key`;
+///  - a named custom provider names the variable it authenticates through, as
+///    `provider auth env var = "X (present)"`.
+///
+/// A provider whose variable is *missing* reads `"X (missing)"` and the check fails,
+/// which is why the third arm tests for the presence suffix rather than for the key
+/// being there at all — the difference between those two strings is the whole
+/// refusal.
+///
+/// **Two further readings are folded into the three rather than becoming a fourth
+/// shape.** An ambient `OPENAI_API_KEY`/`CODEX_API_KEY` with no stored file is an
+/// API key (`auth env vars present`), and a provider that needs no credential at
+/// all — measured: it reports *"OpenAI auth is not required for the active model
+/// provider"* and passes — is a custom provider with no variable. Inventing a
+/// fourth shape for either would put a word on the gate that the vendor never uses.
+fn login_state(report: &serde_json::Value, provider: Option<&str>) -> LoginState {
+    let check = &report["checks"]["auth.credentials"];
+    let status = check["status"].as_str().unwrap_or_default();
+    let summary = check["summary"].as_str().unwrap_or("the vendor reported no credential");
+    let stored = detail(report, "auth.credentials", "stored auth mode");
+    let env_var = detail(report, "auth.credentials", "provider auth env var");
+    let ambient = detail(report, "auth.credentials", "auth env vars present");
+
+    match stored.as_deref() {
+        Some("chatgpt") => return LoginState::LoggedIn(AccountShape::SubscriptionPlan {
+            // Codex 0.153.4 reports the shape and not the tier; see the field's own
+            // note. Read here so a release that starts naming one needs a line
+            // rather than a redesign.
+            plan: detail(report, "auth.credentials", "stored ChatGPT plan"),
+        }),
+        Some("api_key") => return LoginState::LoggedIn(AccountShape::ApiKey),
+        _ => {}
+    }
+    if let Some(named) = env_var.as_deref().filter(|v| v.ends_with("(present)")) {
+        let variable = named.trim_end_matches("(present)").trim().to_string();
+        return LoginState::LoggedIn(AccountShape::CustomProvider {
+            name: provider.unwrap_or("an unnamed provider").to_string(),
+            env_var: Some(variable),
+        });
+    }
+    if status == "fail" {
+        return LoginState::NoCredential { summary: summary.to_string() };
+    }
+    if ambient.as_deref().is_some_and(|v| !v.is_empty() && v != "none") {
+        return LoginState::LoggedIn(AccountShape::ApiKey);
+    }
+    if status == "ok" {
+        return LoginState::LoggedIn(AccountShape::CustomProvider {
+            name: provider.unwrap_or("an unnamed provider").to_string(),
+            env_var: None,
+        });
+    }
+    LoginState::NoCredential { summary: summary.to_string() }
+}
+
+/// What the vendor's catalog resolution offers, filtered to what it would show a
+/// person and ordered the way it orders them.
+///
+/// `visibility` and `priority` are the vendor's own fields: a catalog entry marked
+/// `hide` is one codex does not offer in its own picker, and putting it in FLEETOR's
+/// would be offering an option the operator cannot see the vendor offer. A catalog
+/// that cannot be read is an empty list, never a guessed one (M2).
+fn catalog(binary: &Path, at: &Installation<'_>) -> Vec<ModelChoice> {
+    match run_json(binary, &CATALOG, at) {
+        Some(Ok(report)) => listed_models(&report),
+        _ => Vec::new(),
+    }
+}
+
+/// The filter and the order, apart from the subprocess that fetches the document —
+/// so the rule can be asserted on a machine with no codex on it.
+fn listed_models(report: &serde_json::Value) -> Vec<ModelChoice> {
+    let Some(models) = report["models"].as_array() else {
+        return Vec::new();
+    };
+    let mut listed: Vec<(i64, ModelChoice)> = models
+        .iter()
+        .filter(|m| m["visibility"].as_str() != Some("hide"))
+        .filter_map(|m| {
+            let slug = m["slug"].as_str()?.to_string();
+            let display_name = m["display_name"].as_str().unwrap_or(&slug).to_string();
+            Some((m["priority"].as_i64().unwrap_or(i64::MAX), ModelChoice { slug, display_name }))
+        })
+        .collect();
+    listed.sort_by_key(|(priority, _)| *priority);
+    listed.into_iter().map(|(_, choice)| choice).collect()
+}
+
+/// One `codex` subcommand, its stdout parsed as JSON.
+///
+/// Three outcomes and they are three different facts: `None` is *no such binary*,
+/// `Some(Err)` is *it ran and said something this cannot read*, `Some(Ok)` is a
+/// report. Collapsing the first two would turn a machine with no codex on it into a
+/// broken installation.
+///
+/// **The exit status is deliberately ignored.** `doctor` exits non-zero whenever any
+/// check fails — an unreachable provider, an update warning — and every one of those
+/// is a report worth reading. Gating on the status would discard exactly the reports
+/// the gate exists to show.
+fn run_json(
+    binary: &Path,
+    args: &[&str; 2],
+    at: &Installation<'_>,
+) -> Option<Result<serde_json::Value, String>> {
+    let mut command = std::process::Command::new(binary);
+    command.args(args);
+    if let Some(dir) = at.config_dir {
+        command.env(CODEX_SPEC.config_dir.env_var, dir);
+    }
+    if let Some(home) = at.home {
+        command.env("HOME", home);
+    }
+    if let Some(cwd) = at.cwd {
+        command.current_dir(cwd);
+    }
+    let out = match command.output() {
+        Ok(out) => out,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => return Some(Err(format!("could not run `{}`: {e}", binary.display()))),
+    };
+    Some(serde_json::from_slice(&out.stdout).map_err(|e| {
+        let said = String::from_utf8_lossy(&out.stderr);
+        format!("`{} {}` did not emit JSON ({e}){}", binary.display(), args.join(" "), match said.trim() {
+            "" => String::new(),
+            text => format!(": {}", text.lines().next().unwrap_or(text)),
+        })
+    }))
+}
+
+/// One `details` field off one check, or `None` — the shape of every reading above.
+fn detail(report: &serde_json::Value, check: &str, field: &str) -> Option<String> {
+    report["checks"][check]["details"][field].as_str().map(str::to_string)
+}
+
+/// A probe that ran and could not be read — not a refusal, for the reason
+/// [`LoginState::Unreadable`] gives.
+fn unreadable(invoked: &Path, why: String) -> HarnessReadiness {
+    HarnessReadiness {
+        invoked: invoked.display().to_string(),
+        login: LoginState::Unreadable { why },
+        ..HarnessReadiness::not_installed(&CODEX_SPEC)
     }
 }
 
@@ -4130,4 +4422,202 @@ args = ["--root", "~/notes"]
         );
     }
 
+    // --- the diagnostic probe (WP-25 #34; C8, C14) ------------------------------
+
+    /// One `auth.credentials` reading, in the vendor's own report shape.
+    ///
+    /// **Recorded from `codex-cli 0.153.4`, not invented.** Every field spelled
+    /// here was read off a real `codex doctor --json` against a fabricated
+    /// `CODEX_HOME`, which is what lets the three shapes be exercised on a machine
+    /// with no codex on it at all — and what lets the vendor tier's arm assert the
+    /// *same* readings against the real binary, so a vendor that renames one of
+    /// these fails there rather than passing quietly here.
+    fn recorded(status: &str, summary: &str, details: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "codexVersion": "0.153.4",
+            "checks": {
+                "auth.credentials": { "status": status, "summary": summary, "details": details },
+                "sandbox.helpers": { "status": "ok", "details": {
+                    "filesystem sandbox": "restricted",
+                    "network sandbox": "restricted",
+                    "approval policy": "OnRequest",
+                }},
+                "network.websocket_reachability": { "details": { "provider name": "loopback" }},
+                "config.load": { "details": { "model provider": "loop", "model": "gpt-5-codex" }},
+            }
+        })
+    }
+
+    /// **All three of C14's auth shapes count as logged in, and each is named.**
+    ///
+    /// The readings are the vendor tier's
+    /// `the_operators_own_seat_authenticates_and_a_fenced_seat_holds_nothing_of_the_operators`
+    /// exactly — a subscription plan reads `stored auth mode = chatgpt`, a stored
+    /// key reads `api_key`, and a named custom provider names the variable it
+    /// authenticates through. That arm proves the vendor produces them; this one
+    /// proves the gate reads all three as a login rather than only the shape the
+    /// machine it was written on happened to have.
+    #[test]
+    fn all_three_auth_shapes_count_as_logged_in_and_are_named_individually() {
+        let plan = login_state(
+            &recorded("ok", "auth is configured", serde_json::json!({
+                "stored auth mode": "chatgpt", "stored ChatGPT tokens": "true",
+            })),
+            Some("loopback"),
+        );
+        assert_eq!(
+            plan,
+            LoginState::LoggedIn(AccountShape::SubscriptionPlan { plan: None }),
+            "a subscription plan is a login (C14), and 0.153.4 reports no tier",
+        );
+        assert_eq!(plan.caveat(), Some(super::super::harness::REACHABILITY_NOT_AUTHORIZATION));
+
+        let key = login_state(
+            &recorded("ok", "auth is configured", serde_json::json!({
+                "stored auth mode": "api_key", "stored API key": "true",
+            })),
+            Some("loopback"),
+        );
+        assert_eq!(key, LoginState::LoggedIn(AccountShape::ApiKey), "a stored key is a login");
+
+        let custom = login_state(
+            &recorded("ok", "auth is provided by the active model provider", serde_json::json!({
+                "provider auth env var": "OPERATORS_SHELL_KEY (present)",
+            })),
+            Some("the operator's own"),
+        );
+        assert_eq!(
+            custom,
+            LoginState::LoggedIn(AccountShape::CustomProvider {
+                name: "the operator's own".to_string(),
+                env_var: Some("OPERATORS_SHELL_KEY".to_string()),
+            }),
+            "a named custom provider is a login, and the name is the operator's own (C2, C9)",
+        );
+
+        // Three shapes, three sentences. A gate that said "logged in" three times
+        // would tell an operator nothing about which credential a click spends.
+        let displayed: Vec<String> = [&plan, &key, &custom]
+            .iter()
+            .map(|state| match state {
+                LoginState::LoggedIn(shape) => shape.display(),
+                other => panic!("{other:?} is not a login"),
+            })
+            .collect();
+        assert_eq!(
+            displayed,
+            vec![
+                "subscription plan".to_string(),
+                "API key".to_string(),
+                "the operator's own (custom provider, via $OPERATORS_SHELL_KEY)".to_string(),
+            ],
+        );
+    }
+
+    /// **The one refusal is no usable credential at all** (C14).
+    ///
+    /// Two readings that must *not* refuse are asserted beside it, because each was
+    /// measured as a passing installation on 0.153.4 and each would be refused by
+    /// the obvious implementation: an ambient key with no stored file, and a
+    /// provider that needs no credential.
+    #[test]
+    fn the_gate_refuses_only_when_the_vendor_resolved_no_credential_at_all() {
+        let none = login_state(
+            &recorded("fail", "no Codex credentials were found", serde_json::json!({})),
+            Some("loopback"),
+        );
+        assert_eq!(
+            none,
+            LoginState::NoCredential { summary: "no Codex credentials were found".to_string() },
+            "the vendor's own sentence is the operator's most actionable line",
+        );
+        assert_eq!(none.caveat(), None, "there is nothing to caveat about a refusal");
+
+        // A named provider whose variable is *missing* is the same refusal, and the
+        // only thing separating it from the login above is the suffix.
+        let missing = login_state(
+            &recorded("fail", "active model provider auth env var is missing", serde_json::json!({
+                "provider auth env var": "FLEETOR_CODEX_KEY (missing)",
+            })),
+            Some("fleetor"),
+        );
+        assert!(matches!(missing, LoginState::NoCredential { .. }), "{missing:?}");
+
+        let ambient = login_state(
+            &recorded("ok", "auth is configured", serde_json::json!({
+                "auth env vars present": "CODEX_API_KEY",
+            })),
+            None,
+        );
+        assert_eq!(
+            ambient,
+            LoginState::LoggedIn(AccountShape::ApiKey),
+            "an ambient key with no stored file is a login the vendor honours (#29)",
+        );
+
+        let free = login_state(
+            &recorded("ok", "OpenAI auth is not required for the active model provider",
+                serde_json::json!({})),
+            Some("a local endpoint"),
+        );
+        assert_eq!(
+            free,
+            LoginState::LoggedIn(AccountShape::CustomProvider {
+                name: "a local endpoint".to_string(),
+                env_var: None,
+            }),
+            "a provider that needs no credential is usable, and refusing it would be \
+             story 9 at the gate",
+        );
+    }
+
+    /// **The model list is the vendor's catalog resolution, filtered its way.**
+    ///
+    /// `visibility` and `priority` are codex's own fields; an entry it marks `hide`
+    /// is one it does not offer in its own picker. The fixture is the real shape
+    /// `codex debug models` emits, with the ordering deliberately scrambled so the
+    /// sort is measured rather than coincidental.
+    #[test]
+    fn the_model_list_is_what_the_vendor_would_offer_in_the_vendors_own_order() {
+        let report = serde_json::json!({ "models": [
+            { "slug": "gpt-5.2", "display_name": "GPT-5.2", "visibility": "list", "priority": 29 },
+            { "slug": "gpt-6-astra", "display_name": "GPT-6-Astra", "visibility": "list", "priority": 1 },
+            { "slug": "gpt-5.4", "display_name": "GPT-5.4", "visibility": "hide", "priority": 16 },
+            { "slug": "gpt-5.5", "display_name": "GPT-5.5", "visibility": "list", "priority": 12 },
+        ]});
+        let listed = listed_models(&report);
+        assert_eq!(
+            listed.iter().map(|m| m.slug.as_str()).collect::<Vec<_>>(),
+            vec!["gpt-6-astra", "gpt-5.5", "gpt-5.2"],
+            "the hidden entry is not an option and the vendor's priority is the order",
+        );
+        assert_eq!(
+            listed.iter().map(|m| m.display_name.as_str()).collect::<Vec<_>>(),
+            vec!["GPT-6-Astra", "GPT-5.5", "GPT-5.2"],
+            "a picker needs the name a human recognises beside the slug the argv takes",
+        );
+        assert!(listed_models(&serde_json::json!({})).is_empty(), "no catalog is no options");
+    }
+
+    /// **A machine with no codex is an ordinary machine**, and the gate says so
+    /// rather than reporting a broken installation.
+    ///
+    /// This runs the production probe against a binary that does not exist, which
+    /// is the one arm of `diagnose` that needs no vendor at all — and it is the
+    /// arm that would otherwise be discovered by an operator who has never
+    /// installed codex.
+    #[test]
+    fn a_machine_without_the_vendor_reports_not_installed_and_never_a_failure() {
+        let nowhere = std::env::temp_dir().join("fleetor-no-such-codex-binary");
+        let readiness = diagnose(&Installation { binary: Some(&nowhere), ..Default::default() });
+        assert_eq!(readiness.login, LoginState::NotInstalled);
+        assert!(readiness.models.is_empty(), "nothing to offer and nothing guessed (M2)");
+        assert_eq!(readiness.posture, ResolvedPosture::default());
+        assert!(std::ptr::eq(readiness.harness, codex().spec()), "it is still codex that is absent");
+
+        let lines = readiness.notices();
+        assert_eq!(lines.len(), 1, "one sentence, no posture and no caveat: {lines:#?}");
+        assert_eq!(lines[0].0, NoticeLevel::Info, "not having a vendor is not a warning");
+        assert!(lines[0].1.contains("not installed"), "{}", lines[0].1);
+    }
 }

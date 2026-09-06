@@ -310,9 +310,16 @@ pub(crate) fn target_slug(target: &Path) -> String {
 /// mid-session takes effect on the next pane restart rather than being invisible
 /// until relaunch. The cost is a handful of filesystem checks, six times a session.
 ///
-/// **Two real constructors:** [`Host::discover`] reads the machine, [`Host::bare`]
-/// describes one that has nothing — which is how "no toolchain means those
-/// settings are absent rather than empty" becomes a case a test can express.
+/// **Three real constructors:** [`Host::discover`] reads the machine on the spawn
+/// path, [`Host::discover_for_the_gate`] reads it *and* asks each harness what it
+/// makes of it, and [`Host::bare`] describes a machine that has nothing — which is
+/// how "no toolchain means those settings are absent rather than empty" becomes a
+/// case a test can express.
+///
+/// **The split between the first two is where the cost lives**, and it is the shape
+/// of C8. Everything [`Host::discover`] reads is a filesystem check; the harness
+/// diagnosis is a subprocess and a live provider reachability request, so it belongs
+/// on the one screen the operator is already waiting on and nowhere near a pty.
 #[derive(Clone, Debug, Default)]
 pub struct Host {
     /// The built `fleet` binary, or `None` when this machine has none. A pane
@@ -346,6 +353,29 @@ pub struct Host {
     pub api_key_searched_from: Option<PathBuf>,
     /// Where prepared mission workspaces, the harness and the answer keys live.
     pub missions: evaluator::MissionRoots,
+    /// **What each harness reports about this machine — login state, account
+    /// shape, model list and resolved posture** (WP-25 #34; C8, C14).
+    ///
+    /// Here rather than inside `placement`'s bring-up sequence because these are
+    /// machine facts: the same kind of fact as the toolchain, the built `fleet`
+    /// binary and the worker key, and the same reason for being on this value.
+    /// Login state is a property of the operator's installation, it changes when
+    /// they log in, and reading it means running a subprocess — none of which a
+    /// function that must run identically against a scratch directory may do.
+    /// **This is what preserves the module's one rule** rather than an exception
+    /// to it.
+    ///
+    /// **Empty on the spawn path, and populated only at the gate.** [`Host::discover`]
+    /// leaves it empty; [`Host::discover_for_the_gate`] fills it. The probe makes a
+    /// live provider reachability request, so a spawn path that took it would put a
+    /// network round trip between a click and a pty (C8). Asserted in
+    /// `tests/placement_reads_nothing.rs`, not promised.
+    ///
+    /// **A `Vec` keyed by harness rather than a field per vendor**, so a second
+    /// harness's readiness is a second entry rather than a second field — and so
+    /// nothing in the type says codex. Only [`Host::discover_for_the_gate`] names a
+    /// vendor, for the reason it gives.
+    pub harnesses: Vec<harness::HarnessReadiness>,
 }
 
 impl Host {
@@ -361,6 +391,42 @@ impl Host {
             api_key: crate::fleet::deepseek_api_key(),
             api_key_searched_from: Some(crate::fleet::api_key_search_start()),
             missions: evaluator::MissionRoots::discover(),
+            // **Empty, and that is the ticket.** Everything above is a filesystem
+            // check costing microseconds; a harness diagnosis is a subprocess and a
+            // live provider reachability request. D13's "discovered per spawn" is
+            // affordable precisely because nothing here talks to a network, and
+            // this is the field that would have made it false.
+            harnesses: Vec::new(),
+        }
+    }
+
+    /// **The gate's discovery: this machine, plus what each harness says about
+    /// it** (WP-25 #34; C8, C14).
+    ///
+    /// The third real constructor, and the only one that may be slow. It is
+    /// [`Host::discover`] with [`Host::harnesses`] filled in, which costs a
+    /// subprocess per harness and, for codex, a live provider *reachability*
+    /// request measured at about 1.4 s.
+    ///
+    /// **Its one production caller is the gate** — `fleet_bootstrap`, where the
+    /// operator's single-screen cost statement is assembled and where the notices
+    /// it produces go on the Activity feed. It is not called from
+    /// [`place`] or from anything `place` reaches, which
+    /// `tests/placement_reads_nothing.rs` asserts by reading this file.
+    ///
+    /// **Codex is named here and nowhere else, and that is deliberate rather than
+    /// tidy.** [`Host::harnesses`] is a list keyed by harness with nothing
+    /// vendor-shaped in it; what is vendor-shaped is *having a diagnostic to run*,
+    /// and codex is the only registered harness with one built. Claude Code's login
+    /// check (M17 — `~/.claude.json`'s presence, carrying the same
+    /// reachability-not-authorization caveat) is a second push into this vector
+    /// when the ticket that builds it lands, not a redesign. A trait method would
+    /// have made it a fifteenth checkpoint, which is the wrong shape: the fourteen
+    /// are facts about a vendor, and this is a fact about a machine.
+    pub fn discover_for_the_gate() -> Self {
+        Self {
+            harnesses: vec![codex::diagnose(&codex::Installation::default())],
+            ..Self::discover()
         }
     }
 
@@ -369,6 +435,20 @@ impl Host {
     /// absent-binary branches testable at all.
     pub fn bare() -> Self {
         Self::default()
+    }
+
+    /// **What the operator is told about the harnesses on this machine**, in the
+    /// order they should read it (WP-25 #34).
+    ///
+    /// A sibling of [`machine_notices`] and here for the same reason: the sentences
+    /// and the conditions are placement's, the emit is the caller's. It is separate
+    /// from [`machine_notices`] because the two are asked at different moments —
+    /// that one runs before every spawn, this one once at the gate.
+    ///
+    /// Empty on a [`Host`] from [`Host::discover`], which is the honest answer: a
+    /// machine nobody asked about has nothing to report.
+    pub fn harness_notices(&self) -> Vec<(NoticeLevel, String)> {
+        self.harnesses.iter().flat_map(harness::HarnessReadiness::notices).collect()
     }
 
     /// The `PATH` `orch` runs with: the `fleet` binary's directory, the operator's
@@ -1307,6 +1387,28 @@ mod tests {
         assert!(host.pane_program.is_none(), "a bare machine has no stand-in override");
         assert!(host.toolchain.is_none(), "a bare machine has no rustup");
         assert!(host.api_key.is_none(), "a bare machine has no worker key");
+        assert!(host.harnesses.is_empty(), "and nobody has asked a harness about it (#34)");
+        assert!(host.harness_notices().is_empty(), "so there is nothing to tell the operator");
+    }
+
+    /// **The spawn path's discovery does not run a harness diagnostic** (#34; C8).
+    ///
+    /// [`Host::discover`] runs before every pane comes up. The codex probe makes a
+    /// live provider reachability request, so a spawn path that took it would put a
+    /// network round trip between a click and a pty — and D13's "discovered per
+    /// spawn, not once at bootstrap" is affordable only because everything on it is
+    /// a filesystem check.
+    ///
+    /// The behavioural half of the pin. `tests/placement_reads_nothing.rs` reads
+    /// this file's source for the other half, because a probe reached through some
+    /// other call site would produce the identical value here.
+    #[test]
+    fn the_spawn_paths_discovery_asks_no_harness_anything() {
+        assert!(
+            Host::discover().harnesses.is_empty(),
+            "a harness diagnosis is a subprocess and a network request; it belongs on the \
+             gate (`Host::discover_for_the_gate`) and nowhere the spawn path reaches",
+        );
     }
 
     /// Moved here with the notice itself when `orch` moved onto the placement

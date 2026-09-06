@@ -1274,6 +1274,370 @@ pub fn by_name(name: &str) -> Option<&'static dyn Harness> {
     registered().iter().copied().find(|h| h.spec().name == name)
 }
 
+// --- what a harness reports about this machine (WP-25 #34; C8, C14) ------------
+
+/// **What one harness reports about *this machine*, read at the gate** (WP-25 #34;
+/// C8, C14, C47).
+///
+/// **Not a fifteenth checkpoint, and deliberately not a method on [`Harness`].**
+/// The fourteen are answers about a *vendor* — what it is called, which key carries
+/// a brief, how it stores a transcript — and every one of them is a `'static` value
+/// or a pure function of the pane's own inputs. This is the other kind of fact
+/// entirely: it is what the operator's installation happens to be right now, it
+/// changes when they run `codex login`, and reading it costs a subprocess and a
+/// network round trip. That is [`Host`](super::Host)'s job, which is why this is a
+/// value [`Host`] carries rather than a trait method a harness answers.
+///
+/// **Nothing in `placement`'s placing path constructs one.** It is built by
+/// [`Host::discover_for_the_gate`](super::Host::discover_for_the_gate) and by
+/// nothing else in production — asserted, not promised, in
+/// `tests/placement_reads_nothing.rs`.
+///
+/// **Every field is public and every one is a plain owned value**, so a test builds
+/// the machine it wants to describe rather than arranging for the operator's
+/// installation to be in that state. That is [`Host::bare`](super::Host::bare)'s
+/// property applied one level down.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HarnessReadiness {
+    /// Which harness this describes.
+    pub harness: &'static HarnessSpec,
+    /// The program name as invoked — checkpoint 1's [`Program::bin`], resolved by
+    /// the operator's own `PATH`.
+    pub invoked: String,
+    /// **The vendor binary behind that name, absolutely** (C47). `None` when the
+    /// probe could not resolve one, and then [`Self::readings_agree`] is `false`
+    /// because there was only ever one reading.
+    ///
+    /// C47's rule is that any measurement of flags or resolved configuration takes
+    /// both readings, because the `codex` on a developer's `PATH` may be a wrapper
+    /// that injects flags — and on the machine this was written on it is.
+    pub resolved: Option<PathBuf>,
+    /// Whether the two readings said the same thing about everything below.
+    ///
+    /// **The half of C47 that is for the operator rather than for the suite.** A
+    /// wrapper that changes what the vendor resolves is a fleet whose gate
+    /// describes a configuration no pane will run under, and the operator is the
+    /// only one who can do anything about it.
+    pub readings_agree: bool,
+    /// The vendor's own version string, as it reported it.
+    pub version: Option<String>,
+    /// Whether this machine has a usable credential, and in which shape.
+    pub login: LoginState,
+    /// The model provider the vendor resolved — a fact displayed beside the model,
+    /// never a control (C2 as amended by C9).
+    pub provider: Option<String>,
+    /// **What the vendor's own catalog resolution offers**, in the vendor's own
+    /// order (C2).
+    ///
+    /// Read out of the vendor rather than out of its catalog file, so a picker's
+    /// options are what the harness would actually accept — an operator pointing
+    /// `model_catalog_json` at a file of their own gets *their* list here, and a
+    /// reader of the file would have got it only by reimplementing the vendor's
+    /// resolution and its `~` handling.
+    ///
+    /// Empty on a machine whose harness has no catalog to resolve, which is a real
+    /// answer and not a failure: it means the gate offers no list and the operator
+    /// types a name.
+    pub models: Vec<ModelChoice>,
+    /// The containment the vendor *resolved*, which is not the keys FLEETOR wrote
+    /// (C8).
+    pub posture: ResolvedPosture,
+}
+
+/// One model a harness would accept, as the vendor names it.
+///
+/// Two strings because a picker needs both and they differ: `gpt-5.6-sol` is what
+/// goes on the argv, `GPT-5.6-Sol` is what a human recognises.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelChoice {
+    /// What the harness accepts — checkpoint 3's `--model` value.
+    pub slug: String,
+    /// What the vendor calls it in front of a person.
+    pub display_name: String,
+}
+
+/// Whether this machine can authenticate a seat on one harness, and how.
+///
+/// **The refusal is one variant and it is narrow on purpose** (C14). Codex has
+/// three credential shapes and any of them is a login; refusing anything but "no
+/// usable credential at all" would be story 9's *a supported feature looks
+/// unimplemented*, at the gate. C9 is what makes that proportionate — the
+/// orchestrator is the only seat that spends the operator's own credential, so the
+/// gate is deciding about one pane rather than about a fleet.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LoginState {
+    /// A usable credential, in the shape the vendor reported.
+    LoggedIn(AccountShape),
+    /// **The one refusal**: the vendor resolved no usable credential at all,
+    /// carrying the vendor's own sentence about why.
+    NoCredential {
+        /// What the vendor said, verbatim — the operator's most actionable line.
+        summary: String,
+    },
+    /// The harness's binary is not on this machine, so there was nothing to ask.
+    NotInstalled,
+    /// The probe ran and its answer could not be read — a vendor that changed its
+    /// report format, or one that would not start.
+    ///
+    /// **Not a refusal and not a login.** A gate that treated an unreadable probe
+    /// as "logged out" would refuse a working installation on the strength of a
+    /// parse error, which is the failure mode C14's narrowness exists to avoid.
+    Unreadable {
+        /// What went wrong, for the operator rather than for a log.
+        why: String,
+    },
+}
+
+impl LoginState {
+    /// Whether the gate may offer this harness a seat.
+    pub fn is_logged_in(&self) -> bool {
+        matches!(self, LoginState::LoggedIn(_))
+    }
+
+    /// **What a passing probe does not prove, in the operator's words** (C14, M17).
+    ///
+    /// `Some` exactly when this machine looks logged in, because that is the only
+    /// state where the caveat can mislead somebody. A vendor's diagnostic reports
+    /// that a credential resolved and that its provider answered — not that the
+    /// provider *accepted* it. Codex's probe returned **HTTP 401 against a live
+    /// provider and still counted as reachable**, and Claude Code's login check is
+    /// the same class: `~/.claude.json`'s presence proves a login happened, not
+    /// that the token still works (M17).
+    ///
+    /// **Returned rather than logged, so it reaches the operator.** The rejected
+    /// alternative was a live authenticated probe at gate time, which is real and
+    /// which on a subscription plan spends quota before the operator has agreed to
+    /// spend anything — precisely what the gate's single-screen cost statement
+    /// exists to prevent. Having refused the check, the fleet owes the operator the
+    /// sentence.
+    pub fn caveat(&self) -> Option<&'static str> {
+        self.is_logged_in().then_some(REACHABILITY_NOT_AUTHORIZATION)
+    }
+}
+
+/// The sentence [`LoginState::caveat`] returns, pinned by a test for the reason
+/// every other operator-facing constant in this module is: it is the whole of what
+/// the gate says about a check it deliberately did not make.
+pub const REACHABILITY_NOT_AUTHORIZATION: &str =
+    "this only proves a credential resolved and its provider answered — not that the \
+     provider accepted it. A revoked or expired key clears this check and fails on the \
+     pane's first turn. The fleet does not spend a token to find out, so if a pane \
+     reports an authentication error on turn one, this is why.";
+
+/// Which shape of credential a machine is logged in with (C14).
+///
+/// **Three variants because the vendor has three mechanisms, and each is named
+/// individually rather than flattened to `true`.** An operator debugging a pane
+/// that will not authenticate needs to know *which* credential the fleet is about
+/// to spend: a plan, a stored key, and a provider of their own fail differently and
+/// are fixed differently.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AccountShape {
+    /// A subscription plan the vendor stores tokens for.
+    SubscriptionPlan {
+        /// The plan's tier, where the vendor's diagnostic names one.
+        ///
+        /// **`None` on codex 0.153.4, and that is a measurement rather than a gap
+        /// in this code** (#34). `doctor` reports `stored auth mode = chatgpt` and
+        /// says nothing about the tier — the tier is inside the stored id token,
+        /// and reading it would mean parsing the credential file this arc took
+        /// pains to reach only through the vendor. C14 said the gate would show
+        /// "ChatGPT &lt;plan&gt;"; what it can honestly show is the shape.
+        plan: Option<String>,
+    },
+    /// A key the vendor stores or reads from the environment.
+    ApiKey,
+    /// A provider of the operator's own, by the name they gave it.
+    CustomProvider {
+        /// What the operator called it.
+        name: String,
+        /// The environment variable it authenticates through, where it names one.
+        /// `None` for a provider carrying its credential inline, or one that needs
+        /// none at all.
+        env_var: Option<String>,
+    },
+}
+
+impl AccountShape {
+    /// What the gate puts beside the model — one short phrase, the shape named
+    /// (C14).
+    pub fn display(&self) -> String {
+        match self {
+            AccountShape::SubscriptionPlan { plan: Some(plan) } => {
+                format!("subscription plan ({plan})")
+            }
+            AccountShape::SubscriptionPlan { plan: None } => "subscription plan".to_string(),
+            AccountShape::ApiKey => "API key".to_string(),
+            AccountShape::CustomProvider { name, env_var: Some(var) } => {
+                format!("{name} (custom provider, via ${var})")
+            }
+            AccountShape::CustomProvider { name, env_var: None } => {
+                format!("{name} (custom provider)")
+            }
+        }
+    }
+}
+
+/// The containment a harness *resolved*, as opposed to the keys FLEETOR wrote into
+/// its configuration (C8, checkpoint 3's `sandbox_keys`).
+///
+/// **The distinction is the whole point.** Placement writes `sandbox_mode` and
+/// `approval_policy` into every codex pane's seed; nothing about having written
+/// them proves the vendor read them, and a release that renames one produces a
+/// fleet that is configured to be fenced and is not. This is the vendor's own
+/// reading back.
+///
+/// Every field is `Option<String>` rather than an enum of postures, because these
+/// are the vendor's words and a vendor that invents a fourth posture should show
+/// the operator its name rather than be forced into the nearest of three.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ResolvedPosture {
+    /// What the vendor resolved for filesystem writes.
+    pub filesystem: Option<String>,
+    /// What it resolved for outbound network access.
+    pub network: Option<String>,
+    /// What it resolved for asking a human — the row that matters most to a fenced
+    /// pane, because a worker has no human and a posture that asks one parks.
+    pub approval: Option<String>,
+}
+
+impl ResolvedPosture {
+    /// The rows, in the order the operator should read them, skipping any the
+    /// vendor did not report.
+    pub fn rows(&self) -> Vec<(&'static str, &str)> {
+        [
+            ("filesystem", self.filesystem.as_deref()),
+            ("network", self.network.as_deref()),
+            ("approval", self.approval.as_deref()),
+        ]
+        .into_iter()
+        .filter_map(|(name, value)| value.map(|v| (name, v)))
+        .collect()
+    }
+}
+
+impl HarnessReadiness {
+    /// A harness whose binary this machine does not have.
+    ///
+    /// A real value describing a real machine rather than a placeholder — the same
+    /// role [`Host::bare`](super::Host::bare) plays — so the "no codex installed"
+    /// branch of the gate is a case a test can express.
+    pub fn not_installed(harness: &'static HarnessSpec) -> Self {
+        Self {
+            harness,
+            invoked: harness.program.bin.to_string(),
+            resolved: None,
+            readings_agree: false,
+            version: None,
+            login: LoginState::NotInstalled,
+            provider: None,
+            models: Vec::new(),
+            posture: ResolvedPosture::default(),
+        }
+    }
+
+    /// **What the operator is told, for the Activity feed** (WP-25 #34).
+    ///
+    /// Returned rather than emitted, which is the shape everything operator-facing
+    /// in `placement` already uses (see the module header): this module holds no
+    /// store, and a returned line is one a test can assert on.
+    ///
+    /// The caveat is a [`NoticeLevel::Warn`] on a machine that is *logged in*, and
+    /// that inversion is deliberate. It is not a warning that something is wrong —
+    /// it is a warning that a green check is narrower than it looks, and the moment
+    /// it is useful is exactly the moment everything appears fine.
+    pub fn notices(&self) -> Vec<(NoticeLevel, String)> {
+        let name = self.harness.name;
+        let mut notices = Vec::new();
+        match &self.login {
+            LoginState::NotInstalled => {
+                notices.push((
+                    NoticeLevel::Info,
+                    format!(
+                        "{name} is not installed on this machine — `{}` is not on the \
+                         PATH the app was launched with, so no seat can run it.",
+                        self.invoked,
+                    ),
+                ));
+                return notices;
+            }
+            LoginState::Unreadable { why } => {
+                notices.push((
+                    NoticeLevel::Warn,
+                    format!(
+                        "{name} is installed and its diagnostic could not be read: {why}. \
+                         The gate cannot say whether a seat on it would authenticate.",
+                    ),
+                ));
+                return notices;
+            }
+            LoginState::NoCredential { summary } => {
+                notices.push((
+                    NoticeLevel::Warn,
+                    format!(
+                        "{name} has no usable credential on this machine: {summary}. \
+                         Log in with `{}` before giving a seat to {name}.",
+                        self.invoked,
+                    ),
+                ));
+                return notices;
+            }
+            LoginState::LoggedIn(shape) => {
+                let version = self.version.as_deref().unwrap_or("an unreported version");
+                let provider = match &self.provider {
+                    Some(p) => format!(", provider {p}"),
+                    None => String::new(),
+                };
+                notices.push((
+                    NoticeLevel::Info,
+                    format!(
+                        "{name} {version} is logged in: {}{provider}. {} model{} offered.",
+                        shape.display(),
+                        self.models.len(),
+                        if self.models.len() == 1 { "" } else { "s" },
+                    ),
+                ));
+            }
+        }
+
+        let posture = self.posture.rows();
+        if !posture.is_empty() {
+            notices.push((
+                NoticeLevel::Info,
+                format!(
+                    "{name} resolved its containment as {} — read back from the vendor, \
+                     not from the keys FLEETOR wrote.",
+                    posture
+                        .iter()
+                        .map(|(k, v)| format!("{k} {v}"))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                ),
+            ));
+        }
+
+        if let Some(resolved) = &self.resolved {
+            if !self.readings_agree {
+                notices.push((
+                    NoticeLevel::Warn,
+                    format!(
+                        "the `{}` on your PATH is a wrapper: it and the vendor binary at {} \
+                         report different configurations. What a pane runs under is the \
+                         second one, so the first is not what the gate above describes.",
+                        self.invoked,
+                        resolved.display(),
+                    ),
+                ));
+            }
+        }
+
+        if let Some(caveat) = self.login.caveat() {
+            notices.push((NoticeLevel::Warn, format!("{name}: {caveat}")));
+        }
+        notices
+    }
+}
+
 // --- pinning the two forms together -------------------------------------------
 
 /// **What the expand step's safety net became once there was no second form
@@ -1442,5 +1806,143 @@ mod tests {
         }
 
         std::fs::remove_dir_all(&scratch).ok();
+    }
+
+    // --- what a harness reports about this machine (WP-25 #34) ------------------
+
+    /// A machine that is logged in, described as a value rather than arranged for.
+    ///
+    /// **This is the answer to "how does a test supply this without touching the
+    /// operator's installation".** Every field is public and owned, so the state
+    /// the gate has to render is written down here instead of being produced by
+    /// logging somebody in — the same property [`Host::bare`](super::Host::bare)
+    /// gives the machine one level up.
+    fn logged_in() -> HarnessReadiness {
+        HarnessReadiness {
+            harness: crate::placement::codex::codex().spec(),
+            invoked: "codex".to_string(),
+            resolved: Some(PathBuf::from("/opt/vendor/bin/codex")),
+            readings_agree: true,
+            version: Some("0.153.4".to_string()),
+            login: LoginState::LoggedIn(AccountShape::ApiKey),
+            provider: Some("loopback".to_string()),
+            models: vec![ModelChoice {
+                slug: "gpt-6-astra".to_string(),
+                display_name: "GPT-6-Astra".to_string(),
+            }],
+            posture: ResolvedPosture {
+                filesystem: Some("restricted".to_string()),
+                network: Some("restricted".to_string()),
+                approval: Some("never".to_string()),
+            },
+        }
+    }
+
+    /// **The reachability-not-authorization caveat reaches the operator**, on the
+    /// one machine state where it can mislead them (#34; C14, M17).
+    ///
+    /// This is the acceptance criterion that is easiest to satisfy dishonestly: a
+    /// caveat recorded in `decisions.md` and nowhere else is a caveat the operator
+    /// never sees, and the failure it describes — a revoked key clearing the gate
+    /// and failing on turn one — looks like a FLEETOR bug from the outside. So the
+    /// assertion is that the sentence is *on the feed*, that it says what the check
+    /// did not prove, and that it does not appear on a machine with nothing to be
+    /// wrong about.
+    #[test]
+    fn the_reachability_caveat_is_on_the_feed_whenever_the_gate_says_logged_in() {
+        let lines = logged_in().notices();
+        let caveat = lines
+            .iter()
+            .find(|(_, text)| text.contains(REACHABILITY_NOT_AUTHORIZATION))
+            .unwrap_or_else(|| panic!("the caveat never reached the operator: {lines:#?}"));
+        assert_eq!(caveat.0, NoticeLevel::Warn, "a green check that is narrower than it looks");
+        assert!(caveat.1.starts_with("codex:"), "it names which harness: {}", caveat.1);
+        assert!(
+            REACHABILITY_NOT_AUTHORIZATION.contains("first turn"),
+            "the operator needs when it bites, not only that it is imprecise",
+        );
+        assert!(
+            REACHABILITY_NOT_AUTHORIZATION.contains("does not spend a token"),
+            "and why the fleet did not simply check — the rejected live probe (C14)",
+        );
+
+        // Not on a machine with no credential: there is no green check to qualify,
+        // and a caveat beside a refusal reads as a second problem.
+        let refused = HarnessReadiness {
+            login: LoginState::NoCredential { summary: "no Codex credentials".to_string() },
+            ..logged_in()
+        };
+        assert!(
+            !refused.notices().iter().any(|(_, t)| t.contains(REACHABILITY_NOT_AUTHORIZATION)),
+            "{:#?}",
+            refused.notices(),
+        );
+    }
+
+    /// **The gate names the shape, the provider and the posture it read back.**
+    ///
+    /// The posture line is checkpoint 3's read *back*: placement writes
+    /// `sandbox_mode` and `approval_policy` into every codex pane, and nothing
+    /// about having written them proves the vendor resolved them. C8's whole point
+    /// is that the gate shows the second thing.
+    #[test]
+    fn the_gate_says_the_shape_the_provider_and_the_posture_the_vendor_resolved() {
+        let lines = logged_in().notices();
+        let text = lines.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("API key"), "the shape is named individually (C14): {text}");
+        assert!(text.contains("loopback"), "the provider is displayed beside it (C2): {text}");
+        assert!(text.contains("0.153.4"), "which build answered: {text}");
+        assert!(text.contains("1 model offered"), "what a picker will have: {text}");
+        assert!(
+            text.contains("filesystem restricted, network restricted, approval never"),
+            "the resolved containment, all three rows: {text}",
+        );
+        assert!(
+            text.contains("not from the keys FLEETOR wrote"),
+            "and that it is a read-back rather than a restatement of the seed: {text}",
+        );
+    }
+
+    /// **A wrapper on the PATH is the operator's problem to know about** (C47).
+    ///
+    /// The `codex` on the machine this was written on is a shim that injects flags,
+    /// and #31 found the class where that changes a verdict absolutely. When the
+    /// two readings disagree, the gate is describing a configuration no pane will
+    /// run under — which is unactionable unless the operator is told.
+    #[test]
+    fn two_readings_that_disagree_are_a_warning_and_two_that_agree_are_silent() {
+        assert!(
+            !logged_in().notices().iter().any(|(_, t)| t.contains("is a wrapper")),
+            "agreeing readings say nothing about the wrapper",
+        );
+        let disagreeing = HarnessReadiness { readings_agree: false, ..logged_in() };
+        let warned = disagreeing
+            .notices()
+            .into_iter()
+            .find(|(_, t)| t.contains("is a wrapper"))
+            .expect("a disagreement the operator is not told about is C47 unenforced");
+        assert_eq!(warned.0, NoticeLevel::Warn);
+        assert!(warned.1.contains("/opt/vendor/bin/codex"), "it names both readings: {}", warned.1);
+    }
+
+    /// The three shapes' sentences, pinned — they are what an operator debugging a
+    /// pane that will not authenticate reads to know which credential is at stake.
+    #[test]
+    fn each_auth_shape_has_its_own_sentence() {
+        assert_eq!(AccountShape::ApiKey.display(), "API key");
+        assert_eq!(
+            AccountShape::SubscriptionPlan { plan: None }.display(),
+            "subscription plan",
+            "0.153.4's `doctor` reports the shape and not the tier — see the field",
+        );
+        assert_eq!(
+            AccountShape::SubscriptionPlan { plan: Some("pro".into()) }.display(),
+            "subscription plan (pro)",
+            "and a release that starts naming one needs no code change here",
+        );
+        assert_eq!(
+            AccountShape::CustomProvider { name: "mine".into(), env_var: None }.display(),
+            "mine (custom provider)",
+        );
     }
 }

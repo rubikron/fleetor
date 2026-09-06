@@ -310,6 +310,26 @@ pub fn fleet_bootstrap(
     let target = Target::new(resolve_target(&layout, &store)?);
     let config = fleet_config_for(&target.get());
 
+    // **What each harness makes of this machine, asked once, here** (WP-25 #34; C8,
+    // C14). This is the gate: the screen where the operator decides what a click
+    // will spend, and the only place a live provider reachability request belongs.
+    // The spawn path's `Host::discover` deliberately does not take it.
+    //
+    // **Off the bootstrap thread**, because the probe costs a subprocess and a
+    // network round trip per harness — about 1.4 s for codex — and the operator
+    // should not wait on it to see a window. The lines land on the feed a moment
+    // later, which is what the feed is for; every other notice here is already
+    // chronological.
+    //
+    // The sentences and the conditions are placement's (`Host::harness_notices`);
+    // this is the emit and nothing more, exactly as `machine_notices` is above.
+    let harness_store = store.clone();
+    std::thread::spawn(move || {
+        for (level, text) in placement::Host::discover_for_the_gate().harness_notices() {
+            note(&harness_store, level, &text);
+        }
+    });
+
     // Stamp what this run is, for the History row it becomes at the next start.
     // The target is only ever prose inside a notice in the log, so a run that
     // ended without this marker lists with an unknown target rather than a guess.
