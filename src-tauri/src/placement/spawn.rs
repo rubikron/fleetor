@@ -79,7 +79,7 @@ use fleetor_core::brief::{render_orch, render_worker};
 use fleetor_core::pane::{PaneId, WORKER_SLOTS};
 use portable_pty::CommandBuilder;
 
-use super::harness::{Harness, HarnessSpec, Seat, Seed};
+use super::harness::{CredentialSource, Harness, HarnessSpec, Seat, Seed};
 use crate::prompts::PaneContext;
 
 /// Overrides the program every pane runs. Set by `src-tauri/tests/panes.rs` to
@@ -374,12 +374,17 @@ pub(super) fn critic_command_with(
 pub(super) fn worker_command_with(
     harness: &'static dyn Harness,
     slot: u8,
-    model: &str,
     cwd: &Path,
     home: &Path,
     config_dir: &Path,
     socket: &Path,
     api_key: &str,
+    // **`Option`, because a plan seat names no model** (C80). It was `&str` with
+    // the fleet's own model substituted upstream, which put `ANTHROPIC_MODEL` on
+    // every worker — including one running the operator's login, where the fleet's
+    // model is a name its vendor has never heard of.
+    model: Option<&str>,
+    credential_source: &CredentialSource<'_>,
     toolchain: Option<&FleetToolchain>,
     ctx: &PaneContext,
     program: Option<&str>,
@@ -399,16 +404,18 @@ pub(super) fn worker_command_with(
         // is for one that takes it in the environment (Claude Code's). One seat,
         // one value, two possible carriers — never both at once, which is what
         // the conformance suite's checkpoint 3 refuses.
-        &harness.command_args(
-            &Seat::new(&render_worker(
-                &ctx.worker_template,
-                pane,
-                &roster(),
-                &cwd.display().to_string(),
-            ))
-            .with_model(model)
-            .with_permission_mode(&ctx.launch.worker_permission_mode),
-        ),
+        &{
+            let brief = render_worker(&ctx.worker_template, pane, &roster(), &cwd.display().to_string());
+            let seat = Seat::new(&brief).with_permission_mode(&ctx.launch.worker_permission_mode);
+            // **The argv half of the same rule** (C80). A harness that takes its
+            // model in argv (codex's `--model`) must not be handed the fleet's on
+            // a plan seat any more than one that takes it in the environment.
+            let seat = match model {
+                Some(model) => seat.with_model(model),
+                None => seat,
+            };
+            harness.command_args(&seat)
+        },
     );
     cmd.cwd(cwd);
     apply_pane_env(&mut cmd, pane, socket, path.to_string());
@@ -452,18 +459,37 @@ pub(super) fn worker_command_with(
     // does not take it that way, not a worker that goes without: checkpoint 5's
     // `provider_keys` is the config-dir channel for one that is configured
     // instead, and the conformance suite refuses a harness with neither.
-    if let Some(var) = spec.credentials.base_url_env {
-        cmd.env(var, &ctx.launch.worker_base_url);
+    //
+    // **A plan-backed seat is given neither** (C73, C75), and that is a
+    // measurement rather than tidiness. The fleet's endpoint is a different
+    // provider, so an Anthropic OAuth credential presented there authenticates
+    // nothing; and `ANTHROPIC_AUTH_TOKEN`'s mere *presence* selects the metered
+    // path, so setting it would put a pane on API billing while the operator was
+    // told it runs their plan (C71). Its credential arrives through checkpoint 4's
+    // directory instead — planted by this harness's seeder, which is the one
+    // channel a fenced pane can still reach.
+    if credential_source.is_the_operators_plan() {
+        // Said out loud rather than left as an empty branch: the two variables
+        // below are deliberately absent here, and `Placed::scrubbed` reports the
+        // scrub that still happens either way.
+    } else {
+        if let Some(var) = spec.credentials.base_url_env {
+            cmd.env(var, &ctx.launch.worker_base_url);
+        }
+        if let Some(var) = spec.credentials.token_env {
+            cmd.env(var, api_key);
+        }
     }
-    if let Some(var) = spec.credentials.token_env {
-        cmd.env(var, api_key);
-    }
-    // Checkpoint 3's model channel. A worker is always given one — the gate's pick
-    // or the launch configuration's — because its provider is FLEETOR's and there
-    // is no vendor default to fall back to (C9). The attended seats are the other
-    // way round and stay that way: `orch` names a model only when the operator
-    // picked one (M2), and the two judges never do.
-    if let Some(var) = spec.posture.model_env {
+    // Checkpoint 3's model channel. **A fleet-key worker is always given one** —
+    // the gate's pick or the launch configuration's — because its provider is
+    // FLEETOR's and there is no vendor default to fall back to (C9).
+    //
+    // **A plan seat is the other way round, and C80 is why that matters.** Its
+    // provider *is* the vendor's, so there is a default to fall back to and the
+    // fleet's model is a name that vendor has never heard of. `model` arrives
+    // `None` on such a seat and nothing is set — the same shape `orch` has always
+    // had (M2), reached now by a second seat rather than by a second rule.
+    if let (Some(var), Some(model)) = (spec.posture.model_env, model) {
         cmd.env(var, model);
     }
     // Checkpoint 11's export half, off the spec (WP-25 #23). A harness that does
@@ -473,8 +499,17 @@ pub(super) fn worker_command_with(
     // read from `gauge.window_tokens`, so the vendor's bookkeeping and the rail's
     // display cannot disagree (D-054). Both `None` is a harness that publishes its
     // own window, which is the strictly better answer and gets nothing exported.
-    if let (Some(var), Some(window)) = (spec.gauge.window_env, spec.gauge.window_tokens) {
-        cmd.env(var, window.to_string());
+    //
+    // **Not on a plan seat** (C80), for the reason the comment above gives read the
+    // other way: the fleet exports this *because* it is the one asserting the
+    // window, and on a plan seat it is not. Exporting the fleet model's window to
+    // a pane running the operator's own model tells that pane to compact against a
+    // number belonging to a different provider — the WP-02 failure this export
+    // exists to prevent, caused by the export itself.
+    if !credential_source.is_the_operators_plan() {
+        if let (Some(var), Some(window)) = (spec.gauge.window_env, spec.gauge.window_tokens) {
+            cmd.env(var, window.to_string());
+        }
     }
     // Checkpoint 5's second half, and the half that is easier to get wrong.
     //
@@ -1071,12 +1106,13 @@ mod tests {
         worker_command_with(
             super::super::harness::claude_code(),
             slot,
-            &ctx.launch.worker_model,
             cwd,
             home,
             config_dir,
             socket,
             api_key,
+            Some(ctx.launch.worker_model.as_str()),
+            &CredentialSource::FleetKey,
             toolchain,
             ctx,
             pane_program().as_deref(),

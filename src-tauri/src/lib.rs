@@ -14,6 +14,7 @@ pub mod context_gauge;
 /// The Critic (WP-20, D-076) — what it is told, and where it works. Its brief is
 /// `prompts/critic.md`, overridable from `~/.fleetor/prompts/` like every other
 /// brief, and it exists whether or not dev mode is on: it is a product feature.
+pub mod credential_source;
 pub mod critic;
 pub mod deliver;
 /// Dev mode (WP-16) — read by the UI and by later packages, never by the

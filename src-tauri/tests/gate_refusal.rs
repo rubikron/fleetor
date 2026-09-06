@@ -347,16 +347,35 @@ fn names_the_fleets_own_key(sentence: &str) -> bool {
     sentence.contains("runs FLEETOR's own provider and key")
 }
 
-/// **C9's split survives in the sentences themselves** (story 12).
+/// Whether a worker sentence describes running the operator's plan.
 ///
-/// The asymmetry is the whole content of the cost line. A codex or Claude Code
-/// *orchestrator* runs the operator's own login and inherited provider, so a turn
-/// there can draw down their subscription quota; a *worker* is fenced on FLEETOR's
-/// provider and key and cannot reach that plan at all (D-030, D-052, D-062). One
-/// sentence that covered both would have to be vague enough to be useless, and a
-/// sentence that promised the wrong one would be worse than none.
+/// **A separate predicate from [`names_the_operators_own_login`], and not a
+/// widening of it.** That one reads the orchestrator's fixed sentence; this one
+/// reads a branch. Sharing a matcher between them is what let this file keep
+/// passing after C75 moved the axis: `worker_cost`'s plan branch says "runs your
+/// own `{harness}` login", which the orchestrator's matcher does not see, so the
+/// old assertion went on being true about a sentence it was no longer about.
+fn names_the_operators_plan(sentence: &str) -> bool {
+    sentence.contains("runs your own {harness} login")
+}
+
+/// **The cost line's split is plan-versus-fleet-key** (story 12, reshaped by C75).
+///
+/// **This assertion used to be orchestrator-versus-worker, and #49 predicted it
+/// would go wrong here rather than fail.** It was true while a worker could only
+/// run the fleet's key; C73 made a worker able to run the operator's plan, so a
+/// test pinning "a worker's sentence never names the operator's login" is pinning
+/// the absence of the feature. It is reshaped rather than deleted, because the
+/// property underneath it is the one that matters and has not changed: **a cost
+/// sentence must name the credential the seat actually runs on, and no sentence
+/// may name the wrong one.**
+///
+/// So: the orchestrator's line is unchanged and still says the operator's own
+/// login. The worker's function must carry **both** branches — a fleet-key
+/// sentence and a plan sentence — because a `worker_cost` with only one of them is
+/// a gate that lies to half the fleets it renders.
 #[test]
-fn the_cost_sentences_keep_the_orchestrator_and_the_fleet_apart() {
+fn the_cost_sentences_name_the_credential_each_seat_runs_on() {
     let backend = read(BACKEND);
     let orch = rust_fn(&backend, "fn orchestrator_cost(");
     let worker = rust_fn(&backend, "fn worker_cost(");
@@ -374,12 +393,84 @@ fn the_cost_sentences_keep_the_orchestrator_and_the_fleet_apart() {
     );
     assert!(
         names_the_fleets_own_key(&worker),
-        "a worker's cost line no longer says it runs FLEETOR's own provider and key:\n{worker}",
+        "a worker's cost line no longer says it runs FLEETOR's own provider and key. That \
+         is still what a fleet-key seat does, and it is still the majority of \
+         them:\n{worker}",
     );
     assert!(
-        !names_the_operators_own_login(&worker),
-        "a worker's cost line claims the operator's own login. A worker is fenced on the \
-         fleet's credential and cannot reach their plan:\n{worker}",
+        names_the_operators_plan(&worker),
+        "a worker's cost line has no plan branch, so a fleet whose seats spend the \
+         operator's subscription is described as spending FLEETOR's metered key (C75). \
+         That is the wrong direction to be wrong in:\n{worker}",
+    );
+    assert!(
+        worker.contains("no per-pane budget"),
+        "the plan branch stops saying that FLEETOR caps nothing. No per-pane budget \
+         exists anywhere in this codebase, and four uncapped seats on one subscription is \
+         the cost the operator is agreeing to:\n{worker}",
+    );
+}
+
+/// **The plan is a choice the operator makes, and it is stated before Start**
+/// (#49, C75).
+///
+/// Two properties in one test because they are one requirement: a fleet may spend
+/// the operator's subscription, and the operator must have said so and been told
+/// how many seats will do it. Either half alone is the failure — a picker with no
+/// count is a choice made blind, and a count with no picker is an announcement.
+#[test]
+fn the_gate_says_how_many_seats_will_spend_the_operators_plan() {
+    let backend = read(BACKEND);
+    let verdict = rust_fn(&backend, "    fn for_seats(");
+
+    assert!(
+        verdict.contains("plan_seats"),
+        "the start verdict no longer counts the seats about to spend the operator's \
+         plan:\n{verdict}",
+    );
+    assert!(
+        verdict.contains("gap_for"),
+        "the gate no longer refuses a seat whose credential this machine cannot honour. \
+         Falling back silently bills the operator for a choice they did not make in one \
+         direction, and spends their subscription in the other:\n{verdict}",
+    );
+
+    // **A seat that could run on the other credential is moved, not refused**
+    // (C79 narrowed C78 here). The strict rule met a dead gate on arrival: the
+    // default is the plan on every seat, so a machine where one harness has no
+    // login refused a fleet the operator had not configured at all. What survives
+    // is the property that actually mattered — no *invisible* spend — which the
+    // move satisfies by being announced.
+    let settle = rust_fn(&backend, "fn settle_credentials(");
+    assert!(
+        settle.contains("gap_for") && settle.contains("CredentialFallback"),
+        "seats are no longer moved onto the credential this machine has, so a fleet nobody \
+         configured can arrive already refused:\n{settle}",
+    );
+    assert!(
+        settle.contains("seat.model = None"),
+        "a moved seat keeps its old model, which the credential it moved to has never heard \
+         of:\n{settle}",
+    );
+
+    // **The refusal that is left is the one with nowhere to go**, and it must name
+    // both fixes — either one alone unblocks the seat.
+    let refusal = rust_fn(&backend, "fn credential_gap(");
+    assert!(
+        refusal.contains("Re-check logins"),
+        "the refusal no longer tells the operator how to log in — one of its two \
+         actionable lines:\n{refusal}",
+    );
+    assert!(
+        refusal.contains("DEEPSEEK_API_KEY"),
+        "the refusal no longer names the key that would unblock the seat, so an operator \
+         with no login is told only about the fix they cannot take:\n{refusal}",
+    );
+    assert!(
+        refusal.contains("neither"),
+        "the refusal no longer says both credentials are missing. A seat short of only one \
+         is moved rather than refused now, so a refusal that reads as a single gap sends \
+         the operator to fix something that was never the problem:\n{refusal}",
     );
 }
 

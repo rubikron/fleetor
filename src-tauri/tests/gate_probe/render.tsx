@@ -25,7 +25,7 @@
 // use. It renders and prints; it asserts nothing.
 
 import { renderToStaticMarkup } from "react-dom/server";
-import { SeatRow } from "../../../ui/src/components/StartGate";
+import { CredentialSourcePicker, SeatRow } from "../../../ui/src/components/StartGate";
 import type { GateState, HarnessOffer } from "../../../ui/src/fleet/types";
 
 /// A harness that can take a seat, with a catalog carrying one long model name —
@@ -145,16 +145,18 @@ const NO_GUIDANCE: HarnessOffer = {
 const GATE: GateState = {
   harnesses: [RUNNABLE, REFUSED, TWO_STEP, PROVIDER_KEY, UNREADABLE, NO_GUIDANCE],
   seats: {
-    orch: { harness: RUNNABLE.name, model: null },
+    orch: { harness: RUNNABLE.name, model: null, credential: "plan" },
     workers: [
-      { harness: RUNNABLE.name, model: null },
-      { harness: RUNNABLE.name, model: null },
-      { harness: REFUSED.name, model: null },
-      { harness: RUNNABLE.name, model: null },
+      { harness: RUNNABLE.name, model: null, credential: "plan" },
+      { harness: RUNNABLE.name, model: null, credential: "plan" },
+      { harness: REFUSED.name, model: null, credential: "plan" },
+      { harness: RUNNABLE.name, model: null, credential: "plan" },
     ],
   },
   worker_model_default: "deepseek-v4-flash",
-  verdict: { refusals: [], cost: [], fallbacks: [] },
+  verdict: { refusals: [], cost: [], fallbacks: [], credential_fallbacks: [], plan_seats: null },
+  harnesses_with_a_login: [RUNNABLE.name],
+  has_fleet_key: true,
 };
 
 const noop = () => {};
@@ -168,15 +170,58 @@ const row = (props: Parameters<typeof SeatRow>[0]) =>
     </ul>,
   );
 
+/// The credential picker, rendered on its own — it is a `<fieldset>` and mounts
+/// directly into the card, so no wrapper is needed.
+const picker = (props: Parameters<typeof CredentialSourcePicker>[0]) =>
+  renderToStaticMarkup(<CredentialSourcePicker {...props} />);
+
 process.stdout.write(
   JSON.stringify(
     {
+      // **The default** (C75): workers on the operator's own plan, on a machine
+      // where every harness this fleet spends has a readable login.
+      credential_source_plan: picker({
+        chosen: "plan",
+        withALogin: [RUNNABLE.name],
+        hasFleetKey: true,
+        spending: [RUNNABLE.name],
+        onChoose: noop,
+      }),
+      // The operator has opted out. Both options must still render — a control
+      // that hid the one you are not on would make the choice invisible.
+      credential_source_fleet_key: picker({
+        chosen: "fleet_key",
+        withALogin: [RUNNABLE.name],
+        hasFleetKey: true,
+        spending: [RUNNABLE.name],
+        onChoose: noop,
+      }),
+      // **The state the seats report and the operator cannot give** (C78): four
+      // seats that disagree. It renders only here, and it is not selectable.
+      credential_source_mixed: picker({
+        chosen: "mixed",
+        withALogin: [RUNNABLE.name],
+        hasFleetKey: true,
+        spending: [RUNNABLE.name],
+        onChoose: noop,
+      }),
+      // **The state that must not be silent**: the plan is chosen and one of the
+      // harnesses this fleet spends has no readable login. The backend refuses
+      // that fleet rather than falling back to the metered key, so the row has to
+      // say so before the operator clicks.
+      credential_source_no_login: picker({
+        chosen: "plan",
+        withALogin: [RUNNABLE.name],
+        hasFleetKey: true,
+        spending: [RUNNABLE.name, REFUSED.name],
+        onChoose: noop,
+      }),
       // The orchestrator's shape: an absent model shown as the sentinel
       // placeholder, never a value.
       orchestrator: row({
         label: "orchestrator",
         gate: GATE,
-        seat: { harness: RUNNABLE.name, model: null },
+        seat: { harness: RUNNABLE.name, model: null, credential: "plan" },
         sentinel: "default (your login)",
         onHarness: noop,
         onModel: noop,
@@ -187,17 +232,28 @@ process.stdout.write(
       worker_named_model: row({
         label: "worker 1",
         gate: GATE,
-        seat: { harness: RUNNABLE.name, model: "deepseek-v4-flash-preview" },
+        seat: { harness: RUNNABLE.name, model: "deepseek-v4-flash-preview", credential: "fleet_key" },
         sentinel: "deepseek-v4-flash",
         onHarness: noop,
         onModel: noop,
+      }),
+      // **A worker row with all three controls** (C78) — the shape the credential
+      // dropdown created, and the one the orchestrator deliberately does not have.
+      worker_with_a_credential: row({
+        label: "worker 2",
+        gate: GATE,
+        seat: { harness: RUNNABLE.name, model: null, credential: "plan" },
+        sentinel: "default (your login)",
+        onHarness: noop,
+        onModel: noop,
+        onCredential: noop,
       }),
       // A seat currently on the harness that cannot take one — the state the
       // shipped card handled worst, per the redesign brief.
       worker_on_refused_harness: row({
         label: "worker 3",
         gate: GATE,
-        seat: { harness: REFUSED.name, model: null },
+        seat: { harness: REFUSED.name, model: null, credential: "plan" },
         sentinel: "deepseek-v4-flash",
         onHarness: noop,
         onModel: noop,
@@ -208,7 +264,7 @@ process.stdout.write(
       worker_on_runnable_harness: row({
         label: "worker 4",
         gate: GATE,
-        seat: { harness: RUNNABLE.name, model: null },
+        seat: { harness: RUNNABLE.name, model: null, credential: "plan" },
         sentinel: "deepseek-v4-flash",
         onHarness: noop,
         onModel: noop,
@@ -219,7 +275,7 @@ process.stdout.write(
       guidance_login_command: row({
         label: "worker 1",
         gate: GATE,
-        seat: { harness: REFUSED.name, model: null },
+        seat: { harness: REFUSED.name, model: null, credential: "plan" },
         sentinel: "deepseek-v4-flash",
         onHarness: noop,
         onModel: noop,

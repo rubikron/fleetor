@@ -441,8 +441,18 @@ fn checkpoint_5_the_worker_holds_the_fleets_credential_and_the_operators_is_remo
 /// mechanism as a harness universal it is not. What is asserted is therefore the
 /// three mechanisms separately: the variable that relocates *configuration*, the
 /// variable that selects the *credential* namespace, and the private `HOME` — with
-/// `credentials_follow_home` deciding which of the last two a fenced pane's login
+/// `token_follows_home` deciding which of the last two a fenced pane's login
 /// actually arrives through.
+///
+/// **Two `*_follows_home` fields since C73, and this asserts both.** The one
+/// boolean that used to be here answered for the fleet's token channel *and* for
+/// the operator's own credential store, which behave differently on the same
+/// harness — Claude Code's token is an environment variable that cares nothing
+/// for `HOME`, and its keychain entry is behind a search list `HOME` derives.
+/// `operator_store_follows_home` is asserted **behaviourally**, against the
+/// pane's real private `HOME`, because a spec field claiming a store is
+/// unreachable is exactly the kind of claim this suite exists to stop taking on
+/// trust.
 ///
 /// **The pass places against a machine with nothing on it**, which is what makes
 /// `seeds_from_operator: false` a thing a test can say rather than assume: there
@@ -505,12 +515,39 @@ fn checkpoint_6_configuration_and_credentials_are_isolated_by_the_named_mechanis
             );
         }
 
-        if isolation.credentials_follow_home {
+        // **C73's second channel, measured rather than declared.** A harness whose
+        // operator store follows `HOME` is claiming that a fenced pane — which has
+        // a private one — cannot reach the operator's login by itself. On macOS
+        // that is the keychain search list, and it is readable in one command, so
+        // the claim is checked instead of believed. This is what makes a plan seat
+        // *need* the credential planted in its config dir: the failure asserted
+        // here is the reason that mechanism exists (`plan-worker-notes.md` §2).
+        if isolation.operator_store_follows_home {
+            let home = env_on(&pass.worker, "HOME")
+                .expect("a harness whose store follows HOME must give the Fence one");
+            let fenced = std::process::Command::new("security")
+                .arg("list-keychains")
+                .env("HOME", &home)
+                .output();
+            if let Ok(out) = fenced {
+                let listed = String::from_utf8_lossy(&out.stdout);
+                assert!(
+                    !listed.contains("login.keychain"),
+                    "{}: this harness declares its operator store follows HOME, but a \
+                     pane with the Fence's private HOME still has the login keychain on \
+                     its search list — so either the spec is wrong or the Fence stopped \
+                     replacing HOME:\n{listed}",
+                    pass.spec.name,
+                );
+            }
+        }
+
+        if isolation.token_follows_home {
             // Then the private HOME *is* the credential mechanism, and it has to be
             // both given and seeded from somewhere, or the pane has no login at all.
             assert!(
                 isolation.private_home && isolation.seeds_from_operator,
-                "{}: a harness whose login is reachable only through HOME needs a private \
+                "{}: a harness whose token is reachable only through HOME needs a private \
                  one, seeded",
                 pass.spec.name,
             );

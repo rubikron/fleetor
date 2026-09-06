@@ -270,6 +270,28 @@ pub struct Posture {
     /// The environment variable that names the model, when the harness takes it
     /// that way. Claude Code: `ANTHROPIC_MODEL`.
     pub model_env: Option<&'static str>,
+    /// **Models this harness offers when its vendor publishes no catalog** (C78)
+    /// — `(slug, display name)`, in the order an operator should see them.
+    ///
+    /// **Data on the spec rather than a literal in the interface**, and
+    /// `tests/gate_pickers.rs` is what forces that: every harness's name, label,
+    /// model list and reason reaches the gate over the wire from
+    /// [`HarnessReadiness`], because a vendor name written into a component is a
+    /// third harness offered and then handled by a branch written for the first
+    /// two. This is the same argument C72 made for [`LoginInstruction`], and the
+    /// same shape: `'static` strings, because what a vendor calls its own models
+    /// is a fact it knows before any machine is probed.
+    ///
+    /// **Empty for a harness that publishes a real catalog**, which is codex —
+    /// its `models.json` is read live and sorted by the vendor's own priority, and
+    /// a hand-written list beside that would be a second answer going stale.
+    /// Claude Code publishes none (measured: `models: Vec::new()` in its
+    /// diagnostic), so its aliases live here.
+    ///
+    /// **A floor, never a ceiling.** The gate's model field stays free text with
+    /// these as suggestions, so a full id the vendor accepts is always reachable
+    /// and this list going stale costs an operator one typed word.
+    pub declared_models: &'static [(&'static str, &'static str)],
     /// The argv flag that names the model, for a harness that takes it that way
     /// instead. `None` here.
     pub model_flag: Option<&'static str>,
@@ -421,8 +443,12 @@ pub struct Credentials {
 /// The private `HOME` is still real and still seeded — it is the Fence (WP-08),
 /// and its job is `~/.ssh`, shell profiles and the operator's tooling. It is not
 /// this harness's credential mechanism, and
-/// [`credentials_follow_home`](Self::credentials_follow_home) is the field that
-/// says so.
+/// [`token_follows_home`](Self::token_follows_home) is the field that says so.
+///
+/// **Two fields, because there are two channels** (C73). The token channel and
+/// the operator's own credential store answer this question differently on the
+/// same harness, and the single boolean that used to answer for both recorded the
+/// second one wrong.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigAndCredentialIsolation {
     /// The variable that relocates *configuration*. The same variable as
@@ -438,12 +464,34 @@ pub struct ConfigAndCredentialIsolation {
     /// give `orch` an empty credential namespace keyed by a hash of that
     /// directory, and the pane would sit at a login prompt looking healthy.
     pub credential_env: Option<&'static str>,
-    /// Whether this harness's login is reachable only through `HOME`. `false`
-    /// here, and it is the fact C17 renamed this checkpoint over: a fenced Claude
-    /// Code pane keeps a private `HOME` and still authenticates, because its
-    /// credential arrives through [`Credentials::token_env`] and its keychain
-    /// entry through [`credential_env`](Self::credential_env).
-    pub credentials_follow_home: bool,
+    /// Whether the **fleet's token channel** — [`Credentials::token_env`] — is
+    /// reachable only through `HOME`. `false` on every harness registered here,
+    /// and it is the fact C17 renamed this checkpoint over: an environment
+    /// variable cares nothing for `HOME`, so a fenced pane carrying the fleet's
+    /// key authenticates with a private one.
+    ///
+    /// **This was one boolean answering for two channels until C73.** The field
+    /// it replaces was documented as covering the token *and* the keychain entry;
+    /// the first clause was true and the second was measured false, which is C17's
+    /// own error in mirror image. See
+    /// [`operator_store_follows_home`](Self::operator_store_follows_home).
+    pub token_follows_home: bool,
+    /// Whether the **operator's own credential store** is reachable only through
+    /// `HOME` — the second channel, and the one that behaves differently.
+    ///
+    /// `true` for Claude Code, and it is macOS's fact rather than the vendor's: a
+    /// private `HOME` removes the operator's login keychain from the process's
+    /// keychain search list, so the entry
+    /// [`credential_env`](Self::credential_env) selects is not merely unselected
+    /// but *unsearchable* (`plan-worker-notes.md` §2). `false` for codex, whose
+    /// `auth.json` is found through [`config_env`](Self::config_env) instead.
+    ///
+    /// **What this field decides is not whether a plan seat can work** — C73
+    /// measured that it can, by planting the credential in the pane's own
+    /// configuration directory. It decides whether a fenced pane can reach the
+    /// operator's store *by itself*, which is what the conformance suite asserts
+    /// the failure of.
+    pub operator_store_follows_home: bool,
     /// Whether a fenced pane of this harness is given a private `HOME` at all.
     /// `true`: the Fence still wants one for `~/.ssh`, shell profiles and the
     /// operator's tool rungs, and a worker's first `git commit` needs the
@@ -814,6 +862,93 @@ pub struct ProjectIdentityAndTrust {
 /// **`Clone` but no longer `Copy`** (#30). [`main_repository`](Self::main_repository)
 /// is an owned path because it is *derived* from the cwd rather than handed in
 /// alongside it, and there is nowhere for a borrow of it to live.
+/// **The operator's own credential, read once before any pane exists** (C73, C75).
+///
+/// An opaque document and nothing more. What it contains is the harness's own
+/// business — Claude Code's is a JSON object, codex's is the contents of an
+/// `auth.json` — and this type deliberately cannot be inspected, only written,
+/// so no code path outside a harness can grow a dependency on one vendor's shape.
+///
+/// **Constructed in exactly one place**, [`Harness::read_operator_login`], which
+/// is reached from `Host::discover_for_the_gate` and from nothing else. That is
+/// the property the whole design rests on: the read happens in an *unfenced*
+/// process, on the operator's own `HOME`, with their login keychain on the search
+/// list — the one moment it is reachable at all (`plan-worker-notes.md` §2).
+///
+/// **It is narrowed by the harness that reads it.** Claude Code's login keychain
+/// item carries more than Claude Code's credential — on a machine with MCP
+/// servers configured it also holds third-party OAuth tokens with their own
+/// refresh tokens and client secrets — so the reader hands over the
+/// `claudeAiOauth` object and never the item (`plan-worker-notes.md` §9).
+///
+/// `Debug` is implemented by hand and prints no bytes: this value ends up on a
+/// [`Seed`], and a `Seed` is `Debug`.
+#[derive(Clone, PartialEq, Eq)]
+pub struct OperatorLogin {
+    document: String,
+}
+
+impl OperatorLogin {
+    /// Wrap a credential document a harness has just read and narrowed.
+    pub fn new(document: String) -> Self {
+        Self { document }
+    }
+
+    /// The document, for the one caller that writes it into a pane's own
+    /// configuration directory.
+    pub fn document(&self) -> &str {
+        &self.document
+    }
+}
+
+impl std::fmt::Debug for OperatorLogin {
+    /// **Says the length and never the bytes.** Every value on a [`Seed`] reaches
+    /// a `{:?}` somewhere eventually — a test failure, a notice, a log line — and
+    /// a credential that formats itself is a credential in a transcript.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "OperatorLogin({} bytes, redacted)", self.document.len())
+    }
+}
+
+/// **Whose usage a seat spends** — the field C75 split out of
+/// [`Seed::operators_own_seat`].
+///
+/// Those two questions had been one boolean, and `placement/codex.rs` said so in
+/// as many words: it was "the one question deciding both halves", meaning
+/// *whether a pane is the operator's own* and *whether it carries the operator's
+/// credential*. A plan-backed worker is the combination that boolean cannot
+/// spell — fenced, not the operator's own pane, and running on their login.
+///
+/// **The credential rides on the variant**, so "this seat is on the plan" cannot
+/// be said without supplying the thing that makes it true. The alternative was a
+/// bool beside an `Option`, which is the shape where a `true` with a `None` is a
+/// pane that reaches its prompt logged out and looking healthy — D-062's failure
+/// mode, and the one this whole arc exists to keep legible.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CredentialSource<'a> {
+    /// The fleet's own metered key and endpoint — [`Credentials::token_env`] and
+    /// [`Credentials::base_url_env`], with [`Credentials::scrubbed_env`] removed
+    /// from the inherit. D-062's original rule, unchanged and still the default
+    /// on a seat nobody thought about.
+    FleetKey,
+    /// The operator's existing login, planted in this pane's own configuration
+    /// directory by its harness's seeder.
+    ///
+    /// **A seat on this variant is given no endpoint and no fleet token.** Both
+    /// were measured to be wrong here rather than merely redundant: the fleet's
+    /// endpoint is a different provider, and setting the token variable at all
+    /// selects the metered path (C71, C73).
+    OperatorsPlan(&'a OperatorLogin),
+}
+
+impl CredentialSource<'_> {
+    /// Whether this seat spends the operator's plan. The one predicate the gate's
+    /// count and the cost line both read, so they cannot disagree.
+    pub fn is_the_operators_plan(&self) -> bool {
+        matches!(self, CredentialSource::OperatorsPlan(_))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Seed<'a> {
     /// **Whether this is the operator's own pane** — the field #28 added, and the
@@ -833,6 +968,17 @@ pub struct Seed<'a> {
     /// A `PaneId` here would read more precisely and would have no safe default at
     /// all under the builder shape C39 settled on.
     pub operators_own_seat: bool,
+    /// **Whose usage this seat spends** (C75). See [`CredentialSource`] for why
+    /// this is not a widening of [`operators_own_seat`](Self::operators_own_seat).
+    ///
+    /// **[`CredentialSource::FleetKey`] is the default here, and that stays true
+    /// even though the operator-facing default is the plan.** The two are not the
+    /// same default: the gate makes the choice explicitly and hands it down, so a
+    /// seat that arrives here without one is a seat nobody thought about — a
+    /// fifth `place_*` arm, a harness added later — and it must not spend the
+    /// operator's plan by omission. What C75 changed is what the *operator* is
+    /// offered, not what a forgotten code path gets.
+    pub credential_source: CredentialSource<'a>,
     /// The pane's own configuration directory. **Every byte this call writes lands
     /// under here**, and a harness that writes anywhere else is the bug this field
     /// exists to make obvious.
@@ -903,6 +1049,7 @@ impl<'a> Seed<'a> {
     pub fn new(config_dir: &'a Path, cwd: &'a Path, operator_home: Option<&'a Path>) -> Self {
         Self {
             operators_own_seat: false,
+            credential_source: CredentialSource::FleetKey,
             config_dir,
             cwd,
             main_repository: super::main_repository(cwd),
@@ -928,6 +1075,17 @@ impl<'a> Seed<'a> {
     /// it was not explicitly told to leave alone.
     pub fn for_the_operator(self) -> Self {
         Self { operators_own_seat: true, ..self }
+    }
+
+    /// The same seed, spending the operator's own plan rather than the fleet's
+    /// key (C73, C75).
+    ///
+    /// **Takes the credential, so the state cannot be half-set.** There is no way
+    /// to mark a seat plan-backed and then fail to supply the login, which is the
+    /// shape that produces a pane sitting at a prompt looking healthy while logged
+    /// out.
+    pub fn on_the_operators_plan(self, login: &'a OperatorLogin) -> Self {
+        Self { credential_source: CredentialSource::OperatorsPlan(login), ..self }
     }
 
     /// The same seed carrying this pane's rendered brief.
@@ -1004,6 +1162,7 @@ impl<'a> Seat<'a> {
     pub fn for_the_operator(self) -> Self {
         Self { operators_own_seat: true, ..self }
     }
+
 }
 
 /// A registered harness: its fourteen answers, plus the three checkpoints that
@@ -1063,6 +1222,38 @@ pub trait Harness: std::fmt::Debug + Send + Sync + 'static {
     /// Claude Code's answer: its configuration directory is fleet-owned and
     /// nothing of the operator's is being overridden in it.
     fn seed_config_dir(&self, seed: &Seed<'_>) -> Result<Vec<(NoticeLevel, String)>, String>;
+
+    /// **Read the operator's own credential, so a seat can spend their plan**
+    /// (C73, C75) — or `None` when this harness has no such credential, or this
+    /// machine has no login in it.
+    ///
+    /// **The one process read in the whole feature, and it is deliberately not in
+    /// [`crate::placement`]'s call graph.** It is reached from
+    /// `Host::discover_for_the_gate` and from nowhere else, which is what
+    /// `tests/placement_reads_nothing.rs` exists to keep true. The timing is the
+    /// mechanism, not a convenience: FLEETOR is unsandboxed when the gate runs, so
+    /// the operator's `HOME` is theirs and their login keychain is on the search
+    /// list. A pane cannot do this for itself — a private `HOME` removes the
+    /// keychain from that list entirely (`plan-worker-notes.md` §2).
+    ///
+    /// `operator_home` is the operator's own `HOME`, the same value
+    /// [`Seed::operator_home`] carries, and `None` on a machine nobody looked at.
+    /// A harness whose credential is a system store rather than a file under that
+    /// home ignores it, as Claude Code's reader does.
+    ///
+    /// **The implementation narrows before it returns.** A vendor's credential
+    /// store may hold credentials that are not this vendor's — Claude Code's
+    /// keychain item carries third-party MCP OAuth tokens on a machine with MCP
+    /// servers configured — and handing those to a fenced pane would leak
+    /// credentials with nothing to do with FLEETOR (`plan-worker-notes.md` §9).
+    ///
+    /// The default is `None`: a harness that has not answered this cannot take a
+    /// plan seat, which fails toward the fleet's key rather than toward a pane
+    /// that looks healthy while logged out.
+    fn read_operator_login(&self, operator_home: Option<&std::path::Path>) -> Option<OperatorLogin> {
+        let _ = operator_home;
+        None
+    }
 
     /// **Checkpoint 7's behavioural half:** register the fleet's write guardrail
     /// in this harness's own settings document, keeping everything the operator
@@ -1201,6 +1392,21 @@ pub const CLAUDE_CODE_SPEC: HarnessSpec = HarnessSpec {
     posture: Posture {
         model_env: Some("ANTHROPIC_MODEL"),
         model_flag: None,
+        // **The vendor's own aliases, from its own `--help`** (C78): "an alias
+        // for the latest model (e.g. 'fable', 'opus', or 'sonnet') or a model's
+        // full name (e.g. 'claude-fable-5')". An alias is deliberately preferred
+        // to a dated id here — it tracks the latest of each family, so this list
+        // does not go stale every release.
+        //
+        // **Offered on a seat running the operator's own login and nowhere else.**
+        // A worker on the fleet's key talks to FLEETOR's provider, where none of
+        // these names resolves; the gate picks the list per credential.
+        declared_models: &[
+            ("fable", "Claude Fable 5.1"),
+            ("opus", "Claude Opus 5"),
+            ("sonnet", "Claude Sonnet 5"),
+            ("haiku", "Claude Haiku 4.5"),
+        ],
         permission_flag: Some("--permission-mode"),
         sandbox_keys: &[],
         // **Nothing to read back, which is an answer rather than a gap** (#37).
@@ -1230,16 +1436,33 @@ pub const CLAUDE_CODE_SPEC: HarnessSpec = HarnessSpec {
             "ANTHROPIC_DEFAULT_OPUS_MODEL",
             "ANTHROPIC_DEFAULT_SONNET_MODEL",
             "CLAUDE_SECURESTORAGE_CONFIG_DIR",
+            // **A D-062 hole found while measuring #49, and fixed independently of
+            // it** (C74). This variable overrides `/login` — the vendor's own
+            // `/login` warns when it is set — so an operator carrying one in a
+            // shell profile authenticates every fenced worker on their personal
+            // account, silently and without the plan seat being chosen. It is
+            // scrubbed for `ANTHROPIC_API_KEY`'s reason and not for this ticket's:
+            // a plan seat's credential arrives as a file in checkpoint 4's
+            // directory, never in the environment, so removing this name costs the
+            // feature nothing.
+            "CLAUDE_CODE_OAUTH_TOKEN",
         ],
     },
 
-    // 6 — config and credential isolation (C17). Configuration relocates by
-    // variable; the credential is a keychain entry selected by another. Neither
-    // follows HOME, which is the measurement this checkpoint was renamed over.
+    // 6 — config and credential isolation (C17, split per channel by C73).
+    // Configuration relocates by variable; the fleet's token is a variable and
+    // does not follow HOME; the *operator's* keychain entry does, transitively,
+    // through a search list derived from HOME. Two channels, two answers.
     isolation: ConfigAndCredentialIsolation {
         config_env: "CLAUDE_CONFIG_DIR",
         credential_env: Some(super::spawn::ENV_CC_SECURESTORAGE_DIR),
-        credentials_follow_home: false,
+        token_follows_home: false,
+        // **Measured, and it is macOS's fact rather than this vendor's** (C73,
+        // `plan-worker-notes.md` §2): `security list-keychains` under a private
+        // `HOME` returns the System keychain alone, so the entry `credential_env`
+        // names is not on the search list at all. Setting that variable correctly
+        // buys nothing once `HOME` has been replaced.
+        operator_store_follows_home: true,
         private_home: true,
         seeds_from_operator: false,
     },
@@ -1314,6 +1537,42 @@ pub const CLAUDE_CODE_SPEC: HarnessSpec = HarnessSpec {
     },
 };
 
+/// The macOS login-keychain item Claude Code's own `/login` writes.
+///
+/// **Named here rather than on the spec**, because it is not one of the fourteen:
+/// the checkpoints are facts a bring-up reads, and this is the address of a store
+/// only [`ClaudeCode::read_operator_login`] ever opens.
+const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
+
+/// The file Claude Code reads a credential out of, inside its configuration
+/// directory (C73, `plan-worker-notes.md` §12).
+const CREDENTIALS_FILE: &str = ".credentials.json";
+
+/// Write the operator's login where this pane can read it, at `0600`.
+///
+/// **The mode is the vendor's own**, matching what its file store chmods its
+/// writes to — and it is the whole of the protection this file gets. The
+/// directory is fleet-owned and disposable, which is what makes that acceptable:
+/// a refreshed credential the pane writes back lands in the same place and is
+/// thrown away with the pane.
+///
+/// **Truncating rather than merging.** A credential is one document with one
+/// writer; merging would mean a stale half surviving a re-seed, which is the
+/// shape that produces a pane authenticating as something the operator no longer
+/// is.
+fn write_operator_login(config_dir: &Path, login: &OperatorLogin) -> Result<(), String> {
+    let path = config_dir.join(CREDENTIALS_FILE);
+    std::fs::write(&path, login.document())
+        .map_err(|e| format!("write {}: {e}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("chmod {}: {e}", path.display()))?;
+    }
+    Ok(())
+}
+
 impl Harness for ClaudeCode {
     fn spec(&self) -> &'static HarnessSpec {
         &CLAUDE_CODE_SPEC
@@ -1326,7 +1585,45 @@ impl Harness for ClaudeCode {
     fn seed_config_dir(&self, seed: &Seed<'_>) -> Result<Vec<(NoticeLevel, String)>, String> {
         // Nothing to announce: this directory is the fleet's own, so no key
         // written into it is standing on top of an answer the operator gave.
-        super::spawn::seed_config_dir(self, seed).map(|()| Vec::new())
+        super::spawn::seed_config_dir(self, seed)?;
+        // **Checkpoint 6's plan-seat half** (C73, C75). The credential goes here
+        // and only here: a fenced pane has no login keychain on its search list,
+        // and its own configuration directory is the one store it can still read.
+        // Measured, not assumed — `plan-worker-notes.md` §12.
+        if let CredentialSource::OperatorsPlan(login) = seed.credential_source {
+            write_operator_login(seed.config_dir, login)?;
+        }
+        Ok(Vec::new())
+    }
+
+    /// **Claude Code's login is a macOS login-keychain item**, not a file, which
+    /// is why `operator_home` goes unread here (C73).
+    ///
+    /// **Narrowed to `claudeAiOauth` before it returns, and that is not caution
+    /// for its own sake.** The item is a JSON document holding more than this
+    /// vendor's credential: on a machine with MCP servers configured it also
+    /// carries their OAuth access tokens, refresh tokens and client secrets
+    /// (`plan-worker-notes.md` §9). Handing the *item* to a fenced pane would put
+    /// credentials with nothing to do with FLEETOR inside an unattended worktree.
+    ///
+    /// Read-only: `find-generic-password -w` does not modify the item.
+    fn read_operator_login(&self, _operator_home: Option<&Path>) -> Option<OperatorLogin> {
+        let out = std::process::Command::new("security")
+            .args(["find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let raw = String::from_utf8(out.stdout).ok()?;
+        let item: serde_json::Value = serde_json::from_str(raw.trim()).ok()?;
+        let oauth = item.get("claudeAiOauth")?;
+        if !oauth.is_object() {
+            return None;
+        }
+        let mut narrowed = serde_json::Map::new();
+        narrowed.insert("claudeAiOauth".to_string(), oauth.clone());
+        serde_json::to_string(&serde_json::Value::Object(narrowed)).ok().map(OperatorLogin::new)
     }
 
     /// Claude Code's settings document: JSON, a top-level `hooks` object keyed by
@@ -2246,7 +2543,21 @@ pub fn claude_code_diagnose(home: Option<&Path>, path: &str) -> HarnessReadiness
         // pointing `ANTHROPIC_BASE_URL` somewhere is doing it in their shell, which
         // is the process this module may not read.
         provider: None,
-        models: Vec::new(),
+        // **The vendor publishes no catalog, so the spec's is what the gate
+        // offers** (C78). This is still not an invented reading: the aliases are
+        // the vendor's own, quoted from its `--help`, and the field they land in
+        // is the same one codex fills from a live `models.json`. What a caller
+        // cannot do is tell the two apart — which is correct, because the gate's
+        // job is to offer models and not to explain where the list came from.
+        models: CLAUDE_CODE_SPEC
+            .posture
+            .declared_models
+            .iter()
+            .map(|(slug, display_name)| ModelChoice {
+                slug: (*slug).to_string(),
+                display_name: (*display_name).to_string(),
+            })
+            .collect(),
         // #37's, not this ticket's: comparing what the vendor resolved against what
         // FLEETOR wrote is a gate check of its own, and Claude Code publishes no
         // diagnostic that reports one.

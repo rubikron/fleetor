@@ -636,14 +636,29 @@ fn the_orchestrator_keeps_its_default_your_login_sentinel() {
     );
     let default = between(
         &read(PICKERS),
-        "function seatDefault(seat: PaneId, workerModelDefault: string): string | null {",
+        "function seatDefault(
+  seat: PaneId,
+  credential: CredentialChoice,
+  workerModelDefault: string,
+): string | null {",
         "\n}",
         "seatDefault",
     );
+    // **The property, not the spelling** (C78 reshaped this). It read
+    // `seat === ORCH ? null`, which was the whole function while the orchestrator
+    // was the only seat naming no model. A worker on the operator's plan now names
+    // none either — same reason, same sentinel — so the branch grew a second
+    // condition and an assertion pinned to the ternary would fail on a change that
+    // widened the rule rather than broke it.
     assert!(
-        default.contains("seat === ORCH ? null"),
+        default.contains("seat === ORCH") && default.contains("return null"),
         "the orchestrator's sentinel stopped being an absent model. A named default would \
          put a model on the operator's own seat that they never chose:\n{default}",
+    );
+    assert!(
+        default.contains(r#"credential === "plan""#),
+        "a worker on the operator's plan no longer shares the sentinel, so it falls back to \
+         the fleet's model — a name its vendor has never heard of (C78):\n{default}",
     );
     let spawn = read("src-tauri/src/placement/spawn.rs");
     let orch = between(&spawn, "pub(super) fn orch_command_with(", "\n}", "orch_command_with");
@@ -883,4 +898,71 @@ fn the_declarations_this_file_reads_still_exist() {
         "the registry no longer holds two harnesses ({names:?}) — a third is welcome, and \
          `registered_names` has to learn where its spec is declared",
     );
+}
+
+// --- whose usage a seat spends (WP-25 #49; C73, C75, C78) ----------------------
+
+/// The Rust half of the credential choice.
+const CREDENTIAL_SOURCE: &str = "src-tauri/src/credential_source.rs";
+
+/// **The two spellings are one spelling** (C75, C78).
+///
+/// The choice crosses the wire as a bare string on every seat. A drift between the
+/// union in `types.ts` and the `serde` renaming in `credential_source.rs` is the
+/// one drift in this file whose failure mode costs money: an unrecognised value
+/// fails the deserialize, and an *absent* one reads as the plan by design — so a
+/// field the interface stopped sending would silently put every seat on the
+/// operator's subscription.
+#[test]
+fn the_credential_spellings_agree_across_the_wire() {
+    let backend = read(CREDENTIAL_SOURCE);
+    let wire = read(WIRE);
+
+    assert!(
+        backend.contains(r#"#[serde(rename_all = "snake_case")]"#),
+        "{CREDENTIAL_SOURCE} no longer renames its variants, so the wire spellings are the \
+         Rust identifiers and no longer match {WIRE}",
+    );
+    for spelling in ["plan", "fleet_key"] {
+        assert!(
+            wire.contains(&format!(r#""{spelling}""#)),
+            "{WIRE} does not spell `{spelling}`. An absent credential reads as the plan by \
+             design, so this drift does not error — it spends a subscription",
+        );
+    }
+    assert!(
+        wire.contains("export type CredentialChoice"),
+        "{WIRE} no longer names the credential as a type, so a seat could carry any string",
+    );
+    assert!(
+        backend.contains("#[default]"),
+        "{CREDENTIAL_SOURCE} no longer marks a default variant, so a payload from before \
+         this field existed fails to parse instead of landing on the plan",
+    );
+}
+
+/// **The seat carries the credential, and nothing else stores it** (C78).
+///
+/// C75 kept the answer in `~/.fleetor/config.json` as one fleet-wide value; C78
+/// moved it onto the seat, because a per-seat control beside a fleet-wide key
+/// would be two homes for one answer — the shape M15 refuses. This fails if a
+/// second home comes back.
+#[test]
+fn the_credential_has_exactly_one_home() {
+    let wire = read(WIRE);
+    assert!(
+        wire.contains("credential: CredentialChoice;"),
+        "{WIRE}'s SeatChoice no longer carries the credential, so the per-seat picker has \
+         nowhere to write",
+    );
+
+    let backend = read(CREDENTIAL_SOURCE);
+    for gone in ["fn chosen(", "CONFIG_KEY", "worker_credential_source"] {
+        assert!(
+            !backend.contains(gone),
+            "{CREDENTIAL_SOURCE} stores the credential again (`{gone}`). The seat is the \
+             home (C78); a second one is a value that can disagree with the picker the \
+             operator is looking at",
+        );
+    }
 }

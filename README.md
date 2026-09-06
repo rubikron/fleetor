@@ -2,7 +2,7 @@
 
 *(working name)*
 
-A local desktop app that runs five Claude Code terminals against a git repo you already have, and lets them talk to each other. One is your own Opus, as orchestrator. Four are DeepSeek V4 Flash workers, each in its own git worktree. All five are **real, interactive `claude` TUIs** — chat, plan mode, skills and slash commands all work, because each one genuinely is `claude`.
+A local desktop app that runs five agent terminals against a git repo you already have, and lets them talk to each other. One is your own login, as orchestrator. Four are workers, each in its own git worktree — running on the plan you are already logged into, or on a metered key, your choice per seat. All five are **real, interactive TUIs** (`claude`, `codex`) — chat, plan mode, skills and slash commands all work, because each one genuinely is the vendor's own binary.
 
 They coordinate through one command:
 
@@ -52,31 +52,89 @@ Five ptys, one per pane. The `fleet` CLI runs inside a pane's Bash tool and dial
 
 **Nothing may delay, refuse, reorder, drop or throttle a message.** There is no timeout anywhere between `fleet send` and the pty, no queue, no idle guard, no rate limiter. A ceiling could only ever report failure for a message that then arrives — which makes the model resend and makes the log lie. See D-034.
 
-## Running it
+## Run it
 
-Needs `claude` on your PATH and a `DEEPSEEK_API_KEY` in a `.env` at the repo root (workers only — the orchestrator uses your own login).
+macOS. Everything runs locally; nothing is uploaded anywhere.
+
+### 1. What you need
+
+| | | |
+|---|---|---|
+| **Node** 18+ and **npm** | `node --version` | [nodejs.org](https://nodejs.org) |
+| **Rust** 1.80+ | `rustc --version` | `curl https://sh.rustup.rs -sSf \| sh` |
+| **Xcode command line tools** | `xcode-select -p` | `xcode-select --install` |
+| **At least one agent CLI, logged in** | `claude` and/or `codex` on your PATH | see below |
+
+**You do not need an API key.** A worker seat can run on the plan you are already logged
+into — `claude` then `/login`, or `codex login`. If you would rather workers spend a
+metered key instead, put a `DEEPSEEK_API_KEY` in a `.env` at the repo root; the start gate
+offers whichever of the two this machine actually has, per seat.
+
+The orchestrator has always run your own login, and still does.
+
+### 2. Build and run
 
 ```bash
+git clone <this repo> && cd fleetor
 npm install
-npm run tauri dev
+npm run tauri build
+./src-tauri/target/release/fleetor-shell
 ```
 
-Then **Start fleet**. Five processes spawn: your Opus in the target repo, four Flash workers in per-slot worktrees under `~/.fleetor/_shell/worktrees/<target-slug>/`. Ask the orchestrator to run `fleet send 2 "say hello back with fleet reply"` and watch worker-2's tab.
+The build takes a few minutes the first time and under two after that.
 
-Without a configured target it works in a seeded testbed at `~/.fleetor/testbed` — a small Python project with a passing test suite, embedded in the binary so it can't fail to materialize. Point it at your own repo with **Choose folder…** on the start gate, or by setting `target` in `~/.fleetor/config.json`.
+**Run it from the repo root**, as above. There is no `.app` bundle yet, and the shell
+looks for its `fleet` CLI at `./target/release/fleet` — which the build put there, and
+which it can only find if the repo root is your working directory. Anywhere else, panes
+come up looking alive and unable to talk to each other. If you need to launch from
+somewhere else, point `FLEETOR_FLEET_BIN` at that binary.
 
-### A run that costs nothing
+### 3. First launch
+
+The start gate opens before anything spawns, and states what a click will cost.
+
+1. **Pick a folder** — **Choose folder…**, or leave it. With no target it works in a
+   seeded testbed at `~/.fleetor/testbed`, a small Python project with a passing test
+   suite that is embedded in the binary, so there is nothing to download and nothing of
+   yours to break.
+2. **Choose what the workers spend** — `your plan` or `your key`, for all four at once or
+   per seat. Defaults to your plan. A seat whose credential this machine does not have
+   moves to the one it does and says so; a seat with neither is refused by name, and
+   **Start fleet** stays disabled until you fix it.
+3. **Start fleet.** Five processes spawn: your own login as orchestrator in the target
+   repo, four workers in per-slot git worktrees under
+   `~/.fleetor/_shell/worktrees/<target-slug>/`.
+
+To see it work, ask the orchestrator:
+
+```
+fleet send 2 "say hello back with fleet reply"
+```
+
+and watch worker-2's tab. The message is typed into that terminal — you see it land.
+
+### 4. What it touches, and removing it
+
+Everything FLEETOR owns lives in `~/.fleetor/`: `config.json` (your target), `testbed/`,
+and `_shell/` (the socket, the event database, per-worker config directories and
+worktrees).
 
 ```bash
-FLEETOR_PANE_CMD=$PWD/tests/fake-pane/fake-pane.sh npm run tauri dev
+rm -rf ~/.fleetor && git worktree prune
 ```
 
-Every pane runs a five-line echo script instead of `claude`. The registry, socket, hub, delivery path and UI are all real; only the agents are not. Drive it from another terminal:
+leaves your repo as it was, minus any feature branches you chose to keep. FLEETOR writes
+application code only, only on feature branches — never your trunk, never `CLAUDE.md`.
 
-```bash
-export FLEET_SOCKET=~/.fleetor/_shell/fleet.sock FLEETOR_PANE=orch
-./target/debug/fleet send 2 "hello worker two"
-```
+**On a plan seat, your login is copied into that worker's own config directory** so the
+pane can authenticate at all, and it is thrown away with the pane. The start gate says how
+many seats will spend your plan before you click, because FLEETOR applies no per-pane
+budget and an exhausted plan looks like an idle pane rather than an error.
+
+### Working on it
+
+`npm run tauri dev`, the zero-token fake-pane run, the test tiers and the probes are in
+[`docs/developing.md`](docs/developing.md).
 
 ## Layout
 
@@ -108,7 +166,7 @@ State lives in `~/.fleetor/`: `config.json` (your target), `testbed/` (the fallb
 
 **The pivot is complete and merged, and the Blackboard packages landed on top of it.** FLEETOR previously ran one TUI orchestrator plus four *headless* `claude -p` workers under a sync supervisor, reached through an MCP shim, wrapped in a ticket board with gates and peer review. All of it is gone — see `docs/archive/tui-pivot-plan.md` for why, and D-030 through D-039 in `decisions.md` for each decision. What came after — prompts as files, the command channel, the context gauge, task blocks, receipts and review, the operator as participant, the Fence — is WP-01..09 in `docs/roadmap/00-index.md`, with D-042 through D-056 behind them.
 
-Verified: 187 workspace tests and 93 shell tests, eleven of them driving five **real ptys**; `tsc --noEmit && vite build` clean. And the thing no test can prove — five live `claude` TUIs messaging each other through the socket — has been run by hand.
+Verified: 226 workspace tests and 442 shell tests, a dozen of them driving five **real ptys**; `tsc --noEmit` clean and `npm run tauri build` producing a running release binary. And the thing no test can prove — five live `claude` TUIs messaging each other through the socket — has been run by hand.
 
 Known gaps, in rough priority order:
 
@@ -122,10 +180,11 @@ Known gaps, in rough priority order:
 
 1. **`CLAUDE.md`** — orientation, the commands, the conventions, and the documentation system. Auto-loaded if you are a Claude Code session; read it anyway if you are not.
 2. **`building.md`** — decision tiers, the seams, the risk register. The invariants in §1 come before everything else.
-3. **`docs/fleet-comms-map.md`** — how a message actually gets from `fleet send` to a terminal; §8 is the walk through the code.
-4. **`docs/README.md`** — the index of everything else under `docs/`: the as-built maps, the measurement notes, the roadmap, the archive.
-5. **`docs/roadmap/00-index.md`** — the live roadmap: what landed, what's pending, how new work gets filed.
-6. **`decisions.md`** — the running log of where defaults lost, and why. Navigate it with `grep "^## D-"`.
+3. **`docs/developing.md`** — the dev loop, the zero-token run, the test tiers and the probes. Start here if you are about to change something.
+4. **`docs/fleet-comms-map.md`** — how a message actually gets from `fleet send` to a terminal; §8 is the walk through the code.
+5. **`docs/README.md`** — the index of everything else under `docs/`: the as-built maps, the measurement notes, the roadmap, the archive.
+6. **`docs/roadmap/00-index.md`** — the live roadmap: what landed, what's pending, how new work gets filed.
+7. **`decisions.md`** — the running log of where defaults lost, and why. Navigate it with `grep "^## D-"`.
 
 Documents under `docs/archive/` describe superseded systems or moments that have passed. They are kept as the record behind decisions that are still in force, not as a description of the code.
 

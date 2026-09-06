@@ -543,3 +543,176 @@ fn the_declarations_this_file_reads_still_exist() {
          that name"
     );
 }
+
+// --- the credential picker (WP-25 #49; C73, C75, C78) --------------------------
+
+/// Which option the segmented control renders as the live answer, or `<none>`.
+///
+/// **`aria-pressed`, not `checked`** — C78 moved this control from a radio
+/// fieldset to a segmented button group, and the assertions moved with it rather
+/// than being deleted. The property they pin is unchanged: exactly one option is
+/// shown as the answer, and it is the one the seats actually hold.
+fn pressed_option(html: &str) -> String {
+    html.split("<button")
+        .find(|chunk| chunk.contains(r#"aria-pressed="true""#))
+        .and_then(|chunk| chunk.split(r#"data-source=""#).nth(1))
+        .and_then(|rest| rest.split('"').next())
+        .unwrap_or("<none>")
+        .to_string()
+}
+
+/// **The control that decides what a fleet spends actually renders** (C63).
+///
+/// It is here rather than in a file of its own because it shares this file's whole
+/// apparatus — the same probe, the same bundle, the same `node` — and a second
+/// copy of that machinery would be a second thing to keep working.
+///
+/// **Both options, always.** A picker that hid the option you are not on would
+/// make the choice invisible, which is the failure mode this control exists to
+/// prevent: an operator whose workers spend their subscription must be able to see
+/// that they do, and see the other answer sitting beside it.
+#[test]
+fn the_credential_picker_renders_both_options_whichever_is_chosen() {
+    let Some(all) = rendered() else { return };
+
+    for (key, selected, other) in [
+        ("credential_source_plan", "plan", "fleet_key"),
+        ("credential_source_fleet_key", "fleet_key", "plan"),
+    ] {
+        let html = markup(&all, key);
+        assert!(
+            html.contains(&format!(r#"data-source="{selected}""#)),
+            "the {selected} option did not render at all:\n{html}",
+        );
+        assert!(
+            html.contains(&format!(r#"data-source="{other}""#)),
+            "only the chosen option rendered, so the operator cannot see the answer they are \
+             not on — or switch to it:\n{html}",
+        );
+        assert!(
+            html.contains("your plan") && html.contains("your key"),
+            "an option rendered with no label. A control with no words on it is a choice \
+             nobody can make:\n{html}",
+        );
+    }
+}
+
+/// **The chosen option is the one that renders as pressed** (C75, C78).
+///
+/// The whole control is one attribute away from lying about what a click will
+/// spend, and that attribute is exactly what a source-reading test cannot see.
+#[test]
+fn the_credential_picker_marks_the_source_the_seats_hold() {
+    let Some(all) = rendered() else { return };
+
+    let plan = markup(&all, "credential_source_plan");
+    let key = markup(&all, "credential_source_fleet_key");
+
+    assert_eq!(
+        pressed_option(&plan),
+        "plan",
+        "the picker rendered with the seats on the plan and did not mark it, so the gate \
+         shows a fleet that is not the one that will spawn:\n{plan}",
+    );
+    assert_eq!(
+        pressed_option(&key),
+        "fleet_key",
+        "the picker rendered with the seats on the key and still marked the plan. That is \
+         the wrong direction to be wrong in — it spends a subscription:\n{key}",
+    );
+}
+
+/// **`mixed` is reported, never offered** (C78).
+///
+/// It is what the four seats say, not an answer the operator can give. Two
+/// properties, and both matter: it must not appear when the seats agree — a third
+/// option that is always there is one the operator wonders how to pick — and when
+/// it does appear it must be unclickable, or it is a control that silently
+/// rewrites three seats to match a fourth.
+#[test]
+fn the_mixed_state_appears_only_when_true_and_cannot_be_chosen() {
+    let Some(all) = rendered() else { return };
+
+    let agreed = markup(&all, "credential_source_plan");
+    assert!(
+        !agreed.contains(r#"data-source="mixed""#),
+        "`mixed` renders on a fleet whose four seats agree, so it reads as a third answer \
+         the operator could pick:\n{agreed}",
+    );
+
+    let mixed = markup(&all, "credential_source_mixed");
+    assert!(
+        mixed.contains(r#"data-source="mixed""#),
+        "four seats disagree and the control claims one of them:\n{mixed}",
+    );
+    assert_eq!(pressed_option(&mixed), "mixed", "the mixed state is not the live answer:\n{mixed}");
+    let chunk = mixed
+        .split("<button")
+        .find(|c| c.contains(r#"data-source="mixed""#))
+        .expect("just asserted it renders");
+    assert!(
+        chunk.contains("disabled"),
+        "`mixed` is clickable. Picking it would have to rewrite three seats to match a \
+         fourth, chosen by nobody:\n{mixed}",
+    );
+}
+
+/// **A harness with no readable login is said before Start, not discovered at it**
+/// (C75, C78).
+///
+/// The backend refuses a seat whose credential this machine cannot honour — it
+/// substitutes neither for the other — so this is the sentence that turns that
+/// refusal into something the operator can act on while they still can.
+#[test]
+fn the_credential_picker_names_a_harness_it_has_no_login_for() {
+    let Some(all) = rendered() else { return };
+
+    let fine = markup(&all, "credential_source_plan");
+    let missing = markup(&all, "credential_source_no_login");
+
+    assert!(
+        missing.contains("No login was readable"),
+        "the plan option is offered for a harness with no readable login and says nothing \
+         about it, so the operator meets the refusal at the Start button instead:\n{missing}",
+    );
+    assert!(
+        missing.contains("Re-check logins"),
+        "the note names the problem and not the fix. Re-check logins is the button that \
+         resolves it, and it is on this same card:\n{missing}",
+    );
+    assert!(
+        !fine.contains("No login was readable"),
+        "the missing-login warning renders on a machine where every harness this fleet \
+         spends has one, which is a warning that means nothing:\n{fine}",
+    );
+}
+
+/// **A worker row carries three controls and the orchestrator carries two**
+/// (C78).
+///
+/// The absence on the orchestrator is the assertion. That seat has only ever run
+/// the operator's own login, so a credential dropdown there would offer a choice
+/// that does not exist — and rendering it disabled would be worse, since a
+/// disabled control implies a state you could reach.
+#[test]
+fn only_a_worker_row_offers_a_credential() {
+    let Some(all) = rendered() else { return };
+
+    let worker = markup(&all, "worker_with_a_credential");
+    assert!(
+        worker.contains("seat-row__credential"),
+        "a worker row renders no credential dropdown, so the per-seat choice is \
+         unreachable:\n{worker}",
+    );
+    assert!(
+        worker.contains("your plan") && worker.contains("your key"),
+        "the credential dropdown renders without both answers:\n{worker}",
+    );
+
+    let orch = markup(&all, "orchestrator");
+    assert!(
+        !orch.contains("seat-row__credential"),
+        "the orchestrator row offers a credential choice. It has always run the operator's \
+         own login and has no second answer to hold:\n{orch}",
+    );
+}

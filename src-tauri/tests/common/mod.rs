@@ -127,6 +127,20 @@ impl Bench {
             .unwrap();
     }
 
+    /// **Give this machine an operator login for one harness** (C75), the way
+    /// `Host::discover` would on a machine the operator is logged in on.
+    ///
+    /// The document is a stand-in and is never parsed by anything a placement
+    /// reaches: `OperatorLogin` is opaque by construction, and the harnesses write
+    /// it verbatim. What a test asserts is *where it lands and what it replaces*,
+    /// which is exactly what a real credential would be asserted on — so nothing
+    /// here needs the operator's own.
+    pub fn operator_logs_in(&mut self, harness: &'static str, document: &str) {
+        self.host
+            .operator_logins
+            .push((harness, placement::OperatorLogin::new(document.to_string())));
+    }
+
     /// Place a pane for real, and hand back what a caller would get.
     pub fn place(&self, spec: PaneSpec) -> Placed {
         let pane = spec.pane();

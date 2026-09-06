@@ -42,6 +42,8 @@ import {
   type HarnessOffer,
   type SeatChoice,
   type StartRefusal,
+  type CredentialChoice,
+  type ModelOffer,
 } from "../fleet/types";
 import { offerFor, useSeatPickers } from "../ui/useSeatPickers";
 
@@ -92,6 +94,31 @@ function optionLabel(offer: HarnessOffer): string {
   }
 }
 
+/// **The models one seat may run, which is a function of the harness *and* the
+/// credential** (C78) — not the harness alone, as it was.
+///
+/// A seat on the operator's plan reaches the models its harness offers, which
+/// arrive on the wire like every other fact about a harness: a live catalog where
+/// the vendor publishes one, and `Posture::declared_models` where it does not.
+/// **No vendor name is written here**, which `tests/gate_pickers.rs` enforces — a
+/// literal in this file would be a third harness offered and then handled by a
+/// branch written for the first two.
+///
+/// The same seat on the key the operator supplied reaches FLEETOR's provider
+/// instead, where none of those names resolves and the fleet's own model is the
+/// only answer. Offering one list for both would suggest a model that cannot run.
+function modelsFor(gate: GateState, seat: SeatChoice): ModelOffer[] {
+  if (seat.credential === "fleet_key") {
+    return [
+      {
+        slug: gate.worker_model_default,
+        display_name: `${gate.worker_model_default} — the fleet's own model`,
+      },
+    ];
+  }
+  return offerFor(gate, seat.harness)?.models ?? [];
+}
+
 export interface SeatRowProps {
   label: string;
   gate: GateState;
@@ -101,8 +128,16 @@ export interface SeatRowProps {
   sentinel: string;
   onHarness: (harness: string) => void;
   onModel: (model: string) => void;
+  /// **Omitted on the orchestrator** (C78). That seat has only ever run the
+  /// operator's own login and has no second answer to hold, so it renders two
+  /// controls where a worker renders three — an absence, not a disabled control.
+  onCredential?: (credential: CredentialChoice) => void;
   /// A short line under the picker, where a row needs one the facts do not carry.
   aside?: string;
+  /// **Suppressed on every row but the first of its harness group** (C78). Four
+  /// seats on two harnesses printed the same two sentences twice each, and
+  /// identical text under identical rows trains the eye to skip all four.
+  showFacts?: boolean;
 }
 
 /// One seat's harness and model, with the harness's own facts beneath them.
@@ -112,9 +147,19 @@ export interface SeatRowProps {
 /// produces the harness `<select>`, the model field and the facts line is proving
 /// the whole card's seat-picking half is reachable, not just that the source says
 /// the right thing.
-export function SeatRow({ label, gate, seat, sentinel, onHarness, onModel, aside }: SeatRowProps) {
+export function SeatRow({
+  label,
+  gate,
+  seat,
+  sentinel,
+  onHarness,
+  onModel,
+  onCredential,
+  aside,
+  showFacts = true,
+}: SeatRowProps) {
   const offer = offerFor(gate, seat.harness);
-  const models = offer?.models ?? [];
+  const models = modelsFor(gate, seat);
   const listId = `models-${label.replace(/\s+/g, "-")}`;
   const [typed, setTyped] = useState<string | null>(null);
   const shown = typed ?? seat.model ?? "";
@@ -143,6 +188,40 @@ export function SeatRow({ label, gate, seat, sentinel, onHarness, onModel, aside
             </option>
           ))}
         </select>
+        {/* **The expensive question on the row, between the cheap ones** (C78):
+            which harness, then whose account, then which model. Always two
+            options — never filtered — so a machine that cannot honour one shows
+            it disabled with the reason, the same rule the harness list follows.
+            Absent on the orchestrator, which has only one answer. */}
+        {onCredential !== undefined && (
+          <select
+            className="seat-row__credential"
+            data-value={seat.credential}
+            aria-label={`${label} credential`}
+            value={seat.credential}
+            onChange={(e) => onCredential(e.target.value as CredentialChoice)}
+          >
+            <option
+              value="plan"
+              disabled={!gate.harnesses_with_a_login.includes(seat.harness)}
+              title={
+                gate.harnesses_with_a_login.includes(seat.harness)
+                  ? undefined
+                  : `no ${seat.harness} login was readable on this machine`
+              }
+            >
+              your plan
+            </option>
+            <option
+              value="fleet_key"
+              disabled={!gate.has_fleet_key}
+              title={gate.has_fleet_key ? undefined : "no worker key was found in your .env"}
+            >
+              your key
+            </option>
+          </select>
+        )}
+        <div className="seat-row__field">
         <input
           className="seat-row__model"
           type="text"
@@ -176,20 +255,33 @@ export function SeatRow({ label, gate, seat, sentinel, onHarness, onModel, aside
             ))}
           </datalist>
         )}
-        <button
-          type="button"
-          className="seat-row__sentinel"
-          disabled={seat.model === null}
-          title={`Run this seat on ${sentinel}`}
-          onClick={() => {
-            setTyped(null);
-            onModel("");
-          }}
-        >
-          use default
-        </button>
+        {/* **One slot, two glyphs, never both** (C78). `use default` was a button
+            the width of the credential dropdown that replaced it; folded into the
+            field, it is also better placed, since it resets that field and
+            nothing else. At the default the slot shows a chevron, because what it
+            has to advertise is that there is a list; once a model is named it
+            shows the reset, because what it has to offer is the way back. */}
+        {seat.model === null ? (
+          <span className="seat-row__aff seat-row__aff--list" aria-hidden="true">
+            ▾
+          </span>
+        ) : (
+          <button
+            type="button"
+            className="seat-row__aff"
+            aria-label={`reset ${label} model`}
+            title={`Run this seat on ${sentinel}`}
+            onClick={() => {
+              setTyped(null);
+              onModel("");
+            }}
+          >
+            ↺
+          </button>
+        )}
+        </div>
       </div>
-      <p className="seat-row__facts">{factsFor(offer)}</p>
+      {showFacts && <p className="seat-row__facts">{factsFor(offer)}</p>}
       {/* **The way out, beside what is wrong** (#51). The line above is the vendor's
           own sentence about the state and it is correct and it is a dead end; this
           is the move. Everything in it — the sentence, the command, the variable —
@@ -234,6 +326,99 @@ export function SeatRow({ label, gate, seat, sentinel, onHarness, onModel, aside
       {aside !== undefined && <p className="seat-row__facts">{aside}</p>}
     </li>
   );
+}
+
+export interface CredentialSourcePickerProps {
+  /// The credential all four workers share, or `"mixed"` when they do not.
+  chosen: CredentialChoice | "mixed";
+  /// Harnesses this machine has a readable operator login for.
+  withALogin: string[];
+  /// Whether the `.env` walk found a worker key.
+  hasFleetKey: boolean;
+  /// Harnesses this fleet is actually about to spend, so the note names those and
+  /// not every harness registered.
+  spending: string[];
+  onChoose: (credential: CredentialChoice) => void;
+}
+
+/// **Whose usage this fleet's workers spend, for all four at once** (WP-25 #49;
+/// C73, C75, C78).
+///
+/// **A bulk control, not a separate value.** It writes the four seats; it is
+/// never something they inherit from. That keeps the seats the only answer (M15)
+/// and is why it renders `mixed` rather than picking one of them to display —
+/// `mixed` is what the seats report, not an answer the operator can give, so it
+/// appears only when true and is not selectable.
+///
+/// **It is not redundant with the per-row dropdowns**, and the two cover
+/// different states: the collapsed workers row only ever renders when all four
+/// agree, and this is the control that still works from `mixed`.
+///
+/// **Exported for the reason [`SeatRow`] is** (C63): a source-reading tripwire
+/// cannot tell you the control it is quoting is the one that mounts, and this one
+/// decides what gets billed.
+export function CredentialSourcePicker({
+  chosen,
+  withALogin,
+  hasFleetKey,
+  spending,
+  onChoose,
+}: CredentialSourcePickerProps) {
+  const noLoginFor = spending.filter((name) => !withALogin.includes(name));
+  return (
+    <li className="pane-gate__fact seat-source">
+      <span className="k">workers run on</span>
+      <div className="seat-source__body">
+        <div className="segmented" role="group" aria-label="Workers run on">
+          <button
+            type="button"
+            data-source="plan"
+            aria-pressed={chosen === "plan"}
+            disabled={noLoginFor.length === spending.length && spending.length > 0}
+            onClick={() => onChoose("plan")}
+          >
+            your plan
+          </button>
+          <button
+            type="button"
+            data-source="fleet_key"
+            aria-pressed={chosen === "fleet_key"}
+            disabled={!hasFleetKey}
+            onClick={() => onChoose("fleet_key")}
+          >
+            your key
+          </button>
+          {/* Reported, never chosen — and shown only when it is true, so it is
+              never a third option the operator wonders how to pick. */}
+          {chosen === "mixed" && (
+            <button type="button" data-source="mixed" aria-pressed disabled>
+              mixed
+            </button>
+          )}
+        </div>
+        <p className="seat-source__why">{sourceNote(noLoginFor, hasFleetKey)}</p>
+      </div>
+    </li>
+  );
+}
+
+/// **What the two options mean on this machine**, in the operator's own terms.
+///
+/// A harness with no readable login is named before Start rather than discovered
+/// at it: the backend refuses that fleet — it substitutes neither credential for
+/// the other — so this is the sentence that turns a refusal into something the
+/// operator can act on while they still can.
+function sourceNote(noLoginFor: string[], hasFleetKey: boolean): string {
+  if (noLoginFor.length > 0 && !hasFleetKey) {
+    return `No login was readable for ${noLoginFor.join(" or ")}, and no worker key was found in your .env. Log in and press Re-check logins, or add a key.`;
+  }
+  if (noLoginFor.length > 0) {
+    return `No login was readable for ${noLoginFor.join(" or ")}. Log in and press Re-check logins, or put those seats on your key.`;
+  }
+  if (!hasFleetKey) {
+    return "Your existing login, copied into each worker at spawn. No worker key was found in your .env, so your key is not available.";
+  }
+  return "Your existing login, copied into each worker at spawn — or the key you supplied in .env.";
 }
 
 export function StartGate({ config, onStart, onTargetChanged }: StartGateProps) {
@@ -310,6 +495,9 @@ export function StartGate({ config, onStart, onTargetChanged }: StartGateProps) 
   // `canTakeASeat` would be a second implementation of a rule that has to hold in
   // one place (#36).
   const refusals = gate?.verdict.refusals ?? [];
+  // The worker harnesses, once each — what the credential note names, so an
+  // operator running a fleet of Claude Code is not told about codex's login.
+  const workerHarnesses = [...new Set(workers.map((seat) => seat.harness))];
 
   return (
     <div className="pane-gate pane-gate--workspace">
@@ -319,14 +507,21 @@ export function StartGate({ config, onStart, onTargetChanged }: StartGateProps) 
           Spawns the orchestrator{hasWorkers ? ` and ${WORKER_SLOTS.length} worker terminals` : ""},
           each on the harness named below, all wired to the hub. It will spend tokens.
         </p>
-        {/* **What it will spend, per harness and per seat** (#36, story 12, C9).
-            "It will spend tokens" is the sentence above and it is not enough on its
-            own: a turn in the orchestrator seat runs the operator's *own* login and
-            can draw down their subscription quota, while a worker is fenced on
-            FLEETOR's provider and key and cannot reach that plan at all. The two
-            fail differently and are paid for differently, so they are two sentences.
-            Both are written by the backend from the same `seats` the pickers wrote,
-            so this card cannot promise a fleet that is not the one that will spawn
+        {/* **How many seats are about to spend the plan** (#49). Separate from the
+            cost sentences because those are per-harness and this is per-fleet: a
+            mixed fleet has two of them and still exactly one answer to "how many".
+            Rendered only when it is true — a line reading "0 seats" every launch is
+            a line an operator stops reading. */}
+        {gate?.verdict.plan_seats != null && (
+          <p className="pane-gate__note pane-gate__note--warn">{gate.verdict.plan_seats}</p>
+        )}
+        {/* **What it will spend, per harness and per seat** (#36, story 12, C9,
+            reshaped by C75). "It will spend tokens" is the sentence above and it is
+            not enough on its own. The split these sentences carry used to be
+            orchestrator-versus-worker; since a worker can run the operator's plan it
+            is **plan versus fleet key**, and the backend computes which one each
+            harness gets. Written there from the same `seats` the pickers wrote, so
+            this card cannot promise a fleet that is not the one that will spawn
             (M15). */}
         {gate !== null && gate.verdict.cost.length > 0 && (
           <ul className="pane-gate__cost">
@@ -357,10 +552,22 @@ export function StartGate({ config, onStart, onTargetChanged }: StartGateProps) 
               {!hasWorkers ? (
                 <li className="pane-gate__fact">
                   <span className="k">workers</span>
-                  <span className="v">none — no API key found, the orchestrator runs alone</span>
+                  <span className="v">none — this build places no worker seats</span>
                 </li>
               ) : (
                 <>
+                  {/* **Whose usage the four workers spend, above the rows that
+                      each say it for themselves** (C78). Placed here rather than
+                      at the top of the card so it sits with the seats it writes:
+                      which harness a seat runs and whose account it spends are two
+                      questions, and this is the one that costs money. */}
+                  <CredentialSourcePicker
+                    chosen={pickers.workersCredential}
+                    withALogin={gate.harnesses_with_a_login}
+                    hasFleetKey={gate.has_fleet_key}
+                    spending={workerHarnesses}
+                    onChoose={pickers.chooseWorkersCredential}
+                  />
                   {/* **The disclosure now lives under the label it controls** (defect
                       6): a "workers" header row, so the toggle is never a line an
                       operator finds floating under four rows with no clear owner. It
@@ -405,9 +612,17 @@ export function StartGate({ config, onStart, onTargetChanged }: StartGateProps) 
                             label={`worker ${slot}`}
                             gate={gate}
                             seat={seat}
-                            sentinel={workerDefault}
+                            sentinel={seatSentinel(seat, workerDefault)}
                             onHarness={(harness) => pickers.chooseHarness(workerPane(slot), harness)}
                             onModel={(model) => pickers.chooseModel(workerPane(slot), model)}
+                            onCredential={(credential) =>
+                              pickers.chooseCredential(workerPane(slot), credential)
+                            }
+                            // **Once per harness group, not once per seat** (C78).
+                            // Four seats on two harnesses printed the same two
+                            // sentences twice each; identical text under identical
+                            // rows trains the eye to skip all four.
+                            showFacts={workers[slot - 2]?.harness !== seat.harness}
                           />
                         );
                       })}
@@ -418,10 +633,20 @@ export function StartGate({ config, onStart, onTargetChanged }: StartGateProps) 
                         label={`${WORKER_SLOTS.length} workers`}
                         gate={gate}
                         seat={firstWorker}
-                        sentinel={workerDefault}
+                        sentinel={seatSentinel(firstWorker, workerDefault)}
                         onHarness={pickers.chooseWorkersHarness}
                         onModel={pickers.chooseWorkersModel}
-                        aside="Fenced, on FLEETOR's own provider and key — never your login."
+                        onCredential={pickers.chooseWorkersCredential}
+                        // **The aside is now a function of the credential** (C78).
+                        // "Fenced, on FLEETOR's own provider and key — never your
+                        // login" was true of every worker and is true of half of
+                        // them now; a fixed sentence here would be the card
+                        // stating the opposite of what the row above it says.
+                        aside={
+                          firstWorker.credential === "plan"
+                            ? "Fenced, on your own login — copied into each pane at spawn, never written back."
+                            : "Fenced, on FLEETOR's own provider and the key you supplied — never your login."
+                        }
                       />
                     )
                   )}
@@ -489,6 +714,21 @@ export function StartGate({ config, onStart, onTargetChanged }: StartGateProps) 
             from the list, or re-check logins if you have just changed your catalog.
           </p>
         ))}
+        {/* **A seat whose credential this machine could not honour** (C79). It has
+            already moved — the row's own dropdown shows the answer it will run on
+            — so this is not a warning about something that might happen; it is the
+            record of a substitution, which the operator has to be told about
+            precisely because the thing that changed is what gets billed. */}
+        {(gate?.verdict.credential_fallbacks ?? []).map((moved) => (
+          <p key={moved.seat} className="pane-gate__note pane-gate__note--warn">
+            {moved.seat} was set to{" "}
+            <span className="mono">{moved.asked === "plan" ? "your plan" : "your key"}</span>, which
+            this machine does not have for <span className="mono">{moved.harness}</span>, so it runs
+            on{" "}
+            <span className="mono">{moved.fell_back_to === "plan" ? "your plan" : "your key"}</span>{" "}
+            instead. Change it on the row, or log in and press Re-check logins.
+          </p>
+        ))}
         {/* **Why the fleet will not start** (#36, story 11). Named per seat rather
             than as one "cannot start", because the operator's next action is to
             change *that row* — and the sentence is the vendor's own, since a login
@@ -535,6 +775,17 @@ export function StartGate({ config, onStart, onTargetChanged }: StartGateProps) 
       </div>
     </div>
   );
+}
+
+/// **What an empty model field means for this seat** (C78).
+///
+/// A seat on the key falls back to the fleet's own model, because its provider is
+/// FLEETOR's and there is no vendor default to reach (C9). A seat on the plan
+/// falls back to the vendor's own choice, which is exactly what the orchestrator
+/// has always done — so it reuses M2's sentinel rather than introducing a second
+/// one that would mean the same thing.
+function seatSentinel(seat: SeatChoice, workerDefault: string): string {
+  return seat.credential === "plan" ? DEFAULT_YOUR_LOGIN : workerDefault;
 }
 
 /// One refusal as a single line, for the disabled button's tooltip.

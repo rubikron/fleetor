@@ -289,3 +289,121 @@ python3 examples/plan-worker-spike/probe_env_token.py --bin "$HOME/.local/bin/cl
 ```
 
 All arms are free. `--bin` for the same reason §5 gives.
+
+---
+
+# WP-25 (#49), part 3 — the credential file is read from inside the Fence, and route 3 is alive
+
+**Verdict: spike 1 is green. A fenced pane authenticates on the operator's own
+plan from a `.credentials.json` in its own `CLAUDE_CONFIG_DIR`.** #49 said the
+first attempt had *assumed* this and that a keychain-only store would kill route
+3 alongside route 4, leaving defer as the only answer. It is not keychain-only.
+
+A second arm closes a gap in §§6-10 rather than restating it: `CLAUDE_CODE_OAUTH_TOKEN`
+is a different variable from the `ANTHROPIC_AUTH_TOKEN` those sections measured,
+and it does not work either.
+
+Same interactive `claude` **2.1.263** at `~/.local/bin/claude` on macOS 24.6.0
+that §1 and §6 used, so all three probes are one comparison set rather than
+three snapshots. Zero tokens: every arm spawns in a pty, watches for twelve
+seconds, SIGKILLs, and never submits.
+
+## 11. The arms
+
+`examples/plan-worker-spike/probe_config_dir_creds.py`, a sibling of the other
+two and not an edit to either. Same conventions throughout: a fresh seeded
+`CLAUDE_CONFIG_DIR` per arm (L1), a fresh private `HOME` (D-052), one `redact`
+function every print path goes through, arm directories under the gitignored
+`work/`, deleted and recreated per run.
+
+| Arm | `HOME` | Handed in | `Not logged in`? | Mode line |
+|---|---|---|---|---|
+| `control-unfenced` | operator's | — | no | **`Opus 5 (1M context) · Claude Max`** |
+| `control-fenced` | **private** | — | **yes** | `Opus 5 (1M context) · API Usage Billing` |
+| `fenced-creds-file` | **private** | `.credentials.json`, 526 B, mode `0600` | **no** | **`Opus 5 (1M context) · Claude Max`** |
+| `fenced-oauth-env` | **private** | `CLAUDE_CODE_OAUTH_TOKEN` = access token | no | `Sonnet 5 · Claude API` + **401** |
+
+The two controls reproduce §1's `unfenced-plan` and `fenced-plan` readings
+exactly, which is what makes the other two mean anything.
+
+## 12. Spike 1 — the config dir is a store `claude` will read
+
+`fenced-creds-file` has a private `HOME`, the worker's PATH, and
+`CLAUDE_SECURESTORAGE_CONFIG_DIR` scrubbed. §2's finding still holds underneath
+it: **there is no login keychain on that process's search list at all.** It
+reads `Claude Max` anyway.
+
+**The arm differs from its own negative control by the planted file and nothing
+else.** No variable was added to its environment; `control-fenced` and
+`fenced-creds-file` are built from the same `arm_env` branch. So the file is
+what authenticated it, and the inference has one step.
+
+The file carries the `claudeAiOauth` object and **only** that object — not the
+keychain item, which on this machine also holds third-party MCP OAuth tokens
+with their own refresh tokens and a client secret (§9). Every arm here narrows
+the same way, for the same reason.
+
+**Written at mode `0600`**, matching what the vendor's own file store chmods its
+writes to.
+
+## 13. Spike 2 is not settled here, and the probe says so
+
+The planted file was **unchanged** after the twelve-second watch. The probe
+reports that as *bounded by the watch window* and not as evidence the pane
+cannot refresh, because a credential with 0.87 h remaining (§8) has no reason to
+refresh inside twelve seconds. **Nothing in this section supports either answer
+to #49's second spike.**
+
+What can be said without measuring: the vendor's file store exposes `read`,
+`write` and `remove` against **the same computed path**, so the store the pane
+read from is the store a refreshed credential would be written back into — the
+pane's own disposable directory, which is the outcome #49 called fine. That is
+read from the bundle, not run, and it is not a measurement.
+
+**The obvious next arm carries a real risk and was not run.** Planting a file
+whose `expiresAt` is already past would force a refresh attempt on startup and
+settle the question in one run — but an OAuth refresh rotates the refresh token,
+and the operator's keychain copy would become the stale one. That is a decision
+about the operator's own live login, not a probe's to take.
+
+A zero-risk variant exists: plant an expired `expiresAt` with a **deliberately
+invalid** refresh token. It cannot prove refresh succeeds, but it shows whether
+the pane attempts one and whether the failure is *legible* on screen — which is
+the D-062 question, and the one that matters for a worker dying mid-run.
+
+## 14. `CLAUDE_CODE_OAUTH_TOKEN` — a real gap in §§6-10, closed the same way
+
+§§6-10 measured `ANTHROPIC_AUTH_TOKEN`. `CLAUDE_CODE_OAUTH_TOKEN` was never in
+those arms, and it is not the same channel: the vendor's own `byoc` runner sets
+it on a child `claude` and refreshes it on a timer, and two changelog entries
+describe it as an **override of `/login`** that `/login` warns about. It is
+OAuth-aware where the other variable is the metered path, so §7's blocker 1 does
+not speak to it.
+
+Measured: the operator's existing access token in that variable reads
+**`Sonnet 5 · Claude API`** with **`Remote managed settings failed to load
+(authentication rejected (401))`**. Not the plan, and a 401 is the server
+refusing the credential on that path.
+
+**The variable wants a token minted by `claude setup-token`** — the vendor's own
+help calls it "a long-lived authentication token (requires Claude subscription)".
+That is an interactive browser login the operator performs per machine, and the
+operator has ruled out routes that ask a user for an extra step, so this closes
+as scoped-out rather than merely as failed.
+
+It repeats §7's sharp part: the arm shows **neither** `Not logged in` **nor** a
+plan. Handing the wrong credential in deletes the legible symptom again.
+
+**One finding worth acting on independently of #49:** `CLAUDE_CODE_OAUTH_TOKEN`
+is **not** in Claude Code's `scrubbed_env` (`placement/harness.rs:1228`). An
+operator with it in a shell profile authenticates a fenced worker on their own
+account today, silently. That is a D-062 hole with its own fix.
+
+## 15. Reproducing
+
+```bash
+python3 examples/plan-worker-spike/probe_config_dir_creds.py --bin "$HOME/.local/bin/claude"
+python3 examples/plan-worker-spike/probe_config_dir_creds.py --bin "$HOME/.local/bin/claude" --arm fenced-creds-file
+```
+
+All arms are free. `--bin` for the same reason §5 gives.

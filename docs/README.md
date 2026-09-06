@@ -20,6 +20,7 @@ The map a fresh session reads instead of launching explore agents. Every documen
 | [`context-architecture.md`](./context-architecture.md) | *What* is a pane told, and who decided each piece? | current |
 | [`context-injection-flow.md`](./context-injection-flow.md) | *When* does each piece of context arrive, and where does it land in the window? | current |
 | [`runtime-layout.md`](./runtime-layout.md) | What lives under `~/.fleetor` and what bites? | current |
+| [`developing.md`](./developing.md) | How do I run the dev loop, the zero-token run, the tests and the probes? | current |
 
 `prompts/README.md` (beside the prompt files, not here) is the account of the briefs themselves. The `ui/` frontend has no map yet — that is WP-10 on the roadmap.
 

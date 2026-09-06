@@ -192,10 +192,10 @@ use toml_edit::{DocumentMut, Item, Table, Value};
 
 use super::harness::{
     AccountShape, BriefCarrier, CommandChannel, ConfigAndCredentialIsolation, ConfigDir,
-    Credentials, GaugeSource, GuardrailInstall, Harness, HarnessReadiness, HarnessSpec,
-    LoginInstruction, LoginState, ModelChoice, OrphanNames, Outbound, Posture, PostureExpectation,
-    ProjectIdentityAndTrust, Program, ProviderKey, ResolvedPosture, Seat, Seed, Transcript,
-    Transport, TypingProfile,
+    CredentialSource, Credentials, GaugeSource, GuardrailInstall, Harness, HarnessReadiness,
+    HarnessSpec, LoginInstruction, LoginState, ModelChoice, OperatorLogin, OrphanNames, Outbound,
+    Posture, PostureExpectation, ProjectIdentityAndTrust, Program, ProviderKey, ResolvedPosture,
+    Seat, Seed, Transcript, Transport, TypingProfile,
 };
 
 // --- the vendor's own shape ----------------------------------------------------
@@ -279,6 +279,37 @@ const SNAPSHOT_ENTRIES: &[&str] = &[
 /// inside the pane is not carried back to the operator's own installation, and a
 /// re-seed overwrites the pane's copy with the operator's again.
 const OPERATORS_OWN_ENTRIES: &[&str] = &["auth.json"];
+
+/// The one entry of [`OPERATORS_OWN_ENTRIES`] a plan-backed seat is given, named
+/// on its own because that seat receives it as a *document* rather than as a copy
+/// (C73, C75).
+///
+/// **Deliberately the same file.** Codex carries configuration and login in one
+/// directory (C6), so there is no second store to plant this in and no variable
+/// that would select one — which is exactly why codex needed no spike where
+/// Claude Code did.
+const OPERATOR_CREDENTIAL_FILE: &str = "auth.json";
+
+/// Write the operator's login into a pane's own `CODEX_HOME`, at `0600`.
+///
+/// **Truncating rather than merging**, for the reason Claude Code's writer gives:
+/// a credential is one document with one writer, and a surviving stale half is a
+/// pane authenticating as something the operator no longer is.
+///
+/// The "never written back" rule (this module's header) is untouched: this writes
+/// *into* the pane's directory and never towards `~/.codex`.
+fn write_operator_login(dir: &Path, login: &OperatorLogin) -> Result<(), String> {
+    let path = dir.join(OPERATOR_CREDENTIAL_FILE);
+    std::fs::write(&path, login.document())
+        .map_err(|e| format!("write {}: {e}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("chmod {}: {e}", path.display()))?;
+    }
+    Ok(())
+}
 
 /// Per-provider keys that carry, or reach, the operator's own credential — struck
 /// from every `[model_providers.*]` table on a **fenced** seat's way in (C9, C43).
@@ -498,6 +529,10 @@ pub const CODEX_SPEC: HarnessSpec = HarnessSpec {
     posture: Posture {
         model_env: None,
         model_flag: Some("--model"),
+        // **Empty on purpose** (C78): codex publishes a real catalog and `catalog`
+        // reads it, sorted by the vendor's own priority. A hand-written list
+        // beside a live one is a second answer that goes stale.
+        declared_models: &[],
         permission_flag: None,
         // **The sandbox trio, two of its three rows** (#28, C7). The third is
         // checkpoint 8's and lives on `outbound` because it is the socket lever
@@ -628,7 +663,13 @@ pub const CODEX_SPEC: HarnessSpec = HarnessSpec {
     isolation: ConfigAndCredentialIsolation {
         config_env: "CODEX_HOME",
         credential_env: None,
-        credentials_follow_home: false,
+        token_follows_home: false,
+        // **`false` here too, and for a different reason than Claude Code's**
+        // (C73): codex's `auth.json` is found through `CODEX_HOME`, which FLEETOR
+        // sets, so the operator's store is not behind a `HOME`-derived search list
+        // the way a login keychain is. C6 measured it — a fabricated `HOME` with
+        // the real `CODEX_HOME` stayed logged in.
+        operator_store_follows_home: false,
         private_home: true,
         seeds_from_operator: true,
     },
@@ -809,6 +850,24 @@ pub const CODEX_SPEC: HarnessSpec = HarnessSpec {
 };
 
 impl Harness for CodexCli {
+    /// **Codex's login is a file inside the directory this module replaces**
+    /// (C6, C73) — `auth.json` under the operator's own `CODEX_HOME`.
+    ///
+    /// This is the read Claude Code's needed a spike for and codex did not: there
+    /// is no keychain and no search list, so the credential is reachable by path
+    /// and the only question was whether FLEETOR may take it. `None` on a machine
+    /// with no operator `HOME`, and on an operator who has never logged in.
+    ///
+    /// **Read verbatim and not parsed.** Unlike Claude Code's keychain item, this
+    /// file is codex's alone — there is nothing in it belonging to another vendor
+    /// to narrow away, and parsing it would be this module inventing an opinion
+    /// about a document shape it does not own.
+    fn read_operator_login(&self, operator_home: Option<&Path>) -> Option<OperatorLogin> {
+        let home = operator_home?;
+        let path = home.join(OPERATOR_DIR).join(OPERATOR_CREDENTIAL_FILE);
+        std::fs::read_to_string(path).ok().map(OperatorLogin::new)
+    }
+
     fn spec(&self) -> &'static HarnessSpec {
         &CODEX_SPEC
     }
@@ -979,6 +1038,21 @@ fn install(
         }
     }
 
+    // 1b. **The operator's login, on a fenced seat that spends their plan**
+    // (C73, C75). The same file `OPERATORS_OWN_ENTRIES` carries above, arriving
+    // by a different road on purpose: that copy reads the operator's directory at
+    // seed time, and this one writes a document `Host::discover` already read — so
+    // a plan seat works on a machine where `operator_home` is unknown, and there
+    // is exactly one moment the credential is taken.
+    //
+    // **Not folded into the branch above.** They answer different questions —
+    // *is this the operator's own pane* and *whose usage does this seat spend* —
+    // and C75 split them precisely because a plan-backed worker is the
+    // combination the single boolean could not spell.
+    if let CredentialSource::OperatorsPlan(login) = seed.credential_source {
+        write_operator_login(dir, login)?;
+    }
+
     // 2. The base document.
     let installed = dir.join(spec.config_dir.seed_file);
     let mut doc = match (spec.config_dir.seed_merges, std::fs::read_to_string(&installed)) {
@@ -1010,9 +1084,18 @@ fn install(
         // `checkpoint_keys` precisely because it is not a harness answer — it is
         // the answer for one seat, and putting it in the spec would make the
         // orchestrator run on the fleet's credential too (C2, as amended by C9).
-        for (key, value) in WORKER_PROVIDER_SELECTION {
-            let path: Vec<&str> = key.split('.').collect();
-            set_owned(&mut doc, &path, toml_value(value), &seat, CREDENTIAL_WHY, &mut notices);
+        //
+        // **Not written on a seat spending the operator's plan** (C75). The
+        // FLEETOR entry names a different provider at a different endpoint;
+        // selecting it on a plan seat would point a pane holding the operator's
+        // login at a machine that has never heard of it. This branch reads
+        // `credential_source` and the one below reads `operators_own_seat`,
+        // because containment and credential are the two questions C75 split.
+        if !seed.credential_source.is_the_operators_plan() {
+            for (key, value) in WORKER_PROVIDER_SELECTION {
+                let path: Vec<&str> = key.split('.').collect();
+                set_owned(&mut doc, &path, toml_value(value), &seat, CREDENTIAL_WHY, &mut notices);
+            }
         }
         for (key, value) in WORKER_FEATURE_OVERRIDES {
             let path: Vec<&str> = key.split('.').collect();
@@ -3642,7 +3725,13 @@ args = ["--root", "~/notes"]
         assert_eq!(CODEX_SPEC.config_dir.env_var, "CODEX_HOME");
         assert_eq!(CODEX_SPEC.isolation.config_env, CODEX_SPEC.config_dir.env_var);
         const { assert!(CODEX_SPEC.isolation.seeds_from_operator, "checkpoint 6 is a snapshot") };
-        const { assert!(!CODEX_SPEC.isolation.credentials_follow_home, "and login is not HOME's") };
+        const { assert!(!CODEX_SPEC.isolation.token_follows_home, "and the token is not HOME's") };
+        const {
+            assert!(
+                !CODEX_SPEC.isolation.operator_store_follows_home,
+                "and codex's own credential store is CODEX_HOME's, not HOME's (C6, C73)"
+            )
+        };
         const { assert!(CODEX_SPEC.isolation.private_home, "the Fence still wants one") };
         const {
             assert!(
@@ -3891,12 +3980,13 @@ args = ["--root", "~/notes"]
         let worker = crate::placement::spawn::worker_command_with(
             codex(),
             1,
-            &context.launch.worker_model,
             Path::new("/tmp"),
             Path::new("/tmp/home"),
             Path::new("/tmp/cfg"),
             Path::new("/tmp/s.sock"),
             "sk-the-fleets-own-key",
+            Some(context.launch.worker_model.as_str()),
+            &CredentialSource::FleetKey,
             None,
             &context,
             None,
