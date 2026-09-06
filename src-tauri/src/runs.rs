@@ -202,7 +202,8 @@ fn archive_files(live: &Path, dest: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Move every pane's Claude Code transcript into the run it belongs to.
+/// Move every pane's transcript into the run it belongs to, from wherever its
+/// harness leaves them.
 ///
 /// The event log records what the panes said **to each other**; a transcript
 /// records what one pane actually did — the tool calls, the reasoning, the work
@@ -223,32 +224,79 @@ fn archive_files(live: &Path, dest: &Path) -> std::io::Result<()> {
 /// Tier 1.1. `orch` now has a fleet-owned config dir under the same
 /// `pane-config/` root a worker's lives in, so the scan below finds it by the
 /// name it already walks and files it under `transcripts/orch/`.
+///
+/// **Where and what it looks for is checkpoint 13's** (WP-25, C12):
+/// [`Transcript::subdir`](crate::placement::harness::Transcript::subdir) and
+/// [`file_ext`](crate::placement::harness::Transcript::file_ext), across every
+/// registered harness — see [`transcript_locations`] for why the whole registry
+/// rather than this pane's own harness.
+///
+/// **The rename is checkpoint 13's third answer and this function does not check
+/// it.** `file_move_is_safe` says a plain move is a safe way to take this
+/// harness's transcript, and it is `true` for every registered harness because a
+/// harness whose transcript is a live database needs a mechanism here — a backup
+/// API, not a rename — before it can be registered at all. Reading the flag to
+/// skip such a harness would silently archive nothing for it, which is a run
+/// missing its evidence and looking like an ordinary one; the conformance suite
+/// refuses the registration instead, which fails at the right time. The
+/// mechanism itself is #39's.
 fn harvest_transcripts(shell: &Path, dest: &Path) -> u32 {
     let Ok(panes) = std::fs::read_dir(crate::placement::pane_config_root(shell)) else { return 0 };
     let mut moved = 0;
 
     for pane in panes.flatten() {
         let name = pane.file_name();
-        let Ok(slugs) = std::fs::read_dir(pane.path().join("projects")) else { continue };
         let into = dest.join("transcripts").join(&name);
 
-        for slug in slugs.flatten() {
-            let Ok(files) = std::fs::read_dir(slug.path()) else { continue };
-            for file in files.flatten() {
-                let from = file.path();
-                if from.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                    continue;
-                }
-                if std::fs::create_dir_all(&into).is_err() {
-                    continue;
-                }
-                if std::fs::rename(&from, into.join(file.file_name())).is_ok() {
-                    moved += 1;
+        for (subdir, file_ext) in transcript_locations() {
+            let Ok(slugs) = std::fs::read_dir(pane.path().join(subdir)) else { continue };
+            for slug in slugs.flatten() {
+                let Ok(files) = std::fs::read_dir(slug.path()) else { continue };
+                for file in files.flatten() {
+                    let from = file.path();
+                    if from.extension().and_then(|e| e.to_str()) != Some(file_ext) {
+                        continue;
+                    }
+                    if std::fs::create_dir_all(&into).is_err() {
+                        continue;
+                    }
+                    if std::fs::rename(&from, into.join(file.file_name())).is_ok() {
+                        moved += 1;
+                    }
                 }
             }
         }
     }
     moved
+}
+
+/// Every place a pane could have left a transcript: checkpoint 13's
+/// subdirectory and extension, one pair per registered harness.
+///
+/// **The whole registry, not the pane's own harness, because nothing on disk
+/// says which harness a pane ran.** A pane's config directory is named for the
+/// seat (`orch`, `worker-1`), and the run being archived is the *previous* one —
+/// its panes are gone and the fleet that placed them is gone with them. Reading
+/// each pane's harness back would mean the placement writing a marker file into
+/// the config dir purely so rotation could read it, which is state kept alive
+/// across a crash for the benefit of a directory walk. Looking under every
+/// registered harness's answer costs one failed `read_dir` per harness per pane
+/// and cannot mis-file anything: what it finds under a subdirectory is filed
+/// under the seat it was found in, never under a harness name.
+///
+/// Deduplicated, so two harnesses that agree on a location do not have the same
+/// file counted twice — the count is what the run manifest reports as its
+/// evidence, and a doubled one would read as transcripts that are not there.
+fn transcript_locations() -> Vec<(&'static str, &'static str)> {
+    let mut seen: Vec<(&'static str, &'static str)> = Vec::new();
+    for harness in crate::placement::harness::registered() {
+        let transcript = &harness.spec().transcript;
+        let at = (transcript.subdir, transcript.file_ext);
+        if !seen.contains(&at) {
+            seen.push(at);
+        }
+    }
+    seen
 }
 
 // --- the live run, laid out for a reader (WP-15) --------------------------------
@@ -329,27 +377,33 @@ pub fn snapshot_live_run(shell: &Path, dest: &Path, run_id: &str) -> Result<u32,
 
 /// [`harvest_transcripts`]'s non-destructive twin — see [`snapshot_live_run`]
 /// for why the two are not one function with a flag.
+///
+/// It reads the same checkpoint 13 answers through the same
+/// [`transcript_locations`], so the live snapshot and the archive cannot come to
+/// look in different places; only the last verb differs, and that is the point.
 fn copy_transcripts(shell: &Path, dest: &Path) -> u32 {
     let Ok(panes) = std::fs::read_dir(crate::placement::pane_config_root(shell)) else { return 0 };
     let mut copied = 0;
 
     for pane in panes.flatten() {
         let name = pane.file_name();
-        let Ok(slugs) = std::fs::read_dir(pane.path().join("projects")) else { continue };
         let into = dest.join("transcripts").join(&name);
 
-        for slug in slugs.flatten() {
-            let Ok(files) = std::fs::read_dir(slug.path()) else { continue };
-            for file in files.flatten() {
-                let from = file.path();
-                if from.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                    continue;
-                }
-                if std::fs::create_dir_all(&into).is_err() {
-                    continue;
-                }
-                if std::fs::copy(&from, into.join(file.file_name())).is_ok() {
-                    copied += 1;
+        for (subdir, file_ext) in transcript_locations() {
+            let Ok(slugs) = std::fs::read_dir(pane.path().join(subdir)) else { continue };
+            for slug in slugs.flatten() {
+                let Ok(files) = std::fs::read_dir(slug.path()) else { continue };
+                for file in files.flatten() {
+                    let from = file.path();
+                    if from.extension().and_then(|e| e.to_str()) != Some(file_ext) {
+                        continue;
+                    }
+                    if std::fs::create_dir_all(&into).is_err() {
+                        continue;
+                    }
+                    if std::fs::copy(&from, into.join(file.file_name())).is_ok() {
+                        copied += 1;
+                    }
                 }
             }
         }

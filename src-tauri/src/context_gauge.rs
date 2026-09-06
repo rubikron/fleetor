@@ -47,6 +47,14 @@ use fleetor_core::pane::{ContextGauge, PaneId};
 /// CC's own auto-compact bookkeeping works to the same window. They must
 /// never diverge — a gauge reading 100% while CC believes 40% (or the
 /// reverse) is exactly the quiet lie this product exists to avoid.
+///
+/// **Both consumers now reach it through checkpoint 11** (WP-25, C11): it is
+/// [`GaugeSource::window_tokens`](crate::placement::harness::GaugeSource::window_tokens)
+/// and [`GaugeSource::window_env`](crate::placement::harness::GaugeSource::window_env)
+/// that this gauge and the worker command read, and Claude Code's spec names
+/// this constant rather than repeating its value. It stays defined here because
+/// it is Claude Code's *answer*, not the seam's — a harness that publishes its
+/// own window answers `None` and is not measured against this number at all.
 pub const WORKER_WINDOW_TOKENS: u32 = 500_000;
 
 /// Where a pane's percent first earns an informational Notice (WP-04
@@ -103,9 +111,27 @@ impl GaugeSources {
     /// recorded, has no transcript on disk yet, or the transcript has no
     /// completed turn yet. Re-reads the directory every call rather than
     /// caching a filename — see [`latest_transcript`] for why.
+    ///
+    /// **The window comes from the pane's own harness** (WP-25, checkpoint 11),
+    /// and the two ways it can be absent are the reason this reads as three
+    /// early returns rather than one call. A harness that reads usage from a
+    /// store this module knows nothing about
+    /// ([`reads_transcript`](crate::placement::harness::GaugeSource::reads_transcript)
+    /// `== false`), and a harness that publishes its own window instead of
+    /// letting the fleet assert one
+    /// ([`window_tokens`](crate::placement::harness::GaugeSource::window_tokens)
+    /// `== None`), both sample as **absent**. That is D-054's rule applied to
+    /// the seam rather than to one vendor: an unavailable gauge says
+    /// unavailable, and the one thing it may never do is divide by a window
+    /// borrowed from a harness that is not this pane's — a number that looks
+    /// right and is wrong.
     pub fn sample(&self, pane: PaneId) -> Option<ContextGauge> {
         let source = self.0.lock().ok()?.get(&pane).cloned()?;
-        sample_transcript(&source, WORKER_WINDOW_TOKENS)
+        let gauge = &source.harness.spec().gauge;
+        if !gauge.reads_transcript {
+            return None;
+        }
+        sample_transcript(&source, gauge.window_tokens?)
     }
 }
 
@@ -124,34 +150,51 @@ impl GaugeSources {
 /// [`Harness::seed_config_dir`](crate::placement::harness::Harness::seed_config_dir)
 /// wrote the pane's trust record under.
 ///
-/// The `projects` subdirectory and the slug rule are still Claude Code's own and
-/// are checkpoint 13's to move.
+/// **The subdirectory is checkpoint 13's** (WP-25,
+/// [`Transcript::subdir`](crate::placement::harness::Transcript::subdir)), read
+/// off the same harness as the key.
+///
+/// **The slug rule is not, and this is now the only place that shows it.** How a
+/// harness names the *per-project directory* underneath that subdirectory is not
+/// one of the fourteen answers, so the `/`-and-`.`-to-`-` mapping below is still
+/// Claude Code's own literal — the last one in this function, where there were
+/// two. Nothing else in the fleet re-derives it: the harvest walks whatever
+/// directories it finds rather than computing their names, so this is the single
+/// consumer and the single point of drift. A second harness whose transcripts are
+/// per-project cannot be read by this gauge until that becomes a checkpoint
+/// answer or a method on [`Harness`](crate::placement::harness::Harness); a
+/// harness whose store is not per-project at all is unaffected. Left for #39,
+/// which is the ticket that has a second layout to generalize against — inventing
+/// the shape from one example is how a seam ends up describing one vendor.
 fn project_dir(source: &TranscriptSource) -> PathBuf {
     let resolved = source.harness.project_key(&source.cwd);
     let slug: String =
         resolved.chars().map(|c| if c == '/' || c == '.' { '-' } else { c }).collect();
-    source.config_dir.join("projects").join(slug)
+    source.config_dir.join(source.harness.spec().transcript.subdir).join(slug)
 }
 
-/// The pane's current transcript: the most-recently-modified `*.jsonl` under
-/// its project directory.
+/// The pane's current transcript: the most-recently-modified file with this
+/// harness's transcript extension (WP-25, checkpoint 13's
+/// [`Transcript::file_ext`](crate::placement::harness::Transcript::file_ext))
+/// under its project directory.
 ///
 /// Read fresh on every call, never cached from spawn. A `/clear` resets a
 /// pane's session (`docs/notes/command-channel-notes.md`); whether Claude Code
 /// opens a new `<uuid>.jsonl` for that or keeps writing the same one was not
 /// worth a fifth spike run to settle — picking "most recently modified" is
 /// correct under either answer, at the cost of one directory read per sample.
-fn latest_transcript(dir: &Path) -> Option<PathBuf> {
+fn latest_transcript(dir: &Path, file_ext: &str) -> Option<PathBuf> {
     let entries = std::fs::read_dir(dir).ok()?;
     entries
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("jsonl"))
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some(file_ext))
         .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
 }
 
 fn sample_transcript(source: &TranscriptSource, window_tokens: u32) -> Option<ContextGauge> {
-    let path = latest_transcript(&project_dir(source))?;
+    let path =
+        latest_transcript(&project_dir(source), source.harness.spec().transcript.file_ext)?;
     let text = std::fs::read_to_string(&path).ok()?;
     let used = last_turn_usage(&text)?;
     Some(ContextGauge::new(used, window_tokens))
@@ -423,6 +466,154 @@ mod tests {
     }
 
     // --- GaugeSources ------------------------------------------------------------
+
+    // --- checkpoint 11's two unavailable cases ------------------------------------
+    //
+    // Neither is reachable through a registered harness — Claude Code reads its
+    // own transcript and the fleet asserts its window — so they are driven
+    // through stand-ins that answer checkpoint 11 differently and are otherwise
+    // Claude Code. They are deliberately **not** registered: `registered()` still
+    // holds exactly one, and what these stand for is a later vendor's answer.
+    // Without them D-054's rule is only asserted for the harness that happens to
+    // satisfy it, which is not an assertion about the seam at all.
+
+    mod stand_ins {
+        use crate::placement::harness::{
+            claude_code, GaugeSource, Harness, HarnessSpec, CLAUDE_CODE_SPEC,
+        };
+        use std::path::Path;
+        use std::sync::LazyLock;
+
+        /// A harness that publishes its own context window instead of letting the
+        /// fleet assert one — a strictly better answer than D-054's, and the one
+        /// [`GaugeSource::window_tokens`](crate::placement::harness::GaugeSource::window_tokens)
+        /// documents `None` as meaning.
+        #[derive(Debug)]
+        pub struct PublishesItsOwnWindow;
+        static NO_ASSERTED_WINDOW: LazyLock<HarnessSpec> = LazyLock::new(|| HarnessSpec {
+            name: "stand-in-publishes-its-own-window",
+            gauge: GaugeSource {
+                reads_transcript: true,
+                window_tokens: None,
+                window_env: None,
+            },
+            ..CLAUDE_CODE_SPEC
+        });
+
+        /// A harness whose usage lives somewhere this module has no reader for.
+        #[derive(Debug)]
+        pub struct KeepsUsageElsewhere;
+        static USAGE_ELSEWHERE: LazyLock<HarnessSpec> = LazyLock::new(|| HarnessSpec {
+            name: "stand-in-keeps-usage-elsewhere",
+            gauge: GaugeSource {
+                reads_transcript: false,
+                window_tokens: Some(super::WORKER_WINDOW_TOKENS),
+                window_env: Some("A_WINDOW_IT_DOES_TELL_THE_PANE_ABOUT"),
+            },
+            ..CLAUDE_CODE_SPEC
+        });
+
+        macro_rules! delegate {
+            ($ty:ty, $spec:ident) => {
+                impl Harness for $ty {
+                    fn spec(&self) -> &'static HarnessSpec {
+                        &$spec
+                    }
+                    fn project_key(&self, cwd: &Path) -> String {
+                        claude_code().project_key(cwd)
+                    }
+                    fn seed_config_dir(&self, dir: &Path, cwd: &Path) -> Result<(), String> {
+                        claude_code().seed_config_dir(dir, cwd)
+                    }
+                    fn command_args(&self, brief: &str, mode: Option<&str>) -> Vec<String> {
+                        claude_code().command_args(brief, mode)
+                    }
+                }
+            };
+        }
+        delegate!(PublishesItsOwnWindow, NO_ASSERTED_WINDOW);
+        delegate!(KeepsUsageElsewhere, USAGE_ELSEWHERE);
+
+        pub static PUBLISHES_ITS_OWN_WINDOW: PublishesItsOwnWindow = PublishesItsOwnWindow;
+        pub static KEEPS_USAGE_ELSEWHERE: KeepsUsageElsewhere = KeepsUsageElsewhere;
+    }
+
+    /// A harness that does not let the fleet assert a window has **no window to
+    /// divide by**, and the gauge says unavailable rather than borrowing the one
+    /// number it happens to have lying around.
+    ///
+    /// The transcript is real and the usage in it is readable — read through
+    /// Claude Code the identical files sample at 10% — so what is being asserted
+    /// is not "nothing was found". It is that a reading the gauge could produce
+    /// is withheld because the denominator would be another harness's. That
+    /// number would look right and be wrong, which is the one thing D-054 forbids
+    /// absolutely.
+    #[test]
+    fn a_harness_that_asserts_no_window_samples_as_absent_rather_than_borrowing_one() {
+        let cwd = temp_dir("no-window-cwd");
+        let config_dir = temp_dir("no-window-cfg");
+        let tenth = WORKER_WINDOW_TOKENS / 10;
+        seed_transcript(&config_dir, &cwd, &[assistant_line(u64::from(tenth), 0, 0)]);
+
+        let sources = GaugeSources::default();
+        sources.record(
+            PaneId::Worker(1),
+            TranscriptSource {
+                harness: &stand_ins::PUBLISHES_ITS_OWN_WINDOW,
+                config_dir: config_dir.clone(),
+                cwd: cwd.clone(),
+            },
+        );
+        sources.record(
+            PaneId::Worker(2),
+            TranscriptSource {
+                harness: crate::placement::harness::claude_code(),
+                config_dir,
+                cwd,
+            },
+        );
+
+        assert_eq!(
+            sources.sample(PaneId::Worker(2)).map(|g| g.pct),
+            Some(10),
+            "the same transcript is readable, so the assertion below is about the window",
+        );
+        assert_eq!(
+            sources.sample(PaneId::Worker(1)),
+            None,
+            "a pane whose harness asserts no window was given one anyway — an unavailable \
+             gauge says unavailable (D-054)",
+        );
+    }
+
+    /// A harness whose usage is not in the pane's own transcript samples as
+    /// absent too. There is a file at the path this module would read and it
+    /// parses, which is exactly the trap: a gauge that read it anyway would
+    /// report a confident number sourced from something that is not this
+    /// harness's usage record.
+    #[test]
+    fn a_harness_that_keeps_usage_elsewhere_samples_as_absent_rather_than_reading_a_transcript() {
+        let cwd = temp_dir("elsewhere-cwd");
+        let config_dir = temp_dir("elsewhere-cfg");
+        seed_transcript(&config_dir, &cwd, &[assistant_line(u64::from(WORKER_WINDOW_TOKENS / 10), 0, 0)]);
+
+        let sources = GaugeSources::default();
+        sources.record(
+            PaneId::Worker(1),
+            TranscriptSource {
+                harness: &stand_ins::KEEPS_USAGE_ELSEWHERE,
+                config_dir,
+                cwd,
+            },
+        );
+
+        assert_eq!(
+            sources.sample(PaneId::Worker(1)),
+            None,
+            "this harness's usage is not in that file, and reading it anyway is a number \
+             that looks right and is wrong",
+        );
+    }
 
     #[test]
     fn an_unrecorded_pane_samples_as_absent() {

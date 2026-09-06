@@ -42,53 +42,81 @@ pub(crate) fn write_registry(path: &Path, pids: &[u32]) {
 
 /// Kill whatever the last session left running. Best-effort and deliberately
 /// silent — startup has nowhere to report to either, and a pid that turns out
-/// to already be gone, or to no longer be a `claude`, is not a failure.
+/// to already be gone, or to no longer be a pane, is not a failure.
 pub(crate) fn sweep() {
     sweep_at(&registry_path());
 }
 
 fn sweep_at(path: &Path) {
-    sweep_at_named(path, "claude");
+    sweep_at_named(path, &confirmable_comm_suffixes());
 }
 
-/// Split from [`sweep_at`] purely so a test can drive it against a name other
-/// than "claude" — proving every matching pid in a batch gets reaped, not just
-/// one, without needing a stand-in that both matches "claude" and survives
-/// macOS code-signing (a copy of a signed system binary, renamed, loses its
-/// signature and behaves unpredictably).
+/// Every `comm` suffix that could name a live pane — checkpoint 12's
+/// [`OrphanNames::comm_suffixes`](crate::placement::harness::OrphanNames::comm_suffixes),
+/// collected across **every registered harness** (WP-25, C11).
+///
+/// The union, and not a per-pid lookup, because the registry is a list of pids
+/// and nothing else. That is deliberate: it is written by the same process that
+/// spawned them, at a point where the pane is still an object in memory, and it
+/// has to be readable by a *later* launch that knows nothing about the fleet it
+/// is cleaning up after. Recording which harness each pid ran would make the
+/// registry a small database whose schema has to survive a crash mid-write,
+/// which is a strictly worse trade than confirming against a slightly wider set
+/// of names — the widening cannot reach the operator's own processes, because
+/// [`reap_if_named`] never signals a pid that was not recorded here in the first
+/// place.
+fn confirmable_comm_suffixes() -> Vec<&'static str> {
+    crate::placement::harness::registered()
+        .iter()
+        .flat_map(|harness| harness.spec().orphans.comm_suffixes.iter().copied())
+        .collect()
+}
+
+/// Split from [`sweep_at`] purely so a test can drive it against names other
+/// than the registered harnesses' — proving every matching pid in a batch gets
+/// reaped, not just one, and that a harness naming more than one suffix has all
+/// of them confirmed, without needing a stand-in that both matches `claude` and
+/// survives macOS code-signing (a copy of a signed system binary, renamed, loses
+/// its signature and behaves unpredictably).
 #[cfg(unix)]
-fn sweep_at_named(path: &Path, expected_comm_suffix: &str) {
+fn sweep_at_named(path: &Path, expected_comm_suffixes: &[&str]) {
     if let Ok(text) = std::fs::read_to_string(path) {
         for pid in text.lines().filter_map(|line| line.trim().parse::<i32>().ok()) {
-            reap_if_named(pid, expected_comm_suffix);
+            reap_if_named(pid, expected_comm_suffixes);
         }
     }
     let _ = std::fs::remove_file(path);
 }
 
 #[cfg(not(unix))]
-fn sweep_at_named(path: &Path, _expected_comm_suffix: &str) {
+fn sweep_at_named(path: &Path, _expected_comm_suffixes: &[&str]) {
     let _ = std::fs::remove_file(path);
 }
 
 /// A pid alone is not enough to act on: pids recycle, and a stale one can by
 /// now name some unrelated process that just happens to have inherited the
-/// number. Confirm it is still actually named `expected_comm_suffix` before
+/// number. Confirm it still matches one of `expected_comm_suffixes` before
 /// signalling it; anything else — including "already gone" — is left alone.
+///
+/// **The names are a filter on recorded pids, never a search key.** Every pid
+/// reaching here came out of the registry FLEETOR wrote, so a name that matches
+/// nothing leaks a crashed pane rather than killing a live one, and the
+/// operator's own harness — whose pid was never recorded — is out of reach no
+/// matter what the registered harnesses are called.
 #[cfg(unix)]
-fn reap_if_named(pid: i32, expected_comm_suffix: &str) {
-    if !process_is_named(pid, expected_comm_suffix) {
+fn reap_if_named(pid: i32, expected_comm_suffixes: &[&str]) {
+    if !process_is_named(pid, expected_comm_suffixes) {
         return;
     }
     unsafe { libc::killpg(pid, libc::SIGTERM) };
     std::thread::sleep(std::time::Duration::from_millis(200));
-    if process_is_named(pid, expected_comm_suffix) {
+    if process_is_named(pid, expected_comm_suffixes) {
         unsafe { libc::killpg(pid, libc::SIGKILL) };
     }
 }
 
 #[cfg(unix)]
-fn process_is_named(pid: i32, expected_comm_suffix: &str) -> bool {
+fn process_is_named(pid: i32, expected_comm_suffixes: &[&str]) -> bool {
     // Signal 0: delivers nothing, only reports whether the pid is reachable.
     if unsafe { libc::kill(pid, 0) } != 0 {
         return false;
@@ -98,7 +126,9 @@ fn process_is_named(pid: i32, expected_comm_suffix: &str) -> bool {
     else {
         return false;
     };
-    String::from_utf8_lossy(&output.stdout).trim().ends_with(expected_comm_suffix)
+    let comm = String::from_utf8_lossy(&output.stdout);
+    let comm = comm.trim();
+    expected_comm_suffixes.iter().any(|suffix| comm.ends_with(suffix))
 }
 
 #[cfg(test)]
@@ -206,7 +236,7 @@ mod tests {
         let registry = dir.join("panes.pids");
         write_registry(&registry, &[first.id(), second.id()]);
 
-        sweep_at_named(&registry, "sleep");
+        sweep_at_named(&registry, &["sleep"]);
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let mut first_exited = false;
@@ -254,7 +284,7 @@ mod tests {
         let mut child = command.spawn().expect("spawn the stand-in");
         let pid = child.id() as i32;
 
-        reap_if_named(pid, "sleep");
+        reap_if_named(pid, &["sleep"]);
 
         // `try_wait`, not `kill(pid, 0)`: a killed child is a *zombie* until its
         // parent reaps it, and a zombie's pid is still "reachable" — checking
@@ -314,6 +344,111 @@ mod tests {
 
         let _ = live_non_claude.kill();
         let _ = live_non_claude.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **The property C29 recorded as unasserted, now that the sweep reads the
+    /// spec: the sweep does not search by process name.**
+    ///
+    /// Two live processes, identical in every way the sweep can observe — same
+    /// program, same `comm`, both matching the suffix it is confirming against.
+    /// One pid is in the registry FLEETOR wrote and one is not, and that alone
+    /// decides which of them is signalled. This is why the operator's own
+    /// harness is never at risk: it is not a name the sweep declines to match,
+    /// it is a pid the sweep never had. Cleanup more dangerous than the leak is
+    /// the failure worth guarding, and a sweeper that enumerated processes by
+    /// name — the plausible "improvement" that would make a crashed pane whose
+    /// pid went unrecorded reapable — kills the survivor here.
+    ///
+    /// The recorded process is in the same batch deliberately: without it a
+    /// sweep that did nothing at all would pass.
+    #[cfg(unix)]
+    #[test]
+    fn a_matching_process_the_registry_never_named_is_left_alone() {
+        use std::os::unix::process::CommandExt;
+
+        let spawn_own_session = || {
+            let mut command = std::process::Command::new("sleep");
+            command.arg("300");
+            unsafe {
+                command.pre_exec(|| {
+                    libc::setsid();
+                    Ok(())
+                });
+            }
+            command.spawn().unwrap()
+        };
+        let mut recorded = spawn_own_session();
+        let mut never_recorded = spawn_own_session();
+
+        let dir =
+            std::env::temp_dir().join(format!("fleetor-orphans-unrecorded-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let registry = dir.join("panes.pids");
+        write_registry(&registry, &[recorded.id()]);
+
+        sweep_at_named(&registry, &["sleep"]);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut recorded_exited = false;
+        while std::time::Instant::now() < deadline && !recorded_exited {
+            recorded_exited = matches!(recorded.try_wait(), Ok(Some(_)));
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(recorded_exited, "the recorded pid was not reaped, so this test proves nothing");
+        assert!(
+            matches!(never_recorded.try_wait(), Ok(None)),
+            "the sweep signalled a process it matched by name rather than by a pid FLEETOR \
+             recorded — this is the operator's own harness being killed"
+        );
+
+        let _ = recorded.kill();
+        let _ = recorded.wait();
+        let _ = never_recorded.kill();
+        let _ = never_recorded.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Checkpoint 12 answers with a *list* of suffixes — more than one wherever a
+    /// harness runs under an interpreter and the bare interpreter name must never
+    /// match alone. Every one of them has to be able to confirm a pid, not just
+    /// whichever the registry's harness happens to name first: a sweep that
+    /// checked only the first would leak every pane of every harness after it.
+    #[cfg(unix)]
+    #[test]
+    fn any_of_a_harnesss_comm_suffixes_can_confirm_a_pid_not_only_the_first() {
+        use std::os::unix::process::CommandExt;
+
+        let mut command = std::process::Command::new("sleep");
+        command.arg("300");
+        unsafe {
+            command.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+        let mut child = command.spawn().unwrap();
+
+        let dir =
+            std::env::temp_dir().join(format!("fleetor-orphans-suffixes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let registry = dir.join("panes.pids");
+        write_registry(&registry, &[child.id()]);
+
+        sweep_at_named(&registry, &["a-name-that-matches-nothing", "sleep"]);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut exited = false;
+        while std::time::Instant::now() < deadline && !exited {
+            exited = matches!(child.try_wait(), Ok(Some(_)));
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(exited, "only the first comm suffix was ever confirmed against");
+
+        let _ = child.kill();
+        let _ = child.wait();
         let _ = std::fs::remove_dir_all(&dir);
     }
 
