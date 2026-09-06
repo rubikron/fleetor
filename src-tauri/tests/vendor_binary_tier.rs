@@ -279,3 +279,130 @@ fn the_probe_addresses_nothing_but_loopback() {
          of this tier spends nothing"
     );
 }
+
+/// **The seeded `CODEX_HOME` loads in the real binary, and the trap it defuses
+/// reproduces** (WP-25 phase 2, #26; C6).
+///
+/// The in-crate tests in `placement::codex` assert what FLEETOR *wrote*. Nothing
+/// they can observe proves the vendor accepts it — which is the whole reason this
+/// tier exists, and it is doubly the reason here, because the failure being
+/// prevented is a pane that dies at spawn with a message about a file the operator
+/// never named.
+///
+/// Two arms, and the negative control is the load-bearing one:
+///
+///  - **verbatim** — the operator's config copied as-is into a pane's
+///    `CODEX_HOME`, with a fabricated `HOME` the way the Fence gives one. The
+///    binary refuses, and the path it names is inside the *pane's* private home.
+///    That is C6's trap, reproduced rather than quoted.
+///  - **seeded** — the identical operator installation through
+///    `Harness::seed_config_dir`. The binary loads it and runs the command.
+///
+/// `codex sandbox <cmd>` is the vehicle: it loads the configuration and runs a
+/// command under the real seatbelt, with **no model and no network** — the same
+/// zero-token instrument arm 2 of the probe uses.
+///
+/// Nothing here reads or writes the operator's real `~/.codex`. The operator
+/// installation is fabricated under the scratch root, which is possible because
+/// `Seed::operator_home` arrives as a value rather than being read from the
+/// process.
+#[test]
+fn the_seeded_codex_home_loads_in_the_real_binary_and_the_trap_reproduces() {
+    use fleetor_shell::placement::codex::{codex, OPERATOR_DIR};
+    use fleetor_shell::placement::Seed;
+
+    let Some(vendor) = on_path(VENDOR_BIN) else {
+        announce(&[
+            format!("SKIPPED: the codex config-seeding arm — `{VENDOR_BIN}` is not on PATH."),
+            format!("  Recorded against {RECORDED_BUILD}. Nothing below was measured:"),
+            "    seeded-config-loads, tilde-trap-reproduces (#26, C6)".into(),
+            "  The in-crate tests still prove what FLEETOR wrote. They cannot prove".into(),
+            "  the vendor accepts it — that is what this arm is for.".into(),
+        ]);
+        return;
+    };
+
+    let root = std::env::temp_dir().join(format!(
+        "fleetor-codex-vendor-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("a clock")
+            .as_millis()
+    ));
+    let operator_home = root.join("operator");
+    let operator_dir = operator_home.join(OPERATOR_DIR);
+    let pane_home = root.join("pane-home");
+    let cwd = root.join("work");
+    fs::create_dir_all(&operator_dir).expect("a fabricated operator installation");
+    fs::create_dir_all(&pane_home).expect("the Fence's private HOME");
+    fs::create_dir_all(&cwd).expect("a pane cwd");
+
+    // The trap, in the shape the operator's own config carries it: a tilde inside
+    // a value naming a file inside the operator's own installation.
+    let operator_config = "model_instructions_file = \"~/.codex/brief.md\"\n";
+    fs::write(operator_dir.join("config.toml"), operator_config).expect("operator config");
+    fs::write(operator_dir.join("brief.md"), "a fifty-character sentinel brief\n").expect("brief");
+
+    let run = |codex_home: &Path| {
+        Command::new(&vendor)
+            .args(["sandbox", "/bin/echo", "ok"])
+            .env("HOME", &pane_home)
+            .env("CODEX_HOME", codex_home)
+            .current_dir(&cwd)
+            .output()
+            .unwrap_or_else(|e| panic!("could not run {}: {e}", vendor.display()))
+    };
+
+    // Arm 1 — verbatim. The refusal names a path inside the pane's private HOME,
+    // which is the whole of C6's measurement.
+    let verbatim = root.join("verbatim");
+    fs::create_dir_all(&verbatim).expect("a verbatim CODEX_HOME");
+    fs::write(verbatim.join("config.toml"), operator_config).expect("verbatim config");
+    let refused = run(&verbatim);
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&refused.stdout),
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert_ne!(
+        refused.status.code(),
+        Some(0),
+        "a `~` copied verbatim into a pane's CODEX_HOME no longer kills the pane. Either the \
+         vendor changed how it resolves one, or this arm stopped testing anything — check \
+         which before relaxing the seeder.\n{said}"
+    );
+    assert!(
+        said.contains(&pane_home.display().to_string()),
+        "the refusal was expected to name a path inside the pane's private HOME ({}), which \
+         is what makes this the trap C6 measured rather than some other failure.\n{said}",
+        pane_home.display()
+    );
+
+    // Arm 2 — seeded. The same installation, through the harness.
+    let seeded = root.join("seeded");
+    codex()
+        .seed_config_dir(&Seed::new(&seeded, &cwd, Some(&operator_home)))
+        .expect("seeding a pane's CODEX_HOME");
+    let accepted = run(&seeded);
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&accepted.stdout),
+        String::from_utf8_lossy(&accepted.stderr)
+    );
+    assert_eq!(
+        accepted.status.code(),
+        Some(0),
+        "the real binary refused a configuration this repository seeded. Whatever the seeder \
+         writes, the vendor has to accept — an artifact assertion cannot see this.\n{said}"
+    );
+    assert!(said.contains("ok"), "the sandboxed command did not run:\n{said}");
+
+    // And the operator's installation is exactly as it was.
+    assert_eq!(
+        fs::read_to_string(operator_dir.join("config.toml")).expect("still there"),
+        operator_config,
+        "seeding wrote back into the operator's own installation",
+    );
+
+    fs::remove_dir_all(&root).ok();
+}

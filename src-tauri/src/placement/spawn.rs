@@ -79,7 +79,7 @@ use fleetor_core::brief::{render_orch, render_worker};
 use fleetor_core::pane::{PaneId, WORKER_SLOTS};
 use portable_pty::CommandBuilder;
 
-use super::harness::{Harness, HarnessSpec};
+use super::harness::{Harness, HarnessSpec, Seed};
 use crate::prompts::PaneContext;
 
 /// Overrides the program every pane runs. Set by `src-tauri/tests/panes.rs` to
@@ -683,7 +683,8 @@ pub(super) fn fleet_bin_path() -> Option<PathBuf> {
 /// is the single most likely way to reintroduce L1 immediately after fixing it,
 /// which is why [`place`](super::place) calls it on the placement path for every
 /// pane rather than once at the target picker.
-pub(super) fn seed_config_dir(harness: &dyn Harness, dir: &Path, cwd: &Path) -> Result<(), String> {
+pub(super) fn seed_config_dir(harness: &dyn Harness, seed: &Seed<'_>) -> Result<(), String> {
+    let (dir, cwd) = (seed.config_dir, seed.cwd);
     let spec = harness.spec();
     // This harness keeps the first-run gate in the document it seeds, so one
     // read-modify-write covers both checkpoints. A harness that split them would
@@ -1058,7 +1059,7 @@ mod tests {
     fn a_virgin_config_dir_gets_the_two_keys_that_clear_onboarding() {
         let dir = temp_dir("virgin");
         let cwd = temp_dir("virgin-cwd");
-        seed_config_dir(cc(), &dir, &cwd).unwrap();
+        seed_config_dir(cc(), &Seed::new(&dir, &cwd, None)).unwrap();
 
         let config = read_config(&dir);
         assert_eq!(config["hasCompletedOnboarding"], serde_json::json!(true));
@@ -1083,7 +1084,7 @@ mod tests {
         )
         .unwrap();
 
-        seed_config_dir(cc(), &dir, &cwd).unwrap();
+        seed_config_dir(cc(), &Seed::new(&dir, &cwd, None)).unwrap();
 
         let config = read_config(&dir);
         assert_eq!(config["machineID"], serde_json::json!("abc"), "machineID survived");
@@ -1107,8 +1108,8 @@ mod tests {
         let first = temp_dir("target-a");
         let second = temp_dir("target-b");
 
-        seed_config_dir(cc(), &dir, &first).unwrap();
-        seed_config_dir(cc(), &dir, &second).unwrap();
+        seed_config_dir(cc(), &Seed::new(&dir, &first, None)).unwrap();
+        seed_config_dir(cc(), &Seed::new(&dir, &second, None)).unwrap();
 
         let config = read_config(&dir);
         for cwd in [&first, &second] {
@@ -1133,7 +1134,7 @@ mod tests {
         let cwd = temp_dir("corrupt-cwd");
         std::fs::write(dir.join(".claude.json"), "{not json").unwrap();
 
-        seed_config_dir(cc(), &dir, &cwd).unwrap();
+        seed_config_dir(cc(), &Seed::new(&dir, &cwd, None)).unwrap();
         assert_eq!(read_config(&dir)["hasCompletedOnboarding"], serde_json::json!(true));
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1436,7 +1437,7 @@ mod tests {
         let dir = temp_dir("orch-cfg");
         let cwd = temp_dir("orch-target");
 
-        seed_config_dir(cc(), &dir, &cwd).unwrap();
+        seed_config_dir(cc(), &Seed::new(&dir, &cwd, None)).unwrap();
 
         let config = read_config(&dir);
         assert_eq!(config["hasCompletedOnboarding"], serde_json::json!(true));

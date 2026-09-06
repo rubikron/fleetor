@@ -116,7 +116,17 @@ pub mod spawn;
 /// what that means and what is asserted in the meantime.
 pub mod harness;
 
-pub use harness::{Harness, HarnessSpec};
+/// **Codex — the second harness's answers, and the first non-Claude one** (WP-25
+/// phase 2, #26).
+///
+/// It is deliberately **not registered** while phase 2 is in flight: the
+/// conformance suite's exit condition is one harness until every checkpoint has
+/// landed, and #33 is the single moment codex joins the registry. See the module's
+/// own header for which checkpoints are answered and which are still their own
+/// ticket's.
+pub mod codex;
+
+pub use harness::{Harness, HarnessSpec, Seed};
 
 // --- the layout ---------------------------------------------------------------
 
@@ -571,7 +581,7 @@ fn place_orch(
 
     std::fs::create_dir_all(target).map_err(|e| format!("create orchestrator cwd: {e}"))?;
     let config_dir = layout.pane_config(pane);
-    harness.seed_config_dir(&config_dir, target)?;
+    harness.seed_config_dir(&Seed::new(&config_dir, target, host.operator_home.as_deref()))?;
     notices.extend(guardrail_notices(harness, layout, pane, &config_dir, target, context)?);
 
     // One Activity line per pane launch (WP-04's spawn-time "Loadout" counter):
@@ -649,7 +659,7 @@ fn place_worker(
     };
 
     let config_dir = layout.pane_config(pane);
-    harness.seed_config_dir(&config_dir, &cwd)?;
+    harness.seed_config_dir(&Seed::new(&config_dir, &cwd, host.operator_home.as_deref()))?;
 
     // The Fence (WP-08): a private HOME, created and seeded before the process
     // exists — same reason the config dir is seeded here rather than at the target
@@ -763,7 +773,7 @@ fn place_evaluator(
     let brief = evaluator::render_brief(&mission, &cwd)?;
 
     let config_dir = evaluator::config_dir(layout.root());
-    harness.seed_config_dir(&config_dir, &cwd)?;
+    harness.seed_config_dir(&Seed::new(&config_dir, &cwd, host.operator_home.as_deref()))?;
     let notices = guardrail_notices(harness, layout, pane, &config_dir, &cwd, context)?;
 
     let command = spawn::evaluator_command_with(
@@ -831,7 +841,7 @@ fn place_critic(
     let brief = critic::render_brief(&context.critic_template, &cwd)?;
 
     let config_dir = critic::config_dir(layout.root());
-    harness.seed_config_dir(&config_dir, &cwd)?;
+    harness.seed_config_dir(&Seed::new(&config_dir, &cwd, host.operator_home.as_deref()))?;
     let notices = guardrail_notices(harness, layout, pane, &config_dir, &cwd, context)?;
 
     let command = spawn::critic_command_with(

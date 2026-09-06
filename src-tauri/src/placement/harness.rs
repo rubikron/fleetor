@@ -21,15 +21,19 @@
 //! byte for byte the same command as one that reads [`ConfigDir::env_var`], so no
 //! test that *runs* the code can tell them apart.
 //!
-//! **Every one of the fourteen is defined here, including the ones no production
-//! call site reads yet.** Three are read only by the conformance suite —
+//! **Every one of the fourteen is defined here, and as of phase 2 every one of
+//! them has a reader.** Three had none through the whole of phase 1 —
 //! [`Posture::sandbox_keys`], [`Credentials::provider_keys`] and
-//! [`Outbound::reachability_keys`] — and they stay, because all three are the same
-//! absent reader: the config-dir seeding a harness that is *configured* rather
-//! than flagged would need, which is one reader in phase 2's
-//! [`Harness::seed_config_dir`] rather than three (C36). Deleting them would make
-//! phase 2 re-add them field by field, which is the trap `building.md` §6 is about
-//! pointed the other way round.
+//! [`Outbound::reachability_keys`] — left that way three times deliberately (#18,
+//! #19, #21) because all three are the same absent reader rather than three
+//! separate ones: the config-dir seeding a harness that is *configured* rather
+//! than flagged would need. C36 said that reader would be
+//! [`Harness::seed_config_dir`], and #26 wrote it, in
+//! [`codex`](crate::placement::codex) — one pass over all three, each `(key,
+//! value)` a dotted path into the seeded document. Claude Code's three lists are
+//! empty because it is flagged rather than configured, so its own seeder does not
+//! read them, and that is the honest answer rather than a general mechanism for a
+//! harness that has no use for one.
 //!
 //! ## The one rule this module inherits
 //!
@@ -202,6 +206,11 @@ pub struct Posture {
     ///
     /// **Tier 1.7 reads this field.** Anything a harness puts here narrows what a
     /// pane may do; nothing here may widen auto-approve past a worker's worktree.
+    ///
+    /// **Written by [`Harness::seed_config_dir`]**, which reads this list,
+    /// [`Credentials::provider_keys`] and [`Outbound::reachability_keys`] together
+    /// and nothing else — one pass over dotted paths into the harness's own
+    /// configuration document (C36).
     pub sandbox_keys: &'static [(&'static str, &'static str)],
 }
 
@@ -251,6 +260,9 @@ pub struct Credentials {
     /// Configuration keys a harness needs written into its config dir to reach
     /// the fleet's endpoint, for one that is configured rather than
     /// environment-driven. Empty here.
+    ///
+    /// Written by [`Harness::seed_config_dir`], alongside
+    /// [`Posture::sandbox_keys`] and [`Outbound::reachability_keys`] (C36).
     pub provider_keys: &'static [(&'static str, &'static str)],
     /// **Removed from the inherited environment, not merely left unset.** A
     /// worker inherits the app's environment, and an operator's key sitting in a
@@ -355,6 +367,9 @@ pub struct Outbound {
     pub socket_reachable: bool,
     /// The configuration keys that have to be set to make it reachable, for a
     /// harness whose default posture refuses. Empty here.
+    ///
+    /// Written by [`Harness::seed_config_dir`], alongside
+    /// [`Posture::sandbox_keys`] and [`Credentials::provider_keys`] (C36).
     pub reachability_keys: &'static [(&'static str, &'static str)],
 }
 
@@ -511,6 +526,56 @@ pub struct ProjectIdentityAndTrust {
 
 // --- the behavioural half -----------------------------------------------------
 
+/// Everything seeding one pane's configuration directory is allowed to look at
+/// (WP-25 P2, #26).
+///
+/// **A struct rather than three arguments, because the list grows and the call
+/// sites should not.** Checkpoints 4 and 6 need the pane's own directory, the cwd
+/// its trust record is keyed by, and — for a harness whose isolated directory is a
+/// snapshot of the operator's ([`ConfigAndCredentialIsolation::seeds_from_operator`])
+/// — where the operator's own installation is. #29 adds the fleet's endpoint and
+/// credential here when the FLEETOR provider lands; #30 adds whatever per-worktree
+/// trust turns out to need. Each of those is a field here and no change at all in
+/// the four `place_*` arms.
+///
+/// **Nothing on it is read from the process**, which is [`crate::placement`]'s one
+/// rule: [`operator_home`](Self::operator_home) is
+/// [`Host::operator_home`](crate::placement::Host::operator_home), discovered once
+/// where machine facts are discovered and handed down as a value. That is what
+/// lets a test seed against a *fabricated* operator installation — and it is the
+/// mechanism by which the operator's real one is never touched, since a test that
+/// hands a scratch path cannot reach `~/.codex` even by accident.
+#[derive(Debug, Clone, Copy)]
+pub struct Seed<'a> {
+    /// The pane's own configuration directory. **Every byte this call writes lands
+    /// under here**, and a harness that writes anywhere else is the bug this field
+    /// exists to make obvious.
+    pub config_dir: &'a Path,
+    /// The pane's working directory, which checkpoint 14's trust record is keyed
+    /// by through [`Harness::project_key`].
+    pub cwd: &'a Path,
+    /// The operator's own `HOME`, when this machine has one — the root the
+    /// snapshot is taken from, for a harness that takes one. `None` on a machine
+    /// nobody looked at, and a harness that seeds from the operator then seeds a
+    /// clean directory rather than refusing: a pane with the fleet's own keys and
+    /// none of the operator's preferences is a working pane, and refusing to place
+    /// would be a fleet that cannot start because of a missing preference file.
+    ///
+    /// **It is the operator's `HOME`, not their config directory.** Which
+    /// subdirectory of it holds this harness's installation is the harness's own
+    /// answer and lives in its [`Harness::seed_config_dir`], for the same reason
+    /// the document format does (C31, C32).
+    pub operator_home: Option<&'a Path>,
+}
+
+impl<'a> Seed<'a> {
+    /// The ordinary case: a pane's directory, its cwd, and the machine's operator
+    /// `HOME`.
+    pub fn new(config_dir: &'a Path, cwd: &'a Path, operator_home: Option<&'a Path>) -> Self {
+        Self { config_dir, cwd, operator_home }
+    }
+}
+
 /// A registered harness: its fourteen answers, plus the three checkpoints that
 /// are functions rather than values (M23).
 ///
@@ -538,14 +603,21 @@ pub trait Harness: std::fmt::Debug + Send + Sync + 'static {
     fn project_key(&self, cwd: &Path) -> String;
 
     /// **Checkpoint 4's behavioural half**, which also writes checkpoint 14's
-    /// trust record: give `dir` what a pane of this harness needs to reach its
-    /// prompt in `cwd`, without disturbing anything else already there.
+    /// trust record: give [`Seed::config_dir`] what a pane of this harness needs
+    /// to reach its prompt in [`Seed::cwd`], without disturbing anything else
+    /// already there.
     ///
     /// Merge rather than clobber where [`ConfigDir::seed_merges`] says so, and
     /// install through a temp file and a rename: a half-written config file is a
     /// pane that boots into onboarding, which is the failure this exists to
     /// prevent.
-    fn seed_config_dir(&self, dir: &Path, cwd: &Path) -> Result<(), String>;
+    ///
+    /// **This is also the one reader of the three checkpoint key lists** —
+    /// [`Posture::sandbox_keys`], [`Credentials::provider_keys`] and
+    /// [`Outbound::reachability_keys`] (C36). One reader for all three, per
+    /// harness, because a harness's config keys have exactly one place they get
+    /// written and three readers would be three answers to that question.
+    fn seed_config_dir(&self, seed: &Seed<'_>) -> Result<(), String>;
 
     /// **Checkpoints 1, 2 and 3's behavioural half:** the argv one pane is
     /// launched with, given its brief and — for the seats that get one — its
@@ -708,8 +780,8 @@ impl Harness for ClaudeCode {
         super::spawn::project_key(cwd)
     }
 
-    fn seed_config_dir(&self, dir: &Path, cwd: &Path) -> Result<(), String> {
-        super::spawn::seed_config_dir(self, dir, cwd)
+    fn seed_config_dir(&self, seed: &Seed<'_>) -> Result<(), String> {
+        super::spawn::seed_config_dir(self, seed)
     }
 
     fn command_args(&self, brief: &str, permission_mode: Option<&str>) -> Vec<String> {
@@ -854,7 +926,7 @@ mod tests {
         let config = scratch.join("config");
 
         let cc = claude_code();
-        cc.seed_config_dir(&config, &cwd).expect("seed the config dir");
+        cc.seed_config_dir(&Seed::new(&config, &cwd, None)).expect("seed the config dir");
 
         let spec = cc.spec();
         let text = std::fs::read_to_string(config.join(spec.config_dir.seed_file))

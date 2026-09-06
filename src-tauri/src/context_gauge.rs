@@ -479,7 +479,7 @@ mod tests {
 
     mod stand_ins {
         use crate::placement::harness::{
-            claude_code, GaugeSource, Harness, HarnessSpec, CLAUDE_CODE_SPEC,
+            claude_code, GaugeSource, Harness, HarnessSpec, Seed, CLAUDE_CODE_SPEC,
         };
         use std::path::Path;
         use std::sync::LazyLock;
@@ -522,8 +522,8 @@ mod tests {
                     fn project_key(&self, cwd: &Path) -> String {
                         claude_code().project_key(cwd)
                     }
-                    fn seed_config_dir(&self, dir: &Path, cwd: &Path) -> Result<(), String> {
-                        claude_code().seed_config_dir(dir, cwd)
+                    fn seed_config_dir(&self, seed: &Seed<'_>) -> Result<(), String> {
+                        claude_code().seed_config_dir(seed)
                     }
                     fn command_args(&self, brief: &str, mode: Option<&str>) -> Vec<String> {
                         claude_code().command_args(brief, mode)

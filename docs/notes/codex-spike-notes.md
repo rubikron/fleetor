@@ -200,3 +200,66 @@ It is the concrete form of M23's "it can no longer be one function", and a phase
 it is a third-party provider behind codex's provider mechanism, and it is a **different
 key** from `.env`'s `DEEPSEEK_API_KEY` that FLEETOR already gives its Claude Code workers
 (`spawn.rs:331`). Two keys, same vendor. That distinction is what C9 turns on.
+
+---
+
+## Findings appended by #26 — the private `CODEX_HOME`, seeded (C6, C39)
+
+Measured on the same build, `codex-cli 0.153.4`. Two are now gated in
+`src-tauri/tests/vendor_binary_tier.rs` rather than only written down.
+
+**The tilde trap, reproduced against the binary and gated.** With a fabricated
+operator installation carrying `model_instructions_file = "~/.codex/brief.md"` and a
+fabricated `HOME` the way the Fence gives one, `codex sandbox /bin/echo ok` refuses:
+
+```
+Error: failed to read model instructions file <PANE HOME>/.codex/brief.md:
+No such file or directory (os error 2)
+```
+
+The path it names is inside the **pane's** private `HOME`, which is C6's measurement
+exactly. Seeding the identical installation through `Harness::seed_config_dir` and
+re-running the same command prints `ok` and exits 0. Both arms are the new
+`the_seeded_codex_home_loads_in_the_real_binary_and_the_trap_reproduces` test —
+the negative control is the load-bearing half, because without it a seeder that
+accidentally wrote nothing would also go green.
+
+**`codex sandbox <cmd>` is a config-load instrument.** It reads `config.toml`,
+fails loudly on a bad one, runs the command under the real seatbelt, and touches no
+model and no network. ~0.2 s. `--strict-config` is *not* accepted by it (`` `--strict-config`
+is not supported for `codex sandbox` ``) — that flag reaches only the interactive
+TUI and `exec`, so unknown-key detection is not available at zero cost.
+
+**The `-c` value rule is the vendor's own, and it is documented.** From
+`codex --help`: *"Use a dotted path (`foo.bar.baz`) to override nested values. The
+`value` portion is parsed as TOML. If it fails to parse as TOML, the raw string is
+used as a literal."* This is what the three checkpoint key lists' single reader
+implements, so a key written into a spec list is spelled exactly as it would be
+typed after `-c`.
+
+**There is no top-level onboarding flag.** The binary's own `ConfigToml` serde field
+list carries nothing shaped like Claude Code's `hasCompletedOnboarding`. Codex's
+first-run gates are the trust dialog (`[projects."<path>"] trust_level`, and the
+binary confirms `ProjectTrustConfigToml` has exactly one element) and the animated
+splash C37 already named as a readiness question. Checkpoint 4's `seed_keys` for
+codex are therefore `sqlite_home` and `log_dir` — see C39(c).
+
+**The operator's installation, measured for size.** `packages/` is **275 MB** of
+downloaded release binaries; `.tmp/plugins/` is **88 MB** and is what
+`codex plugin marketplace list` reports as its marketplace root; `models.json` is
+112 KB and `skills/` 508 KB. That ratio is why the snapshot is an allowlist and why
+the plugin cache does not travel (C39(d)).
+
+**Provider credential fields, by name.** `ModelProviderInfo` carries `name`,
+`base_url`, `env_key`, `env_key_instructions`, `experimental_bearer_token`, `aws`,
+`wire_api`, `query_params` and retry/timeout settings. The seeder strikes
+`experimental_bearer_token` (the operator's key in plaintext — the real installation
+has one) and `env_key` (it names a variable the vendor reads the key *out of*, so a
+surviving value points a fenced pane at the operator's shell profile — L2's leak).
+
+**Not measured, and stated as such:** that setting `sqlite_home` and `log_dir`
+actually relocates the stores. Both are real `ConfigToml` fields and a seed carrying
+them is accepted, but no zero-token instrument was found that opens the thread
+store — `codex sandbox`, `codex features list` and `codex plugin marketplace list`
+all leave the directory empty. #40 reads that store for the gauge and will observe
+it either way.
