@@ -529,10 +529,21 @@ pub struct Placed {
     /// it is holding (M24) — and a fact the caller re-derives is a fact that can
     /// disagree with the one placement acted on.
     ///
-    /// Nothing reads it yet. It is here so that the ticket which writes it into
-    /// the manifest finds it already carried, rather than having to thread it back
-    /// through four arms.
+    /// **Read by [`crate::fleet::spawn_pane`]**, which hands it and
+    /// [`Placed::model`] to `runs::record_pane`. #33 carried this field with
+    /// nothing reading it so that #39 would find it already threaded; it is.
     pub harness: &'static HarnessSpec,
+    /// The model this pane was placed against, where the fleet chose one (M24).
+    ///
+    /// `None` on every attended seat, and that is the same product
+    /// [`harness::Seat::model`]'s `None` is rather than a missing lookup: the
+    /// operator's own pane runs their login and whatever model that account
+    /// defaults to, which is not a name this side of the pty knows. The manifest
+    /// records the absence rather than a guess (M2).
+    ///
+    /// Owned, unlike [`Placed::harness`], because it comes off the launch config
+    /// rather than out of a static — see `PaneContext`.
+    pub model: Option<String>,
     /// **Checkpoint 5's scrub, as data:** the credential names placement removed
     /// from the environment this pane's command inherited (WP-25, C27).
     ///
@@ -652,7 +663,7 @@ fn place_orch(
 
     // `orch` is not on the live gauge: the Loadout counter is a per-run budget line
     // for the panes doing the work, and the gauge samples worker transcripts.
-    Ok(Placed { command, notices, gauge: None, harness: harness.spec(), scrubbed: &[] })
+    Ok(Placed { command, notices, gauge: None, harness: harness.spec(), model: None, scrubbed: &[] })
 }
 
 /// One fenced worker: its own checkout of the target, its own `HOME`, the fleet's
@@ -775,6 +786,9 @@ fn place_worker(
         notices,
         gauge: Some(TranscriptSource { harness, config_dir, cwd }),
         harness: harness.spec(),
+        // The one seat the fleet names a model for; the three attended arms above
+        // answer `None` because the operator's login chooses theirs.
+        model: Some(context.launch.worker_model.clone()),
         scrubbed: worker.scrubbed,
     })
 }
@@ -844,7 +858,7 @@ fn place_evaluator(
 
     // Not on the live gauge, for `orch`'s reason: the gauge samples the transcripts
     // of the panes doing the work, and this pane is not one of them.
-    Ok(Placed { command, notices, gauge: None, harness: harness.spec(), scrubbed: &[] })
+    Ok(Placed { command, notices, gauge: None, harness: harness.spec(), model: None, scrubbed: &[] })
 }
 
 /// The Critic (WP-20, D-076): the operator's own `claude` in the run it is
@@ -915,7 +929,7 @@ fn place_critic(
     // Not on the live gauge, for `orch`'s reason and the evaluator's: the gauge
     // samples the transcripts of the panes doing the work, and this pane is not
     // one of them.
-    Ok(Placed { command, notices, gauge: None, harness: harness.spec(), scrubbed: &[] })
+    Ok(Placed { command, notices, gauge: None, harness: harness.spec(), model: None, scrubbed: &[] })
 }
 
 /// What placing a Critic on an archived run answers with, until the ticket that

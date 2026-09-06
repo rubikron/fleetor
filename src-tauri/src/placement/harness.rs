@@ -562,17 +562,54 @@ pub struct OrphanNames {
 /// drifts, and by then the raw evidence is gone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Transcript {
-    /// The directory under the pane's config dir that holds them, per project.
+    /// The directory under the pane's config dir that holds them.
+    ///
+    /// **The empty string is a real answer** meaning the configuration directory
+    /// itself, and it is codex's (#33). Whether there is a per-project directory
+    /// *below* this one, and what it would be called, is deliberately not
+    /// answered here — see [`Transcript::subdir`]'s note in the conformance suite
+    /// and C54. The harvest looks in this directory and one level below it, which
+    /// is the whole of the variation the registry has.
     pub subdir: &'static str,
     /// The extension the harvest looks for.
     pub file_ext: &'static str,
     /// What `manifest.json` records as this pane's `transcript_format`, so a
     /// Critic reading a mixed run cold knows what it is holding (M24).
     pub format: &'static str,
-    /// Whether a plain filesystem move is a safe way to take it. `true` for
-    /// append-only files; a harness whose transcript is a live database needs a
-    /// mechanism of its own, and a file copy of one is a torn copy.
-    pub file_move_is_safe: bool,
+    /// **How the archive is allowed to take it** — the field that used to be
+    /// `file_move_is_safe: bool` (#39).
+    ///
+    /// A bool said *whether* a rename was safe and left the archive to infer the
+    /// mechanism from the negative, so every harness answering `false` would have
+    /// been handed SQLite's backup path whether or not its transcript was a SQLite
+    /// database. A harness whose store is something else again would have been
+    /// `VACUUM INTO`'d and failed quietly. Naming the transport makes that a
+    /// non-exhaustive `match` in [`crate::runs`] instead: a fourth mechanism
+    /// cannot be declared without the harvest being made to implement it.
+    pub transport: Transport,
+}
+
+/// How the archive takes one harness's transcript — checkpoint 13's third answer.
+///
+/// **Both arms are implemented by [`crate::runs`], and that is the point of the
+/// type.** A harness may not declare a transport the harvest does not have; the
+/// conformance suite drives whichever one this names through rotation and asserts
+/// the file arrives, so a new variant here is a compile error there until it does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transport {
+    /// Append-only files. A plain `rename` takes one whole, and the archive is
+    /// byte-identical to what the pane wrote.
+    Rename,
+    /// A live SQLite database — `db` plus `-wal` plus `-shm`.
+    ///
+    /// **Never a rename and never a file copy.** Renaming the `.sqlite` alone
+    /// leaves every transaction still in the write-ahead log behind; copying the
+    /// three files gives an *untorn* copy only because rotation happens to run
+    /// before any pane exists, and untorn is not the same property as complete.
+    /// The archive is taken with SQLite's own backup path (`VACUUM INTO`), which
+    /// reads the log as part of the database and writes one self-contained file
+    /// with no journal beside it.
+    SqliteBackup,
 }
 
 /// **Checkpoint 14 — project identity and trust seeding** (C17).
@@ -1064,7 +1101,7 @@ pub const CLAUDE_CODE_SPEC: HarnessSpec = HarnessSpec {
         subdir: "projects",
         file_ext: "jsonl",
         format: "claude-code-jsonl",
-        file_move_is_safe: true,
+        transport: Transport::Rename,
     },
 
     // 14 — project identity and trust seeding (C17). `spawn::project_key` and the
@@ -1189,8 +1226,8 @@ fn mentions_our_hook(entry: &serde_json::Value, spec: &GuardrailInstall) -> bool
 
 static CLAUDE_CODE: ClaudeCode = ClaudeCode;
 
-/// Every registered harness. **Still exactly one, and #33 established what it
-/// will take to make that two** (C20, C25, C53).
+/// Every registered harness. **Still exactly one, and #39 removed the last thing
+/// standing in the way of two** (C20, C25, C53, C54).
 ///
 /// Phase 1 held this at one on purpose: a seam green with one harness before a
 /// second exists is a seam, and one written beside a second is a description of
@@ -1198,12 +1235,19 @@ static CLAUDE_CODE: ClaudeCode = ClaudeCode;
 /// **found seven things the second pass was the only way to find** — six
 /// checkpoint assertions shaped around the one harness they were written against,
 /// all reshaped and landed here, and one that is not a reshape at all:
-/// checkpoint 13 refuses a harness whose transcript is a live database until the
-/// harvest has a mechanism for one, which is #39's. That refusal is correct, so
-/// the flip was reverted and the findings kept.
+/// checkpoint 13 refused a harness whose transcript is a live database, because
+/// the harvest had no mechanism for one. That refusal was correct, so the flip
+/// was reverted and the findings kept.
 ///
-/// **The follow-up is two lines and is gated on #39**: this array, and the pin
-/// below. Everything else a second entry needs is already here.
+/// **#39 landed the mechanism and the refusal is gone** (C54). [`crate::runs`]
+/// takes a transcript by the [`Transport`] its harness declares, `SqliteBackup`
+/// included, and the flip was made a second time, run, and reverted: all fifteen
+/// conformance tests pass over both harnesses, checkpoint 13 among them.
+/// **The follow-up is now exactly two lines with nothing in front of them** —
+/// this array, and the pin below. Everything else a second entry needs is already
+/// here, and #39 is deliberately not the ticket that types them: a registration
+/// is a gesture an operator makes, not a side effect of the ticket that unblocked
+/// it.
 ///
 /// **Nothing may be added here without a conformance pass behind it.** The suite
 /// runs one pass per entry, end to end through [`place`](super::place), and it
@@ -1253,12 +1297,15 @@ mod tests {
     /// **The one-harness pin, kept** (C20, C25, C53).
     ///
     /// It held from #14 through #32 as phase 1's exit condition and phase 2's
-    /// standing invariant, and #33 established that it holds one ticket longer:
-    /// the registration flip is gated on #39, because checkpoint 13 refuses a
-    /// harness whose transcript is a live database until the harvest has a
-    /// mechanism for one. A second entry here without a conformance pass behind it
-    /// is the "half-implemented harness compiles quietly" failure this exists to
-    /// prevent, and right now codex would fail that pass on one checkpoint.
+    /// standing invariant, #33 established that it holds one ticket longer — the
+    /// flip was gated on #39, because checkpoint 13 refused a harness whose
+    /// transcript is a live database until the harvest had a mechanism for one —
+    /// and **#39 has landed that mechanism** (C54). Codex now passes all fourteen
+    /// checkpoints, so this pin is no longer waiting on evidence, only on two
+    /// lines being typed deliberately. A second entry here without a conformance
+    /// pass behind it is still the "half-implemented harness compiles quietly"
+    /// failure this exists to prevent, which is why the assertion stays until the
+    /// flip rather than being softened in anticipation of it.
     ///
     /// **What #33 added is the second half**, which the count alone never said:
     /// every entry is a distinct, nameable harness that [`by_name`] resolves back

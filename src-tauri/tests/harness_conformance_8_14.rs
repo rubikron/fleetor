@@ -33,6 +33,7 @@ use conformance::{
 use fleetor_core::pane::PaneId;
 use fleetor_core::{Command, ALLOWED_COMMANDS};
 use fleetor_shell::context_gauge::GaugeSources;
+use fleetor_shell::placement::harness::Transport;
 use fleetor_shell::placement::MISSING_FLEET_BIN;
 
 /// A body nothing would type by accident, so finding it on the far end of a pty
@@ -579,13 +580,20 @@ fn checkpoint_13_transcripts_live_under_the_panes_config_dir_and_the_harvest_mov
                 pass.spec.name,
             );
         }
-        assert!(
-            transcript.file_move_is_safe,
-            "{}: the harvest takes transcripts with a plain rename, so a harness whose \
-             transcript is a live database needs the harvest to learn a mechanism of its \
-             own before it is registered — a file copy of one is a torn copy",
-            pass.spec.name,
-        );
+        // **The transport is asserted as a mechanism, not as a permission** (#39).
+        // The field was `file_move_is_safe: bool` and this assertion required it to
+        // be `true`, which refused codex correctly: the harvest took every
+        // transcript with a plain rename, and a WAL-mode database is `db` plus
+        // `-wal` plus `-shm`, so renaming the `.sqlite` alone leaves every
+        // committed transaction behind. The harvest now reads
+        // `Transport` and has an arm for each, so what this checks is
+        // that the declared arm *works* — driven through rotation below, and for a
+        // database with the control that proves the mechanism is neither a rename
+        // nor a copy. A harness declaring a transport nobody implements is a
+        // compile error in `runs::take_transcript` rather than a refusal here.
+        match transcript.transport {
+            Transport::Rename | Transport::SqliteBackup => {}
+        }
 
         // One transcript per seat, and one file beside it that is not one.
         let planted: Vec<(&str, std::path::PathBuf, std::path::PathBuf)> = pass
@@ -627,6 +635,30 @@ fn checkpoint_13_transcripts_live_under_the_panes_config_dir_and_the_harvest_mov
             );
         }
 
+        // **The control, taken before the harvest, because the harvest consumes
+        // its subject.** For a harness whose transport is a database backup, this
+        // is the whole reason the backup exists: a plain `fs::copy` of the
+        // `.sqlite` — the naive implementation, and the one a `file_move_is_safe:
+        // false` flag would have left a later author to invent — produces a file
+        // that does *not* contain the committed row, because the row is in the
+        // write-ahead log. If this ever stops failing to find the mark, the
+        // fixture has stopped being a live database and the assertions below are
+        // asserting nothing.
+        if transcript.transport == Transport::SqliteBackup {
+            for (seat, kept, _) in &planted {
+                let torn = pass.root.join(format!("a-file-copy-of-{seat}.{}", transcript.file_ext));
+                std::fs::copy(kept, &torn).expect("copying the planted database");
+                let bytes = std::fs::read(&torn).expect("reading the copy back");
+                assert!(
+                    !bytes.windows(TRANSCRIPT_MARK.len()).any(|w| w == TRANSCRIPT_MARK.as_bytes()),
+                    "{}/{seat}: a plain file copy of this transcript already contains the \
+                     committed row, so it is not a live write-ahead-logged database and this \
+                     checkpoint cannot tell a backup from a copy",
+                    pass.spec.name,
+                );
+            }
+        }
+
         let run = pass.harvest_into_a_run();
         let taken = files_containing(&run, TRANSCRIPT_MARK);
         assert_eq!(
@@ -659,6 +691,55 @@ fn checkpoint_13_transcripts_live_under_the_panes_config_dir_and_the_harvest_mov
                 pass.spec.name,
                 transcript.file_ext,
             );
+
+            // **The database half, and it is three claims rather than one.** That
+            // the archived file contains the mark is already asserted above, by
+            // the same count every harness gets; what is specific here is *how* it
+            // got there. It is a database SQLite will open, holding the row that
+            // was only ever in the write-ahead log — which the control above
+            // proved a file copy does not carry — and it arrives with no journal
+            // beside it, because a `-wal` left in an archive is a second file the
+            // reader has to know to keep. Nothing of the original survives, the
+            // log and its shared-memory index included: those hold the same rows,
+            // and a fragment of this run's evidence left in a pane's configuration
+            // directory would be harvested into the *next* run's archive.
+            if transcript.transport == Transport::SqliteBackup {
+                let conn = rusqlite::Connection::open(&filed).unwrap_or_else(|e| {
+                    panic!("{}/{seat}: the archived transcript is not a database SQLite \
+                            will open, so the harvest did not back it up: {e}", pass.spec.name)
+                });
+                let rows: i64 = conn
+                    .query_row("SELECT count(*) FROM thread_items WHERE item_json = ?1", [TRANSCRIPT_MARK], |r| r.get(0))
+                    .unwrap_or_else(|e| {
+                        panic!("{}/{seat}: the archived database has no readable item — a \
+                                rename of the main file alone would look exactly like \
+                                this: {e}", pass.spec.name)
+                    });
+                assert_eq!(rows, 1, "{}/{seat}: the archived database lost the committed item", pass.spec.name);
+
+                for suffix in ["-wal", "-shm"] {
+                    let beside = filed.with_file_name(format!(
+                        "{}{suffix}",
+                        filed.file_name().unwrap_or_default().to_string_lossy(),
+                    ));
+                    assert!(
+                        !beside.exists(),
+                        "{}/{seat}: the archive holds a `{suffix}` beside the transcript, so \
+                         it is a file copy of a live database rather than a backup of one",
+                        pass.spec.name,
+                    );
+                    let left = kept.with_file_name(format!(
+                        "{}{suffix}",
+                        kept.file_name().unwrap_or_default().to_string_lossy(),
+                    ));
+                    assert!(
+                        !left.exists(),
+                        "{}/{seat}: the harvest took the database and left its `{suffix}` \
+                         behind, so the next run's archive will hold a fragment of this one",
+                        pass.spec.name,
+                    );
+                }
+            }
         }
     });
 }

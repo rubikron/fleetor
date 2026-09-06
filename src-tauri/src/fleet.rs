@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use fleetor_core::event::{FleetEvent, NoticeLevel};
-use fleetor_core::pane::{PaneEntry, PaneId};
+use fleetor_core::pane::{PaneEntry, PaneId, PaneState};
 use fleetor_core::wire::{Op, OpResult};
 use fleetor_core::Store;
 use fleetor_db::SqliteStore;
@@ -457,6 +457,39 @@ pub(crate) fn spawn_pane(
     if let Some(source) = placed.gauge {
         gauges.record(pane, source);
     }
+
+    // **What this pane was placed as, written down twice — once for the archive
+    // and once for the feed** (M24, #39).
+    //
+    // The archive's copy goes into the live run's own `run.json`, because that is
+    // the only place it can survive to reach `manifest.json`: rotation archives the
+    // *previous* run, whose panes and whose fleet are both gone, and a
+    // configuration directory is named for its seat and says nothing about which
+    // vendor was pointed at it (C33). The feed's copy is the spawn event, so an
+    // operator watching a mixed fleet come up is not poorer than a Critic reading
+    // the same run afterwards.
+    //
+    // Both are the values placement *returned*, never re-derived from `spec`: a
+    // fact the caller recomputes is a fact that can disagree with the one the pane
+    // was actually brought up on.
+    //
+    // Neither is on the message path and neither can become so (Tier 1.4) — this is
+    // the spawn path, several filesystem writes deep already, and a `fleet send`
+    // reads none of it.
+    runs::record_pane(&layout.shell(), &pane.to_string(), placed.harness, placed.model.as_deref());
+    if let Err(e) = store.append_event(&FleetEvent::PaneState {
+        pane,
+        // A pane with no pty is `Dead` to every reader in the fleet — the roster
+        // included — so that is what it was a moment ago, rather than a fifth state
+        // meaning "never existed".
+        from: PaneState::Dead,
+        to: PaneState::Spawning,
+        harness: Some(placed.harness.name.to_string()),
+        model: placed.model.clone(),
+    }) {
+        eprintln!("fleet: could not append the spawn event: {e}");
+    }
+
     registry.spawn(pane, placed.command, placed.harness, rows, cols)
 }
 

@@ -52,6 +52,14 @@ base64 = "0.22"
 # should keep their comments and layout: the pane's file is meant to be readable as
 # theirs, and a round-trip through a serde value silently throws that away.
 toml_edit = "0.25"
+# WP-25 (#39): a codex pane's transcript is a live WAL-mode SQLite thread store,
+# so `runs::harvest_transcripts` takes it with SQLite's own backup path
+# (`VACUUM INTO`) rather than a rename — see `runs::sqlite_backup` and C55. Not a
+# new tree: `fleetor-db` already depends on this exact version through the path
+# dependency below, so the crate and its bundled `libsqlite3-sys` were compiling
+# into this package's binary before the line existed. Kept at the same version and
+# features as the workspace's own, so one SQLite is linked and not two.
+rusqlite = { version = "0.32", features = ["bundled"] }
 anyhow = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
 

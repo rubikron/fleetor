@@ -883,6 +883,7 @@ dependencies = [
  "fleetor-server",
  "libc",
  "portable-pty",
+ "rusqlite",
  "serde",
  "serde_json",
  "tauri",

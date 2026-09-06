@@ -186,7 +186,20 @@ export type FleetEvent =
       /// means exactly that, never that nothing is open.
       open?: string[];
     }
-  | { seq: number; type: "pane-state"; pane: PaneId; from: string; to: string }
+  /// A pane moved through its lifecycle. `harness` and `model` are carried on the
+  /// spawn and absent on every other transition (WP-25, M24): a run's manifest
+  /// records which vendor ran in each seat, and a feed that could not say the same
+  /// would be poorer than the archive of itself. `model` stays absent on an
+  /// attended seat, which runs the operator's own login.
+  | {
+      seq: number;
+      type: "pane-state";
+      pane: PaneId;
+      from: string;
+      to: string;
+      harness?: string;
+      model?: string;
+    }
   | { seq: number; type: "notice"; level: NoticeLevel; text: string };
 
 export type MessageEvent = Extract<FleetEvent, { type: "message" }>;

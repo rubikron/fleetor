@@ -120,7 +120,28 @@ pub enum FleetEvent {
         open: Vec<String>,
     },
     /// A pane moved through its lifecycle (spawning → live → dead).
-    PaneState { pane: PaneId, from: PaneState, to: PaneState },
+    ///
+    /// **`harness` and `model` are carried on the spawn** (WP-25, M24). A run's
+    /// `manifest.json` records which vendor ran in each seat and what model it was
+    /// pointed at, and a live feed that could not say the same would be poorer
+    /// than the archive of itself — an operator watching a mixed fleet come up
+    /// would have to wait for the run to end to learn what came up. They are
+    /// `Option` because they are facts about a placement: a transition that is not
+    /// a spawn has none, and a pane that died carries no new answer.
+    ///
+    /// `model` is `None` on an attended seat even at spawn, which is the same
+    /// honest absence [`crate::pane::PaneEntry`] keeps elsewhere — the operator's
+    /// own pane runs their login, and the model that account defaults to is not a
+    /// name this side of the pty knows (M2).
+    PaneState {
+        pane: PaneId,
+        from: PaneState,
+        to: PaneState,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        harness: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+    },
     /// Free-form operational note. The honest-failure channel: a target that
     /// could not be read, a `fleet` binary that is not there, a socket that would
     /// not bind. Everything that would otherwise leave the shell looking fine
@@ -198,6 +219,8 @@ mod tests {
                 pane: PaneId::Worker(2),
                 from: PaneState::Spawning,
                 to: PaneState::Live,
+                harness: None,
+                model: None,
             },
             FleetEvent::Notice { level: NoticeLevel::Warn, text: "no fleet binary".into() },
         ];

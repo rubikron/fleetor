@@ -52,13 +52,14 @@
 
 #![allow(dead_code)]
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use fleetor_core::pane::PaneId;
-use fleetor_shell::placement::harness::{registered, Harness};
+use fleetor_shell::placement::harness::{registered, Harness, Transport};
 use fleetor_shell::placement::{self, HarnessSpec, Host, Layout, PaneSpec, Placed};
 use fleetor_shell::prompts::PaneContext;
 use fleetor_shell::pty::{Emit, PaneRegistry};
@@ -131,6 +132,21 @@ pub struct Pass {
     pub worker: Placed,
     /// The directory that worker was placed in: its own checkout of the target.
     pub worker_cwd: PathBuf,
+
+    /// **Connections held open on the transcripts this pass planted** — the
+    /// fixture half of checkpoint 13's transport assertion (#39).
+    ///
+    /// A harness whose transport is [`Transport::SqliteBackup`] has its transcript
+    /// planted as a real WAL-mode database, and a WAL database is only interesting
+    /// to this suite while its committed rows are still *in the log*: SQLite
+    /// checkpoints and unlinks the `-wal` when the last connection closes, and a
+    /// checkpointed database is one a plain file copy would take correctly. So the
+    /// connection stays open across the harvest, which is also what a live pane
+    /// would be doing.
+    ///
+    /// A `RefCell` because [`for_each_registered`] hands each checkpoint a `&Pass`,
+    /// and this is the one thing planting has to keep rather than return.
+    pub open_stores: RefCell<Vec<rusqlite::Connection>>,
 }
 
 /// Run `check` once per registered harness, and return how many times it ran.
@@ -200,6 +216,7 @@ impl Pass {
             orch,
             worker,
             worker_cwd,
+            open_stores: RefCell::new(Vec::new()),
         };
         pass.assert_placed_as_the_harness_under_test();
         pass
@@ -354,20 +371,61 @@ impl Pass {
         self.config_dir(placed).join(self.spec.transcript.subdir)
     }
 
-    /// Plant one transcript file where a pane of this harness would leave it, and
-    /// return where it was put.
+    /// Plant one transcript file where a pane of this harness would leave it, in
+    /// the form that harness would leave it in, and return where it was put.
     ///
-    /// `slug` stands in for whatever the harness names its per-project directory.
-    /// **That naming is deliberately not re-derived here**: it is not one of the
-    /// fourteen answers, so a test that computed it would be encoding one vendor's
-    /// rule as though it were the seam's. What the harvest is asserted on is the
-    /// two things that *are* spec'd — the subdirectory and the extension.
+    /// **Two things vary and both are read off the spec rather than assumed.**
+    ///
+    /// *Where.* `slug` stands in for whatever the harness names its per-project
+    /// directory, and **that naming is deliberately not re-derived here**: it is
+    /// not one of the fourteen answers, so a test that computed it would be
+    /// encoding one vendor's rule as though it were the seam's (C54). A harness
+    /// whose `subdir` is the empty string is saying its transcripts are in the
+    /// configuration directory *itself*, and for such a harness there is no
+    /// per-project level to stand in for — planting one anyway would put the file
+    /// somewhere that harness never writes, and would let a harvest that only
+    /// looked one level down pass for a layout it would miss in production.
+    ///
+    /// *What.* A [`Transport::Rename`] transcript is an append-only file, so the
+    /// body is written as-is. A [`Transport::SqliteBackup`] one is a live WAL-mode
+    /// database with the body in a `TEXT` column and the connection **left open**,
+    /// so the row is still in the write-ahead log when the harvest runs — see
+    /// [`Pass::open_stores`]. That is not decoration: it is the only state in which
+    /// the difference between a backup and a file copy is observable, and a
+    /// checkpoint that planted a checkpointed database would pass for a harvest
+    /// that renamed.
     pub fn plant_transcript(&self, placed: &Placed, slug: &str, file: &str, body: &str) -> PathBuf {
-        let dir = self.transcript_dir(placed).join(slug);
+        let dir = match self.spec.transcript.subdir {
+            "" => self.transcript_dir(placed),
+            _ => self.transcript_dir(placed).join(slug),
+        };
         std::fs::create_dir_all(&dir).expect("a scratch transcript directory");
         let path = dir.join(file);
-        std::fs::write(&path, body).expect("a scratch transcript");
+        match self.spec.transcript.transport {
+            Transport::Rename => std::fs::write(&path, body).expect("a scratch transcript"),
+            Transport::SqliteBackup => self.plant_live_database(&path, body),
+        }
         path
+    }
+
+    /// One WAL-mode database with `body` committed into it and nothing
+    /// checkpointed — checkpoint 13's fixture for [`Transport::SqliteBackup`].
+    ///
+    /// The table is shaped like the thing it stands in for (C12's `thread_items`,
+    /// with the item's own JSON verbatim in a column) without claiming to be that
+    /// vendor's schema: what the harvest is asserted on is that a database arrives
+    /// whole, and it does not read a row of it.
+    fn plant_live_database(&self, path: &Path, body: &str) {
+        let conn = rusqlite::Connection::open(path).expect("a scratch thread store");
+        conn.pragma_update(None, "journal_mode", "WAL").expect("WAL mode, which is the point");
+        conn.execute("CREATE TABLE thread_items (item_json TEXT NOT NULL)", [])
+            .expect("a scratch thread_items table");
+        conn.execute("INSERT INTO thread_items (item_json) VALUES (?1)", [body])
+            .expect("one committed item");
+        // Held rather than dropped: closing the last connection checkpoints the
+        // log into the main file and unlinks it, which would erase exactly the
+        // condition this fixture exists to create.
+        self.open_stores.borrow_mut().push(conn);
     }
 
     /// Rotate this pass's layout into an archive, and return the run directory
@@ -668,7 +726,15 @@ pub fn files_containing(dir: &Path, needle: &str) -> Vec<PathBuf> {
                 stack.push(path);
                 continue;
             }
-            if std::fs::read_to_string(&path).is_ok_and(|text| text.contains(needle)) {
+            // **Bytes rather than text** (#39). Every needle this suite searches
+            // for is UTF-8, but not every file that legitimately holds one is: a
+            // harness whose transcript is a SQLite database stores its `TEXT`
+            // columns unencoded inside a file that is not valid UTF-8 anywhere
+            // else, so `read_to_string` used to answer "this archive does not
+            // contain the transcript" for the one transport that needed asserting.
+            if std::fs::read(&path).is_ok_and(|bytes| {
+                bytes.windows(needle.len()).any(|w| w == needle.as_bytes())
+            }) {
                 found.push(path.strip_prefix(dir).unwrap_or(&path).to_path_buf());
             }
         }

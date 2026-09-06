@@ -193,7 +193,7 @@ use toml_edit::{DocumentMut, Item, Table, Value};
 use super::harness::{
     BriefCarrier, CommandChannel, ConfigAndCredentialIsolation, ConfigDir, Credentials, GaugeSource,
     GuardrailInstall, Harness, HarnessSpec, OrphanNames, Outbound, Posture,
-    ProjectIdentityAndTrust, Program, Seat, Seed, Transcript, TypingProfile,
+    ProjectIdentityAndTrust, Program, Seat, Seed, Transcript, Transport, TypingProfile,
 };
 
 // --- the vendor's own shape ----------------------------------------------------
@@ -688,15 +688,22 @@ pub const CODEX_SPEC: HarnessSpec = HarnessSpec {
     // the pane's own `CODEX_HOME`, with `thread_items` and `thread_turns` tables
     // under an `_sqlx_migrations`-managed schema. The generation number in the
     // filename is codex's own compatibility signal and is what the manifest
-    // records. **`file_move_is_safe` is `false` and that is the load-bearing
-    // field**: it is WAL-mode, so archiving it is `VACUUM INTO` or the backup API
-    // and never `cp` — `run-rotation-notes.md` measured the torn-copy failure for
-    // the fleet's own store and the same physics applies here.
+    // records. **`transport` is `SqliteBackup` and that is the load-bearing
+    // field** (#39): it is WAL-mode, so archiving it is `VACUUM INTO` and never
+    // `cp` and never a rename — `run-rotation-notes.md` measured the torn-copy
+    // failure for the fleet's own store and the same physics applies here. The
+    // field was `file_move_is_safe: false` until #39 gave the harvest the
+    // mechanism; a negative said what the archive must not do and left it to
+    // guess what it should.
+    //
+    // **`subdir` is the empty string, and that is an answer rather than a gap**:
+    // the store sits in `CODEX_HOME` itself, so there is no per-project directory
+    // to name — which is also why C54's naming gap costs this harness nothing.
     transcript: Transcript {
         subdir: "",
         file_ext: "sqlite",
         format: "codex-thread-history-1-sqlite",
-        file_move_is_safe: false,
+        transport: Transport::SqliteBackup,
     },
 
     // 14 — project identity and trust seeding (C16, C17). The key canonicalizes
@@ -1337,11 +1344,14 @@ fn hook_trust_key(config_dir: &Path, install: &GuardrailInstall, group: usize) -
     )
 }
 
-/// Codex, by name. **Not in the registry**: #33 flipped it in, ran the
-/// conformance suite over both harnesses, and found that checkpoint 13 refuses a
-/// harness whose transcript is a live database until the harvest has a mechanism
-/// for one — so the flip is a follow-up gated on #39 and the findings landed
-/// without it (C53).
+/// Codex, by name. **Not in the registry, and no longer for a reason**: #33
+/// flipped it in, ran the conformance suite over both harnesses, and found that
+/// checkpoint 13 refuses a harness whose transcript is a live database until the
+/// harvest has a mechanism for one (C53). #39 landed that mechanism and re-ran
+/// the flip — all fourteen checkpoints pass for this harness — then reverted it,
+/// because a registration is an operator's gesture and a registry that widened as
+/// a side effect of the ticket that unblocked it is worse than a deferred one
+/// (C54).
 ///
 /// `pub(super)` on the static, so that the follow-up adds this entry to
 /// [`registered`](super::harness::registered) rather than a second unit struct
@@ -2260,15 +2270,19 @@ args = ["--root", "~/notes"]
     /// formality. It was: #33 flipped the registry to two, ran the suite over both
     /// harnesses, and the flip surfaced six checkpoint assertions shaped around
     /// the one harness they were written against — every one of them reshaped and
-    /// landed — plus one that is not a reshape. Checkpoint 13 refuses a harness
-    /// whose transcript is a live database, because the harvest takes transcripts
+    /// landed — plus one that is not a reshape. Checkpoint 13 refused a harness
+    /// whose transcript is a live database, because the harvest took transcripts
     /// with a plain rename and a WAL database is `db` + `-wal` + `-shm`: renaming
-    /// the `.sqlite` alone leaves committed transactions behind. That refusal is
-    /// correct and the mechanism is #39's, so the flip was reverted and this pin
+    /// the `.sqlite` alone leaves committed transactions behind. That refusal was
+    /// correct and the mechanism was #39's, so the flip was reverted and this pin
     /// stayed.
     ///
-    /// **What it is waiting for is named rather than left open**: #39, then two
-    /// lines — `harness::REGISTERED` and this test.
+    /// **#39 landed it, and the thing C53 recorded as not established now is**
+    /// (C54): the harvest reads a `Transport` and takes this harness's transcript
+    /// with `VACUUM INTO`, the flip was made a second time, and checkpoint 13
+    /// passed for codex along with the other thirteen. What is left is the two
+    /// lines — `harness::REGISTERED` and this test — and nothing in front of
+    /// them.
     #[test]
     fn codex_is_implemented_and_still_not_registered() {
         assert_eq!(registered().len(), 1);
@@ -3151,7 +3165,12 @@ args = ["--root", "~/notes"]
         const { assert!(CODEX_SPEC.isolation.seeds_from_operator, "checkpoint 6 is a snapshot") };
         const { assert!(!CODEX_SPEC.isolation.credentials_follow_home, "and login is not HOME's") };
         const { assert!(CODEX_SPEC.isolation.private_home, "the Fence still wants one") };
-        const { assert!(!CODEX_SPEC.transcript.file_move_is_safe, "WAL-mode: never `cp`") };
+        const {
+            assert!(
+                matches!(CODEX_SPEC.transcript.transport, Transport::SqliteBackup),
+                "WAL-mode: the backup path, never `cp` and never a rename",
+            )
+        };
         assert!(!CODEX_SPEC.config_dir.seed_keys.is_empty());
     }
 

@@ -31,11 +31,20 @@ function render(event: FleetEvent): Rendered {
         text: event.text,
         rail: event.level !== "info",
       };
+    // The harness and the model are said here or nowhere: the roster is
+    // deliberately harness-free, because a worker that knows which peer is
+    // "weaker" starts routing work on that belief (M25). This line is the
+    // operator's, not a pane's, and it is the only place the live feed can be as
+    // specific about a mixed fleet as the archive of it will be (M24).
     case "pane-state":
       return {
         kind: "pane",
         tone: event.to === "dead" ? "red" : "neutral",
-        text: `${event.pane} ${event.from} → ${event.to}`,
+        text: event.harness
+          ? `${event.pane} ${event.from} → ${event.to} · ${event.harness}${
+              event.model ? ` · ${event.model}` : ""
+            }`
+          : `${event.pane} ${event.from} → ${event.to}`,
         rail: event.to === "dead",
       };
     // A command is not a message and must never read like one, so it says what

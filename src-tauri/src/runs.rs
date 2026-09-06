@@ -33,6 +33,8 @@ use fleetor_core::event::{FleetEvent, NoticeLevel};
 use fleetor_db::archive;
 use serde::{Deserialize, Serialize};
 
+use crate::placement::harness::{HarnessSpec, Transport};
+
 /// Milliseconds in a day — the unit the civil-date conversion counts in.
 const MS_PER_DAY: i64 = 86_400_000;
 
@@ -40,6 +42,31 @@ const MS_PER_DAY: i64 = 86_400_000;
 const EVENTS_JSON: &str = "events.json";
 /// What the run is and what else is in its directory, for a reader arriving cold.
 const MANIFEST_JSON: &str = "manifest.json";
+
+/// **What `transcripts/` holds, said without naming a vendor** (M24, #39).
+///
+/// It used to say "that pane's Claude Code session `.jsonl` files", which was true
+/// of every run a one-harness fleet could produce and becomes a false statement to
+/// any Critic reading a mixed run cold — the wrong kind of false, too: a reader
+/// who believes it will look for a format that is not there and conclude the
+/// evidence is missing rather than that the sentence is. It now says what is
+/// invariant (one directory per pane, raw, this run only) and points at `panes`
+/// for what varies.
+const TRANSCRIPTS_ARE: &str = "one directory per pane — orch and each worker — holding that pane's \
+     own transcripts for this run only, exactly as its harness wrote them. Nothing here is \
+     converted or normalized: `panes` below says which harness ran in each seat and what format \
+     its transcripts are in.";
+
+/// What the `panes` object is, for the same cold reader.
+const PANES_ARE: &str = "one entry per pane that was placed, keyed by the seat name the \
+     transcripts/ directories use — the harness it ran, the model it was pointed at where the \
+     fleet chose one, and the format of its transcripts. A run whose panes never started has \
+     none, and a pane placed before this record existed is absent rather than guessed at.";
+
+/// The sentence that tells a cold reader what the two records are *for*. Vendor-free
+/// already, and unchanged.
+const READING_THIS: &str = "The event log is what the panes said to each other. The transcripts \
+     are what each pane did between saying things. Neither records terminal output.";
 
 /// One past run, as the History view lists it.
 ///
@@ -63,6 +90,14 @@ pub struct RunRecord {
     /// How many pane transcripts were archived with the run, `orch`'s included
     /// (see [`harvest_transcripts`]). `0` is ordinary — a run whose panes never
     /// started has none.
+    ///
+    /// **It is no longer also what a whole harness contributing nothing looks
+    /// like** (M24, #39). While the harvest could only take a transcript with a
+    /// rename, a pane whose transcript was a live database contributed zero and
+    /// the run read as an ordinary one — a real gap in a normal run's clothes,
+    /// which is why registering such a harness was refused rather than allowed to
+    /// produce quiet archives. Every registered harness's transport is now one the
+    /// harvest implements, so a zero here means what it says.
     #[serde(default)]
     pub transcripts: u32,
 }
@@ -80,6 +115,43 @@ struct LiveMeta {
     started_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     target: Option<String>,
+    /// What each pane of this run was placed as, keyed by the seat name its
+    /// configuration directory is called — the same name the harvest files
+    /// transcripts under. Written at spawn by [`record_pane`], archived into
+    /// `manifest.json` by rotation (M24).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    panes: BTreeMap<String, PaneRecord>,
+}
+
+/// What a mixed run's manifest says about one pane (M24, #39).
+///
+/// **The archive is the only place this can be read from afterwards, which is why
+/// it is written while the run is alive.** A pane's configuration directory is
+/// named for its *seat* — `orch`, `worker-1` — and carries no record of which
+/// vendor's binary was pointed at it; by the time rotation archives a run its
+/// panes are gone and the fleet that placed them is gone with them (C33). So the
+/// harvest still finds transcripts by looking under every registered harness's
+/// answer, and this is what tells a Critic reading the result cold *which* vendor
+/// wrote the files it is now holding, and in what format.
+///
+/// C33 named this exact reversal: "a run manifest that already records each pane's
+/// harness, at which point the harvest should read that rather than guess". Only
+/// half of it applies — the manifest records it now, and the harvest still does
+/// not read it, because this file describes the run being *archived* and the
+/// harvest's own dedup makes the guess harmless. The orphan sweep still records
+/// nothing, deliberately: its registry is not a manifest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneRecord {
+    /// The harness this pane ran, by [`HarnessSpec::name`].
+    pub harness: String,
+    /// The model it was pointed at, where the fleet chose one. `None` on an
+    /// attended seat, which runs the operator's own login and whatever model that
+    /// account defaults to — the honest answer rather than a guessed name (M2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Checkpoint 13's `format`, so the transcripts filed under this pane can be
+    /// named without knowing which vendor wrote them.
+    pub transcript_format: String,
 }
 
 // --- locations ----------------------------------------------------------------
@@ -111,10 +183,43 @@ fn live_meta(shell: &Path) -> PathBuf {
 /// Best-effort on purpose: a failure here costs one row's target column, and is
 /// not worth failing a boot over.
 pub fn begin(shell: &Path, started_ms: i64, target: &Path) {
+    // The panes are empty here and are filled in one at a time by
+    // [`record_pane`], because at bootstrap there are none: rotation has just run
+    // and the first pane is several operator gestures away.
     let meta = LiveMeta {
         started_ms: Some(started_ms),
         target: Some(target.display().to_string()),
+        panes: BTreeMap::new(),
     };
+    if let Ok(text) = serde_json::to_string_pretty(&meta) {
+        let _ = std::fs::write(live_meta(shell), text);
+    }
+}
+
+/// Write down what one pane was placed as, for the manifest of the run it belongs
+/// to (M24, #39).
+///
+/// Called from the spawn path, once per pane, after placement has succeeded — so
+/// what is recorded is what a pane was actually placed *as*, never what a caller
+/// intended. **Not on the message path and never able to be** (Tier 1.4): a
+/// `fleet send` neither writes this nor reads it, and a spawn is already several
+/// filesystem writes deep by the time it gets here.
+///
+/// Best-effort, like [`begin`], and for the same reason: this is one object in a
+/// manifest an agent reads later, and a fleet that refused to start a pane because
+/// it could not describe it would be trading the run for the record of it. A pane
+/// missing here is a pane the manifest does not name; its transcripts are still
+/// harvested and still filed under its seat.
+pub fn record_pane(shell: &Path, pane: &str, harness: &'static HarnessSpec, model: Option<&str>) {
+    let mut meta = read_live_meta(shell);
+    meta.panes.insert(
+        pane.to_string(),
+        PaneRecord {
+            harness: harness.name.to_string(),
+            model: model.map(str::to_string),
+            transcript_format: harness.transcript.format.to_string(),
+        },
+    );
     if let Ok(text) = serde_json::to_string_pretty(&meta) {
         let _ = std::fs::write(live_meta(shell), text);
     }
@@ -158,7 +263,7 @@ pub fn rotate(shell: &Path, runs: &Path, now_ms: i64) -> Vec<(NoticeLevel, Strin
     match record_for(&dest, &id, meta.target.as_deref()) {
         Ok(mut record) => {
             record.transcripts = transcripts;
-            if let Err(e) = write_agent_view(&dest, &record) {
+            if let Err(e) = write_agent_view(&dest, &record, &meta.panes) {
                 notices.push((
                     NoticeLevel::Warn,
                     format!("archived run {id}, but its JSON export did not write: {e}"),
@@ -231,47 +336,149 @@ fn archive_files(live: &Path, dest: &Path) -> std::io::Result<()> {
 /// registered harness — see [`transcript_locations`] for why the whole registry
 /// rather than this pane's own harness.
 ///
-/// **The rename is checkpoint 13's third answer and this function does not check
-/// it.** `file_move_is_safe` says a plain move is a safe way to take this
-/// harness's transcript, and it is `true` for every registered harness because a
-/// harness whose transcript is a live database needs a mechanism here — a backup
-/// API, not a rename — before it can be registered at all. Reading the flag to
-/// skip such a harness would silently archive nothing for it, which is a run
-/// missing its evidence and looking like an ordinary one; the conformance suite
-/// refuses the registration instead, which fails at the right time. The
-/// mechanism itself is #39's.
+/// **How each one is taken is checkpoint 13's third answer, and this function
+/// reads it** (#39). [`Transport::Rename`] is a plain move, which is what
+/// append-only files want. [`Transport::SqliteBackup`] is a live database — `db`
+/// plus `-wal` plus `-shm` — and renaming the `.sqlite` alone would leave every
+/// transaction still in the write-ahead log behind, so it goes through SQLite's
+/// own backup path. Rotation running before any pane exists would make a
+/// three-file copy *untorn*, which is a different property from complete and not
+/// the one an archive needs.
+///
+/// **Reading the flag to *skip* such a harness stays rejected**, as it was before
+/// the mechanism existed: it archives nothing while the run looks ordinary. What
+/// changed is that there is now nothing to skip.
 fn harvest_transcripts(shell: &Path, dest: &Path) -> u32 {
+    // `Take::Move` is this function's whole contract and is stated at the call
+    // site rather than inside the walk — see [`copy_transcripts`] for the twin.
+    walk_transcripts(shell, dest, Take::Move)
+}
+
+/// Take one transcript into the archive the way its harness says it may be taken,
+/// and answer whether it arrived.
+///
+/// The two verbs are separated from the two transports on purpose: whether the
+/// original survives is the *caller's* contract (rotation moves, the live snapshot
+/// copies), and how a file is read is the *harness's*. Crossing them would give
+/// four bespoke branches instead of two facts.
+fn take_transcript(from: &Path, to: &Path, transport: Transport, take: Take) -> bool {
+    match transport {
+        Transport::Rename => match take {
+            Take::Move => std::fs::rename(from, to).is_ok(),
+            Take::Copy => std::fs::copy(from, to).is_ok(),
+        },
+        Transport::SqliteBackup => {
+            if sqlite_backup(from, to).is_err() {
+                return false;
+            }
+            if take == Take::Move {
+                // The whole database, not the file that shares its name: a `-wal`
+                // left beside a store whose contents have been archived is a
+                // fragment of the next run's evidence, and the `-shm` is scratch.
+                let _ = std::fs::remove_file(from);
+                for suffix in ["-wal", "-shm"] {
+                    let _ = std::fs::remove_file(with_suffix(from, suffix));
+                }
+            }
+            true
+        }
+    }
+}
+
+/// Read a live SQLite database and write one self-contained copy of it — the
+/// mechanism [`Transport::SqliteBackup`] names (C12, #39).
+///
+/// **`VACUUM INTO` rather than a file copy**, and the difference is not
+/// theoretical: in WAL mode the committed rows live in the `-wal` until something
+/// checkpoints, so the main file on its own can be a schema-less header while the
+/// database it names is full of turns. This opens the database, which is what
+/// makes SQLite read the log as part of it, and writes a fresh file with no
+/// journal beside it — exactly what an archive wants, since a `-wal` that got left
+/// behind would be a second file the reader has to know to keep.
+///
+/// Opened read-write rather than read-only, because a read-only connection to a
+/// WAL database still needs to build the shared-memory index and fails where it
+/// cannot. Rotation runs before any pane exists (see [`rotate`]), and `VACUUM
+/// INTO` is read-only with respect to the source in any case.
+fn sqlite_backup(from: &Path, to: &Path) -> Result<(), String> {
+    let to = to.to_str().ok_or_else(|| format!("{} is not utf-8", to.display()))?;
+    let conn = rusqlite::Connection::open(from).map_err(|e| format!("open {}: {e}", from.display()))?;
+    conn.execute("VACUUM INTO ?1", [to]).map_err(|e| format!("VACUUM INTO {to}: {e}"))?;
+    Ok(())
+}
+
+/// Whether the original survives the archive. Rotation's answer and the live
+/// snapshot's answer, named rather than passed as a `bool` — the accumulation bug
+/// this distinction prevents is described on [`copy_transcripts`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Take {
+    Move,
+    Copy,
+}
+
+/// The walk both [`harvest_transcripts`] and [`copy_transcripts`] are, so the
+/// archive and the live snapshot cannot come to look in different places or read a
+/// database two different ways.
+fn walk_transcripts(shell: &Path, dest: &Path, take: Take) -> u32 {
     let Ok(panes) = std::fs::read_dir(crate::placement::pane_config_root(shell)) else { return 0 };
-    let mut moved = 0;
+    let mut taken = 0;
 
     for pane in panes.flatten() {
         let name = pane.file_name();
         let into = dest.join("transcripts").join(&name);
 
-        for (subdir, file_ext) in transcript_locations() {
-            let Ok(slugs) = std::fs::read_dir(pane.path().join(subdir)) else { continue };
-            for slug in slugs.flatten() {
-                let Ok(files) = std::fs::read_dir(slug.path()) else { continue };
-                for file in files.flatten() {
-                    let from = file.path();
-                    if from.extension().and_then(|e| e.to_str()) != Some(file_ext) {
-                        continue;
-                    }
-                    if std::fs::create_dir_all(&into).is_err() {
-                        continue;
-                    }
-                    if std::fs::rename(&from, into.join(file.file_name())).is_ok() {
-                        moved += 1;
-                    }
+        for at in transcript_locations() {
+            for from in transcript_files(&pane.path().join(at.subdir), at.file_ext) {
+                let Some(file_name) = from.file_name() else { continue };
+                if std::fs::create_dir_all(&into).is_err() {
+                    continue;
+                }
+                if take_transcript(&from, &into.join(file_name), at.transport, take) {
+                    taken += 1;
                 }
             }
         }
     }
-    moved
+    taken
+}
+
+/// Every file under a harness's transcript directory that carries its extension:
+/// **the directory itself, and one level below it.**
+///
+/// Two depths because that is the whole of the variation the registry has, and
+/// because the intervening level is the one thing checkpoint 13 does not answer.
+/// Claude Code keeps `projects/<per-project directory>/<session>.jsonl`; codex
+/// keeps its thread store in `CODEX_HOME` itself, with no per-project level at all.
+/// What that directory would be *called* is not one of the fourteen answers and
+/// this function does not need it to be — it is looking for files, not
+/// constructing a path — which is precisely the half of the gap that can be closed
+/// without inventing a general rule out of one vendor's (C54).
+///
+/// Not recursive, deliberately. A configuration directory holds a great deal that
+/// is not a transcript, and a harness whose extension is as ordinary as `sqlite`
+/// would have its settings and its caches archived as evidence by a walk that kept
+/// descending.
+fn transcript_files(root: &Path, file_ext: &str) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let Ok(entries) = std::fs::read_dir(root) else { return found };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let Ok(below) = std::fs::read_dir(&path) else { continue };
+            found.extend(below.flatten().map(|e| e.path()).filter(|p| has_ext(p, file_ext)));
+        } else if has_ext(&path, file_ext) {
+            found.push(path);
+        }
+    }
+    found
+}
+
+fn has_ext(path: &Path, file_ext: &str) -> bool {
+    path.extension().and_then(|e| e.to_str()) == Some(file_ext)
 }
 
 /// Every place a pane could have left a transcript: checkpoint 13's
-/// subdirectory and extension, one pair per registered harness.
+/// subdirectory, extension and transport, one row per registered harness.
 ///
 /// **The whole registry, not the pane's own harness, because nothing on disk
 /// says which harness a pane ran.** A pane's config directory is named for the
@@ -284,19 +491,39 @@ fn harvest_transcripts(shell: &Path, dest: &Path) -> u32 {
 /// and cannot mis-file anything: what it finds under a subdirectory is filed
 /// under the seat it was found in, never under a harness name.
 ///
+/// **`manifest.json` now records each pane's harness (M24), and this still does
+/// not read it** — C33's named reversal applies to a manifest describing the run
+/// being archived, and the one rotation is about to write is the *output* of this
+/// walk rather than an input to it.
+///
 /// Deduplicated, so two harnesses that agree on a location do not have the same
 /// file counted twice — the count is what the run manifest reports as its
-/// evidence, and a doubled one would read as transcripts that are not there.
-fn transcript_locations() -> Vec<(&'static str, &'static str)> {
-    let mut seen: Vec<(&'static str, &'static str)> = Vec::new();
+/// evidence, and a doubled one would read as transcripts that are not there. Two
+/// harnesses agreeing on a location and disagreeing on how it may be read is not
+/// deduplicated, because those are two different reads of the same file and
+/// silently picking one would be picking a vendor.
+fn transcript_locations() -> Vec<Location> {
+    let mut seen: Vec<Location> = Vec::new();
     for harness in crate::placement::harness::registered() {
         let transcript = &harness.spec().transcript;
-        let at = (transcript.subdir, transcript.file_ext);
+        let at = Location {
+            subdir: transcript.subdir,
+            file_ext: transcript.file_ext,
+            transport: transcript.transport,
+        };
         if !seen.contains(&at) {
             seen.push(at);
         }
     }
     seen
+}
+
+/// One row of [`transcript_locations`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Location {
+    subdir: &'static str,
+    file_ext: &'static str,
+    transport: Transport,
 }
 
 // --- the live run, laid out for a reader (WP-15) --------------------------------
@@ -324,10 +551,10 @@ fn transcript_locations() -> Vec<(&'static str, &'static str)> {
 ///    rotation's file-moving path wholesale would try it.
 ///  - **Transcripts are copied, not moved.** [`harvest_transcripts`] moves them,
 ///    which is right at rotation because no pane exists then. Here every pane is
-///    alive and Claude Code still has those files open; moving one is a
-///    data-loss bug in the very run being judged. Kept as a separate walk rather
-///    than a `copy: bool` on that function, because its move-not-copy contract
-///    is load-bearing and a flag would invite the accumulation bug back.
+///    alive and its harness still has those files open; moving one is a
+///    data-loss bug in the very run being judged. The two are named functions
+///    over one walk rather than a `copy: bool` — see [`copy_transcripts`] for why
+///    the distinction survived being factored.
 ///
 /// The directory is rebuilt from scratch on every call, so a second handoff in
 /// one run gets a snapshot of the run at *that* moment rather than a merge of
@@ -355,11 +582,13 @@ pub fn snapshot_live_run(shell: &Path, dest: &Path, run_id: &str) -> Result<u32,
             "target": meta.target,
             "transcripts": transcripts,
         },
+        "panes": meta.panes,
         "layout": {
             "events.json": "the whole event log so far, one JSON array, oldest first; `seq` and `ts` are the row's own columns",
-            "transcripts/": "one directory per pane — orch and each worker — holding that pane's Claude Code session .jsonl files, copied at the moment below",
+            "transcripts/": TRANSCRIPTS_ARE,
+            "panes": PANES_ARE,
         },
-        "reading_this": "The event log is what the panes said to each other. The transcripts are what each pane did between saying things. Neither records terminal output.",
+        "reading_this": READING_THIS,
         "this_is_a_snapshot": format!(
             "Taken when the mission was handed back, while the run was still open. It holds \
              the run up to that moment and nothing after it. There is no state.db here — the \
@@ -375,40 +604,29 @@ pub fn snapshot_live_run(shell: &Path, dest: &Path, run_id: &str) -> Result<u32,
     Ok(transcripts)
 }
 
-/// [`harvest_transcripts`]'s non-destructive twin — see [`snapshot_live_run`]
-/// for why the two are not one function with a flag.
+/// [`harvest_transcripts`]'s non-destructive twin.
 ///
 /// It reads the same checkpoint 13 answers through the same
-/// [`transcript_locations`], so the live snapshot and the archive cannot come to
-/// look in different places; only the last verb differs, and that is the point.
+/// [`transcript_locations`] and takes each file through the same
+/// [`take_transcript`], so the live snapshot and the archive cannot come to look
+/// in different places or read a database two different ways. Only [`Take`]
+/// differs, and that is the point.
+///
+/// **Still two named functions rather than one with a `copy: bool`** (D-059's
+/// rule, kept). What made the flag dangerous was that a caller could pass the
+/// wrong value and get the accumulation bug back silently; what makes it worth
+/// factoring now is that the walk contains a *database backup* and two copies of
+/// one is a place for exactly the divergence this doc warns about. So the verb is
+/// an enum with two named constants, each written at exactly one call site, in a
+/// function whose name says which it passes.
+///
+/// **A `SqliteBackup` transcript is copied here by being backed up, not by
+/// `fs::copy`** — the source is a live database with a pane still writing to it,
+/// which is the case a file copy tears. `VACUUM INTO` takes a read transaction,
+/// so the snapshot holds a consistent moment of a run in progress rather than a
+/// mid-write page.
 fn copy_transcripts(shell: &Path, dest: &Path) -> u32 {
-    let Ok(panes) = std::fs::read_dir(crate::placement::pane_config_root(shell)) else { return 0 };
-    let mut copied = 0;
-
-    for pane in panes.flatten() {
-        let name = pane.file_name();
-        let into = dest.join("transcripts").join(&name);
-
-        for (subdir, file_ext) in transcript_locations() {
-            let Ok(slugs) = std::fs::read_dir(pane.path().join(subdir)) else { continue };
-            for slug in slugs.flatten() {
-                let Ok(files) = std::fs::read_dir(slug.path()) else { continue };
-                for file in files.flatten() {
-                    let from = file.path();
-                    if from.extension().and_then(|e| e.to_str()) != Some(file_ext) {
-                        continue;
-                    }
-                    if std::fs::create_dir_all(&into).is_err() {
-                        continue;
-                    }
-                    if std::fs::copy(&from, into.join(file.file_name())).is_ok() {
-                        copied += 1;
-                    }
-                }
-            }
-        }
-    }
-    copied
+    walk_transcripts(shell, dest, Take::Copy)
 }
 
 /// The directory name the live run *will* be archived under, computed from the
@@ -429,19 +647,25 @@ pub fn live_run_id(shell: &Path, fallback_ms: i64) -> String {
 /// The reader this is for is a `claude -p` with a shell, and it should be able
 /// to `cat` a run without SQLite, without this app running, and without knowing
 /// that a GUI exists.
-fn write_agent_view(dest: &Path, record: &RunRecord) -> std::io::Result<()> {
+fn write_agent_view(
+    dest: &Path,
+    record: &RunRecord,
+    panes: &BTreeMap<String, PaneRecord>,
+) -> std::io::Result<()> {
     let json = fleetor_db::archive::to_json(&dest.join("state.db"))
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     std::fs::write(dest.join(EVENTS_JSON), json)?;
 
     let manifest = serde_json::json!({
         "run": record,
+        "panes": panes,
         "layout": {
             "events.json": "the whole event log, one JSON array, oldest first; `seq` and `ts` are the row's own columns",
             "state.db": "the same log as SQLite — the source of truth events.json is generated from",
-            "transcripts/": "one directory per pane — orch and each worker — holding that pane's Claude Code session .jsonl files for this run only",
+            "transcripts/": TRANSCRIPTS_ARE,
+            "panes": PANES_ARE,
         },
-        "reading_this": "The event log is what the panes said to each other. The transcripts are what each pane did between saying things. Neither records terminal output.",
+        "reading_this": READING_THIS,
     });
     std::fs::write(
         dest.join(MANIFEST_JSON),
@@ -1006,6 +1230,162 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(dir.join(MANIFEST_JSON)).unwrap()).unwrap();
         let layout = manifest["layout"]["transcripts/"].as_str().unwrap();
         assert!(layout.contains("orch"), "a cold reader is told orch is in there: {layout}");
+    }
+
+    /// One live WAL-mode thread store, shaped like the one a codex pane leaves
+    /// behind (C12) — **fabricated rather than produced by a vendor binary**, and
+    /// that is the point: what is being asserted is the archive's mechanism, and a
+    /// database whose committed rows are still in its write-ahead log is a thing
+    /// this test can build in three lines and a probe would cost a real turn to
+    /// get. The connection is returned rather than dropped because closing the last
+    /// one checkpoints the log away, which is exactly the state that must survive
+    /// to the harvest.
+    fn a_live_thread_store(at: &Path, mark: &str) -> rusqlite::Connection {
+        std::fs::create_dir_all(at.parent().expect("a directory to plant in")).unwrap();
+        let conn = rusqlite::Connection::open(at).unwrap();
+        conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+        conn.execute("CREATE TABLE thread_items (item_json TEXT NOT NULL)", []).unwrap();
+        conn.execute("INSERT INTO thread_items (item_json) VALUES (?1)", [mark]).unwrap();
+        conn
+    }
+
+    fn holds(path: &Path, mark: &str) -> bool {
+        std::fs::read(path)
+            .is_ok_and(|b| b.windows(mark.len()).any(|w| w == mark.as_bytes()))
+    }
+
+    /// **The mechanism, and the control that says it is a mechanism** (#39, C12,
+    /// M24).
+    ///
+    /// A harness whose transcript is a live database gets SQLite's own backup path.
+    /// The assertion that makes that more than a name is the second half: the same
+    /// store taken with `fs::copy` — the naive implementation — does not contain
+    /// the row at all, because the row is in the `-wal`. A rename of the `.sqlite`
+    /// produces the identical loss and additionally strands the log.
+    ///
+    /// Driven at [`take_transcript`] rather than through [`rotate`] because
+    /// `transcript_locations` reads the registry, and the only registered harness
+    /// answers [`Transport::Rename`]. The end-to-end pass belongs to checkpoint 13,
+    /// which runs it for every harness that *is* registered.
+    #[test]
+    fn a_live_database_is_archived_through_sqlites_own_backup_and_a_copy_would_have_torn_it() {
+        const MARK: &str = "FLEETOR-RUNS-THREAD-ITEM";
+        let root = scratch("thread-store");
+        let from = root.join("pane-config/worker-1/thread_history_1.sqlite");
+        let store = a_live_thread_store(&from, MARK);
+
+        // The control, first: this is what a file-copy harvest would have filed.
+        let torn = root.join("a-file-copy.sqlite");
+        std::fs::copy(&from, &torn).unwrap();
+        assert!(
+            !holds(&torn, MARK),
+            "the fixture is not a live write-ahead-logged database, so this test cannot tell \
+             a backup from a copy",
+        );
+
+        let into = root.join("runs/r1/transcripts/worker-1/thread_history_1.sqlite");
+        std::fs::create_dir_all(into.parent().unwrap()).unwrap();
+        assert!(take_transcript(&from, &into, Transport::SqliteBackup, Take::Move));
+
+        // Whole: the row that was only ever in the log is in the archive, and the
+        // archive is a database rather than a file that resembles one.
+        assert!(holds(&into, MARK), "the archived database lost the committed item");
+        let archived = rusqlite::Connection::open(&into).unwrap();
+        let rows: i64 = archived
+            .query_row("SELECT count(*) FROM thread_items WHERE item_json = ?1", [MARK], |r| r.get(0))
+            .expect("the archived database is readable");
+        assert_eq!(rows, 1);
+
+        // Self-contained: no journal beside it, because a `-wal` in an archive is a
+        // second file the reader has to know to keep.
+        for suffix in ["-wal", "-shm"] {
+            assert!(!with_suffix(&into, suffix).exists(), "the archive holds a {suffix}");
+            assert!(
+                !with_suffix(&from, suffix).exists(),
+                "the harvest left a {suffix} behind, so the next run archives a fragment of \
+                 this one",
+            );
+        }
+        assert!(!from.exists(), "a moved transcript does not stay where it was");
+        drop(store);
+    }
+
+    /// **Both depths, because the per-project level is the one thing checkpoint 13
+    /// does not answer** (C54).
+    ///
+    /// Claude Code keeps `projects/<per-project directory>/<session>.jsonl`; codex
+    /// keeps its store in the configuration directory itself, with no such level.
+    /// The harvest looks in the directory and one below it and stops there — a
+    /// deeper walk would archive a harness's caches as evidence on any extension
+    /// as ordinary as `sqlite`.
+    #[test]
+    fn the_harvest_finds_a_transcript_with_a_per_project_directory_and_without_one() {
+        let root = scratch("depths");
+        std::fs::create_dir_all(root.join("a-project")).unwrap();
+        std::fs::create_dir_all(root.join("a-project/deeper")).unwrap();
+        std::fs::write(root.join("at-the-root.sqlite"), "x").unwrap();
+        std::fs::write(root.join("a-project/one-below.sqlite"), "x").unwrap();
+        std::fs::write(root.join("a-project/deeper/two-below.sqlite"), "x").unwrap();
+        std::fs::write(root.join("a-project/not-one.txt"), "x").unwrap();
+
+        let mut found: Vec<String> = transcript_files(&root, "sqlite")
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        found.sort();
+        assert_eq!(found, ["at-the-root.sqlite", "one-below.sqlite"]);
+    }
+
+    /// **What a Critic reading a mixed run cold is told** (M24, #39).
+    ///
+    /// Two things at once, because they are one failure: the manifest names each
+    /// pane's harness, model and transcript format, and the sentence describing
+    /// `transcripts/` no longer claims they are one vendor's session files. The old
+    /// sentence was true of every run a one-harness fleet could produce, which is
+    /// why it survived — and false in the worst way to a reader of the first mixed
+    /// one, who would look for a format that is not there and conclude the evidence
+    /// is missing rather than that the sentence is.
+    #[test]
+    fn a_mixed_runs_manifest_names_each_panes_harness_and_stops_naming_one_vendor() {
+        let root = scratch("mixed-manifest");
+        let shell = root.join("_shell");
+        let runs = runs_dir(&root);
+        begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"));
+        write_live(&shell, &["take the parser"]);
+
+        // Two seats placed as two different harnesses — the run the old sentence
+        // could not describe. Recorded through the production path, so what is
+        // asserted is what a spawn writes.
+        record_pane(&shell, "orch", crate::placement::harness::claude_code().spec(), None);
+        record_pane(&shell, "worker-1", crate::placement::codex::codex().spec(), Some("a-model"));
+
+        rotate(&shell, &runs, 0);
+
+        let dir = runs.join(&list(&runs)[0].id);
+        let manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join(MANIFEST_JSON)).unwrap()).unwrap();
+
+        assert_eq!(manifest["panes"]["orch"]["harness"], "claude-code");
+        assert_eq!(manifest["panes"]["orch"]["transcript_format"], "claude-code-jsonl");
+        assert!(
+            manifest["panes"]["orch"]["model"].is_null(),
+            "the attended seat runs the operator's login, and a guessed model name is worse \
+             than an absent one",
+        );
+        assert_eq!(manifest["panes"]["worker-1"]["harness"], "codex");
+        assert_eq!(manifest["panes"]["worker-1"]["model"], "a-model");
+        assert_eq!(
+            manifest["panes"]["worker-1"]["transcript_format"],
+            "codex-thread-history-1-sqlite",
+        );
+
+        let sentence = manifest["layout"]["transcripts/"].as_str().unwrap();
+        assert!(
+            !sentence.contains("Claude Code") && !sentence.contains("jsonl"),
+            "the manifest still describes every pane's transcripts as one vendor's: {sentence}",
+        );
+        assert!(sentence.contains("panes"), "and it points at what does vary: {sentence}");
+        assert!(manifest["layout"]["panes"].is_string(), "a cold reader is told what `panes` is");
     }
 
     #[test]
