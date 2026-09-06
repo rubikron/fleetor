@@ -539,15 +539,45 @@ pub const CODEX_SPEC: HarnessSpec = HarnessSpec {
         seeds_from_operator: true,
     },
 
-    // 7 — write-guardrail install (C4). Codex has a real pre-edit event, so D-065
-    // ports rather than needing M12's "the sandbox stands in" argument. The
-    // settings file is the same `config.toml` as everything else, which is why
-    // C32 named the installer as the thing that becomes a `Harness` method: the
-    // document is TOML and `guardrail::install` writes JSON. **#31's ticket.**
+    // 7 — write-guardrail install (C4, and #31 measured it). Codex has a real
+    // pre-edit event, so D-065 ports rather than needing M12's "the sandbox stands
+    // in" argument. The settings file is the same `config.toml` as everything
+    // else, which is exactly why C32 named the installer as the thing that becomes
+    // a `Harness` method — see `CodexCli::install_guardrail`.
+    //
+    // **The event name is `PreToolUse`, not `pre_tool_use`.** C4 recorded the
+    // snake_case set and that spelling is real, but it is the one codex uses in a
+    // *hook trust key*; the `config.toml` table is keyed PascalCase, and a hook
+    // registered under the snake_case name loads without error and never fires.
+    // That is this arc's signature failure exactly, and it is why this row was
+    // measured rather than carried over.
     guardrail: GuardrailInstall {
         settings_file: CONFIG_FILE,
-        hook_event: "pre_tool_use",
-        tool_matcher: "*",
+        hook_event: "PreToolUse",
+        // **Codex normalizes its tool names to Claude Code's in a hook payload,
+        // and that is measured rather than assumed.** On the wire this build
+        // advertises `exec_command`, `write_stdin`, `view_image` and the rest; a
+        // captured `PreToolUse` stdin for a call the model side named
+        // `exec_command` carried `"tool_name": "Bash"` with Claude Code's own
+        // `{"command": "…"}` input shape. A list of codex's *wire* names would
+        // therefore have matched nothing and refused nothing — installed,
+        // well-formed and silent, which is this arc's signature failure and very
+        // nearly what shipped here.
+        //
+        // **The normalization is partial, which is why both halves are here.**
+        // Only `exec_command` is renamed, and it is renamed to `Bash`.
+        // `apply_patch` arrives *verbatim* — `"tool_name": "apply_patch"`, with
+        // the raw patch text under `command` — and is **not** mapped to `Edit` or
+        // `Write`. So a list of Claude Code's five names alone would have let
+        // every codex file edit through. Both spellings, measured, both carried.
+        write_tools: &[
+            "Bash",
+            "Write",
+            "Edit",
+            "MultiEdit",
+            "NotebookEdit",
+            "apply_patch",
+        ],
         hook_file: crate::guardrail::HOOK_FILE,
     },
 
@@ -693,6 +723,27 @@ impl Harness for CodexCli {
         install(self.spec(), &self.project_key(seed.cwd), seed)
     }
 
+    /// **Checkpoint 7, into TOML** (#31, C4, C32).
+    ///
+    /// The same three writes every time, into the same `config.toml` the seed went
+    /// into, in an order that matters:
+    ///
+    /// 1. **`features.hooks = true`.** Default-on in this build, and written
+    ///    anyway: the pane's configuration is a snapshot of the operator's, so an
+    ///    operator who had turned hooks off would otherwise get five panes whose
+    ///    guardrail is a well-formed table nothing loads. It lands on **every**
+    ///    seat including the operator's own, because checkpoint 7 is every pane's.
+    /// 2. **The hook entry**, under `hooks.PreToolUse`, merged: the operator's own
+    ///    entries survive and exactly one of ours is left.
+    /// 3. **The trust record**, which is the whole reason this ticket had a spike
+    ///    in it — see [`hook_trust_key`].
+    fn install_guardrail(
+        &self,
+        at: &crate::guardrail::GuardrailPlacement<'_>,
+    ) -> Result<Vec<(NoticeLevel, String)>, String> {
+        install_guardrail(self.spec(), at)
+    }
+
     /// Checkpoints 1, 2 and 3's behavioural half.
     ///
     /// **The brief does not travel in argv for this harness** — it is
@@ -796,6 +847,242 @@ fn install(
     std::fs::rename(&tmp, &installed)
         .map_err(|e| format!("install {}: {e}", installed.display()))?;
     Ok(notices)
+}
+
+// --- checkpoint 7, into TOML (#31, C4, C32) -------------------------------------
+
+/// How the trust key spells the event — snake_case, where the `config.toml` table
+/// that registers the hook is PascalCase. Codex's own inconsistency, recorded
+/// rather than smoothed over.
+const TRUST_EVENT_SEGMENT: &str = "pre_tool_use";
+
+/// The feature flag hooks live behind.
+///
+/// **Measured, and the measurement is narrower than it first looked:** `hooks` is
+/// enabled by *default* on `codex-cli 0.153.4` — `doctor`'s resolved feature list
+/// carries it with no `[features]` table at all — and setting it to `false`
+/// removes it. So this key is not what makes the guardrail load on an ordinary
+/// machine; it is what stops **one operator's `hooks = false` from producing a
+/// fleet of five unguarded panes**, since checkpoint 6 seeds every codex pane from
+/// the operator's own configuration (C6, C39). Written unconditionally for the
+/// reason FLEETOR writes the sandbox trio unconditionally (C41(a)): a key that is
+/// load-bearing for containment is not left to a default that an inherited
+/// document can overturn.
+///
+/// **Turning a feature *on* is new, and it is the only one.** C21's four overrides
+/// all turn a default-on feature off; this is the inverse.
+const HOOKS_FEATURE: &str = "features.hooks";
+
+/// Why the operator is told, when they had turned hooks off.
+const HOOKS_WHY: &str =
+    "every pane gets the fleet's write guardrail, and codex loads no hook at all with this \
+     off — an unguarded pane is not a seat FLEETOR may place";
+
+/// The handler keys codex reads for a `type = "command"` hook, camelCase in TOML
+/// and measured against the binary's own schema rather than guessed.
+const HANDLER_TYPE: &str = "command";
+
+/// Seconds. The guardrail is a `python3` process that reads stdin, resolves a few
+/// paths and exits; a second would do. This is codex's own default and is set
+/// explicitly so a vendor that changes it cannot change what a pane may write.
+const HANDLER_TIMEOUT: i64 = 30;
+
+/// The body of [`CodexCli::install_guardrail`], taking its spec so the tests can
+/// drive it the way [`install`] is driven.
+fn install_guardrail(
+    spec: &'static HarnessSpec,
+    at: &crate::guardrail::GuardrailPlacement<'_>,
+) -> Result<Vec<(NoticeLevel, String)>, String> {
+    let install = &spec.guardrail;
+    let (command, mut notices) = crate::guardrail::prepare(install, at)?;
+    let seat = seat_label(at.config_dir);
+
+    let mut doc = crate::guardrail::existing_document(install, at.config_dir)
+        .unwrap_or_default()
+        .parse::<DocumentMut>()
+        .map_err(|e| format!("parse {} for the guardrail: {e}", install.settings_file))?;
+
+    // 1. The feature. Default-on today; written so that an inherited `false`
+    // cannot make everything below decoration.
+    let path: Vec<&str> = HOOKS_FEATURE.split('.').collect();
+    set_owned(&mut doc, &path, Value::from(true), &seat, HOOKS_WHY, &mut notices);
+
+    // 2. The entry, merged. Ours is recognised by the hook file's name — the
+    // fleet's for every harness — so a relaunch replaces it and an operator's own
+    // hooks are left exactly where they are.
+    let mut entries: Vec<Value> = existing_hook_entries(&doc, install)
+        .into_iter()
+        .filter(|entry| !entry_is_ours(entry, install))
+        .collect();
+    // **Where ours lands is load-bearing, not cosmetic**: the trust record is
+    // filed under this entry's *index*, so the index has to be read off the merge
+    // rather than assumed to be zero. An operator with two hooks of their own and
+    // a trust record pointing at slot 0 would be trusting one of theirs and
+    // leaving ours untrusted — a guardrail that is installed, enabled and silent.
+    let ours = entries.len();
+    entries.push(our_hook_entry(&command));
+    set_path(&mut doc, &["hooks", install.hook_event], Value::Array(entries.into_iter().collect()));
+
+    // 3. **The trust record, which FLEETOR cannot write — so it says so, loudly.**
+    // See `UNTRUSTED_WHY` and `hook_trust_key`. A wrong hash is worse than none:
+    // codex reads it as `modified` and the entry looks tampered with rather than
+    // unreviewed.
+    notices.push((NoticeLevel::Error, untrusted_notice(&seat, at.config_dir, install, ours)));
+
+    crate::guardrail::install_document(install, at.config_dir, &doc.to_string())?;
+    Ok(notices)
+}
+
+/// Every entry already under `hooks.<event>`, in order, whether the operator wrote
+/// them as `[[hooks.PreToolUse]]` blocks or as an inline array.
+///
+/// **Both spellings, because the operator's document is theirs.** `toml_edit`
+/// models the two forms as different items, and a merge that understood only one
+/// of them would silently delete the other — which is D-062's invitation to put
+/// your own configuration here, answered by throwing it away.
+fn existing_hook_entries(doc: &DocumentMut, install: &GuardrailInstall) -> Vec<Value> {
+    let Some(hooks) = doc.as_table().get("hooks").and_then(Item::as_table_like) else {
+        return Vec::new();
+    };
+    match hooks.get(install.hook_event) {
+        Some(Item::ArrayOfTables(tables)) => {
+            tables.iter().map(|t| Value::InlineTable(t.clone().into_inline_table())).collect()
+        }
+        Some(Item::Value(Value::Array(array))) => array.iter().cloned().collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Is this entry one of ours, from a previous launch?
+///
+/// Looks for the hook file's name in any handler's `command`, which is
+/// [`crate::guardrail::is_our_command`]'s rule read through codex's nesting.
+fn entry_is_ours(entry: &Value, install: &GuardrailInstall) -> bool {
+    entry
+        .as_inline_table()
+        .and_then(|t| t.get("hooks"))
+        .and_then(Value::as_array)
+        .is_some_and(|handlers| {
+            handlers.iter().any(|handler| {
+                handler
+                    .as_inline_table()
+                    .and_then(|h| h.get(HANDLER_TYPE))
+                    .and_then(Value::as_str)
+                    .is_some_and(|c| crate::guardrail::is_our_command(c, install))
+            })
+        })
+}
+
+/// One entry, in codex's shape: a matcher group holding one command handler.
+///
+/// **No `matcher` key, and that is a decision rather than an omission.** Codex's
+/// matcher syntax is its own and was not measured; leaving it out registers the
+/// hook for every tool, and `write_guardrail.py` then permits by name everything
+/// that is not on `write_tools`. The cost is stated where it is felt: for this
+/// harness "a read never reaches the hook" is the script's rule rather than a
+/// property of the wiring. The benefit is that a tool codex adds later arrives at
+/// a guardrail that has heard of it, instead of past a matcher that has not.
+fn our_hook_entry(command: &str) -> Value {
+    let mut handler = toml_edit::InlineTable::new();
+    handler.insert("type", Value::from(HANDLER_TYPE));
+    handler.insert(HANDLER_TYPE, Value::from(command));
+    handler.insert("timeout", Value::from(HANDLER_TIMEOUT));
+
+    let mut entry = toml_edit::InlineTable::new();
+    entry.insert("hooks", Value::Array([Value::InlineTable(handler)].into_iter().collect()));
+    Value::InlineTable(entry)
+}
+
+/// **The trust record — C4's named unknown, measured, and the answer is that
+/// this does not ship working.**
+///
+/// C4 recorded hook trust as unverified and named the risk exactly: the binary
+/// carries `--dangerously-bypass-hook-trust`, which implies a persisted trust
+/// record a fleet-spawned pane will not have, and an installed-but-silent hook is
+/// decoration that fails by looking healthy. **It is all true**, and the vendor
+/// says so in its own words. Booting a real `codex` TUI on a real pty against a
+/// `CODEX_HOME` holding one `PreToolUse` hook and no trust record renders:
+///
+/// ```text
+/// Hooks need review
+/// 1 hook is new or changed. Hooks can run outside the sandbox after you trust them.
+///   1. Review hooks
+///   2. Trust all and continue
+///   3. Continue without trusting (hooks won't run)
+/// ```
+///
+/// An untrusted hook is **skipped silently and the tool call proceeds** — measured
+/// both ways against the same `CODEX_HOME` with only the record differing. There is
+/// no warning to the pane and nothing in the transcript.
+///
+/// Approving that prompt makes codex write the record itself, and its shape is
+/// known exactly ([`hook_trust_key`]). What is **not** known is how
+/// `trusted_hash` is computed: it is a `sha256:` over something wider than the
+/// declaration, and it did not reproduce as the command, the command plus a
+/// newline, the script's contents, or any of ~200 JSON and TOML renderings of the
+/// handler — including for a command as short as `/bin/true`. Codex will hand the
+/// value over at runtime (`hooks/list` reports `currentHash`), but that is a live
+/// call to the vendor binary and **`placement`'s one rule is that nothing in it
+/// reads the process** — a per-pane hash is not a machine fact and cannot live on
+/// `Host` the way C8's gate probe does.
+///
+/// **So FLEETOR writes no record, and refuses to pretend.** Three things were
+/// deliberately not done:
+///
+///  - **`--dangerously-bypass-hook-trust` was not reached for.** It is Tier 1.7's
+///    to decide, not a builder's (`building.md` §9.2), and it is also the wrong
+///    shape: it would trust *every* hook in the document, including one an
+///    operator's own snapshot carried in, where a record trusts exactly the line
+///    FLEETOR wrote.
+///  - **A guessed hash was not written.** A wrong one reads back as `modified`,
+///    which is the vendor's word for *tampered with* rather than *unreviewed*.
+///  - **The install was not skipped.** The entry, the script and the feature are
+///    all correct and in place, so the day the hash is known this is one function.
+///
+/// What ships instead is [`untrusted_notice`]: an `Error` on the Activity feed, on
+/// every codex pane, saying the guardrail will not fire. That is the module's own
+/// existing rule for the missing interpreter — *a guardrail that quietly does
+/// nothing is worse than no guardrail, because the operator believes in it* — and
+/// it turns this arc's signature failure from a silent one into a loud one.
+const UNTRUSTED_WHY: &str = "codex will not run a hook it has no trust record for";
+
+/// The `Error` every codex pane carries until the trust record can be written.
+///
+/// It names the key codex expects, so an operator who wants the guardrail today
+/// has a documented manual route — start the pane's codex once and answer *Trust
+/// all and continue* — rather than a dead end.
+fn untrusted_notice(
+    seat: &str,
+    config_dir: &Path,
+    install: &GuardrailInstall,
+    group: usize,
+) -> String {
+    format!(
+        "{seat}: the write guardrail is installed but NOT ACTIVE — {UNTRUSTED_WHY}, and FLEETOR \
+         cannot compute one (the hash codex signs a hook declaration with is not reproducible \
+         from the declaration). This pane can write anywhere you can. Until this is fixed, \
+         `hooks.state.\"{}\"` has to be filled in by answering codex's own `Hooks need review` \
+         prompt once in this pane's CODEX_HOME.",
+        hook_trust_key(config_dir, install, group),
+    )
+}
+
+/// The key one handler's trust is filed under: the settings file's own path, the
+/// event, and the entry's position in it.
+///
+/// **Observed rather than derived** — codex wrote this itself when the review
+/// prompt was answered, and this reproduces it byte for byte.
+///
+/// **The event is spelled `pre_tool_use` here and `PreToolUse` in the table above,
+/// and both are codex's.** Two spellings of one event is the vendor's decision,
+/// not the fleet's, so the second one is a module constant — the shape C31 and
+/// C41(b) give a vendor name read by the one method that writes it — rather than a
+/// spec field every other harness would answer with a copy of `hook_event`.
+fn hook_trust_key(config_dir: &Path, install: &GuardrailInstall, group: usize) -> String {
+    format!(
+        "{}:{TRUST_EVENT_SEGMENT}:{group}:0",
+        config_dir.join(install.settings_file).display(),
+    )
 }
 
 /// Codex, by name. Not in the registry — #33 puts it there.
@@ -2780,4 +3067,327 @@ args = ["--root", "~/notes"]
             "the carrier survives the merge that keeps the previous target's trust row",
         );
     }
+    // --- checkpoint 7, into TOML (#31, C4, C32) ---------------------------------
+
+    impl Machine {
+        /// Install this pane's guardrail the way `place` does, after seeding it.
+        fn guard(&self, pane: &str, roots: &[PathBuf]) -> Vec<(NoticeLevel, String)> {
+            let dir = self.pane_dir(pane);
+            codex()
+                .install_guardrail(&crate::guardrail::GuardrailPlacement {
+                    pane: fleetor_core::pane::PaneId::Worker(1),
+                    config_dir: &dir,
+                    roots,
+                    policy: &self.root.join("_shell").join("pane-config"),
+                    journal: &self.root.join("_shell").join("guardrail.jsonl"),
+                })
+                .expect("installing the guardrail")
+        }
+
+        /// Every hook entry codex would load, as inline tables.
+        fn hook_entries(&self, pane: &str) -> Vec<Value> {
+            let doc = self.seeded(pane);
+            existing_hook_entries(&doc, &CODEX_SPEC.guardrail)
+        }
+
+        /// The command line of the one entry that is ours.
+        fn our_command(&self, pane: &str) -> String {
+            let ours: Vec<String> = self
+                .hook_entries(pane)
+                .iter()
+                .filter(|e| entry_is_ours(e, &CODEX_SPEC.guardrail))
+                .map(|e| {
+                    e.as_inline_table().expect("an entry")["hooks"]
+                        .as_array()
+                        .expect("handlers")
+                        .get(0)
+                        .expect("one handler")
+                        .as_inline_table()
+                        .expect("a handler")[HANDLER_TYPE]
+                        .as_str()
+                        .expect("a command")
+                        .to_string()
+                })
+                .collect();
+            assert_eq!(ours.len(), 1, "exactly one of ours: {ours:#?}");
+            ours.into_iter().next().expect("just asserted")
+        }
+    }
+
+    fn a_root(machine: &Machine) -> Vec<PathBuf> {
+        crate::guardrail::roots_for(&machine.cwd(), &machine.root.join("_shell"), &[])
+    }
+
+    /// **The whole install, in codex's own document** — and the one thing it is
+    /// honest about not having done.
+    ///
+    /// The script is on disk, the feature is on and the entry names it with this
+    /// pane's own roots. The trust record is **absent**, because the hash codex
+    /// signs a declaration with is not reproducible from the declaration (C4's
+    /// named unknown, measured), and the pane says so as an `Error` rather than
+    /// looking healthy.
+    #[test]
+    fn the_guardrail_lands_in_config_toml_and_says_plainly_that_it_will_not_fire() {
+        let machine = Machine::new("cp7-install");
+        machine.seed("worker-1").expect("seed");
+        let notices = machine.guard("worker-1", &a_root(&machine));
+
+        let dir = machine.pane_dir("worker-1");
+        assert!(dir.join(crate::guardrail::HOOK_FILE).is_file(), "the decision itself is on disk");
+
+        let doc = machine.seeded("worker-1");
+        assert_eq!(
+            doc["features"]["hooks"].as_bool(),
+            Some(true),
+            "the pane's config is a snapshot of the operator's, so this is written rather than \
+             left to a default an inherited `hooks = false` would overturn",
+        );
+
+        let command = machine.our_command("worker-1");
+        assert!(command.contains(crate::guardrail::HOOK_FILE), "{command}");
+        assert!(command.contains("--pane 'worker-1'"), "{command}");
+        assert!(command.contains("--event 'PreToolUse'"), "{command}");
+        for tool in CODEX_SPEC.guardrail.write_tools {
+            assert!(command.contains(&format!("--tool '{tool}'")), "{tool} missing: {command}");
+        }
+        for root in a_root(&machine) {
+            assert!(command.contains(&format!("--root '{}'", root.display())), "{command}");
+        }
+
+        // **And the pane is told, loudly, that none of the above will run.** The
+        // trust record codex requires cannot be written (see `UNTRUSTED_WHY`), so
+        // the one thing this install must not do is look healthy.
+        assert!(
+            doc.as_table().get("hooks").and_then(Item::as_table_like).and_then(|h| h.get("state")).is_none(),
+            "no trust record is written at all: a guessed hash reads back as `modified`, which \
+             is the vendor's word for tampered-with rather than unreviewed",
+        );
+        let told: Vec<&String> = notices
+            .iter()
+            .filter(|(level, _)| *level == NoticeLevel::Error)
+            .map(|(_, text)| text)
+            .collect();
+        assert_eq!(told.len(), 1, "exactly one Error, not a wall of them: {told:#?}");
+        assert!(told[0].contains("NOT ACTIVE"), "{}", told[0]);
+        assert!(
+            told[0].contains(&hook_trust_key(&dir, &CODEX_SPEC.guardrail, 0)),
+            "the operator is given the key they would have to fill in: {}",
+            told[0],
+        );
+    }
+
+    /// **The operator's own hooks survive, and so does everything else they wrote.**
+    /// D-062 invites them to populate this directory; a guardrail install that ate
+    /// their configuration would be the invitation withdrawn.
+    #[test]
+    fn the_operators_own_hooks_and_settings_survive_the_install() {
+        let machine = Machine::new("cp7-merge");
+        machine.operator_file(
+            "config.toml",
+            "model = \"gpt-5\"\n\
+             [features]\n\
+             hooks = false\n\
+             [[hooks.PreToolUse]]\n\
+             matcher = \"shell\"\n\
+             [[hooks.PreToolUse.hooks]]\n\
+             type = \"command\"\n\
+             command = \"/usr/bin/true\"\n\
+             [[hooks.SessionStart]]\n\
+             [[hooks.SessionStart.hooks]]\n\
+             type = \"command\"\n\
+             command = \"/usr/bin/false\"\n",
+        );
+        machine.seed("worker-1").expect("seed");
+        let notices = machine.guard("worker-1", &a_root(&machine));
+
+        let doc = machine.seeded("worker-1");
+        assert_eq!(doc["model"].as_str(), Some("gpt-5"), "an unrelated setting survived");
+        assert!(
+            doc["hooks"]["SessionStart"].is_array_of_tables()
+                || doc["hooks"]["SessionStart"].is_array(),
+            "another event's hooks survived: {doc}",
+        );
+
+        let entries = machine.hook_entries("worker-1");
+        assert_eq!(entries.len(), 2, "the operator's entry and ours: {entries:#?}");
+        assert!(
+            !entry_is_ours(&entries[0], &CODEX_SPEC.guardrail),
+            "theirs is still first, unmodified",
+        );
+        assert!(entry_is_ours(&entries[1], &CODEX_SPEC.guardrail));
+
+        // Their `hooks = false` is exactly the setting that would have made the
+        // guardrail decoration, so it loses — and they are told, once, why.
+        assert_eq!(doc["features"]["hooks"].as_bool(), Some(true));
+        assert!(
+            notices.iter().any(|(level, text)| *level == NoticeLevel::Warn
+                && text.contains("features.hooks")
+                && text.contains("write guardrail")),
+            "the operator is told their setting did not apply: {notices:#?}",
+        );
+
+        // The notice names our entry's own index, not slot 0 — an operator handed
+        // the wrong key would trust one of their own hooks and leave ours dead.
+        let key = hook_trust_key(&machine.pane_dir("worker-1"), &CODEX_SPEC.guardrail, 1);
+        assert!(
+            notices.iter().any(|(level, text)| *level == NoticeLevel::Error
+                && text.contains(&key)),
+            "the key quoted must be our entry's, at index 1: {notices:#?}",
+        );
+    }
+
+    /// A relaunch must not accumulate a copy of our hook per launch — every one of
+    /// them would run, and the operator would read five identical refusals.
+    #[test]
+    fn installing_twice_leaves_exactly_one_of_ours() {
+        let machine = Machine::new("cp7-twice");
+        machine.seed("worker-1").expect("seed");
+        for _ in 0..3 {
+            machine.guard("worker-1", &a_root(&machine));
+        }
+        let entries = machine.hook_entries("worker-1");
+        assert_eq!(entries.len(), 1, "three installs, one hook: {entries:#?}");
+        machine.our_command("worker-1"); // asserts exactly one of ours
+
+        // And a re-seed between installs — the merge path a target switch takes —
+        // does not strand a second copy either.
+        machine.seed("worker-1").expect("re-seed");
+        machine.guard("worker-1", &a_root(&machine));
+        assert_eq!(machine.hook_entries("worker-1").len(), 1);
+    }
+
+    /// **Tier 1.7, at the seam that could break it.** The roots are the caller's,
+    /// and nothing on the spec or in this module can reach them — so the strongest
+    /// available assertion is that the roots which arrive are the roots installed,
+    /// and that a worker's do not include the operator's own checkout.
+    #[test]
+    fn the_installed_roots_are_the_callers_and_the_harness_cannot_widen_them() {
+        let machine = Machine::new("cp7-roots");
+        machine.seed("worker-1").expect("seed");
+        let roots = a_root(&machine);
+        machine.guard("worker-1", &roots);
+
+        let command = machine.our_command("worker-1");
+        let installed: Vec<&str> = command
+            .split(" --root ")
+            .skip(1)
+            .map(|rest| rest.split(" --").next().unwrap_or(rest).trim_matches('\''))
+            .collect();
+        assert_eq!(
+            installed,
+            roots.iter().map(|r| r.to_string_lossy().into_owned()).collect::<Vec<_>>(),
+            "every root installed is one the caller computed, in order, and no other",
+        );
+        assert!(
+            !command.contains(&format!("--root '{}'", machine.operator_home().display())),
+            "a codex pane may not write in the operator's own home: {command}",
+        );
+    }
+
+    /// **The decision, through the artifact a real install wrote** — the arm
+    /// `tests/write_guardrail.rs` runs for Claude Code, run here for codex because
+    /// codex is not registered and `place` cannot produce one of its panes yet.
+    ///
+    /// No vendor binary and no tokens: the command is pulled out of the installed
+    /// `config.toml`, handed to a real `sh`, and fed a real `PreToolUse` payload in
+    /// codex's own field names. What it proves is the two acceptance criteria that
+    /// do not need `codex` running — a write outside the worktree is refused with a
+    /// reason, and the refusal reaches the journal the Activity feed drains.
+    #[test]
+    fn a_codex_write_outside_the_worktree_is_refused_and_reaches_the_activity_feed() {
+        use std::io::Write as _;
+
+        let machine = Machine::new("cp7-decision");
+        machine.seed("worker-1").expect("seed");
+        std::fs::create_dir_all(machine.root.join("_shell")).expect("a shell dir");
+        machine.guard("worker-1", &a_root(&machine));
+        let command = machine.our_command("worker-1");
+        let journal = machine.root.join("_shell").join("guardrail.jsonl");
+
+        let ask = |tool: &str, input: serde_json::Value| -> Option<String> {
+            let payload = serde_json::json!({
+                "hook_event_name": "PreToolUse",
+                "cwd": machine.cwd().display().to_string(),
+                "tool_name": tool,
+                "tool_input": input,
+            });
+            let mut child = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(&command)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .expect("the installed command must be runnable");
+            child
+                .stdin
+                .take()
+                .expect("stdin")
+                .write_all(payload.to_string().as_bytes())
+                .expect("the payload");
+            let out = child.wait_with_output().expect("the hook exits");
+            assert!(out.status.success(), "the hook must exit cleanly: {out:?}");
+            let answer: serde_json::Value =
+                serde_json::from_slice(&out.stdout).expect("the hook must answer JSON");
+            answer
+                .get("hookSpecificOutput")
+                .filter(|h| h["permissionDecision"] == serde_json::json!("deny"))
+                .map(|h| h["permissionDecisionReason"].as_str().unwrap_or_default().to_string())
+        };
+
+        // Inside its own worktree: allowed. Asserted alongside the refusal for
+        // C41(d)'s reason — a guardrail that refused everything would pass the
+        // arm below perfectly while shipping a worker that cannot work.
+        assert_eq!(
+            ask("Bash", serde_json::json!({ "command": "touch newfile.rs" })),
+            None,
+            "a worker must be able to write in its own worktree",
+        );
+        // A tool codex has that this guardrail does not police is let through by
+        // name rather than guessed at — the hook is registered for every tool.
+        assert_eq!(ask("Read", serde_json::json!({ "path": "/etc/hosts" })), None);
+        // A codex *wire* name is not a hook name — `exec_command` arrives as
+        // `Bash` — so one sent verbatim is unrecognised and permitted, which is
+        // the rule rather than an oversight.
+        assert_eq!(
+            ask("exec_command", serde_json::json!({ "command": "echo x > /Users/somebody/n" })),
+            None,
+        );
+
+        let why = ask("Bash", serde_json::json!({ "command": "echo x > /Users/somebody/notes.txt" }))
+            .expect("a write outside every root must be refused");
+        assert!(why.contains("/Users/somebody/notes.txt"), "it names the path: {why}");
+        assert!(why.contains("worker-1"), "and whose workspace it is outside of: {why}");
+        assert!(why.contains("Reading is not restricted"), "and what the rule is: {why}");
+        assert!(
+            !why.trim().is_empty(),
+            "codex rejects a denial whose reason is empty, and lets the write through",
+        );
+
+        // The structured half: codex's own edit tool names its destination.
+        assert!(
+            ask("apply_patch", serde_json::json!({ "path": "/Users/somebody/CLAUDE.md" })).is_some(),
+            "apply_patch must be refused outside the roots",
+        );
+
+        // **And it reached the feed.** The journal is the fleet's one file for
+        // every harness, so a codex refusal lands on the Activity view through the
+        // same drain a Claude Code refusal does — which is the acceptance criterion
+        // that the record does not go quiet for half the fleet.
+        let written = std::fs::read_to_string(&journal).expect("the journal the hook was given");
+        assert!(written.contains("worker-1"), "{written}");
+        assert!(written.contains("notes.txt"), "{written}");
+        let notices = crate::guardrail::Journal::fresh(journal.clone());
+        drop(notices);
+        std::fs::write(&journal, &written).expect("restore");
+        let mut feed = crate::guardrail::Journal::fresh(journal.clone());
+        std::fs::write(&journal, &written).expect("the run's own lines");
+        let lines = feed.drain();
+        assert!(
+            lines.iter().any(|(level, text)| *level == NoticeLevel::Warn
+                && text.contains("worker-1")
+                && text.contains("notes.txt")),
+            "a codex refusal must become an Activity notice like any other: {lines:#?}",
+        );
+    }
+
 }

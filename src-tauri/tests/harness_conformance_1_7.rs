@@ -578,7 +578,6 @@ fn checkpoint_7_every_seat_gets_the_write_guardrail_with_roots_no_wider_than_its
         for (what, value) in [
             ("settings_file", install.settings_file),
             ("hook_event", install.hook_event),
-            ("tool_matcher", install.tool_matcher),
             ("hook_file", install.hook_file),
         ] {
             assert!(
@@ -587,6 +586,17 @@ fn checkpoint_7_every_seat_gets_the_write_guardrail_with_roots_no_wider_than_its
                 pass.spec.name,
             );
         }
+        // **An empty tool list is a hook that permits everything**, and it would
+        // pass every other assertion in this test: the script is on disk, the
+        // event is registered, the roots are right, and not one tool name matches
+        // so nothing is ever checked. That is this arc's signature failure —
+        // decoration that looks healthy — so it is named here rather than implied.
+        assert!(
+            !install.write_tools.is_empty(),
+            "{}: checkpoint 7's write_tools is empty, so the hook is registered and refuses \
+             nothing — an installed guardrail that permits every write",
+            pass.spec.name,
+        );
 
         for (seat, placed) in pass.seats() {
             let dir = pass.config_dir(placed);
@@ -598,16 +608,28 @@ fn checkpoint_7_every_seat_gets_the_write_guardrail_with_roots_no_wider_than_its
             );
 
             let settings = pass.config_text(placed, install.settings_file);
-            for (what, needle) in [
-                ("hook event", install.hook_event),
-                ("tool matcher", install.tool_matcher),
-                ("hook file", install.hook_file),
-            ] {
+            for (what, needle) in
+                [("hook event", install.hook_event), ("hook file", install.hook_file)]
+            {
                 assert!(
                     settings.contains(needle),
                     "{}/{seat}: {} does not register the {what} the spec names ({needle})",
                     pass.spec.name,
                     install.settings_file,
+                );
+            }
+            // **The tool names, in the installed command rather than in the
+            // matcher.** The matcher is the settings document's own syntax and a
+            // harness may not have one at all — codex registers for every tool —
+            // but every harness hands the script the same `--tool` list, so that
+            // is where the one spelling is checked. A name the spec grew and the
+            // command never received is a write nobody refuses.
+            for tool in install.write_tools {
+                assert!(
+                    settings.contains(&format!("--tool '{tool}'")),
+                    "{}/{seat}: the installed hook command was never handed {tool}, so a \
+                     {tool} write is permitted no matter where it points",
+                    pass.spec.name,
                 );
             }
 

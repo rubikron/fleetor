@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
-"""The write guardrail (WP-17): a `PreToolUse` hook that refuses a tool call
+"""The write guardrail (WP-17): a pre-tool-use hook that refuses a tool call
 which would write outside this pane's own allowlist of roots.
 
-Installed into every pane's `CLAUDE_CONFIG_DIR` at spawn by
-`src-tauri/src/guardrail.rs`, which also writes the `settings.json` entry that
-invokes it. The roots arrive on argv, so this file is the same for every pane and
-the *policy* is the command line — one artifact to review, one place per pane the
-policy is written down.
+Installed into every pane's configuration directory at spawn by
+`src-tauri/src/guardrail.rs` and the harness's own `install_guardrail`, which
+writes the settings entry that invokes it. The roots, the tool names and the
+event name all arrive on argv, so this file is byte-identical in every pane of
+every harness and the *policy* is the command line — one artifact to review, one
+place per pane the policy is written down.
 
 Three rules, and they are the whole of it:
 
-  1. **Writes only.** The hook is registered for `Bash`, `Write`, `Edit`,
-     `MultiEdit` and `NotebookEdit` and for nothing else, so `Read`, `Grep`,
-     `Glob` and every other read never reach this file at all. Reads stay open
-     deliberately (WP-17 §Scope): a Bash command a hook allows can read anything
+  1. **Writes only.** The write tools arrive on `--tool`, from the one place the
+     fleet spells them (`GuardrailInstall::write_tools`); anything else is
+     allowed untouched, and for a harness whose matcher can name them, a read
+     never reaches this file at all. Reads stay open
+     deliberately (WP-17 §Scope): a shell command a hook allows can read anything
      internally, so read-blocking is friction wearing enforcement's clothes, and
      its allowlist has to cover every toolchain path — which wedges a pane in the
      way that looks exactly like a healthy one.
@@ -25,16 +27,25 @@ Three rules, and they are the whole of it:
      says so. A guardrail that quietly does nothing is worse than no guardrail,
      because the operator believes in it.
 
-**What this enforces and what it merely deters.** For `Write`/`Edit`/`MultiEdit`/
-`NotebookEdit` the destination is a field in the tool call, so the check is exact
-and the refusal is enforcement. For `Bash` there is no such field: this scans the
-command for paths in *write positions* — a redirection target, an argument to one
-of the mutating commands in `MUTATORS` — and can only see what the command
-actually names. `cargo build` writing into `~/.cargo`, or
-`python3 -c "open(x,'w')"` with the path assembled at runtime, are invisible here
-and always will be. That is deliberate: the realistic failure is an accident with
-the path written out in full, and `docs/notes/write-guardrail-notes.md` measures
-what the alternatives cost.
+**What this enforces and what it merely deters.** For a structured edit the
+destination is a field in the tool call, so the check is exact and the refusal is
+enforcement. For a shell command there is no such field: this scans the command
+for paths in *write positions* — a redirection target, an argument to one of the
+mutating commands in `MUTATORS` — and can only see what the command actually
+names. `cargo build` writing into `~/.cargo`, or `python3 -c "open(x,'w')"` with
+the path assembled at runtime, are invisible here and always will be. That is
+deliberate: the realistic failure is an accident with the path written out in
+full, and `docs/notes/write-guardrail-notes.md` measures what the alternatives
+cost.
+
+**Two vendors, one decision, and the same words.** Claude Code and codex were
+expected to disagree about what a hook payload is called and how a denial is
+spelled. Measured, they do not: both name `cwd`, `tool_name` and `tool_input` on
+the way in and both read `hookSpecificOutput` on the way out. What they disagree
+about is the *settings document* the hook is registered in, which never reaches
+this file. So there is no per-vendor branch here at all — the tool names arrive
+on `--tool` and the event name on `--event`, and everything else is the same
+program.
 """
 
 import argparse
@@ -80,11 +91,17 @@ SEPARATORS = {";", "&&", "||", "|", "|&", "&", "\n"}
 #: Tool inputs that name a destination directly. Everything here is exact.
 PATH_FIELDS = ("file_path", "notebook_path", "path")
 
-#: The tools this hook is registered for. Any other tool reaching it is a
-#: mismatch between this file and the settings.json that invokes it, and is
-#: allowed rather than guessed at — the hook must not become a deny-by-default
-#: layer nobody asked for.
-WRITE_TOOLS = {"Bash", "Write", "Edit", "MultiEdit", "NotebookEdit"}
+# The tools this hook is registered for used to be a `WRITE_TOOLS` set right
+# here — a second, independent spelling of the same answer the harness spec
+# holds, which could drift from it by an edit to either side. They now arrive on
+# `--tool`, one per name, from `GuardrailInstall::write_tools`. There is one
+# spelling in the fleet and this file is handed it.
+#
+# A tool *not* on that list is allowed rather than guessed at: the hook must not
+# become a deny-by-default layer nobody asked for. That matters more than it used
+# to, because codex registers the hook for **every** tool rather than for a named
+# set — so for that harness "reads stay open" is this rule rather than a property
+# of the wiring, and a read now reaches this file and is let through by name.
 
 
 # --- paths ---------------------------------------------------------------------
@@ -250,15 +267,40 @@ def bash_write_targets(command):
 # --- the decision --------------------------------------------------------------
 
 
+def command_of(tool_input):
+    """The shell command this tool call carries, if it carries one.
+
+    **Read off the input's shape, not off the tool's name.** This used to be
+    `if tool == "Bash"`, which was a third, unmarked spelling of one vendor's tool
+    names inside a file that had already had two removed — and it is the spelling
+    that fails silently, because a harness whose shell tool is called something
+    else got its commands scanned as though they were structured edits and
+    nothing was ever refused.
+
+    Both shapes are accepted: a string, and the argv list a vendor may send
+    instead.
+    """
+    command = tool_input.get("command")
+    if isinstance(command, str):
+        return command
+    if isinstance(command, list) and all(isinstance(part, str) for part in command):
+        return " ".join(command)
+    return ""
+
+
 def offenders(tool, tool_input, cwd, roots, denied):
-    """The paths this tool call would write outside the allowlist, in order."""
-    if tool == "Bash":
-        candidates = bash_write_targets(tool_input.get("command", "") or "")
-    else:
-        candidates = [tool_input[f] for f in PATH_FIELDS if isinstance(tool_input.get(f), str)]
-        for edit in tool_input.get("edits", []) or []:
-            if isinstance(edit, dict) and isinstance(edit.get("file_path"), str):
-                candidates.append(edit["file_path"])
+    """The paths this tool call would write outside the allowlist, in order.
+
+    Both readings are applied to every call rather than one being chosen: a tool
+    that names a destination *and* carries a command is checked for both, and a
+    tool that carries neither yields nothing. Applying both can only ever refuse
+    more, never less, which is the direction Tier 1.7 permits without asking.
+    """
+    candidates = bash_write_targets(command_of(tool_input))
+    candidates += [tool_input[f] for f in PATH_FIELDS if isinstance(tool_input.get(f), str)]
+    for edit in tool_input.get("edits", []) or []:
+        if isinstance(edit, dict) and isinstance(edit.get("file_path"), str):
+            candidates.append(edit["file_path"])
 
     out = []
     for raw in candidates:
@@ -308,12 +350,43 @@ def journal(path, record):
         pass
 
 
-def deny(reason):
+# --- the vendors' one difference ------------------------------------------------
+#
+# There is none, in the payload or the answer, and that is a measurement rather
+# than an assumption (`docs/notes/codex-hook-notes.md`). Codex's `PreToolUse`
+# schemas name `cwd`, `tool_name` and `tool_input` exactly as Claude Code's do,
+# and both read the same `hookSpecificOutput` object as a denial. So the vendor
+# difference this file was expected to carry turned out to live entirely in the
+# *settings document* — which is the harness's `install_guardrail`, not here.
+#
+# Two of codex's rules are stricter than Claude Code's and are worth stating,
+# because breaking either produces a hook that runs, exits zero, and permits the
+# write anyway:
+#
+#   - **only `deny` is supported.** `allow`, `ask` and `approve` are rejected by
+#     name. This file never emits one: a permitted call is `{}`, an opinion
+#     withheld rather than an approval granted, which is also what keeps the
+#     guardrail from ever *widening* what a pane may do (Tier 1.7).
+#   - **a denial without a non-empty reason is rejected.** `refusal()` cannot
+#     return an empty string — it always names at least one path and one rule —
+#     and `assert_reason` below says so out loud rather than trusting it.
+
+
+def assert_reason(reason):
+    """A denial with an empty reason is not a denial: codex rejects it outright
+    and the write proceeds. Cheap to check, and the failure it catches is silent."""
+    if not reason or not reason.strip():
+        raise ValueError("a refusal with no reason is not a refusal")
+    return reason
+
+
+def deny(event_name, reason):
+    """A refusal, in the shape both vendors read as one."""
     return {
         "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
+            "hookEventName": event_name,
             "permissionDecision": "deny",
-            "permissionDecisionReason": reason,
+            "permissionDecisionReason": assert_reason(reason),
         }
     }
 
@@ -321,6 +394,8 @@ def deny(reason):
 def main():
     parser = argparse.ArgumentParser(description="FLEETOR write guardrail (WP-17)")
     parser.add_argument("--pane", required=True)
+    parser.add_argument("--tool", action="append", default=[])
+    parser.add_argument("--event", required=True)
     parser.add_argument("--root", action="append", default=[])
     parser.add_argument("--deny", action="append", default=[])
     parser.add_argument("--journal", default="")
@@ -333,7 +408,7 @@ def main():
         tool_input = event.get("tool_input", {}) or {}
         cwd = event.get("cwd") or os.getcwd()
 
-        if tool not in WRITE_TOOLS:
+        if tool not in args.tool:
             return {}
 
         roots = [resolve(r, cwd) for r in args.root]
@@ -353,7 +428,7 @@ def main():
                 "level": "warn",
             },
         )
-        return deny(reason)
+        return deny(args.event, reason)
     except Exception as error:  # noqa: BLE001 — see rule 3 in the module docstring
         journal(
             args.journal,
@@ -367,6 +442,7 @@ def main():
             },
         )
         return deny(
+            args.event,
             "FLEETOR write guardrail: the guardrail itself failed and refused this call rather "
             f"than letting it through unchecked ({type(error).__name__}: {error}). Tell the "
             "operator with `fleet send operator` — this is a bug in the fleet, not in your work."

@@ -55,15 +55,15 @@
 //! job is to change nothing, or adding a fifteenth checkpoint in the step that
 //! deletes rather than defines. Phase 2 answers it.
 //!
-//! **`src-tauri/src/write_guardrail.py` spells the tool names a second time** —
-//! its own `WRITE_TOOLS` set, which can drift from
-//! [`GuardrailInstall::tool_matcher`] now that the matcher lives on the spec. It
-//! is not scanned because it is not Rust and because the fix is not a grep: the
-//! script would have to be handed its tools rather than baked with them, which is
-//! a change to what `include_str!` ships.
+//! **`src-tauri/src/write_guardrail.py` used to spell the tool names a second
+//! time** — its own `WRITE_TOOLS` set, which could drift from the spec's. #31
+//! closed it the way this file said it had to be closed: the script is *handed*
+//! its tools on `--tool` rather than baking them, so there is one spelling and no
+//! needle is needed. What still cannot be scanned here is the script generally,
+//! because it is not Rust; what pins it now is the conformance suite, which
+//! asserts every `write_tools` name reaches the installed hook command.
 //!
 //! [`Placed::scrubbed`]: fleetor_shell::placement::Placed
-//! [`GuardrailInstall::tool_matcher`]: fleetor_shell::placement::harness::GuardrailInstall
 //!
 //! [`CLAUDE_CODE_SPEC`]: fleetor_shell::placement::harness::CLAUDE_CODE_SPEC
 //! [`Transcript::format`]: fleetor_shell::placement::harness::Transcript
@@ -121,12 +121,12 @@ const NEEDLES: &[Needle] = &[
         opt(s.isolation.credential_env)
     }),
     ("cp 7 — guardrail.hook_event", "PreToolUse", |s| one(s.guardrail.hook_event)),
-    // One alternative out of the matcher regex, not the whole string: the failure
-    // worth catching is a second copy of the vendor's *tool names*, and a second
-    // copy would not necessarily be spelled as the same regex.
-    ("cp 7 — guardrail.tool_matcher", "MultiEdit", |s| {
-        s.guardrail.tool_matcher.split('|').map(str::to_string).collect()
-    }),
+    // One name out of the list, not the joined matcher: the failure worth catching
+    // is a second copy of the vendor's *tool names*, and a second copy would not
+    // necessarily be spelled as the same alternation. This row used to split the
+    // matcher on `|` to recover the list, which is the evidence that the list was
+    // the real fact and the matcher a rendering of it — #31 made the spec say so.
+    ("cp 7 — guardrail.write_tools", "MultiEdit", |s| list(s.guardrail.write_tools)),
     ("cp 9 — typing.paste_start", "\x1b[200~", |s| bytes(s.typing.paste_start)),
     ("cp 9 — typing.paste_end", "\x1b[201~", |s| bytes(s.typing.paste_end)),
     ("cp 11 — gauge.window_env", "CLAUDE_CODE_MAX_CONTEXT_TOKENS", |s| opt(s.gauge.window_env)),
@@ -145,10 +145,9 @@ const NEEDLES: &[Needle] = &[
 /// is the one the spec points at. The anchor is the definition itself, so a
 /// *second* use of the string anywhere in the file still fires.
 ///
-/// `guardrail::HOOK_FILE` and `guardrail::WRITE_TOOLS` follow the same convention
-/// and need no row: neither is a needle, because the hook script is the fleet's
-/// rather than the vendor's (checkpoint 7's own doc) and the tool matcher is
-/// asserted against the spec by the conformance suite.
+/// `guardrail::HOOK_FILE` follows the same convention and needs no row: the hook
+/// script is the fleet's rather than the vendor's (checkpoint 7's own doc), so
+/// the spec points at the item rather than repeating its string.
 const NAMED_NOT_REPEATED: &[(&str, &str, &str)] = &[(
     "src-tauri/src/placement/spawn.rs",
     "pub(super) const ENV_CC_SECURESTORAGE_DIR",

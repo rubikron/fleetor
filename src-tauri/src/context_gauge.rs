@@ -528,6 +528,12 @@ mod tests {
                     ) -> Result<Vec<(fleetor_core::event::NoticeLevel, String)>, String> {
                         claude_code().seed_config_dir(seed)
                     }
+                    fn install_guardrail(
+                        &self,
+                        at: &crate::guardrail::GuardrailPlacement<'_>,
+                    ) -> Result<Vec<(fleetor_core::event::NoticeLevel, String)>, String> {
+                        claude_code().install_guardrail(at)
+                    }
                     fn command_args(&self, brief: &str, mode: Option<&str>) -> Vec<String> {
                         claude_code().command_args(brief, mode)
                     }

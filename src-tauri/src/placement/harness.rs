@@ -332,20 +332,43 @@ pub struct ConfigAndCredentialIsolation {
 /// widened. This checkpoint is the *event* the harness offers to hang it on and
 /// the file the policy is written into.
 ///
-/// The installer itself is [`crate::guardrail::install`] and does not move: the
-/// script, the interpreter and the journal are the fleet's, identical for every
-/// harness. What varies is the settings file, the event name and the tool
-/// matcher.
+/// **The installer is a [`Harness`] method** ([`Harness::install_guardrail`]),
+/// because the settings *document* is the vendor's: Claude Code's is JSON with a
+/// top-level `hooks` object and codex's is the same `config.toml` as everything
+/// else. C32 predicted exactly this and named the measurement that would force it.
+/// What stays free functions in [`crate::guardrail`] is what is the same
+/// everywhere — the script, the interpreter, the command line, the temp-file
+/// install and the journal.
+///
+/// **Tier 1.7 is not on this type and never will be.** The roots are
+/// `placement::guardrail_notices`' own computation from the pane's cwd, handed
+/// down on [`crate::guardrail::GuardrailPlacement`]; a harness supplies *where*
+/// its refusal is registered, never *what* it refuses.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GuardrailInstall {
     /// The settings file inside the config dir the hook is registered in.
-    /// Claude Code: `settings.json`.
+    /// Claude Code: `settings.json`. Codex: `config.toml`, the same document the
+    /// rest of its seed goes into.
     pub settings_file: &'static str,
     /// The hook event fired before a tool call, which is the only place a refusal
     /// can be a refusal rather than a report. Claude Code: `PreToolUse`.
     pub hook_event: &'static str,
-    /// The tools the hook is matched against.
-    pub tool_matcher: &'static str,
+    /// **The vendor's names for the tools that write**, and the one spelling of
+    /// them anywhere in the fleet (#23's carry-forward, closed here).
+    ///
+    /// It is a list rather than a matcher string because the two are not the same
+    /// fact and pretending they were is how they drift: the matcher is whatever
+    /// syntax the settings document wants, rendered by the harness's own
+    /// installer, while *these* are the names that arrive in a hook payload and
+    /// that `write_guardrail.py` is handed on its command line. A harness whose
+    /// document wants an alternation joins them; one that registers for
+    /// everything ignores them here and the script still filters on them.
+    ///
+    /// **Accuracy is load-bearing rather than cosmetic.** The script allows any
+    /// tool not on this list rather than guessing at it — a deny-by-default layer
+    /// nobody asked for is worse — so a name missing here is a write the guardrail
+    /// waves through while looking perfectly installed.
+    pub write_tools: &'static [&'static str],
     /// The script file dropped into the config dir, shared by every harness
     /// because the policy is the fleet's rather than the vendor's.
     pub hook_file: &'static str,
@@ -750,6 +773,36 @@ pub trait Harness: std::fmt::Debug + Send + Sync + 'static {
     /// nothing of the operator's is being overridden in it.
     fn seed_config_dir(&self, seed: &Seed<'_>) -> Result<Vec<(NoticeLevel, String)>, String>;
 
+    /// **Checkpoint 7's behavioural half:** register the fleet's write guardrail
+    /// in this harness's own settings document, keeping everything the operator
+    /// already put there and leaving exactly one of ours.
+    ///
+    /// **A method rather than a shared function, and C32 called this in advance.**
+    /// The four names on [`GuardrailInstall`] migrated onto the spec for free; the
+    /// settings *document model* did not, and could not — Claude Code's is JSON
+    /// with a top-level `hooks` object and codex's `config.toml` is TOML, so a
+    /// data-shaped description of the entry would have been a schema language
+    /// invented for one vendor before the second was measured. This is checkpoint
+    /// 4's precedent exactly (C16, C31): the document format is the vendor's, so
+    /// it belongs to a method; the roots, the script, the interpreter, the hook
+    /// command and the journal stay the fleet's free functions in
+    /// [`crate::guardrail`] beneath it.
+    ///
+    /// **Tier 1.7 does not pass through here.** Every root arrives already
+    /// computed on [`GuardrailPlacement::roots`], from the pane's own cwd, and an
+    /// implementation of this method has no way to widen them — which is
+    /// `building.md` §9.2 held structurally rather than by review.
+    ///
+    /// Merge, never clobber: D-062 explicitly invites the operator to populate
+    /// `pane-config/orch/` themselves, and their own hooks living in this file is
+    /// the obvious way to do it.
+    ///
+    /// [`GuardrailPlacement::roots`]: crate::guardrail::GuardrailPlacement::roots
+    fn install_guardrail(
+        &self,
+        at: &crate::guardrail::GuardrailPlacement<'_>,
+    ) -> Result<Vec<(NoticeLevel, String)>, String>;
+
     /// **Checkpoints 1, 2 and 3's behavioural half:** the argv one pane is
     /// launched with, given its brief and — for the seats that get one — its
     /// permission posture.
@@ -840,11 +893,14 @@ pub const CLAUDE_CODE_SPEC: HarnessSpec = HarnessSpec {
         seeds_from_operator: false,
     },
 
-    // 7 — write-guardrail install. `guardrail::install`.
+    // 7 — write-guardrail install. The installer is `ClaudeCode::install_guardrail`
+    // below, because the document is this vendor's JSON (C32); the matcher it
+    // writes is `write_tools` joined with `|`, which is Claude Code's syntax for
+    // the list rather than a second copy of it.
     guardrail: GuardrailInstall {
         settings_file: "settings.json",
         hook_event: "PreToolUse",
-        tool_matcher: "Bash|Write|Edit|MultiEdit|NotebookEdit",
+        write_tools: &["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit"],
         hook_file: guardrail::HOOK_FILE,
     },
 
@@ -922,6 +978,57 @@ impl Harness for ClaudeCode {
         super::spawn::seed_config_dir(self, seed).map(|()| Vec::new())
     }
 
+    /// Claude Code's settings document: JSON, a top-level `hooks` object keyed by
+    /// event, each event an array of `{matcher, hooks:[{type, command}]}`.
+    ///
+    /// **This body is the thing C32 said could not be data.** It was
+    /// `guardrail::merge_hook` and read as though it were general; it was one
+    /// vendor's document all along, and codex's TOML is what made that visible.
+    ///
+    /// The matcher is rendered from [`GuardrailInstall::write_tools`] rather than
+    /// stored beside it — an alternation is Claude Code's *syntax* for the same
+    /// list the script is handed, and two fields holding one answer is the drift
+    /// this ticket exists to close.
+    fn install_guardrail(
+        &self,
+        at: &crate::guardrail::GuardrailPlacement<'_>,
+    ) -> Result<Vec<(NoticeLevel, String)>, String> {
+        let spec = &self.spec().guardrail;
+        let (command, notices) = guardrail::prepare(spec, at)?;
+
+        let mut root = guardrail::existing_document(spec, at.config_dir)
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .filter(serde_json::Value::is_object)
+            .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+
+        let object = root.as_object_mut().expect("just filtered to an object");
+        let hooks = object
+            .entry("hooks")
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        if !hooks.is_object() {
+            *hooks = serde_json::Value::Object(serde_json::Map::new());
+        }
+        let hooks = hooks.as_object_mut().expect("just ensured it is an object");
+        let pre =
+            hooks.entry(spec.hook_event).or_insert_with(|| serde_json::Value::Array(Vec::new()));
+        if !pre.is_array() {
+            *pre = serde_json::Value::Array(Vec::new());
+        }
+        let pre = pre.as_array_mut().expect("just ensured it is an array");
+        // Ours is replaced rather than appended to, so a relaunch does not
+        // accumulate five copies that would each run and each report.
+        pre.retain(|entry| !mentions_our_hook(entry, spec));
+        pre.push(serde_json::json!({
+            "matcher": spec.write_tools.join("|"),
+            "hooks": [{ "type": "command", "command": command }],
+        }));
+
+        let text = serde_json::to_string_pretty(&root)
+            .map_err(|e| format!("encode settings: {e}"))?;
+        guardrail::install_document(spec, at.config_dir, &text)?;
+        Ok(notices)
+    }
+
     fn command_args(&self, brief: &str, permission_mode: Option<&str>) -> Vec<String> {
         let spec = self.spec();
         let mut args: Vec<String> =
@@ -936,6 +1043,25 @@ impl Harness for ClaudeCode {
         }
         args
     }
+}
+
+/// Is this `PreToolUse` entry one of ours, from a previous launch?
+///
+/// Claude Code's document shape, so it lives with Claude Code. The *recognition*
+/// is the fleet's — the hook file's name — and that half is
+/// [`guardrail::is_our_command`].
+fn mentions_our_hook(entry: &serde_json::Value, spec: &GuardrailInstall) -> bool {
+    entry
+        .get("hooks")
+        .and_then(|h| h.as_array())
+        .map(|hooks| {
+            hooks.iter().any(|h| {
+                h.get("command")
+                    .and_then(|c| c.as_str())
+                    .is_some_and(|c| guardrail::is_our_command(c, spec))
+            })
+        })
+        .unwrap_or(false)
 }
 
 // --- the registry -------------------------------------------------------------

@@ -1107,18 +1107,19 @@ fn guardrail_notices(
     } else {
         guardrail::roots_for(cwd, &shell, &context.launch.fence_allow)
     };
-    // Checkpoint 7 arrives as data, and only the vendor's half of it: the settings
-    // file, the event and the matcher. The roots above are placement's own and no
-    // harness can widen them, which is Tier 1.7 held structurally rather than by
-    // review.
-    guardrail::install(
-        &harness.spec().guardrail,
-        config_dir,
+    // **Checkpoint 7 is a harness method now** (#31, C32): the settings document
+    // is the vendor's — Claude Code's JSON, codex's TOML — so the installer is
+    // theirs, exactly as checkpoint 4's seeder is. What crosses the seam is this
+    // value, and the roots on it are *placement's own*: no implementation of
+    // `install_guardrail` is handed anything it could widen them with, which is
+    // Tier 1.7 held structurally rather than by review.
+    harness.install_guardrail(&guardrail::GuardrailPlacement {
         pane,
-        &roots,
-        &guardrail::policy_dir(&shell),
-        &guardrail::journal_path(&shell),
-    )
+        config_dir,
+        roots: &roots,
+        policy: &guardrail::policy_dir(&shell),
+        journal: &guardrail::journal_path(&shell),
+    })
 }
 
 /// What the operator is told when `orch` spawns on its own config dir (WP-14).
