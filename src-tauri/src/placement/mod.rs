@@ -96,6 +96,23 @@ use crate::{critic, dev, evaluator, guardrail, runs};
 /// spelling of a cwd.
 pub mod spawn;
 
+/// What a harness *is* — the fourteen checkpoints, answered once per vendor
+/// (WP-25, M23, C17).
+///
+/// It lives here rather than in a crate of its own for the reason M23 records:
+/// almost every vendor-specific reference in this codebase is already inside
+/// `placement` and [`crate::guardrail`], so a crate would invert the dependency
+/// direction and pull the guardrail, delivery, the orphan sweep and the context
+/// gauge in behind it.
+///
+/// **Nothing outside this module reads a field of it yet.** It is the expand half
+/// of a wide refactor: the literals in [`spawn`] and its siblings are still what
+/// runs, and this is the form they move onto. See the module's own doc comment for
+/// what that means and what is asserted in the meantime.
+pub mod harness;
+
+pub use harness::{Harness, HarnessSpec};
+
 // --- the layout ---------------------------------------------------------------
 
 /// Where this fleet lives on disk (D1).
@@ -422,6 +439,24 @@ impl PaneSpec {
             PaneSpec::Critic { .. } => PaneId::Critic,
         }
     }
+
+    /// Which harness this pane runs (WP-25).
+    ///
+    /// **The one lookup, and it is here because the harness is a property of the
+    /// pane rather than of the machine or the fleet's directory tree.** A mixed
+    /// fleet is the point of the arc this belongs to — the gate offers a harness
+    /// per role (C23) — so the answer has to be able to differ between two panes
+    /// of the same run, which rules out [`Host`] (what the *machine* has) and
+    /// [`Layout`] (a path and nothing else).
+    ///
+    /// It ignores `self` today because exactly one harness is registered, and
+    /// registering a second is a later ticket's work rather than something this
+    /// method should pretend to already do. What it buys now is that
+    /// [`place`] and every arm below it hold the answer as a value, so a call site
+    /// that migrates onto [`HarnessSpec`] finds it already in scope.
+    pub fn harness(&self) -> &'static dyn Harness {
+        harness::claude_code()
+    }
 }
 
 /// Everything bringing one pane up produced, and nothing it did along the way.
@@ -439,6 +474,18 @@ pub struct Placed {
     /// Where this pane's transcript will live, for the WP-04 live gauge. `None`
     /// for panes the gauge does not track.
     pub gauge: Option<TranscriptSource>,
+    /// Which harness this pane was placed as (WP-25).
+    ///
+    /// **Returned rather than assumed**, for the reason [`Placed::gauge`] is: the
+    /// caller has to write this down — `manifest.json` records a pane's harness,
+    /// model and transcript format so a Critic reading a mixed run cold knows what
+    /// it is holding (M24) — and a fact the caller re-derives is a fact that can
+    /// disagree with the one placement acted on.
+    ///
+    /// Nothing reads it yet. It is here so that the ticket which writes it into
+    /// the manifest finds it already carried, rather than having to thread it back
+    /// through four arms.
+    pub harness: &'static HarnessSpec,
 }
 
 // --- placing ------------------------------------------------------------------
@@ -459,11 +506,16 @@ pub fn place(
     target: &Path,
     context: &PaneContext,
 ) -> Result<Placed, String> {
+    // Which harness this pane runs, resolved once here rather than per arm
+    // (WP-25). Every arm below is handed it and hands it back on `Placed`; none of
+    // them looks it up again, so "which harness is this pane" has exactly one
+    // answer per placement by construction.
+    let harness = spec.harness();
     match spec {
-        PaneSpec::Orch => place_orch(layout, host, target, context),
-        PaneSpec::Worker(slot) => place_worker(slot, layout, host, target, context),
-        PaneSpec::Evaluator => place_evaluator(layout, host, target, context),
-        PaneSpec::Critic { run } => place_critic(run, layout, host, context),
+        PaneSpec::Orch => place_orch(harness, layout, host, target, context),
+        PaneSpec::Worker(slot) => place_worker(harness, slot, layout, host, target, context),
+        PaneSpec::Evaluator => place_evaluator(harness, layout, host, target, context),
+        PaneSpec::Critic { run } => place_critic(harness, run, layout, host, context),
     }
 }
 
@@ -480,6 +532,7 @@ pub fn place(
 /// directory going forward, and keeps its login through the keychain read `claude`
 /// already performs (see [`spawn::orch_command_with`]).
 fn place_orch(
+    harness: &'static dyn Harness,
     layout: &Layout,
     host: &Host,
     target: &Path,
@@ -525,7 +578,7 @@ fn place_orch(
 
     // `orch` is not on the live gauge: the Loadout counter is a per-run budget line
     // for the panes doing the work, and the gauge samples worker transcripts.
-    Ok(Placed { command, notices, gauge: None })
+    Ok(Placed { command, notices, gauge: None, harness: harness.spec() })
 }
 
 /// One fenced worker: its own checkout of the target, its own `HOME`, the fleet's
@@ -544,6 +597,7 @@ fn place_orch(
 /// shared checkout with a notice, and a machine with no rustup gets the toolchain
 /// settings **absent** rather than pointing at a directory that does not exist.
 fn place_worker(
+    harness: &'static dyn Harness,
     slot: u8,
     layout: &Layout,
     host: &Host,
@@ -634,6 +688,7 @@ fn place_worker(
         command,
         notices,
         gauge: Some(TranscriptSource { config_dir, cwd }),
+        harness: harness.spec(),
     })
 }
 
@@ -659,6 +714,7 @@ fn place_worker(
 /// own reasoning never lands in the archive the next generation reads, and its
 /// guardrail roots are its own working directory alone.
 fn place_evaluator(
+    harness: &'static dyn Harness,
     layout: &Layout,
     host: &Host,
     target: &Path,
@@ -698,7 +754,7 @@ fn place_evaluator(
 
     // Not on the live gauge, for `orch`'s reason: the gauge samples the transcripts
     // of the panes doing the work, and this pane is not one of them.
-    Ok(Placed { command, notices, gauge: None })
+    Ok(Placed { command, notices, gauge: None, harness: harness.spec() })
 }
 
 /// The Critic (WP-20, D-076): the operator's own `claude` in the run it is
@@ -728,6 +784,7 @@ fn place_evaluator(
 /// cites that directory, and a brief citing a directory nobody wrote is a pane
 /// that spends its first turn asking about a path.
 fn place_critic(
+    harness: &'static dyn Harness,
     run: RunSource,
     layout: &Layout,
     host: &Host,
@@ -765,7 +822,7 @@ fn place_critic(
     // Not on the live gauge, for `orch`'s reason and the evaluator's: the gauge
     // samples the transcripts of the panes doing the work, and this pane is not
     // one of them.
-    Ok(Placed { command, notices, gauge: None })
+    Ok(Placed { command, notices, gauge: None, harness: harness.spec() })
 }
 
 /// What placing a Critic on an archived run answers with, until the ticket that
