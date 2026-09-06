@@ -1,6 +1,6 @@
 # WP-21 — the Critic interviews, on the operator's word
 
-status: not-started size: L
+status: stage A landed (D-079, D-080) · B and C not started size: L
 depends-on: WP-20 (the Critic exists) · a `fleet reply` fix, in flight — see Blocking defect
 blocks: — brief-cost: **0**, by design — see Invariant guardrails §4
 

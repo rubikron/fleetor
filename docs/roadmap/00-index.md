@@ -34,6 +34,10 @@ The Blackboard vision, split into nine session-sized work packages. The vision i
 | 17 | `17-write-guardrail.md` | The write guardrail | 14, 16 | M | **landed** |
 | 18 | (from TEMPLATE) | More than one fleet at once | — | L | not-started |
 | 19 | (from TEMPLATE) | Orch-to-orch, and its cutoff | 18 | M | not-started |
+| 20 | `20-placement-and-the-critic.md` | Placement, and the Critic — **arc doc**, not a package | — | L | **design** |
+| 21 | `21-the-critic-interviews.md` | The Critic interviews, on the operator's word | 20 | L | **stage A landed** — B (dynamics) and C (proposals) not started |
+| 22 | (from TEMPLATE) | The evaluator becomes a view | 20 | S/M | **landed** (D-073, ahead of its own package) |
+| 23 | (from TEMPLATE) | The Critic | 20, 22 | M | **landed** (D-076, ahead of its own package) |
 
 WP-13..19 are filed by [`12-self-improving-loop.md`](./12-self-improving-loop.md), which
 carries their design, the diagrams and the invariant arguments already had. Write each
@@ -56,6 +60,9 @@ WP-11 ─→ WP-12 (arc) ─┬─→ WP-13 ─┐
                       ├─→ WP-14 ─┼─→ WP-15 ─→ ledger
                       ├─→ WP-16 ─┴─→ WP-17 (blocks any improve run; also needs 14)
                       └─→ WP-18 ─→ WP-19
+
+WP-20 (arc) ─→ WP-21 ─┬─→ stage B (dynamics)
+                      └─→ stage C (proposals, into WP-12's ledger)
 
 rewind harness (separate repo, no WP — fully parallel, no dependencies)
 ```
