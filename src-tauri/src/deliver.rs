@@ -102,6 +102,12 @@ impl Pending {
 /// One pty write, and everyone owed an answer for it.
 struct Run {
     text: String,
+    /// Whether this run is a slash command, and so whether the pane's harness
+    /// gets to spell it (WP-25 #21, checkpoint 10). Carried on the run rather
+    /// than re-derived from a leading `/`, because a message is free to start
+    /// with one and guessing would make the delivery path content-inspecting —
+    /// the shape Tier 1.4 has rejected twice.
+    is_command: bool,
     acks: Vec<oneshot::Sender<DeliveryResult>>,
 }
 
@@ -216,14 +222,27 @@ fn spawn_writer(registry: Arc<PaneRegistry>, pane: PaneId) -> mpsc::UnboundedSen
             for run in runs(batch) {
                 let registry = registry.clone();
                 let body = run.text;
+                let is_command = run.is_command;
                 // The write holds a pty lock across the 30 ms submit gap, so it
                 // goes to a blocking thread — one pane's terminal must never
                 // stall four others, and the hub awaits broadcast legs one at a
                 // time.
-                let written =
-                    tokio::task::spawn_blocking(move || registry.write_paste(pane, &body))
-                        .await
-                        .unwrap_or_else(|e| Err(format!("the write to {pane} did not run: {e}")));
+                //
+                // **A command goes through `write_command`, which is the only
+                // difference the harness seam made here** (WP-25 #21): the pane's
+                // own harness spells it, under the same entry lookup that yields
+                // the writer, so no lock, no branch and no delay was added to the
+                // path a message takes. What it types is the harness's answer to
+                // checkpoint 10; *whether* and *when* it types is unchanged.
+                let written = tokio::task::spawn_blocking(move || {
+                    if is_command {
+                        registry.write_command(pane, &body)
+                    } else {
+                        registry.write_paste(pane, &body)
+                    }
+                })
+                .await
+                .unwrap_or_else(|e| Err(format!("the write to {pane} did not run: {e}")));
 
                 let result = outcome_of(written);
                 for ack in run.acks {
@@ -254,13 +273,17 @@ fn runs(batch: Vec<Pending>) -> Vec<Run> {
         }
         let text = join(messages.iter().map(Pending::text));
         let acks = messages.drain(..).map(Pending::into_ack).collect();
-        runs.push(Run { text, acks });
+        runs.push(Run { text, is_command: false, acks });
     }
 
     for pending in batch {
         if pending.is_command() {
             flush(&mut messages, &mut runs);
-            runs.push(Run { text: pending.text().to_string(), acks: vec![pending.into_ack()] });
+            runs.push(Run {
+                text: pending.text().to_string(),
+                is_command: true,
+                acks: vec![pending.into_ack()],
+            });
         } else {
             messages.push(pending);
         }

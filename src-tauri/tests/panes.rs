@@ -173,7 +173,7 @@ fn fleet_with_registry_path() -> (Arc<PaneRegistry>, Arc<Transcript>, PathBuf) {
         let pane = spec.pane();
         let placed = placement::place(spec, &layout, &host, &target, &ctx)
             .unwrap_or_else(|e| panic!("placing {pane}: {e}"));
-        registry.spawn(pane, placed.command, 24, 80).unwrap();
+        registry.spawn(pane, placed.command, placed.harness, 24, 80).unwrap();
     }
     (registry, transcript, registry_path)
 }
@@ -361,7 +361,7 @@ fn a_killed_pane_can_be_spawned_again() {
         &PaneContext::baked(),
     )
     .expect("worker-4 places");
-    registry.spawn(target, placed.command, 24, 80).expect("a dead pane respawns");
+    registry.spawn(target, placed.command, placed.harness, 24, 80).expect("a dead pane respawns");
 
     registry.write_paste(target, "still here?").unwrap();
     transcript.wait_for(&out_channel(target), "echo:");
@@ -455,7 +455,8 @@ fn kill_all_reaps_a_panes_background_grandchild_too() {
     );
 
     let pane = PaneId::Worker(1);
-    registry.spawn(pane, cmd, 24, 80).unwrap();
+    registry.spawn(pane, cmd, fleetor_shell::placement::harness::claude_code().spec(), 24, 80)
+        .unwrap();
 
     let seen = transcript.wait_for(&out_channel(pane), "grandchild-pid:");
     let pid: i32 = seen
@@ -670,7 +671,7 @@ impl Interviewed {
             let pane = spec.pane();
             let placed = placement::place(spec, &layout, &host, &target, &ctx)
                 .unwrap_or_else(|e| panic!("placing {pane}: {e}"));
-            registry.spawn(pane, placed.command, 24, 80).unwrap();
+            registry.spawn(pane, placed.command, placed.harness, 24, 80).unwrap();
         }
 
         let store: Arc<dyn Store> = Arc::new(SqliteStore::open_in_memory().unwrap());

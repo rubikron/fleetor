@@ -414,7 +414,7 @@ impl Pass {
 
         let pane = PaneId::Worker(WORKER_SLOT);
         let registry = PaneRegistry::new(emit, self.root.join("pane-pids.json"));
-        registry.spawn(pane, placed.command, 24, 80).expect("a real pty for the stand-in");
+        registry.spawn(pane, placed.command, placed.harness, 24, 80).expect("a real pty for the stand-in");
         wait_until(&seen, "ready");
 
         let started = Instant::now();

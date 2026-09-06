@@ -641,14 +641,17 @@ pub const CLAUDE_CODE_SPEC: HarnessSpec = HarnessSpec {
     // 8 — outbound reachability. No seatbelt, so the socket is simply reachable.
     outbound: Outbound { sandboxed: false, socket_reachable: true, reachability_keys: &[] },
 
-    // 9 — typing profile. `pty::write_paste`. See the type's doc for why there is
-    // no startup wait here.
+    // 9 — typing profile. `pty::write_paste` reads it. See the type's doc for why
+    // there is no startup wait here. The four values name `pty`'s own constants
+    // rather than repeating them, the convention `HOOK_FILE` and `WRITE_TOOLS`
+    // already follow: they are Claude Code's, so #23 moves the literals in here
+    // and deletes the constants.
     typing: TypingProfile {
         bracketed_paste: true,
-        paste_start: b"\x1b[200~",
-        paste_end: b"\x1b[201~",
-        submit_bytes: b"\r",
-        submit_gap_ms: 30,
+        paste_start: crate::pty::PASTE_START,
+        paste_end: crate::pty::PASTE_END,
+        submit_bytes: crate::pty::SUBMIT_BYTES,
+        submit_gap_ms: crate::pty::SUBMIT_GAP_MS,
     },
 
     // 10 — command-channel spellings, one row per allowlisted command.

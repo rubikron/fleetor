@@ -450,7 +450,7 @@ pub(crate) fn spawn_pane(
     if let Some(source) = placed.gauge {
         gauges.record(pane, source);
     }
-    registry.spawn(pane, placed.command, rows, cols)
+    registry.spawn(pane, placed.command, placed.harness, rows, cols)
 }
 
 /// Poll the guardrail's refusal journal onto the Activity feed.
@@ -1369,7 +1369,8 @@ mod tests {
 
         let mut cmd = portable_pty::CommandBuilder::new("sleep");
         cmd.arg("30");
-        registry.spawn(PaneId::Orch, cmd, 24, 80).expect("a pty for sleep");
+        registry.spawn(PaneId::Orch, cmd, crate::placement::harness::claude_code().spec(), 24, 80)
+            .expect("a pty for sleep");
 
         // After it. One pane is enough — the fleet is now committed to a repo.
         let refusal = ensure_target_settable(&registry)

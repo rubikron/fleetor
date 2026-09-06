@@ -23,6 +23,13 @@
 //!    otherwise land between a message's body and its `\r` — submitting it early
 //!    or corrupting it. The writer mutex is per-pane and held across the whole
 //!    injection, including the 30 ms gap.
+//!  - **How to type is the pane's harness's answer, not this module's** (WP-25
+//!    #21, checkpoints 9 and 10). Each pane records the `HarnessSpec` it was
+//!    placed with, and the framing, the submit byte, the submit gap and a slash
+//!    command's spelling are all read from it. This is a *widening* and nothing
+//!    more: the spec says which bytes go out, never whether or when — no queue,
+//!    no guard, no retry, no ceiling joined the message path, and checkpoint 9
+//!    has no startup-wait field for one to arrive as (C26).
 //!  - **`kill_all` signals the process group.** `openpty` gives each child its own
 //!    session, so killing the pid alone can leave the real work orphaned. A leaked
 //!    Opus after window close is a money bug.
@@ -42,6 +49,9 @@ use fleetor_core::pane::{PaneEntry, PaneId, PaneState};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use tauri::State;
 
+use crate::placement::harness::{CommandChannel, TypingProfile};
+use crate::placement::HarnessSpec;
+
 /// Merge pty reads for this long before emitting, so a repainting TUI doesn't
 /// cross the IPC bridge once per spinner frame.
 const COALESCE_WINDOW: Duration = Duration::from_millis(16);
@@ -52,20 +62,38 @@ const READ_CHUNK: usize = 8192;
 
 /// Bracketed paste, so the receiving TUI treats a message as pasted text rather
 /// than as a stream of keystrokes.
-const PASTE_START: &[u8] = b"\x1b[200~";
-const PASTE_END: &[u8] = b"\x1b[201~";
+///
+/// **Claude Code's answer to checkpoint 9, and it is read from the spec rather
+/// than from here** (WP-25 #21). Nothing in this module consults these three any
+/// more: [`CLAUDE_CODE_SPEC`](crate::placement::harness::CLAUDE_CODE_SPEC) names
+/// them, and [`PaneRegistry::write_paste`] reads the profile off the pane's own
+/// harness. They stay `pub(crate)` and stay here because the convention
+/// `harness.rs` states for `HOOK_FILE` and `WRITE_TOOLS` is that a literal keeps
+/// living beside the code that owns the subject until the contract batch (#23)
+/// moves it into the spec and deletes the constant.
+pub(crate) const PASTE_START: &[u8] = b"\x1b[200~";
+pub(crate) const PASTE_END: &[u8] = b"\x1b[201~";
+/// What submits a paste once it is closed.
+pub(crate) const SUBMIT_BYTES: &[u8] = b"\r";
 
 /// The gap between the closing paste marker and the `\r` that submits it.
 ///
 /// Phase 0 measured 0/10/30 ms and all three submit reliably — pty stream ordering
 /// is preserved. 30 ms anyway, so we don't depend on Claude Code batching the
 /// end-marker and the CR within one input-handler tick, which is a version detail.
-/// This is the **only** delay anywhere between `fleet send` and a pty (D-034).
-const SUBMIT_GAP: Duration = Duration::from_millis(30);
+/// This is the **only** delay anywhere between `fleet send` and a pty (D-034), and
+/// per-harness (C26) because it is a widening of a value the invariant already
+/// sanctions — unlike a startup wait, which is a *new* delay and is why checkpoint
+/// 9 has no field for one.
+pub(crate) const SUBMIT_GAP_MS: u64 = 30;
 
 /// How long a pane gets to honor SIGTERM before it is killed outright.
 const TERM_GRACE: Duration = Duration::from_millis(200);
 const TERM_POLL: Duration = Duration::from_millis(20);
+
+/// One pane's writer, shared by every path that types into it. Named because
+/// three signatures here hand it around and the shape is noise at each of them.
+type PaneWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
 /// How the registry talks to the outside world: `(channel, base64 payload)`.
 /// A callback rather than an `AppHandle` so the registry is testable headless.
@@ -74,9 +102,22 @@ pub type Emit = Arc<dyn Fn(&str, String) + Send + Sync>;
 /// One live terminal.
 struct Pane {
     master: Box<dyn MasterPty + Send>,
+    /// Which harness this pane runs, recorded from the same [`Placed`] the
+    /// command came off (WP-25 #21, checkpoints 9 and 10).
+    ///
+    /// **Carried on the pane rather than resolved into a value**, the shape C31
+    /// chose for the gauge and for the same reason: the typing profile and the
+    /// command spellings are two checkpoints, and a pane that answered them from
+    /// two places could answer them differently. Recorded at spawn so it cannot
+    /// disagree with the process that is actually running — a respawn replaces
+    /// the entry, so a pane relaunched under another harness types that
+    /// harness's bytes.
+    ///
+    /// [`Placed`]: crate::placement::Placed
+    harness: &'static HarnessSpec,
     /// Shared with every writer — keystrokes *and* deliveries — so an injection
     /// and a keypress can never interleave.
-    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    writer: PaneWriter,
     child: Box<dyn Child + Send + Sync>,
     /// Written by the reader thread, read by the roster. A [`PaneState`] as an
     /// atomic, because the reader learns of an exit and the roster asks about it.
@@ -116,10 +157,15 @@ impl PaneRegistry {
     /// Idempotent for a pane that is still running (React StrictMode double-mounts
     /// every terminal), and a **respawn** for one that has died — which is what
     /// makes per-tab restart a two-line command rather than a special case.
+    ///
+    /// `harness` is the spec `place` returned beside `cmd` — the same placement,
+    /// so what the pane runs and how the registry types into it cannot come from
+    /// two different answers.
     pub fn spawn(
         &self,
         pane: PaneId,
         cmd: CommandBuilder,
+        harness: &'static HarnessSpec,
         rows: u16,
         cols: u16,
     ) -> Result<(), String> {
@@ -151,7 +197,13 @@ impl PaneRegistry {
 
         panes.insert(
             pane,
-            Pane { master: pair.master, writer: Arc::new(Mutex::new(writer)), child, state },
+            Pane {
+                master: pair.master,
+                harness,
+                writer: Arc::new(Mutex::new(writer)),
+                child,
+                state,
+            },
         );
         record_live_pids(&panes, &self.registry_path);
         Ok(())
@@ -160,7 +212,7 @@ impl PaneRegistry {
     /// Relay operator keystrokes. Takes the same per-pane writer lock a delivery
     /// does, which is what stops the two from interleaving.
     pub fn write(&self, pane: PaneId, data: &[u8]) -> Result<(), String> {
-        let writer = self.writable(pane)?;
+        let (writer, _) = self.writable(pane)?;
         let mut guard = writer.lock().map_err(|e| e.to_string())?;
         guard.write_all(data).map_err(|e| format!("write to {pane}: {e}"))?;
         guard.flush().map_err(|e| format!("flush {pane}: {e}"))
@@ -172,19 +224,65 @@ impl PaneRegistry {
     /// so nothing — not a keystroke, not another delivery — can land between the
     /// body and its `\r`. Blocking, by design: [`crate::deliver`] runs it off the
     /// command loop so one slow pane cannot stall the other four.
+    /// The framing, the submit byte and the gap are **this pane's harness's**
+    /// answers to checkpoint 9, read off the spec recorded at spawn rather than
+    /// off a constant here (WP-25 #21). Nothing else about the write changed: the
+    /// profile says what bytes to send, never whether or when to send them.
     pub fn write_paste(&self, pane: PaneId, text: &str) -> Result<(), String> {
-        let writer = self.writable(pane)?;
+        let (writer, harness) = self.writable(pane)?;
+        self.type_framed(pane, &writer, &harness.typing, text)
+    }
 
-        let mut body = Vec::with_capacity(text.len() + PASTE_START.len() + PASTE_END.len());
-        body.extend_from_slice(PASTE_START);
+    /// Type one slash command into `pane`, spelled the way **this pane's harness**
+    /// spells it (checkpoint 10).
+    ///
+    /// A sibling of [`Self::write_paste`] rather than a flag on it, because the
+    /// two differ in exactly one thing: a command's word is looked up in the
+    /// harness's table first. The lookup happens under the same map entry that
+    /// yields the writer, so a spelling and a writer can never come from
+    /// different harnesses, and the command path takes the same single lock it
+    /// always did.
+    ///
+    /// **A command the table does not name is typed as it arrived, never
+    /// refused.** It was allowlisted at accept time (`fleetor_core::command`), and
+    /// after acceptance nothing may delay, drop or alter it (D-034/D-045); a
+    /// second refusal here would be exactly the post-accept gate Tier 1.4 bans.
+    /// The missing row is a conformance failure, caught by checkpoint 10 before a
+    /// harness can be registered.
+    pub fn write_command(&self, pane: PaneId, command: &str) -> Result<(), String> {
+        let (writer, harness) = self.writable(pane)?;
+        let spelled = spell(&harness.commands, command);
+        self.type_framed(pane, &writer, &harness.typing, &spelled)
+    }
+
+    /// The one write both of the above make.
+    ///
+    /// The whole injection happens under a single hold of that pane's writer lock,
+    /// so nothing — not a keystroke, not another delivery — can land between the
+    /// body and its submit byte.
+    fn type_framed(
+        &self,
+        pane: PaneId,
+        writer: &PaneWriter,
+        typing: &TypingProfile,
+        text: &str,
+    ) -> Result<(), String> {
+        let (start, end): (&[u8], &[u8]) = if typing.bracketed_paste {
+            (typing.paste_start, typing.paste_end)
+        } else {
+            (&[], &[])
+        };
+
+        let mut body = Vec::with_capacity(text.len() + start.len() + end.len());
+        body.extend_from_slice(start);
         body.extend_from_slice(text.as_bytes());
-        body.extend_from_slice(PASTE_END);
+        body.extend_from_slice(end);
 
         let mut guard = writer.lock().map_err(|e| e.to_string())?;
         guard.write_all(&body).map_err(|e| format!("write to {pane}: {e}"))?;
         guard.flush().map_err(|e| format!("flush {pane}: {e}"))?;
-        std::thread::sleep(SUBMIT_GAP);
-        guard.write_all(b"\r").map_err(|e| format!("submit to {pane}: {e}"))?;
+        std::thread::sleep(Duration::from_millis(typing.submit_gap_ms));
+        guard.write_all(typing.submit_bytes).map_err(|e| format!("submit to {pane}: {e}"))?;
         guard.flush().map_err(|e| format!("flush {pane}: {e}"))
     }
 
@@ -276,19 +374,41 @@ impl PaneRegistry {
     /// every message until the guess catches up — which is L1's shape exactly. A
     /// write to a still-booting pty is buffered by the kernel and read when the
     /// TUI starts reading; that is the failure we can live with.
-    fn writable(&self, pane: PaneId) -> Result<Arc<Mutex<Box<dyn Write + Send>>>, String> {
+    /// The harness comes back beside the writer, from the same entry, so a write
+    /// is framed by the spec of the process it is actually going to.
+    fn writable(
+        &self,
+        pane: PaneId,
+    ) -> Result<(PaneWriter, &'static HarnessSpec), String> {
         let panes = self.lock()?;
         let entry = panes.get(&pane).ok_or_else(|| format!("{pane} is not running"))?;
         let state = decode_state(entry.state.load(Ordering::Relaxed));
         if !state.accepts_input() {
             return Err(format!("{pane} has exited"));
         }
-        Ok(entry.writer.clone())
+        Ok((entry.writer.clone(), entry.harness))
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, HashMap<PaneId, Pane>>, String> {
         self.panes.lock().map_err(|e| format!("pane registry poisoned: {e}"))
     }
+}
+
+/// One harness's spelling of an allowlisted slash command, arguments intact
+/// (checkpoint 10).
+///
+/// Matched on the command **word**, the same way `fleetor_core::command`
+/// allowlists it, so `/compact keep the parser` is one command and its argument
+/// survives the translation. A word with no row comes back untouched — see
+/// [`PaneRegistry::write_command`] for why that is a pass-through and not a
+/// refusal.
+fn spell(channel: &CommandChannel, command: &str) -> String {
+    let word = command.split_whitespace().next().unwrap_or("");
+    let Some((_, spelling)) = channel.spellings.iter().find(|(canonical, _)| *canonical == word)
+    else {
+        return command.to_string();
+    };
+    format!("{spelling}{}", &command[word.len()..])
 }
 
 /// `pty://output/orch`, `pty://output/2`.
@@ -523,7 +643,8 @@ mod tests {
         for pane in [PaneId::Orch, PaneId::Worker(1), PaneId::Evaluator, PaneId::Critic] {
             let mut cmd = CommandBuilder::new("/bin/cat");
             cmd.env("TERM", "dumb");
-            registry.spawn(pane, cmd, 24, 80).expect("spawn");
+            registry.spawn(pane, cmd, crate::placement::harness::claude_code().spec(), 24, 80)
+                .expect("spawn");
         }
 
         let roster: Vec<PaneId> = registry.roster().into_iter().map(|e| e.pane).collect();
@@ -538,6 +659,33 @@ mod tests {
             assert!(registry.writable(outsider).is_ok(), "still a live pty to write to");
         }
         registry.kill_all();
+    }
+
+    /// **Checkpoint 10's translation, against a table that is not Claude Code's**
+    /// (WP-25 #21). Driven with a fabricated channel on purpose: Claude Code's
+    /// spellings are the identity, so a test using them would pass against a
+    /// `spell` that returned its argument, which is the shape of assertion the
+    /// conformance suite refuses. What has to hold is that the *word* is
+    /// translated, the arguments survive untouched, and a word with no row is
+    /// passed through rather than refused — a post-accept refusal is the thing
+    /// D-045 and Tier 1.4 both ban.
+    #[test]
+    fn a_commands_word_is_respelled_and_its_arguments_are_not() {
+        let channel = CommandChannel { spellings: &[("/clear", "/reset"), ("/compact", "/squash")] };
+        assert_eq!(spell(&channel, "/clear"), "/reset");
+        assert_eq!(spell(&channel, "/compact keep the parser"), "/squash keep the parser");
+        assert_eq!(
+            spell(&channel, "/compact  two  spaces"),
+            "/squash  two  spaces",
+            "the tail is copied, never re-joined",
+        );
+        assert_eq!(
+            spell(&channel, "/model opus"),
+            "/model opus",
+            "a word with no row is typed as it arrived — refusing here would be a second gate \
+             after accept time",
+        );
+        assert_eq!(spell(&channel, ""), "");
     }
 
     /// Only a dead pane refuses input — asserted on the decoder the registry
