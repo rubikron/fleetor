@@ -522,7 +522,7 @@ pub struct ProjectIdentityAndTrust {
 /// Everything that can be `'static` data is on [`HarnessSpec`] instead, because
 /// data can be asserted equal to the literal it replaces and a method can only be
 /// asserted equal to itself.
-pub trait Harness: Send + Sync + 'static {
+pub trait Harness: std::fmt::Debug + Send + Sync + 'static {
     /// This harness's fourteen answers.
     fn spec(&self) -> &'static HarnessSpec;
 
@@ -624,7 +624,7 @@ pub const CLAUDE_CODE_SPEC: HarnessSpec = HarnessSpec {
     // follows HOME, which is the measurement this checkpoint was renamed over.
     isolation: ConfigAndCredentialIsolation {
         config_env: "CLAUDE_CONFIG_DIR",
-        credential_env: Some("CLAUDE_SECURESTORAGE_CONFIG_DIR"),
+        credential_env: Some(super::spawn::ENV_CC_SECURESTORAGE_DIR),
         credentials_follow_home: false,
         private_home: true,
         seeds_from_operator: false,
@@ -694,7 +694,7 @@ impl Harness for ClaudeCode {
     }
 
     fn seed_config_dir(&self, dir: &Path, cwd: &Path) -> Result<(), String> {
-        super::spawn::seed_config_dir(dir, cwd)
+        super::spawn::seed_config_dir(self, dir, cwd)
     }
 
     fn command_args(&self, brief: &str, permission_mode: Option<&str>) -> Vec<String> {

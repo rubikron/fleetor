@@ -61,13 +61,24 @@ const CHARS_PER_TOKEN_ESTIMATE: usize = 4;
 
 // --- where a worker's transcript lives ------------------------------------------
 
-/// Where to look for one worker's own transcript: its isolated config dir and
-/// the cwd it was launched in. Transcripts are keyed by the resolved absolute
-/// cwd (`docs/notes/context-gauge-notes.md` §1), so both are needed — the config
-/// dir alone does not say which of its `projects/*` subdirectories is this
+/// Where to look for one worker's own transcript: the harness the pane runs, its
+/// isolated config dir and the cwd it was launched in. Transcripts are keyed by
+/// the resolved absolute cwd (`docs/notes/context-gauge-notes.md` §1), so the
+/// config dir alone does not say which of its `projects/*` subdirectories is this
 /// pane's.
+///
+/// **The harness is carried rather than assumed** (WP-25, M23). Resolving a cwd
+/// into a project key was one shared function with two consumers — the trust flag
+/// and this gauge — and each harness now declares its own answer, so the gauge
+/// asks the pane's own harness instead of calling Claude Code's canonicalization
+/// by name. It is `place` that decides which harness a pane runs, and this is
+/// recorded from the same `Placed` that carries the command, so the key the gauge
+/// looks under and the key the pane's trust record was written under cannot come
+/// from different harnesses.
 #[derive(Debug, Clone)]
 pub struct TranscriptSource {
+    /// The harness this pane runs, for the project key it is looked up under.
+    pub harness: &'static dyn crate::placement::harness::Harness,
     pub config_dir: PathBuf,
     pub cwd: PathBuf,
 }
@@ -100,15 +111,23 @@ impl GaugeSources {
 
 // --- the transcript sampler ------------------------------------------------------
 
-/// `<config_dir>/projects/<slug>/`, where `<slug>` is the cwd's canonical
-/// absolute path with every `/` and `.` replaced by `-` — empirically
-/// verified character-for-character in `docs/notes/context-gauge-notes.md` §1. The
-/// canonicalization is `crate::placement::spawn::project_key`'s, reused rather than
-/// re-derived: it is the same resolved path Claude Code itself sees as its
-/// cwd (macOS resolves `/tmp`/`/var` symlinks on `getcwd`), and it is already
-/// the key `seed_config_dir` writes the pane's trust flag under.
+/// `<config_dir>/projects/<slug>/`, where `<slug>` is the pane's project key with
+/// every `/` and `.` replaced by `-` — empirically verified character-for-character
+/// in `docs/notes/context-gauge-notes.md` §1.
+///
+/// **The key comes from the pane's own harness** (WP-25, checkpoint 14), which is
+/// what makes "the gauge and the trust flag agree on one spelling of a cwd" a
+/// property of the seam rather than of two call sites happening to name the same
+/// function. For Claude Code that answer is still `std::fs::canonicalize` — the
+/// same resolved path it itself sees as its cwd, since macOS resolves `/tmp` and
+/// `/var` symlinks on `getcwd` — and it is the key
+/// [`Harness::seed_config_dir`](crate::placement::harness::Harness::seed_config_dir)
+/// wrote the pane's trust record under.
+///
+/// The `projects` subdirectory and the slug rule are still Claude Code's own and
+/// are checkpoint 13's to move.
 fn project_dir(source: &TranscriptSource) -> PathBuf {
-    let resolved = crate::placement::spawn::project_key(&source.cwd);
+    let resolved = source.harness.project_key(&source.cwd);
     let slug: String =
         resolved.chars().map(|c| if c == '/' || c == '.' { '-' } else { c }).collect();
     source.config_dir.join("projects").join(slug)
@@ -262,7 +281,7 @@ mod tests {
     }
 
     fn seed_transcript(config_dir: &Path, cwd: &Path, lines: &[String]) {
-        let source = TranscriptSource { config_dir: config_dir.to_path_buf(), cwd: cwd.to_path_buf() };
+        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir: config_dir.to_path_buf(), cwd: cwd.to_path_buf() };
         let dir = project_dir(&source);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("session-a.jsonl"), lines.join("\n")).unwrap();
@@ -277,7 +296,7 @@ mod tests {
     fn project_dir_matches_claude_codes_own_encoding() {
         let cwd = temp_dir("slug-cwd");
         let config_dir = temp_dir("slug-config");
-        let source = TranscriptSource { config_dir: config_dir.clone(), cwd: cwd.clone() };
+        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir: config_dir.clone(), cwd: cwd.clone() };
 
         let resolved = crate::placement::spawn::project_key(&cwd);
         let expected_slug: String =
@@ -342,7 +361,7 @@ mod tests {
     #[test]
     fn no_transcript_directory_at_all_samples_as_absent() {
         let source =
-            TranscriptSource { config_dir: temp_dir("no-dir-cfg"), cwd: temp_dir("no-dir-cwd") };
+            TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir: temp_dir("no-dir-cfg"), cwd: temp_dir("no-dir-cwd") };
         assert_eq!(sample_transcript(&source, WORKER_WINDOW_TOKENS), None);
     }
 
@@ -352,7 +371,7 @@ mod tests {
         let config_dir = temp_dir("empty-turn-cfg");
         seed_transcript(&config_dir, &cwd, &[user_line("are you there")]);
 
-        let source = TranscriptSource { config_dir, cwd };
+        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir, cwd };
         assert_eq!(sample_transcript(&source, WORKER_WINDOW_TOKENS), None, "no assistant reply yet");
     }
 
@@ -365,7 +384,7 @@ mod tests {
         let tenth = WORKER_WINDOW_TOKENS / 10;
         seed_transcript(&config_dir, &cwd, &[user_line("hi"), assistant_line(u64::from(tenth), 0, 0)]);
 
-        let source = TranscriptSource { config_dir, cwd };
+        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir, cwd };
         let gauge = sample_transcript(&source, WORKER_WINDOW_TOKENS).expect("a completed turn exists");
         assert_eq!(gauge.used_tokens, tenth);
         assert_eq!(gauge.window_tokens, WORKER_WINDOW_TOKENS);
@@ -379,7 +398,7 @@ mod tests {
     fn the_most_recently_modified_transcript_file_wins() {
         let cwd = temp_dir("multi-cwd");
         let config_dir = temp_dir("multi-cfg");
-        let source = TranscriptSource { config_dir: config_dir.clone(), cwd: cwd.clone() };
+        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir: config_dir.clone(), cwd: cwd.clone() };
         let dir = project_dir(&source);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -395,7 +414,7 @@ mod tests {
     fn a_non_jsonl_file_in_the_project_dir_is_ignored() {
         let cwd = temp_dir("stray-cwd");
         let config_dir = temp_dir("stray-cfg");
-        let source = TranscriptSource { config_dir: config_dir.clone(), cwd: cwd.clone() };
+        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir: config_dir.clone(), cwd: cwd.clone() };
         let dir = project_dir(&source);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("notes.txt"), "not a transcript").unwrap();
@@ -419,7 +438,7 @@ mod tests {
         seed_transcript(&config_dir, &cwd, &[assistant_line(u64::from(WORKER_WINDOW_TOKENS / 20), 0, 0)]);
 
         let sources = GaugeSources::default();
-        sources.record(PaneId::Worker(2), TranscriptSource { config_dir, cwd });
+        sources.record(PaneId::Worker(2), TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir, cwd });
 
         assert_eq!(sources.sample(PaneId::Worker(2)).map(|g| g.pct), Some(5));
         assert_eq!(sources.sample(PaneId::Worker(3)), None, "an unrecorded peer stays absent");

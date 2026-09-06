@@ -555,7 +555,7 @@ mod tests {
     fn a_pane_with_a_sampled_transcript_carries_its_gauge_on_the_roster() {
         let cwd = temp_dir("cwd");
         let config_dir = temp_dir("cfg");
-        let source = TranscriptSource { config_dir: config_dir.clone(), cwd: cwd.clone() };
+        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir: config_dir.clone(), cwd: cwd.clone() };
 
         // Seed a transcript with usage well under the notice threshold —
         // `crate::placement::spawn::project_key` canonicalizes the same way
@@ -628,7 +628,7 @@ mod tests {
         .unwrap();
 
         let sources = gauges();
-        sources.record(PaneId::Worker(3), TranscriptSource { config_dir, cwd });
+        sources.record(PaneId::Worker(3), TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir, cwd });
         let shared_store = store();
         let mut notified = HashSet::new();
 

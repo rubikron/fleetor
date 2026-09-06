@@ -598,7 +598,11 @@ fn a_roster_ask_surfaces_a_workers_sampled_context_gauge() {
     let gauges = Arc::new(GaugeSources::default());
     gauges.record(
         target,
-        fleetor_shell::context_gauge::TranscriptSource { config_dir: config_dir.clone(), cwd },
+        fleetor_shell::context_gauge::TranscriptSource {
+            harness: fleetor_shell::placement::harness::claude_code(),
+            config_dir: config_dir.clone(),
+            cwd,
+        },
     );
 
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
