@@ -68,7 +68,7 @@
 //! at a call site inside `placement` takes the value that is already in scope; it
 //! does not re-derive it.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use fleetor_core::event::NoticeLevel;
 
@@ -628,7 +628,10 @@ pub struct ProjectIdentityAndTrust {
 /// lets a test seed against a *fabricated* operator installation — and it is the
 /// mechanism by which the operator's real one is never touched, since a test that
 /// hands a scratch path cannot reach `~/.codex` even by accident.
-#[derive(Debug, Clone, Copy)]
+/// **`Clone` but no longer `Copy`** (#30). [`main_repository`](Self::main_repository)
+/// is an owned path because it is *derived* from the cwd rather than handed in
+/// alongside it, and there is nowhere for a borrow of it to live.
+#[derive(Debug, Clone)]
 pub struct Seed<'a> {
     /// **Whether this is the operator's own pane** — the field #28 added, and the
     /// one that lets a harness narrow a pane FLEETOR drives without narrowing the
@@ -654,6 +657,29 @@ pub struct Seed<'a> {
     /// The pane's working directory, which checkpoint 14's trust record is keyed
     /// by through [`Harness::project_key`].
     pub cwd: &'a Path,
+    /// **The main repository [`cwd`](Self::cwd) belongs to**, canonicalized, or
+    /// `None` where there is no git — checkpoint 14's *second* trust candidate
+    /// (#30, C34).
+    ///
+    /// A harness that resolves trust by the cwd alone ignores it, as Claude Code's
+    /// seeder does. Codex does not: it resolves a directory against *two* exact
+    /// candidates — the canonicalized cwd, or the git root that cwd resolves to —
+    /// and for a linked worktree that root is the **main repository**. A pane
+    /// whose seed carries only the worktree key boots correctly at the worktree
+    /// root and parks on the first-run gate the moment its cwd is one directory
+    /// below it, which is the trap C34 measured (row 11).
+    ///
+    /// **The field is filled by [`Seed::new`] rather than by the four `place_*`
+    /// arms** (C39's rule: a ticket adds a field here, not a fourth argument
+    /// there), from [`main_repository`](crate::placement::main_repository) — the
+    /// parent of `git rev-parse --path-format=absolute --git-common-dir`, never
+    /// `--show-toplevel`. That is a subprocess, and it is still not a *process
+    /// read* in [`crate::placement`]'s sense: it derives a fact from the path it
+    /// was handed, so a test seeding against a scratch cwd cannot reach the
+    /// operator's repository any more than it can reach their `~/.codex`.
+    /// [`in_repository`](Self::in_repository) is how a test fabricates one
+    /// without git.
+    pub main_repository: Option<PathBuf>,
     /// The operator's own `HOME`, when this machine has one — the root the
     /// snapshot is taken from, for a harness that takes one. `None` on a machine
     /// nobody looked at, and a harness that seeds from the operator then seeds a
@@ -692,7 +718,24 @@ impl<'a> Seed<'a> {
     /// more; one whose carrier is a config key refuses this seed, so the omission
     /// cannot pass quietly — see [`with_brief`](Self::with_brief).
     pub fn new(config_dir: &'a Path, cwd: &'a Path, operator_home: Option<&'a Path>) -> Self {
-        Self { operators_own_seat: false, config_dir, cwd, operator_home, brief: "" }
+        Self {
+            operators_own_seat: false,
+            config_dir,
+            cwd,
+            main_repository: super::main_repository(cwd),
+            operator_home,
+            brief: "",
+        }
+    }
+
+    /// The same seed, told which repository the cwd belongs to (#30, C34).
+    ///
+    /// **For a test that has no git**, and for a caller that already knows the
+    /// answer. [`new`](Self::new) discovers it, so no production call site says
+    /// this; what it buys is a unit test of the two-key trust record that does not
+    /// have to build a repository and a linked worktree to reach the branch.
+    pub fn in_repository(self, main_repository: &Path) -> Self {
+        Self { main_repository: Some(main_repository.to_path_buf()), ..self }
     }
 
     /// The same seed, for the one pane the operator sits at (#28, C21).

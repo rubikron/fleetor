@@ -131,6 +131,31 @@
 //! it would have typed after `-c`, which is the form every one of those keys was
 //! measured through.
 //!
+//! ## Checkpoint 14 is two keys, and the second one is computed (#30, C34)
+//!
+//! A codex pane with no trust record parks on a modal first-run dialog that
+//! nothing on this side of the pty can answer, while every `fleet send` into it
+//! comes back `accepted` — the sharpest failure in this arc. So the seeder writes
+//! the record, and C34 measured what "the record" has to be: codex resolves trust
+//! by a **two-candidate exact lookup** — the canonicalized cwd, *or* the git root
+//! that cwd resolves to — with **no ancestor walk**. C16's inference that a parent
+//! key trusts what is under it is falsified.
+//!
+//! For a **linked worktree**, which is what every FLEETOR worker gets, the
+//! resolved root is the **main repository**, and that is the whole trap:
+//! `--show-toplevel` inside a worktree returns the worktree, and a key for the
+//! worktree trusts the worktree root and *not one directory below it*. So
+//! [`trust_candidates`] writes both keys, and the main-repository path arrives on
+//! [`Seed::main_repository`] from
+//! [`main_repository`](crate::placement::main_repository), which reads
+//! `--git-common-dir`.
+//!
+//! The row is written with [`set_owned`], not [`set_path`], which is the other
+//! half of the ticket: an operator's explicit `trust_level = "untrusted"` for the
+//! target loses, and C21 says a loss that loud gets a line in the feed
+//! ([`TRUST_WHY`]). `tests/codex_trust_gate.rs` is the behavioural half — a real
+//! pane, in a subdirectory of a real worktree, under both binaries.
+//!
 //! ## The snapshot, and why it is a copy (C6)
 //!
 //! Each codex pane's `CODEX_HOME` is a **bootstrap snapshot** of the operator's
@@ -661,14 +686,18 @@ pub const CODEX_SPEC: HarnessSpec = HarnessSpec {
     // is the same document as the seed file**, so one read-modify-write covers
     // both checkpoints.
     //
-    // `exact_path_match` is `true` because that is what this harness's
-    // `project_key` produces and what the seeder writes. It is also the field with
-    // the live spike behind it: the operator's own config carries
-    // `[projects."/Users/…/harness"]`, a *parent* of the repository, which
-    // suggests codex may resolve trust by repository root. Observed, not verified.
-    // **#30 verifies it**, and a `false` there means the seeder writes one row per
-    // repository rather than one per worktree — a change to this module's
-    // `trust_record`, not to its shape.
+    // `exact_path_match` is `true`, and **that is now measured rather than
+    // assumed** (#25, C34). The open question was C16's: the operator's own config
+    // carries `[projects."/Users/…/harness"]`, a *parent* of the repository, which
+    // suggested codex might resolve trust by repository root. It does not. There
+    // is no ancestor walk at all — a key for a plain parent trusts nothing below
+    // it, with or without git — so an exact match is exactly what this is.
+    //
+    // What the spike changed is not this field but the **number of keys**: codex
+    // matches a directory against *two* exact candidates, the canonicalized cwd
+    // and the git root it resolves to, so the seeder writes both. That is
+    // `trust_candidates`, and it is a fact about the pane rather than about the
+    // harness, which is why it is a computation there and not a field here.
     project_identity: ProjectIdentityAndTrust {
         canonicalize: true,
         exact_path_match: true,
@@ -853,8 +882,22 @@ fn install(
         }
     }
     notices.push(narrowing_notice(spec, &seat, seed.operators_own_seat));
-    for key in spec.project_identity.trust_keys {
-        set_path(&mut doc, &["projects", project_key, key], Value::from(TRUST_AFFIRMATIVE));
+    // Checkpoint 14, and it is **two** rows rather than one (#30, C34). Written
+    // with `set_owned` rather than `set_path` because an operator who marked a
+    // directory untrusted and then watches a fleet deploy into it is owed the
+    // sentence — C21's rule reaches the trust record too, and this is the override
+    // most likely to be read as FLEETOR ignoring them.
+    for project in trust_candidates(project_key, seed.main_repository.as_deref()) {
+        for key in spec.project_identity.trust_keys {
+            set_owned(
+                &mut doc,
+                &["projects", &project, key],
+                Value::from(TRUST_AFFIRMATIVE),
+                &seat,
+                TRUST_WHY,
+                &mut notices,
+            );
+        }
     }
 
     // 4. The measured trap, refused rather than installed.
@@ -1514,6 +1557,47 @@ fn containment_keys(spec: &'static HarnessSpec) -> Vec<(&'static str, &'static s
     spec.posture.sandbox_keys.iter().chain(spec.outbound.reachability_keys).copied().collect()
 }
 
+/// **The two `[projects."…"]` keys one pane's trust record is written under**,
+/// worktree first, main repository second (#30, C34).
+///
+/// Two rather than one, because codex resolves trust by a **two-candidate exact
+/// lookup**: a directory is trusted when either its canonicalized cwd or the git
+/// root that cwd resolves to appears verbatim as a key, and there is **no ancestor
+/// walk**. C16 read the operator's own `[projects."/Users/…/harness"]` — a parent
+/// of this repository — as evidence of by-root resolution; C34 falsified that
+/// (`~/harness` is not a repository at all, and the entry is there because codex
+/// was once run in it), so a key for a plain parent trusts nothing below it.
+///
+///  - **The cwd key** covers a pane sitting at its worktree root with no git
+///    resolution involved at all. One table, and it is the cheap half.
+///  - **The main-repository key** is the one that does the work. A key for a
+///    *linked worktree* trusts the worktree root and **not one directory below
+///    it**; a key for the main repository trusts the worktree and everything under
+///    it (C34, rows 10–12). A worker that `cd`s into `src-tauri/` and finds a
+///    first-run gate is the exact failure the second row prevents, and it is why
+///    [`main_repository`](crate::placement::main_repository) reads
+///    `--git-common-dir` rather than `--show-toplevel`.
+///
+/// **Both resolved, and deduplicated.** An unresolved key is silently ignored
+/// (C34, row 5), so the canonicalization is applied here rather than trusted to
+/// the caller — the same call [`CodexCli::project_key`] makes, for the same
+/// reason. Where the two candidates are the same path (an orchestrator sitting at
+/// the top of the main repository) this is one key, and a second identical table
+/// would be a second chance for the two to disagree.
+fn trust_candidates(project_key: &str, main_repository: Option<&Path>) -> Vec<String> {
+    let mut keys = vec![project_key.to_string()];
+    if let Some(repo) = main_repository {
+        let resolved = std::fs::canonicalize(repo)
+            .unwrap_or_else(|_| repo.to_path_buf())
+            .to_string_lossy()
+            .into_owned();
+        if !keys.contains(&resolved) {
+            keys.push(resolved);
+        }
+    }
+    keys
+}
+
 /// A key list's value, by **codex's own documented rule** for `-c key=value`:
 /// parsed as TOML, and the raw string used as a literal when that fails.
 ///
@@ -1552,6 +1636,29 @@ const CREDENTIAL_WHY: &str =
      FLEETOR's own provider entry, authenticated with the fleet's key from `.env`, so your \
      codex login stays out of a fenced pane and a worker cannot spend your plan. Your \
      orchestrator keeps the provider and the login you configured — it is your own pane";
+
+/// Why FLEETOR's trust record wins over an operator's own, on the one key where
+/// they can disagree (#30, C21, C34).
+///
+/// **A judgement, said out loud rather than squashed.** An operator who wrote
+/// `trust_level = "untrusted"` for a directory meant it, and FLEETOR overrules
+/// them — because a codex pane with no trust record parks on a modal first-run
+/// dialog that nothing on this side of the pty can answer, while `fleet send`
+/// keeps reporting `accepted` (L1, D-034). Both of those are bad; only one of them
+/// is a fleet that cannot run. So the override stands and the sentence explains
+/// itself, which is the whole difference between overriding loudly and overriding
+/// silently.
+///
+/// The cost is bounded and the sentence says where: the record lives in the pane's
+/// **own disposable `CODEX_HOME`**, the operator's `~/.codex` is never written
+/// (C6), and what a trusted project may actually *do* is still the seatbelt's
+/// answer rather than this key's — so this is not a widening of Tier 1.7.
+const TRUST_WHY: &str =
+    "a codex pane with no trust record parks on a first-run dialog nothing can answer from \
+     this side of the pty, and every `fleet send` into it reports `accepted` while the pane \
+     reads nothing. FLEETOR records trust in this pane's own disposable CODEX_HOME only — \
+     your `~/.codex` is untouched, and what the pane may write is still bounded by the \
+     sandbox, not by this key";
 
 /// Why the four features are off, and the one seat they are not off on.
 const FEATURES_WHY: &str =
@@ -1934,6 +2041,21 @@ mod tests {
             self.seed_briefed(pane, cwd, A_BRIEF)
         }
 
+        /// Seed one pane whose cwd is told which repository it belongs to (#30).
+        ///
+        /// The fabricated half of checkpoint 14's second key: it reaches the
+        /// two-candidate branch without building a repository, so the tests that
+        /// are about *what is written* stay separate from the one that is about
+        /// *where the path comes from*.
+        fn seed_in(&self, pane: &str, cwd: &Path, repo: &Path) -> Result<PathBuf, String> {
+            let dir = self.pane_dir(pane);
+            let home = self.operator_home();
+            codex().seed_config_dir(
+                &Seed::new(&dir, cwd, Some(&home)).in_repository(repo).with_brief(A_BRIEF),
+            )?;
+            Ok(dir)
+        }
+
         /// The same seeding, with this pane's brief spelled out — the seam #27
         /// added, and the reason every other test here can stay about the
         /// snapshot: a codex seed with no brief is refused, so the brief is
@@ -1964,6 +2086,41 @@ mod tests {
         fn drop(&mut self) {
             std::fs::remove_dir_all(&self.root).ok();
         }
+    }
+
+    /// One git command in `dir`, with identity, signing and hooks pinned per
+    /// command so a result never depends on the machine's own git configuration.
+    fn git_in(dir: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.email=scratch@fleetor.test"])
+            .args(["-c", "user.name=Scratch"])
+            .args(["-c", "commit.gpgsign=false"])
+            .args(["-c", "core.hooksPath=/dev/null"])
+            .args(args)
+            .output()
+            .expect("git must be on PATH for these tests");
+        assert!(
+            output.status.success(),
+            "git {args:?} in {} failed: {}",
+            dir.display(),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    /// A real repository with one commit — what `git worktree add` needs before it
+    /// will succeed.
+    ///
+    /// **Real rather than fabricated**, because the fact under test is what git
+    /// itself reports for `--git-common-dir` inside a *linked worktree*, and a
+    /// hand-built `.git` would be a test of this file's idea of a worktree.
+    fn init_repo(dir: &Path) {
+        std::fs::create_dir_all(dir).expect("a repository root");
+        std::fs::write(dir.join("README.md"), "scratch\n").expect("something to commit");
+        git_in(dir, &["init", "-q", "-b", "main"]);
+        git_in(dir, &["add", "-A"]);
+        git_in(dir, &["commit", "-q", "-m", "first"]);
     }
 
     /// Every file under `at`, by relative path, with its bytes — the handle a test
@@ -2344,6 +2501,165 @@ args = ["--root", "~/notes"]
             seeded["projects"]["/Users/operator/harness"]["trust_level"].as_str(),
             Some(TRUST_AFFIRMATIVE),
         );
+    }
+
+    /// **Checkpoint 14 is two keys, not one** (#30, C34).
+    ///
+    /// The measurement that decides this ticket: codex trusts a directory when
+    /// *either* its canonicalized cwd or the git root it resolves to appears
+    /// verbatim as a key, with no ancestor walk. A pane in a linked worktree whose
+    /// seed carries only the worktree key parks on the first-run gate the moment
+    /// its cwd is one directory below the worktree root — so both go in.
+    #[test]
+    fn the_trust_record_carries_the_worktree_and_the_main_repository() {
+        let machine = Machine::new("trust-two-keys");
+        a_full_installation(&machine);
+
+        let repo = machine.root.join("main-repo");
+        let deep = machine.root.join("work").join("src").join("deep");
+        std::fs::create_dir_all(&repo).expect("a main repository");
+        std::fs::create_dir_all(&deep).expect("a pane cwd below its worktree");
+        machine.seed_in("worker-1", &deep, &repo).expect("seed");
+
+        let seeded = machine.seeded("worker-1");
+        let cwd_key = codex().project_key(&deep);
+        let repo_key = codex().project_key(&repo);
+        assert_ne!(cwd_key, repo_key, "the fixture has two distinct candidates");
+        for key in [&cwd_key, &repo_key] {
+            assert_eq!(
+                seeded["projects"][key]["trust_level"].as_str(),
+                Some(TRUST_AFFIRMATIVE),
+                "checkpoint 14 left {key} untrusted:\n{seeded}",
+            );
+            // Resolved, or it is silently ignored — an entry spelled `/tmp/…` does
+            // not match a cwd that resolves to `/private/tmp/…` (C34, row 5).
+            assert_eq!(
+                Path::new(key),
+                std::fs::canonicalize(key).expect("the key resolves").as_path(),
+                "{key} is not canonical",
+            );
+        }
+    }
+
+    /// One candidate, one key: an orchestrator sitting at the top of the main
+    /// repository is trusted by one table rather than by two identical ones.
+    #[test]
+    fn the_two_candidates_collapse_to_one_key_when_they_are_the_same_path() {
+        let machine = Machine::new("trust-one-key");
+        a_full_installation(&machine);
+        let cwd = machine.cwd();
+        machine.seed_in("orch", &cwd, &cwd).expect("seed");
+
+        let key = codex().project_key(&cwd);
+        let seeded = machine.seeded("orch");
+        assert_eq!(seeded["projects"][&key]["trust_level"].as_str(), Some(TRUST_AFFIRMATIVE));
+        assert_eq!(
+            seeded.to_string().matches(&format!("[projects.{key:?}]")).count(),
+            1,
+            "the same candidate was written twice:\n{seeded}",
+        );
+    }
+
+    /// **The `--show-toplevel` trap, as an artifact assertion** (#30, C34).
+    ///
+    /// A real repository and a real linked worktree, with the pane's cwd a
+    /// *subdirectory* of the worktree — the shape every FLEETOR worker runs in.
+    /// The key that has to be there is the **main repository**, which is the parent
+    /// of `--git-common-dir`; `--show-toplevel` inside that worktree returns the
+    /// worktree, and a seed carrying only that gates one directory down.
+    ///
+    /// The behavioural half of the same claim — that a pane booted here renders no
+    /// gate — is `tests/codex_trust_gate.rs`, against the real binary.
+    #[test]
+    fn the_main_repository_key_is_the_parent_of_the_git_common_dir() {
+        let machine = Machine::new("trust-worktree");
+        a_full_installation(&machine);
+
+        let repo = machine.root.join("repo");
+        init_repo(&repo);
+        let worktree = machine.root.join("wt");
+        git_in(&repo, &["worktree", "add", "-q", "-b", "fleet/probe", &worktree.to_string_lossy()]);
+        let deep = worktree.join("sub").join("deep");
+        std::fs::create_dir_all(&deep).expect("a subdirectory of the worktree");
+
+        // No `in_repository` here: this is the discovery path, and the point is
+        // that `Seed::new` finds the repository on its own.
+        machine.seed_at("worker-1", &deep).expect("seed");
+
+        let seeded = machine.seeded("worker-1");
+        let repo_key = codex().project_key(&repo);
+        let worktree_key = codex().project_key(&worktree);
+        assert_ne!(repo_key, worktree_key, "the fixture really is a linked worktree");
+        assert_eq!(
+            seeded["projects"][&repo_key]["trust_level"].as_str(),
+            Some(TRUST_AFFIRMATIVE),
+            "the main-repository key is missing — a pane below the worktree root will gate:\n\
+             {seeded}",
+        );
+        // The worktree's own `--show-toplevel` is *not* what was written as the
+        // second key. It is allowed to be absent; what is not allowed is for it to
+        // be there *instead*.
+        assert!(
+            seeded["projects"].as_table_like().and_then(|t| t.get(&worktree_key)).is_none(),
+            "the seeder wrote `--show-toplevel`'s answer, which does not cover {}:\n{seeded}",
+            deep.display(),
+        );
+    }
+
+    /// **An operator's `untrusted` loses, and is told so** (#30, C21).
+    ///
+    /// FLEETOR must seed trust or every pane parks unanswerable, so the override
+    /// stands. What this pins is that it is not *silent* — the same rule the
+    /// sandbox keys already follow, applied to the one key an operator can have
+    /// deliberately set the other way.
+    #[test]
+    fn an_operators_untrusted_directory_is_overruled_out_loud() {
+        let machine = Machine::new("trust-override");
+        let cwd = machine.cwd();
+        let key = codex().project_key(&cwd);
+        machine.operator_file(
+            CONFIG_FILE,
+            &format!("[projects.{key:?}]\ntrust_level = \"untrusted\"\n"),
+        );
+
+        let notices = machine.notices("worker-1");
+        let told = notices
+            .iter()
+            .find(|(level, text)| {
+                *level == NoticeLevel::Warn && text.contains("trust_level") && text.contains(&key)
+            })
+            .unwrap_or_else(|| {
+                panic!("the operator's `untrusted` was overruled in silence: {notices:#?}")
+            });
+        assert!(
+            told.1.contains("untrusted") && told.1.contains(TRUST_AFFIRMATIVE),
+            "the line says neither what they set nor what it became: {}",
+            told.1,
+        );
+        // And it did override — the announcement is not an excuse to leave the
+        // pane parked.
+        assert_eq!(
+            machine.seeded("worker-1")["projects"][&key]["trust_level"].as_str(),
+            Some(TRUST_AFFIRMATIVE),
+        );
+    }
+
+    /// A machine whose operator never wrote a trust row hears nothing about one.
+    ///
+    /// `set_owned`'s conditional shape, on the key that is written for *every*
+    /// pane: an unconditional line here would be one more sentence in every feed,
+    /// every run, saying nothing an operator did not already expect.
+    #[test]
+    fn a_machine_with_no_trust_opinion_is_not_told_about_trust() {
+        let machine = Machine::new("trust-quiet");
+        a_full_installation(&machine);
+        let notices = machine.notices("worker-1");
+        let told: Vec<&String> = notices
+            .iter()
+            .filter(|(level, text)| *level == NoticeLevel::Warn && text.contains("trust_level"))
+            .map(|(_, text)| text)
+            .collect();
+        assert!(told.is_empty(), "an ordinary machine was told about trust anyway: {told:#?}");
     }
 
     #[test]

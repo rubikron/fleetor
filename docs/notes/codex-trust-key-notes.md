@@ -212,6 +212,15 @@ in a subdirectory of its worktree renders no gate.
   Untried.
 - **Whether accepting the gate writes the entry back, and where.** No arm ever answers the
   dialog, deliberately — answering it is a write, and this spike writes to no real config.
+- **What FLEETOR's own wake does to a gated pane.** Appended by #30. `BringUp::AfterWaking`
+  presses `\r` until the pane goes quiet, and `1. Yes, continue` is the gate's *pre-selected*
+  option — so a woken pane plausibly answers the dialog rather than parking on it. Untried:
+  every arm here, and every arm in `tests/codex_trust_gate.rs`, boots under
+  `BringUp::AtOnce` and types nothing, precisely so the gate is observed rather than
+  dismissed. The probe that would settle it is this one with a wake in front of it. It does
+  not change what #30 implements — a pane whose trust FLEETOR decided by pressing return is
+  a pane FLEETOR trusted blindly — but "the pane parks indefinitely" is a statement about a
+  pane nobody is typing into.
 - **`trust_level` values other than `"trusted"`.** Only that a bogus value fails config
   loading outright.
 

@@ -1004,6 +1004,46 @@ pub(crate) fn git(repo: &Path, args: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
+/// **The main repository a directory belongs to**, canonicalized — or `None`
+/// where there is no git at all (WP-25 phase 2, #30; C34).
+///
+/// The measurement C34 records is that codex resolves trust by a *two-candidate
+/// exact lookup*: a directory is trusted when either its canonicalized cwd or the
+/// git root it resolves to appears verbatim as a `[projects."…"]` key, with no
+/// ancestor walk. This is the second candidate, and computing it is the half that
+/// fails silently when it is guessed.
+///
+/// **The parent of `--git-common-dir`, never `--show-toplevel`.** Inside a linked
+/// worktree — which is what every FLEETOR worker gets — `--show-toplevel` returns
+/// the *worktree*, and a key for the worktree trusts the worktree root and **not
+/// one directory below it** (C34, row 11). The common dir is the main repository's
+/// `.git` on every worktree of a repository, so its parent is the one path that
+/// trusts the worktree and everything under it (row 12). The obvious computation
+/// produces the key that does not cover subdirectories, which is why this function
+/// exists rather than a `--show-toplevel` call at the seeder.
+///
+/// **Canonicalized here rather than at the caller**, because an unresolved key is
+/// silently ignored: an entry written `/tmp/…` does not match a cwd that resolves
+/// to `/private/tmp/…` (C34, row 5). Same call, same reason, as
+/// [`Harness::project_key`](harness::Harness::project_key).
+///
+/// Reads a path it was handed and nothing else, so a test pointed at a scratch
+/// repository cannot reach the operator's — the property that lets this be
+/// discovered where every other machine fact is.
+pub(crate) fn main_repository(cwd: &Path) -> Option<PathBuf> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let common = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+    std::fs::canonicalize(common.parent()?).ok()
+}
+
 /// What the operator is told when the `fleet` binary is nowhere. Pinned by a test
 /// for the same reason [`orch_config_dir_notice`] is.
 pub const MISSING_FLEET_BIN: &str =
