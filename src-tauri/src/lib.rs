@@ -103,6 +103,8 @@ pub fn run() {
             fleet::fleet_target,
             fleet::fleet_pick_target,
             fleet::fleet_set_target,
+            fleet::fleet_gate,
+            fleet::fleet_set_seats,
             fleet::fleet_roster,
             fleet::fleet_send,
             fleet::critic_interview_open,

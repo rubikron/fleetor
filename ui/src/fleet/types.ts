@@ -77,6 +77,102 @@ export function paneSlot(pane: PaneId): number | null {
   return m ? Number(m[1]) : null;
 }
 
+// --- the start gate's harness and model pickers (WP-25 #35) -------------------
+
+/// **Which of four states a harness is in on this machine**, mirroring the words
+/// `HarnessOffer::from` in `src-tauri/src/fleet.rs` decides.
+///
+/// The two lists are pinned against each other by `src-tauri/tests/gate_pickers.rs`,
+/// for the reason `views.rs` pins its two: a fifth state added on one side and not
+/// the other renders as nothing at all, exactly the way a view missing from the
+/// restore list was silently unreachable.
+///
+/// `unreadable` is deliberately **not** a refusal. A vendor that changed its report
+/// format is a working installation the gate could not parse, and disabling a seat
+/// on the strength of a parse error is the failure the narrow refusal exists to
+/// avoid.
+export type HarnessStatus = "logged-in" | "no-credential" | "not-installed" | "unreadable";
+
+/// The two states in which a harness may not take a seat.
+///
+/// **Disabled, never hidden** — a supported feature must never look unimplemented,
+/// so the option stays in the list carrying `reason` beside it.
+export const CANNOT_TAKE_A_SEAT: readonly HarnessStatus[] = ["no-credential", "not-installed"];
+
+export function canTakeASeat(harness: HarnessOffer): boolean {
+  return !CANNOT_TAKE_A_SEAT.includes(harness.status);
+}
+
+/// One model a harness would accept, as the vendor names it. The slug goes on the
+/// argv; the display name is what a person recognises.
+export interface ModelOffer {
+  slug: string;
+  display_name: string;
+}
+
+/// One harness as the gate offers it — the facts that sit beside the model.
+export interface HarnessOffer {
+  name: string;
+  invoked: string;
+  status: HarnessStatus;
+  /// The account *shape*, never a plan tier — `doctor` reports the shape and the
+  /// tier lives inside the stored token (C14 as narrowed by C58).
+  account: string | null;
+  /// Why this harness cannot take a seat, in the vendor's own words.
+  reason: string | null;
+  /// **What a passing check does not prove.** Present exactly when this machine
+  /// looks logged in, which is the only state where an unqualified green misleads.
+  caveat: string | null;
+  version: string | null;
+  /// The provider the vendor resolved — a fact, never a control. There is no
+  /// provider picker anywhere.
+  provider: string | null;
+  /// The vendor's own catalog, in the vendor's order. Empty is an answer: the gate
+  /// offers no list and the operator types a name.
+  models: ModelOffer[];
+  /// Whether the PATH name and the vendor binary behind it agreed.
+  readings_agree: boolean;
+  resolved: string | null;
+}
+
+/// One seat's choice — a harness and the model it *starts* with.
+///
+/// `model: null` is the seat's own default: the orchestrator's
+/// `default (your login)` sentinel, or a worker's launch-configured model.
+export interface SeatChoice {
+  harness: string;
+  model: string | null;
+}
+
+/// What the operator picked, for every seat that may carry a choice.
+///
+/// Five seats. **The two judges are absent and there is no field for them** — a
+/// judge running the same harness as the judged is a variable this arc does not
+/// introduce, and the absence is structural on both sides of the wire.
+export interface FleetSeats {
+  orch: SeatChoice;
+  workers: SeatChoice[];
+}
+
+/// **The whole of what the start gate renders from.**
+///
+/// One value, so the pickers and the summary cannot be reading two things: the
+/// summary is generated from `seats`, and `seats` is what the backend places
+/// against.
+export interface GateState {
+  harnesses: HarnessOffer[];
+  seats: FleetSeats;
+  /// The model a worker runs when the operator names none.
+  worker_model_default: string;
+}
+
+/// The orchestrator's sentinel, and the one label it wears (M2).
+///
+/// It is a *seat* default rather than a model name — `null` on the wire — so it
+/// keeps reachable exactly the command the orchestrator ran before this picker
+/// existed: the operator's own login, naming no model at all.
+export const DEFAULT_YOUR_LOGIN = "default (your login)";
+
 /// What the shell knows about a pane. Deliberately not the Rust `PaneState`:
 /// the shell learns liveness from its own pty channels (first output → live,
 /// exit → dead), and "idle" means it has not been started, which the backend has

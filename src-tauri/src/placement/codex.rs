@@ -3708,6 +3708,7 @@ args = ["--root", "~/notes"]
         let worker = crate::placement::spawn::worker_command_with(
             codex(),
             1,
+            &context.launch.worker_model,
             Path::new("/tmp"),
             Path::new("/tmp/home"),
             Path::new("/tmp/cfg"),
@@ -3734,6 +3735,7 @@ args = ["--root", "~/notes"]
 
         let orch = crate::placement::spawn::orch_command_with(
             codex(),
+            None,
             Path::new("/tmp"),
             Path::new("/tmp/s.sock"),
             Path::new("/tmp/cfg-orch"),

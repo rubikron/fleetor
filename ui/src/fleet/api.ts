@@ -9,6 +9,8 @@ import {
   type BootSnapshot,
   type FleetConfig,
   type FleetEvent,
+  type FleetSeats,
+  type GateState,
   type PaneEntry,
   type PaneId,
   type RunRecord,
@@ -41,6 +43,32 @@ export function pickTarget(): Promise<string | null> {
 /// (`~` expanded, `..` and symlinks resolved).
 export function setTarget(path: string): Promise<string> {
   return invoke<string>("fleet_set_target", { path });
+}
+
+// --- the start gate's harness and model pickers (WP-25 #35) -------------------
+
+/// Everything the start gate renders: what each harness reports about this machine,
+/// what is currently picked, and the model a worker runs when nobody names one.
+///
+/// **`refresh` is the re-check button and it is a different question.** `false`
+/// answers from the reading the backend holds, probing only if there is none;
+/// `true` probes again whatever is held, because an operator who just logged in
+/// from another terminal has changed a fact no cached answer contains. It is not
+/// the default: the probe costs a subprocess per harness and about 1.4 s, and
+/// paying that on every render would put it on an interaction the operator repeats.
+export function fetchGate(refresh = false): Promise<GateState> {
+  return invoke<GateState>("fleet_gate", { refresh });
+}
+
+/// Record what the operator picked, and resolve with **what is now stored**.
+///
+/// The resolved value is the backend's, read back — not the argument echoed. The
+/// gate's summary renders from it, and a summary rendered from what the interface
+/// asked for rather than from what took effect is a gate promising a fleet that is
+/// not the one that will spawn. Rejects with a message the operator can act on when
+/// a harness named is not one this build can place.
+export function setSeats(seats: FleetSeats): Promise<FleetSeats> {
+  return invoke<FleetSeats>("fleet_set_seats", { seats });
 }
 
 /// Every pane and its state, each worker's context gauge attached when one

@@ -36,7 +36,7 @@ use fleetor_core::Store;
 use fleetor_db::SqliteStore;
 use fleetor_ipc::UnixTransport;
 use fleetor_server::{AppCommand, BroadcastStore, Hub, Interview};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, oneshot, Notify};
@@ -95,6 +95,295 @@ pub struct FleetConfig {
     gate: String,
 }
 
+// --- the start gate's seats (WP-25 #35; M1, M2, M3, M15, C23) -----------------
+
+/// **One seat's choice: a harness and the model it starts with** (M1).
+///
+/// The selection unit is a *pair*, which is M1 unamended — not a harness alone and
+/// not a named profile. Both halves travel together because a model name only means
+/// something relative to the harness that would accept it.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SeatChoice {
+    /// The harness's [`harness::HarnessSpec`] name — the same string `manifest.json`
+    /// records (M24) and the same one [`harness::by_name`] resolves. One spelling,
+    /// three readers.
+    pub harness: String,
+    /// The model this seat starts with, or `None` for the seat's own default: the
+    /// orchestrator's `default (your login)` sentinel (M2), or a worker's
+    /// launch-configured model.
+    pub model: Option<String>,
+}
+
+/// **What the operator picked, for every seat that may carry a choice** (C23).
+///
+/// Five seats: the orchestrator and the four workers. **The two judges are absent
+/// and there is no field for them**, which is C15 made structural one layer up from
+/// [`PaneSpec`] — offering a judge a harness later is a type change here as well as
+/// there, rather than a value somebody sets.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct FleetSeats {
+    /// The operator's own seat.
+    pub orch: SeatChoice,
+    /// The four fenced workers, in slot order — the row C23 says a disclosure
+    /// expands into four.
+    pub workers: Vec<SeatChoice>,
+}
+
+impl FleetSeats {
+    /// The fleet nobody has picked yet: Claude Code everywhere, the orchestrator on
+    /// its sentinel, the workers on the launch configuration's model.
+    ///
+    /// **Byte for byte the fleet that spawned before the pickers existed**, which is
+    /// the property that makes shipping them safe: an operator who never opens a
+    /// dropdown gets exactly what they got yesterday.
+    fn unpicked(worker_model: &str) -> Self {
+        let claude = harness::claude_code().spec().name.to_string();
+        let workers = fleetor_core::pane::WORKER_SLOTS
+            .iter()
+            .map(|_| SeatChoice {
+                harness: claude.clone(),
+                model: Some(worker_model.to_string()),
+            })
+            .collect();
+        Self { orch: SeatChoice { harness: claude, model: None }, workers }
+    }
+
+    /// The same selection, refused if it names something that cannot be placed.
+    ///
+    /// **Two checks, and neither is about models.** A harness name that no longer
+    /// resolves is a fleet that cannot spawn, and a wrong number of workers is a
+    /// fleet with a seat nobody chose for. A *model* that no longer exists is the
+    /// other kind of problem entirely — it is real, it is #36's, and refusing it
+    /// here would refuse it silently at the wrong moment.
+    fn validated(self) -> Result<Self, String> {
+        let expected = fleetor_core::pane::WORKER_SLOTS.len();
+        if self.workers.len() != expected {
+            return Err(format!("a fleet has {expected} worker seats, not {}", self.workers.len()));
+        }
+        for seat in std::iter::once(&self.orch).chain(&self.workers) {
+            if harness::by_name(&seat.harness).is_none() {
+                let registered: Vec<&str> =
+                    harness::registered().iter().map(|h| h.spec().name).collect();
+                return Err(format!(
+                    "`{}` is not a harness this build can place — the registered ones are {}",
+                    seat.harness,
+                    registered.join(", "),
+                ));
+            }
+        }
+        Ok(self)
+    }
+
+    /// The spec one seat places as, resolved against the registry.
+    ///
+    /// `None` for a pane that carries no choice — the two judges and the operator —
+    /// so the caller keeps the arms it already had rather than growing a branch
+    /// here.
+    fn spec_for(&self, pane: PaneId) -> Option<PaneSpec> {
+        let seat = match pane {
+            PaneId::Orch => &self.orch,
+            PaneId::Worker(slot) => self.workers.get(usize::from(slot).checked_sub(1)?)?,
+            PaneId::Evaluator | PaneId::Critic | PaneId::Operator => return None,
+        };
+        let harness = harness::by_name(&seat.harness)?;
+        let placed = match pane {
+            PaneId::Orch => PaneSpec::orch(harness),
+            PaneId::Worker(slot) => PaneSpec::worker(slot, harness),
+            _ => return None,
+        };
+        Some(match &seat.model {
+            Some(model) => placed.with_model(model),
+            None => placed,
+        })
+    }
+}
+
+/// **What each harness reports about this machine, held for the gate** (C58).
+///
+/// **Held rather than re-probed, and the mutex is the whole of the waiting.** The
+/// probe costs a subprocess per harness and, for codex, a live provider reachability
+/// request measured at about 1.4 s — so it may run once, it may not run on the path
+/// between a click and a pty, and two callers arriving together must produce one
+/// probe rather than two. A `Mutex` held *across* the probe gives all three: the
+/// second caller blocks until the first has finished, then finds the answer already
+/// there. That is deliberate, not a lock held too long.
+///
+/// **This is not [`Host`] kept at bootstrap**, and the distinction is D13's. The
+/// spawn path still discovers the machine at every spawn and never reads this; what
+/// is cached here is the *gate's* reading, which exists because the operator is
+/// waiting on one screen and not because anything wanted a snapshot.
+#[derive(Default)]
+struct HarnessGate(Mutex<Option<Vec<harness::HarnessReadiness>>>);
+
+/// One reading of the harnesses, and the sentences it produced for the feed.
+type HarnessReading = (Vec<harness::HarnessReadiness>, Vec<(NoticeLevel, String)>);
+
+impl HarnessGate {
+    /// What the harnesses said, probing once if nobody has yet.
+    ///
+    /// Returns the notices too, and empty ones when the answer was already there:
+    /// the operator is told what a probe found at the moment it finds it, and a
+    /// cached read has found nothing new to say.
+    fn read(&self) -> HarnessReading {
+        let mut held = self.held();
+        match held.as_ref() {
+            Some(known) => (known.clone(), Vec::new()),
+            None => {
+                let (fresh, notices) = probe_the_harnesses();
+                *held = Some(fresh.clone());
+                (fresh, notices)
+            }
+        }
+    }
+
+    /// **Ask again, whatever is held** — the re-check button (M17, user story 10).
+    ///
+    /// The operator pressing it has just logged in from another terminal, and that
+    /// is a fact no cached answer can contain. Re-rendering a held snapshot here
+    /// would be the control that looks like it worked and did nothing.
+    fn refresh(&self) -> HarnessReading {
+        let mut held = self.held();
+        let (fresh, notices) = probe_the_harnesses();
+        *held = Some(fresh.clone());
+        (fresh, notices)
+    }
+
+    /// Forget what is held, without paying for a new reading.
+    ///
+    /// Called when the target changes: codex resolves trust and project identity
+    /// against a directory (C34), so a fleet pointed somewhere else has been told
+    /// about a machine in a state it is no longer in. Invalidating costs nothing and
+    /// the next [`Self::read`] pays for the truth, which is the right way round —
+    /// the operator who just retyped a path is not the one waiting on a probe.
+    fn invalidate(&self) {
+        *self.held() = None;
+    }
+
+    /// The cell, recovered from a poisoned lock rather than propagated.
+    ///
+    /// A panic inside the probe must not turn every later gate render into an error:
+    /// what is behind this mutex is a cache, and the worst a poisoned one can hold
+    /// is a stale reading the re-check button already exists to replace.
+    fn held(&self) -> std::sync::MutexGuard<'_, Option<Vec<harness::HarnessReadiness>>> {
+        self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+/// The gate's one reading of the machine, with the sentences it produced.
+///
+/// The sentences and the conditions are placement's (`Host::harness_notices`); every
+/// caller here does the emit and nothing more, exactly as `machine_notices` is used
+/// on the spawn path.
+fn probe_the_harnesses() -> HarnessReading {
+    let host = Host::discover_for_the_gate();
+    let notices = host.harness_notices();
+    (host.harnesses, notices)
+}
+
+/// One harness as the start gate offers it — the facts beside the model (M17, C14).
+#[derive(Serialize, Clone)]
+pub struct HarnessOffer {
+    /// The harness's name, which is also the value a [`SeatChoice`] carries.
+    name: String,
+    /// The program name as invoked, resolved on the operator's own `PATH`.
+    invoked: String,
+    /// **Which of the four states this machine is in**, as one word the interface
+    /// switches on. The spellings are mirrored in `ui/src/fleet/types.ts` and the
+    /// two lists are pinned against each other by `tests/gate_pickers.rs` — a fifth
+    /// state added on one side and not the other renders as nothing at all.
+    status: &'static str,
+    /// The account shape, where this machine is logged in (C14 as narrowed by C58 —
+    /// the *shape*, never a plan tier).
+    account: Option<String>,
+    /// **Why this harness cannot take a seat, in the vendor's own words.** Present
+    /// for every state but `logged-in`, and rendered *inline beside the disabled
+    /// option* rather than in place of it: a supported feature must never look
+    /// unimplemented (user story 9).
+    reason: Option<String>,
+    /// **What a passing check does not prove** (#34's caveat, M17's twin). Present
+    /// exactly when this machine looks logged in, because that is the only state
+    /// where an unqualified green would mislead anybody.
+    caveat: Option<&'static str>,
+    /// The vendor's own version string.
+    version: Option<String>,
+    /// The provider the vendor resolved — a fact, never a control (C2, C9).
+    provider: Option<String>,
+    /// What the vendor's own catalog resolution offers, in the vendor's order. Empty
+    /// is an answer: the gate offers no list and the operator types a name.
+    models: Vec<ModelOffer>,
+    /// Whether the `PATH` name and the vendor binary behind it agreed (C47). `false`
+    /// with a resolved binary means a wrapper is injecting flags, and what a pane
+    /// runs under is not what this row describes.
+    readings_agree: bool,
+    /// The vendor binary the `PATH` name resolved to, absolutely (C47).
+    resolved: Option<String>,
+}
+
+/// One model a harness would accept, as the vendor names it.
+#[derive(Serialize, Clone)]
+pub struct ModelOffer {
+    slug: String,
+    display_name: String,
+}
+
+/// **The whole of what the start gate renders from** (M15).
+///
+/// One value, so the pickers and the summary cannot be reading two things. The
+/// summary is generated from `seats`, and `seats` is what [`spawn_pane`] places
+/// against — that is the chain M15 asks for, and it has no branch in it.
+#[derive(Serialize, Clone)]
+pub struct GateState {
+    /// Every registered harness, offered or refused, **never filtered**.
+    harnesses: Vec<HarnessOffer>,
+    /// What is currently picked, which is what a click will spawn.
+    seats: FleetSeats,
+    /// The model a worker runs when the operator names none, from `prompts/`.
+    worker_model_default: String,
+}
+
+impl HarnessOffer {
+    /// One harness's readiness, in the shape the interface reads.
+    ///
+    /// **The four status words are decided here and nowhere else.** `unreadable` is
+    /// deliberately not a refusal (C14): a vendor that changed its report format is
+    /// a working installation the gate could not parse, and treating that as "logged
+    /// out" would refuse a seat on the strength of a parse error.
+    fn from(readiness: &harness::HarnessReadiness) -> Self {
+        use harness::LoginState;
+        let (status, account, reason) = match &readiness.login {
+            LoginState::LoggedIn(shape) => ("logged-in", Some(shape.display()), None),
+            LoginState::NoCredential { summary } => ("no-credential", None, Some(summary.clone())),
+            LoginState::NotInstalled => (
+                "not-installed",
+                None,
+                Some(format!(
+                    "`{}` is not on the PATH this app was launched with, so no seat can run it.",
+                    readiness.invoked,
+                )),
+            ),
+            LoginState::Unreadable { why } => ("unreadable", None, Some(why.clone())),
+        };
+        let models = readiness
+            .models
+            .iter()
+            .map(|m| ModelOffer { slug: m.slug.clone(), display_name: m.display_name.clone() })
+            .collect();
+        Self {
+            name: readiness.harness.name.to_string(),
+            invoked: readiness.invoked.clone(),
+            status,
+            account,
+            reason,
+            caveat: readiness.login.caveat(),
+            version: readiness.version.clone(),
+            provider: readiness.provider.clone(),
+            models,
+            readings_agree: readiness.readings_agree,
+            resolved: readiness.resolved.as_ref().map(|p| p.display().to_string()),
+        }
+    }
+}
+
 /// The live backend, created once by [`fleet_bootstrap`] and kept for the app's
 /// lifetime. Owns the tokio runtime the follower, hub, and delivery loop run on.
 struct Fleet {
@@ -118,6 +407,18 @@ struct Fleet {
     /// reason the target is: a fleet whose panes were briefed from two revisions
     /// of a file being edited is not a fleet anyone can reason about.
     context: PaneContext,
+    /// **What the operator picked at the start gate** (#35; M1, M15, C23).
+    ///
+    /// Held here rather than passed at spawn because panes come up one at a time,
+    /// lazily, as their terminals mount — so a selection travelling on the spawn
+    /// call would be one choice spread across five invocations of the pty path. It
+    /// is written by [`fleet_set_seats`] before any pane exists and read by
+    /// [`spawn_pane`], which is the whole of M15: the gate's summary renders what
+    /// this cell holds, and this cell is what places.
+    seats: FleetSeats,
+    /// **What each harness reports about this machine**, probed once and re-probed
+    /// on demand (C58). See [`HarnessGate`].
+    harnesses: Arc<HarnessGate>,
     /// Where each worker's own transcript lives, recorded at spawn — the WP-04
     /// live gauge's source of truth. Empty until a worker has actually spawned.
     gauges: Arc<GaugeSources>,
@@ -323,9 +624,16 @@ pub fn fleet_bootstrap(
     //
     // The sentences and the conditions are placement's (`Host::harness_notices`);
     // this is the emit and nothing more, exactly as `machine_notices` is above.
+    //
+    // **The reading is kept, not only narrated.** #34 threw the `Host` away once it
+    // had emitted its notices; #35's gate renders from it, so it lands on
+    // [`HarnessGate`] — one probe answering both the feed and the pickers, which is
+    // also what stops the first [`fleet_gate`] call paying for a second one.
+    let harnesses = Arc::new(HarnessGate::default());
     let harness_store = store.clone();
+    let filling = harnesses.clone();
     std::thread::spawn(move || {
-        for (level, text) in placement::Host::discover_for_the_gate().harness_notices() {
+        for (level, text) in filling.read().1 {
             note(&harness_store, level, &text);
         }
     });
@@ -364,12 +672,18 @@ pub fn fleet_bootstrap(
     spawn_evaluator_wake(&rt, bcast.clone(), store.clone(), app, target.clone());
 
     let snap = snapshot(&store)?;
+    // The fleet nobody has picked yet, which is byte for byte the fleet that spawned
+    // before the gate had pickers. The worker default comes off the resolved
+    // `PaneContext` rather than being spelled a second time here.
+    let seats = FleetSeats::unpicked(&context.launch.worker_model);
     *guard = Some(Fleet {
         rt,
         store,
         shutdown,
         config,
         target,
+        seats,
+        harnesses,
         context,
         gauges,
         app: app_tx,
@@ -403,6 +717,48 @@ pub fn fleet_bootstrap(
 /// send` reports success. Seeding inside the placement that also chooses the cwd,
 /// rather than at the target picker, means that can only be got wrong by deleting
 /// a line, not by forgetting a code path.
+/// The spec for a pane the gate offers no choice for.
+///
+/// **Three of the four arms are the arms `spawn_pane` always had**, lifted out
+/// whole when the picked seats moved above them, and matched exhaustively rather
+/// than with a wildcard so a new pane kind still has to say what places it.
+///
+/// The fourth is the one this ticket added: a seat the gate *does* carry a choice
+/// for, whose choice would not resolve. `FleetSeats::spec_for` refuses rather than
+/// substituting — a fleet that quietly placed a different harness than the gate
+/// promised is the failure M15 exists to prevent — and `fleet_set_seats` is what
+/// stops such a value being stored. This arm is the belt to that pair of braces.
+fn spec_without_a_choice(pane: PaneId, seats: &FleetSeats) -> Result<PaneSpec, String> {
+    match pane {
+        PaneId::Evaluator => Ok(PaneSpec::Evaluator),
+        // **The live run, because that is the only run this name can mean here**
+        // (D-076). `pty_spawn` carries a pane and nothing else, so a Critic opened
+        // from the rail is a Critic on the run in progress; pointing one at a
+        // History row is a different gesture with a different argument, and it does
+        // not exist yet (`placement::ARCHIVED_NOT_BUILT`).
+        PaneId::Critic => Ok(PaneSpec::Critic { run: RunSource::Live }),
+        // Never spawnable, and refused here rather than left to fail somewhere
+        // deeper: there is no command to run for a human, no cwd that is theirs, and
+        // no config dir to seed. WP-07's "the operator is never spawnable or
+        // killable" is this arm plus the fact that nothing in the UI offers the
+        // button (`pty_kill` on a name with no pty already answers "operator is not
+        // running").
+        PaneId::Operator => {
+            let why = "the operator is a participant, not a pane — there is nothing to spawn";
+            Err(why.to_string())
+        }
+        PaneId::Orch | PaneId::Worker(_) => {
+            let named = match pane {
+                PaneId::Orch => seats.orch.harness.clone(),
+                _ => seats.workers.iter().map(|s| s.harness.as_str()).collect::<Vec<_>>().join("/"),
+            };
+            Err(format!(
+                "no registered harness answers to `{named}`, so this seat cannot be placed",
+            ))
+        }
+    }
+}
+
 pub(crate) fn spawn_pane(
     fleet: &FleetState,
     registry: &Arc<PaneRegistry>,
@@ -410,10 +766,17 @@ pub(crate) fn spawn_pane(
     rows: u16,
     cols: u16,
 ) -> Result<(), String> {
-    let (target, layout, store, context, gauges) = {
+    let (target, layout, store, context, gauges, seats) = {
         let guard = fleet.0.lock().map_err(|e| e.to_string())?;
         let f = guard.as_ref().ok_or("fleet not bootstrapped")?;
-        (f.target.get(), f.layout.clone(), f.store.clone(), f.context.clone(), f.gauges.clone())
+        (
+            f.target.get(),
+            f.layout.clone(),
+            f.store.clone(),
+            f.context.clone(),
+            f.gauges.clone(),
+            f.seats.clone(),
+        )
     };
 
     // The seam. The layout comes off `Fleet`, resolved once at bootstrap; the host
@@ -427,33 +790,20 @@ pub(crate) fn spawn_pane(
     // wildcard, so a new pane kind has to say what places it instead of silently
     // getting somebody else's arm.
     //
-    // **Which harness each seat runs is named here, and both name Claude Code**
-    // (WP-25 #33). Two are registered as of this ticket and the seam carries the
-    // choice per pane, but nothing yet *asks* the operator for one — that is the
-    // start gate's picker (#35, C23). Said out loud at the one call site rather
-    // than defaulted inside `PaneSpec`, so the picker is one line to wire and the
-    // fleet cannot acquire a second harness by accident on the way there.
-    let spec = match pane {
-        PaneId::Orch => PaneSpec::orch(harness::claude_code()),
-        PaneId::Worker(slot) => PaneSpec::worker(slot, harness::claude_code()),
-        PaneId::Evaluator => PaneSpec::Evaluator,
-        // **The live run, because that is the only run this name can mean here**
-        // (D-076). `pty_spawn` carries a pane and nothing else, so a Critic
-        // opened from the rail is a Critic on the run in progress; pointing one
-        // at a History row is a different gesture with a different argument, and
-        // it does not exist yet (`placement::ARCHIVED_NOT_BUILT`).
-        PaneId::Critic => PaneSpec::Critic { run: RunSource::Live },
-        // Never spawnable, and refused here rather than left to fail somewhere
-        // deeper: there is no command to run for a human, no cwd that is theirs,
-        // and no config dir to seed. WP-07's "the operator is never spawnable or
-        // killable" is this arm plus the fact that nothing in the UI offers the
-        // button (`pty_kill` on a name with no pty already answers "operator is
-        // not running").
-        PaneId::Operator => {
-            return Err(
-                "the operator is a participant, not a pane — there is nothing to spawn".to_string()
-            )
-        }
+    // **Which harness and which model each seat runs is the operator's answer, read
+    // here** (WP-25 #35; M1, M15, C23). #33 carried the choice on `PaneSpec` with
+    // one call site that said Claude Code twice; this is that call site asking the
+    // gate instead. `FleetSeats::spec_for` answers `None` for every pane that
+    // carries no choice — the two judges, whose specs have no field to hold one
+    // (C15), and the operator, who is refused below — so the arms after it are the
+    // arms they always were.
+    //
+    // **The whole of M15 is this line.** The gate renders its summary from the same
+    // `seats` value, so a fleet the gate described and a fleet that spawns cannot be
+    // two different fleets without one of them being read from somewhere else.
+    let spec = match seats.spec_for(pane) {
+        Some(picked) => picked,
+        None => spec_without_a_choice(pane, &seats)?,
     };
 
     // One discovery, read twice: the warnings below and the placement itself see
@@ -959,6 +1309,12 @@ fn apply_target(state: &FleetState, target: &Path) {
             // and the handoff watch alike — reads this cell (D14).
             fleet.target.set(target);
             fleet.config = fleet_config_for(target);
+            // The harness reading is about a machine *in a directory*: codex
+            // resolves trust and project identity against one (C34). Forgetting it
+            // costs nothing and the next gate render pays for the truth — the
+            // operator who just retyped a path is not the one who should wait on a
+            // probe.
+            fleet.harnesses.invalidate();
             note(
                 &fleet.store,
                 NoticeLevel::Info,
@@ -1047,6 +1403,77 @@ pub fn fleet_set_target(
 
     adopt_target(&registry, &state, &canonical)?;
     Ok(canonical.to_string_lossy().into_owned())
+}
+
+// --- the start gate's two commands (WP-25 #35) --------------------------------
+
+/// **Everything the start gate renders, in one call** (M15).
+///
+/// One command rather than three — the readiness, the selection and the worker
+/// default arrive together — because the gate is one screen and a summary assembled
+/// from three round trips can render a fleet that is half of one answer and half of
+/// another.
+///
+/// **`refresh` is the re-check button, and it is a different question** (M17, user
+/// story 10). `false` answers from whatever reading is held, probing only if there
+/// is none; `true` runs the probe again whatever is held, because the operator
+/// pressing it has just logged in from another terminal and no cached answer can
+/// contain that. It is not the default for the reason C8 gives: the probe costs a
+/// subprocess per harness and about 1.4 s, and putting that on every render would
+/// put it on an interaction the operator repeats.
+///
+/// **The fleet's lock is dropped before the probe.** What the probe needs from the
+/// fleet is one `Arc` and two clones; holding the whole backend for 1.4 s would
+/// stall the feed, the roster and every pty command behind a diagnostic.
+#[tauri::command]
+pub fn fleet_gate(refresh: bool, state: State<'_, FleetState>) -> Result<GateState, String> {
+    let (gate, seats, worker_model_default, store) = {
+        let guard = state.0.lock().map_err(|e| e.to_string())?;
+        let fleet = guard.as_ref().ok_or("no fleet is running")?;
+        (
+            fleet.harnesses.clone(),
+            fleet.seats.clone(),
+            fleet.context.launch.worker_model.clone(),
+            fleet.store.clone(),
+        )
+    };
+
+    let (readings, notices) = if refresh { gate.refresh() } else { gate.read() };
+    // What a probe found goes on the feed at the moment it finds it, which is what
+    // makes the re-check button legible after the fact: the row above changed and
+    // the Activity feed says what changed it. A cached read produces none.
+    for (level, text) in &notices {
+        note(&store, *level, text);
+    }
+
+    Ok(GateState {
+        harnesses: readings.iter().map(HarnessOffer::from).collect(),
+        seats,
+        worker_model_default,
+    })
+}
+
+/// Record what the operator picked, and answer with what is now stored.
+///
+/// **The return is the stored value read back rather than the argument echoed**,
+/// which is `critic_interview_open`'s property and is here for a sharper reason: the
+/// gate's summary renders from what this returns, and a summary rendered from what
+/// the interface *asked for* rather than from what took effect is precisely the
+/// fleet-that-is-not-what-spawns M15 refuses.
+///
+/// **A refusal is a refusal, not a silent substitution.** A harness name this build
+/// cannot place would otherwise become a `place` that fails at spawn, one pane at a
+/// time, after the operator has already been told the fleet started.
+#[tauri::command]
+pub fn fleet_set_seats(
+    seats: FleetSeats,
+    state: State<'_, FleetState>,
+) -> Result<FleetSeats, String> {
+    let picked = seats.validated()?;
+    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+    let fleet = guard.as_mut().ok_or("no fleet is running")?;
+    fleet.seats = picked;
+    Ok(fleet.seats.clone())
 }
 
 // --- the Critic's interview (WP-21, D-079) ------------------------------------

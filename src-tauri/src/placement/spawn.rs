@@ -171,8 +171,13 @@ fn apply_attended_config(cmd: &mut CommandBuilder, spec: &'static HarnessSpec, c
 /// [`crate::placement`], and it went with the last caller that wanted it. What is
 /// left is one implementation with one entry point, and the two process reads
 /// live on [`Host`](crate::placement::Host) where a test can supply them.
+// The eighth argument is #35's model. Every one of them is a value this function is
+// forbidden to read for itself, which is the trade D-075 made deliberately — the
+// three siblings above carry the same attribute for the same reason.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn orch_command_with(
     harness: &'static dyn Harness,
+    model: Option<&str>,
     cwd: &Path,
     socket: &Path,
     config_dir: &Path,
@@ -184,20 +189,33 @@ pub(super) fn orch_command_with(
     // arguments, and the brief behind whichever flag carries it. `None` is the
     // permission posture, and it is the asymmetry rather than an omission — this
     // seat is watched by a human who approves its calls (D-030, D-052).
-    let mut cmd = base_command_with(
-        harness,
-        program,
-        // **The operator's own seat, said here in the same breath as the absent
-        // posture and the absent model** (#28, C43, C49). It is what keeps this
-        // pane's hooks and its own trust decisions its own, and — checkpoint 3's
-        // asymmetry — it runs their account and their model, so it names neither.
-        &harness.command_args(
-            &Seat::new(&render_orch(&ctx.orch_template, &roster(), &cwd.display().to_string()))
-                .for_the_operator(),
-        ),
-    );
+    // **The operator's own seat, said here in the same breath as the absent
+    // posture** (#28, C43, C49). It is what keeps this pane's hooks and its own
+    // trust decisions its own, and — checkpoint 3's asymmetry — it runs their
+    // account and their approval, so it names neither.
+    //
+    // **The model is no longer absent by construction, it is absent by default**
+    // (M2). D-052's "the operator's own `claude`" stopped being an invariant the
+    // moment this seat could be a different vendor; `None` is the gate's
+    // `default (your login)` sentinel, and it is what every caller but the picker
+    // passes.
+    let brief = render_orch(&ctx.orch_template, &roster(), &cwd.display().to_string());
+    let seat = Seat::new(&brief).for_the_operator();
+    let seat = match model {
+        Some(model) => seat.with_model(model),
+        None => seat,
+    };
+    let mut cmd = base_command_with(harness, program, &harness.command_args(&seat));
     cmd.cwd(cwd);
     apply_pane_env(&mut cmd, PaneId::Orch, socket, path.to_string());
+    // Checkpoint 3's other model channel, for the one attended seat that may now
+    // carry a name (M2). A harness whose channel is `model_flag` took it in argv
+    // above; this is for one whose channel is the environment. `None` — the gate's
+    // `default (your login)` sentinel — sets nothing at all, which is byte for byte
+    // the command this seat had before the picker existed.
+    if let (Some(var), Some(model)) = (harness.spec().posture.model_env, model) {
+        cmd.env(var, model);
+    }
     apply_attended_config(&mut cmd, harness.spec(), config_dir);
     cmd
 }
@@ -356,6 +374,7 @@ pub(super) fn critic_command_with(
 pub(super) fn worker_command_with(
     harness: &'static dyn Harness,
     slot: u8,
+    model: &str,
     cwd: &Path,
     home: &Path,
     config_dir: &Path,
@@ -387,7 +406,7 @@ pub(super) fn worker_command_with(
                 &roster(),
                 &cwd.display().to_string(),
             ))
-            .with_model(&ctx.launch.worker_model)
+            .with_model(model)
             .with_permission_mode(&ctx.launch.worker_permission_mode),
         ),
     );
@@ -439,11 +458,13 @@ pub(super) fn worker_command_with(
     if let Some(var) = spec.credentials.token_env {
         cmd.env(var, api_key);
     }
-    // Checkpoint 3's model channel. The attended seats get no model at all — that
-    // asymmetry is the product (D-030, D-052) and is why this is here rather than
-    // in `base_command_with`.
+    // Checkpoint 3's model channel. A worker is always given one — the gate's pick
+    // or the launch configuration's — because its provider is FLEETOR's and there
+    // is no vendor default to fall back to (C9). The attended seats are the other
+    // way round and stay that way: `orch` names a model only when the operator
+    // picked one (M2), and the two judges never do.
     if let Some(var) = spec.posture.model_env {
-        cmd.env(var, &ctx.launch.worker_model);
+        cmd.env(var, model);
     }
     // Checkpoint 11's export half, off the spec (WP-25 #23). A harness that does
     // not recognize the worker model's name would assume its own default window
@@ -1023,6 +1044,9 @@ mod tests {
     ) -> CommandBuilder {
         orch_command_with(
             super::super::harness::claude_code(),
+            // The sentinel, which is what this seat ran before it could carry a
+            // model at all (M2) — the tests below pin that command.
+            None,
             cwd,
             socket,
             config_dir,
@@ -1047,6 +1071,7 @@ mod tests {
         worker_command_with(
             super::super::harness::claude_code(),
             slot,
+            &ctx.launch.worker_model,
             cwd,
             home,
             config_dir,

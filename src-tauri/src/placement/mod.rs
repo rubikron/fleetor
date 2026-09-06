@@ -414,20 +414,36 @@ impl Host {
     /// [`place`] or from anything `place` reaches, which
     /// `tests/placement_reads_nothing.rs` asserts by reading this file.
     ///
-    /// **Codex is named here and nowhere else, and that is deliberate rather than
-    /// tidy.** [`Host::harnesses`] is a list keyed by harness with nothing
+    /// **The vendors are named here and nowhere else, and that is deliberate rather
+    /// than tidy.** [`Host::harnesses`] is a list keyed by harness with nothing
     /// vendor-shaped in it; what is vendor-shaped is *having a diagnostic to run*,
-    /// and codex is the only registered harness with one built. Claude Code's login
-    /// check (M17 — `~/.claude.json`'s presence, carrying the same
-    /// reachability-not-authorization caveat) is a second push into this vector
-    /// when the ticket that builds it lands, not a redesign. A trait method would
-    /// have made it a fifteenth checkpoint, which is the wrong shape: the fourteen
-    /// are facts about a vendor, and this is a fact about a machine.
+    /// and each registered harness has one written by hand. #34 built codex's; #35
+    /// built Claude Code's (M17 — `~/.claude.json`'s `oauthAccount`, carrying the
+    /// same reachability-not-authorization caveat), because the gate offers both on
+    /// both rows and a harness with nothing to say about itself sits beside one that
+    /// does, looking half-built. A third harness is a third push into this vector,
+    /// not a redesign. A trait method would have made it a fifteenth checkpoint,
+    /// which is the wrong shape: the fourteen are facts about a vendor, and this is
+    /// a fact about a machine.
     pub fn discover_for_the_gate() -> Self {
-        Self {
-            harnesses: vec![codex::diagnose(&codex::Installation::default())],
-            ..Self::discover()
-        }
+        let machine = Self::discover();
+        // **In the order the gate offers them** (C23), which is the order this
+        // vector is read in and therefore the order the operator sees. Claude Code
+        // first, because it is what a fleet runs unless the operator says otherwise.
+        //
+        // **Both probes are handed the machine rather than reading it** — #34's
+        // `Installation::default()` inherits the application's environment into a
+        // subprocess, and #35's takes the two [`Host`] fields it needs as arguments.
+        // Neither reads the process from inside `placement`, which is the property
+        // `tests/placement_reads_nothing.rs` asserts.
+        let harnesses = vec![
+            harness::claude_code_diagnose(
+                machine.operator_home.as_deref(),
+                &machine.inherited_path,
+            ),
+            codex::diagnose(&codex::Installation::default()),
+        ];
+        Self { harnesses, ..machine }
     }
 
     /// A machine with nothing on it. Not a mock — a real value describing a real
@@ -497,9 +513,22 @@ impl Host {
 pub enum PaneSpec {
     /// The operator's own pane, in the target itself.
     Orch {
-        /// Which harness this seat runs. Named by the caller — until #35's picker
-        /// there is one call site and it says [`harness::claude_code`].
+        /// Which harness this seat runs. Named by the caller — the start gate's
+        /// orchestrator row, since #35.
         harness: &'static dyn Harness,
+        /// **The model this seat starts with, or `None` for the harness's own
+        /// default** (M2, M16).
+        ///
+        /// `None` is the gate's `default (your login)` sentinel, and it is what
+        /// keeps D-052's asymmetry reachable: the operator's own pane, running
+        /// their account and whatever model it defaults to, naming nothing. That
+        /// stopped being an *invariant* the moment this seat could be a different
+        /// vendor, which is what M2 amended; it is still the default.
+        ///
+        /// **What it remembers is what was last launched**, not what the pane is
+        /// running — changing a model mid-run is the harness's own command, and
+        /// FLEETOR has no opinion after spawn (M16).
+        model: Option<String>,
     },
     /// One fenced worker, by slot: its own worktree of the target, its own
     /// private `HOME`, and the fleet's toolchain rather than the operator's.
@@ -509,6 +538,16 @@ pub enum PaneSpec {
         /// Which harness this seat runs — the row C23 says expands into four, so
         /// two workers of one fleet may differ.
         harness: &'static dyn Harness,
+        /// **The model this seat starts with, or `None` for the fleet's own** —
+        /// `PaneContext`'s `launch.worker_model`.
+        ///
+        /// Unlike [`PaneSpec::Orch`]'s, `None` here does not mean "let the vendor
+        /// choose": a worker runs FLEETOR's provider rather than the operator's
+        /// (C9), so an unnamed model is the one the launch configuration names and
+        /// never the vendor's default. That is why the fallback is applied in
+        /// [`place`], against the `PaneContext` it already holds, rather than left
+        /// to a caller to remember.
+        model: Option<String>,
     },
     /// The evaluator (WP-15), in a snapshot of the live run.
     ///
@@ -544,14 +583,45 @@ pub enum RunSource {
 }
 
 impl PaneSpec {
-    /// The operator's own seat, on the harness the caller names.
+    /// The operator's own seat, on the harness the caller names, running whatever
+    /// model that seat would run unasked.
     pub fn orch(harness: &'static dyn Harness) -> Self {
-        PaneSpec::Orch { harness }
+        PaneSpec::Orch { harness, model: None }
     }
 
-    /// One fenced worker, on the harness the caller names.
+    /// One fenced worker, on the harness the caller names, running the fleet's own
+    /// worker model.
     pub fn worker(slot: u8, harness: &'static dyn Harness) -> Self {
-        PaneSpec::Worker { slot, harness }
+        PaneSpec::Worker { slot, harness, model: None }
+    }
+
+    /// **The same seat, running the model the caller named** (M1, M2).
+    ///
+    /// A refinement rather than a third argument on the two constructors above,
+    /// because the seats that *can* carry a model are two of four and the fleet has
+    /// one call site that names one. Every other caller — the conformance suite,
+    /// the two judges, every test that places a pane — is asking for the seat and
+    /// not for a model, and making fifty lines say `None` would be noise to serve
+    /// one.
+    ///
+    /// **A no-op on the two judges**, which is C15 rather than an omission: they
+    /// have no field to hold a harness and none to hold a model, so offering one
+    /// later is a type change and not an accident.
+    pub fn with_model(self, model: impl Into<String>) -> Self {
+        let model = Some(model.into());
+        match self {
+            PaneSpec::Orch { harness, .. } => PaneSpec::Orch { harness, model },
+            PaneSpec::Worker { slot, harness, .. } => PaneSpec::Worker { slot, harness, model },
+            judge => judge,
+        }
+    }
+
+    /// The model this seat was told to start with, if any.
+    pub fn model(&self) -> Option<&str> {
+        match self {
+            PaneSpec::Orch { model, .. } | PaneSpec::Worker { model, .. } => model.as_deref(),
+            PaneSpec::Evaluator | PaneSpec::Critic { .. } => None,
+        }
     }
 
     /// The wire identity this spec places.
@@ -580,7 +650,7 @@ impl PaneSpec {
     /// later override by accident, it is the absence of a place to put one.
     pub fn harness(&self) -> &'static dyn Harness {
         match self {
-            PaneSpec::Orch { harness } | PaneSpec::Worker { harness, .. } => *harness,
+            PaneSpec::Orch { harness, .. } | PaneSpec::Worker { harness, .. } => *harness,
             PaneSpec::Evaluator | PaneSpec::Critic { .. } => harness::claude_code(),
         }
     }
@@ -666,8 +736,23 @@ pub fn place(
     // answer per placement by construction.
     let harness = spec.harness();
     match spec {
-        PaneSpec::Orch { .. } => place_orch(harness, layout, host, target, context),
-        PaneSpec::Worker { slot, .. } => place_worker(harness, slot, layout, host, target, context),
+        PaneSpec::Orch { model, .. } => {
+            place_orch(harness, model.as_deref(), layout, host, target, context)
+        }
+        // **The fleet's own worker model is the fallback, applied here** — this is
+        // the one place holding both the picked value and the `PaneContext` that
+        // names the default, so neither a caller nor a spawn helper has to remember
+        // which wins (C9: a worker's provider is FLEETOR's, so an unnamed model is
+        // the launch configuration's and never the vendor's).
+        PaneSpec::Worker { slot, model, .. } => place_worker(
+            harness,
+            slot,
+            model.as_deref().unwrap_or(&context.launch.worker_model),
+            layout,
+            host,
+            target,
+            context,
+        ),
         PaneSpec::Evaluator => place_evaluator(harness, layout, host, target, context),
         PaneSpec::Critic { run } => place_critic(harness, run, layout, host, context),
     }
@@ -687,6 +772,7 @@ pub fn place(
 /// already performs (see [`spawn::orch_command_with`]).
 fn place_orch(
     harness: &'static dyn Harness,
+    model: Option<&str>,
     layout: &Layout,
     host: &Host,
     target: &Path,
@@ -733,6 +819,7 @@ fn place_orch(
 
     let command = spawn::orch_command_with(
         harness,
+        model,
         target,
         &layout.socket(),
         &config_dir,
@@ -743,7 +830,15 @@ fn place_orch(
 
     // `orch` is not on the live gauge: the Loadout counter is a per-run budget line
     // for the panes doing the work, and the gauge samples worker transcripts.
-    Ok(Placed { command, notices, gauge: None, harness: harness.spec(), model: None, scrubbed: &[] })
+    //
+    // **`model` is what the gate picked, and `None` is still the ordinary answer**
+    // (M2, C56). The manifest keeps the absence rather than inventing a name: an
+    // orchestrator on the sentinel runs the operator's login and whatever model that
+    // account defaults to, which is not a fact this side of the pty. What changed
+    // with #35 is that the operator may now say otherwise, and when they do the
+    // record says what they said.
+    let model = model.map(str::to_string);
+    Ok(Placed { command, notices, gauge: None, harness: harness.spec(), model, scrubbed: &[] })
 }
 
 /// One fenced worker: its own checkout of the target, its own `HOME`, the fleet's
@@ -764,6 +859,7 @@ fn place_orch(
 fn place_worker(
     harness: &'static dyn Harness,
     slot: u8,
+    model: &str,
     layout: &Layout,
     host: &Host,
     target: &Path,
@@ -847,6 +943,7 @@ fn place_worker(
     let worker = spawn::worker_command_with(
         harness,
         slot,
+        model,
         &cwd,
         &home,
         &config_dir,
@@ -866,9 +963,10 @@ fn place_worker(
         notices,
         gauge: Some(TranscriptSource { harness, config_dir, cwd }),
         harness: harness.spec(),
-        // The one seat the fleet names a model for; the three attended arms above
-        // answer `None` because the operator's login chooses theirs.
-        model: Some(context.launch.worker_model.clone()),
+        // **The model this worker was actually placed on** — the gate's pick where
+        // there was one, the launch configuration's where there was not, resolved
+        // once in [`place`] so the record and the command cannot disagree.
+        model: Some(model.to_string()),
         scrubbed: worker.scrubbed,
     })
 }

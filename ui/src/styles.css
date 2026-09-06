@@ -1042,6 +1042,85 @@ body,
   color: var(--fg-mute);
 }
 
+/* one seat's harness and model on the spend gate (WP-25 #35). A row rather than
+   the flat key/value the other facts use: the controls sit on one line and the
+   harness's own facts sit under them, so a login state is read in the same glance
+   as the model it qualifies. */
+.seat-row {
+  display: grid;
+  grid-template-columns: 5.75rem 1fr;
+  gap: 0.125rem 0.625rem;
+  font-size: var(--t-small);
+}
+.seat-row .k { grid-column: 1; }
+.seat-row__controls {
+  grid-column: 2;
+  display: flex;
+  gap: 0.375rem;
+  align-items: center;
+  min-width: 0;
+}
+.seat-row__facts,
+.seat-row__warn {
+  grid-column: 2;
+  margin: 0;
+  font-size: var(--t-label);
+  line-height: 1.45;
+}
+.seat-row__facts { color: var(--fg-mute); }
+.seat-row__warn { color: var(--accent); }
+.seat-row__harness,
+.seat-row__model {
+  font-family: var(--mono);
+  font-size: var(--t-small);
+  color: var(--fg-dim);
+  background: var(--bg-1);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  padding: 0.1875rem 0.375rem;
+}
+.seat-row__harness { flex: 0 1 auto; min-width: 0; }
+.seat-row__model { flex: 1 1 auto; min-width: 0; }
+.seat-row__harness:focus,
+.seat-row__model:focus {
+  color: var(--fg);
+  border-color: var(--border);
+  outline: none;
+}
+/* A harness this machine cannot run stays in the list, greyed, carrying its
+   reason — never dropped, because an absent option reads as unsupported. */
+.seat-row__harness option:disabled { color: var(--fg-mute); }
+.seat-row__sentinel {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: var(--t-label);
+  color: var(--fg-mute);
+  background: transparent;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  padding: 0.1875rem 0.4375rem;
+  cursor: pointer;
+}
+.seat-row__sentinel:hover:not(:disabled) { border-color: var(--accent); color: var(--fg-dim); }
+.seat-row__sentinel:disabled { opacity: 0.4; cursor: default; }
+.seat-disclosure {
+  display: flex;
+  gap: 0.625rem;
+  font-size: var(--t-small);
+}
+.seat-disclosure .k { flex: 0 0 5.75rem; }
+.seat-disclosure__toggle {
+  font-family: var(--mono);
+  font-size: var(--t-label);
+  color: var(--fg-mute);
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+.seat-disclosure__toggle:hover:not(:disabled) { color: var(--fg-dim); }
+.seat-disclosure__toggle:disabled { opacity: 0.45; cursor: default; }
+
 /* the workspace stage: every view mounted, only one shown (L7) */
 .workspace__stage {
   position: relative;

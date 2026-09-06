@@ -1638,6 +1638,141 @@ impl HarnessReadiness {
     }
 }
 
+// --- what Claude Code reports about this machine (WP-25 #35; M17) --------------
+
+/// **Read what Claude Code reports about this machine** (WP-25 #35; M17, C14, C47).
+///
+/// **C58's named second push into [`Host::harnesses`](super::Host::harnesses)**, built
+/// here because the gate is what needed it: C23 puts Claude Code on the orchestrator
+/// row and the workers row beside codex, and a harness whose login the gate cannot
+/// speak to sits next to one whose it can, looking half-built. That is story 9's *a
+/// supported feature looks unimplemented*, at the one screen where the operator is
+/// deciding what to spend.
+///
+/// **`home` and `path` arrive rather than being read**, which is the whole reason
+/// this takes two arguments instead of none. It lives inside `placement`,
+/// `tests/placement_reads_nothing.rs` holds the module to its one rule, and both
+/// facts it needs — the operator's `HOME` and the `PATH` the application was
+/// launched with — are already fields on [`Host`](super::Host). So it reads the same
+/// values a spawn resolves against, and a test can hand it a scratch directory.
+///
+/// **The login check is `~/.claude.json`'s `oauthAccount`, and M17 recorded its
+/// caveat when it chose it:** that file is Claude Code's internal state rather than a
+/// supported API, and its presence proves a login *happened*, not that the token
+/// still works. So a pass here carries the same [`REACHABILITY_NOT_AUTHORIZATION`]
+/// sentence codex's does — two harnesses failing this way for different reasons, and
+/// the operator told the same thing about both.
+///
+/// **What it is bounded by, said rather than hidden:** an operator authenticating
+/// through `ANTHROPIC_API_KEY` in their shell has no `oauthAccount` and is reported
+/// as having no credential. Reading that variable would be a process read inside
+/// `placement`, and putting it on [`Host`](super::Host) to dodge that would put the
+/// operator's own key on a value the whole spawn path holds. The refusal names the
+/// bound so an operator in that state can read what happened rather than guess.
+///
+/// **Both readings, per C47.** `claude` is a name people alias, and this is a
+/// measurement taken through a subprocess — the class where #31 found the two
+/// readings disagreeing absolutely. So the version is read once through the bare name
+/// and once through the absolute file the `PATH` resolved to, and whether they agreed
+/// is [`HarnessReadiness::readings_agree`]. Zero tokens: `--version` asks for no
+/// completion.
+///
+/// **No model list, and that is an answer rather than a gap.** Claude Code publishes
+/// no catalog command, so [`HarnessReadiness::models`] is empty and the gate offers
+/// the operator a name to type — exactly what that field's own documentation says an
+/// empty list means.
+pub fn claude_code_diagnose(home: Option<&Path>, path: &str) -> HarnessReadiness {
+    let spec = &CLAUDE_CODE_SPEC;
+    let invoked = spec.program.bin;
+    let Some(resolved) = first_on_path(path, invoked) else {
+        return HarnessReadiness::not_installed(spec);
+    };
+
+    let through_the_name = vendor_version(Path::new(invoked));
+    let through_the_binary = vendor_version(&resolved);
+
+    HarnessReadiness {
+        harness: spec,
+        invoked: invoked.to_string(),
+        resolved: Some(resolved),
+        readings_agree: through_the_name == through_the_binary,
+        version: through_the_binary,
+        login: claude_code_login(home),
+        // C2 as amended by C9: the orchestrator inherits its provider and the gate
+        // displays it. Claude Code reports none of its own here — an operator
+        // pointing `ANTHROPIC_BASE_URL` somewhere is doing it in their shell, which
+        // is the process this module may not read.
+        provider: None,
+        models: Vec::new(),
+        // #37's, not this ticket's: comparing what the vendor resolved against what
+        // FLEETOR wrote is a gate check of its own, and Claude Code publishes no
+        // diagnostic that reports one.
+        posture: ResolvedPosture::default(),
+    }
+}
+
+/// Whether this machine has completed a `claude` login, by the one file M17 named.
+fn claude_code_login(home: Option<&Path>) -> LoginState {
+    let Some(home) = home else {
+        return LoginState::Unreadable {
+            why: "this machine reported no HOME, so `~/.claude.json` could not be located"
+                .to_string(),
+        };
+    };
+    let file = home.join(".claude.json");
+    let text = match std::fs::read_to_string(&file) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return LoginState::NoCredential { summary: no_login_recorded(&file) }
+        }
+        Err(e) => {
+            let why = format!("{} could not be read: {e}", file.display());
+            return LoginState::Unreadable { why };
+        }
+    };
+    // **Not a refusal**, for the reason `LoginState::Unreadable` exists: a working
+    // installation whose internal state file this arc cannot parse is a parse error,
+    // and treating that as "logged out" would refuse a seat on the strength of one.
+    let value: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(value) => value,
+        Err(e) => {
+            let why = format!("{} is not readable as JSON: {e}", file.display());
+            return LoginState::Unreadable { why };
+        }
+    };
+    match value.get("oauthAccount") {
+        Some(account) if !account.is_null() => {
+            LoginState::LoggedIn(AccountShape::SubscriptionPlan { plan: None })
+        }
+        _ => LoginState::NoCredential { summary: no_login_recorded(&file) },
+    }
+}
+
+/// The one sentence both no-credential branches say, so they cannot drift apart.
+fn no_login_recorded(file: &Path) -> String {
+    format!(
+        "{} records no completed `claude` login (an `ANTHROPIC_API_KEY` in your shell \
+         is not written there and is not read here)",
+        file.display(),
+    )
+}
+
+/// The first `bin` on `path` that is a file. A plain search of a string the caller
+/// handed over — nothing here asks the process what its `PATH` is.
+fn first_on_path(path: &str, bin: &str) -> Option<PathBuf> {
+    std::env::split_paths(path).map(|dir| dir.join(bin)).find(|found| found.is_file())
+}
+
+/// What a vendor says its version is, or `None` when it would not answer.
+fn vendor_version(bin: &Path) -> Option<String> {
+    let out = std::process::Command::new(bin).arg("--version").output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!text.is_empty()).then_some(text)
+}
+
 // --- pinning the two forms together -------------------------------------------
 
 /// **What the expand step's safety net became once there was no second form
