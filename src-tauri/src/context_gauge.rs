@@ -112,27 +112,58 @@ impl GaugeSources {
     /// completed turn yet. Re-reads the directory every call rather than
     /// caching a filename — see [`latest_transcript`] for why.
     ///
-    /// **The window comes from the pane's own harness** (WP-25, checkpoint 11),
-    /// and the two ways it can be absent are the reason this reads as three
-    /// early returns rather than one call. A harness that reads usage from a
-    /// store this module knows nothing about
+    /// **Both numbers come from the pane's own harness** (WP-25, checkpoint 11;
+    /// #41, C61, C65), and every way either can be absent ends in the same
+    /// answer. A harness whose usage this module has no reader for
     /// ([`reads_transcript`](crate::placement::harness::GaugeSource::reads_transcript)
-    /// `== false`), and a harness that publishes its own window instead of
-    /// letting the fleet assert one
-    /// ([`window_tokens`](crate::placement::harness::GaugeSource::window_tokens)
-    /// `== None`), both sample as **absent**. That is D-054's rule applied to
-    /// the seam rather than to one vendor: an unavailable gauge says
+    /// `== false`); a harness that has a reader but finds nothing the vendor
+    /// wrote ([`Harness::read_usage`](crate::placement::harness::Harness::read_usage)
+    /// `== None`); and a harness with a real numerator but no window from
+    /// either the vendor's own record or
+    /// ([`window_tokens`](crate::placement::harness::GaugeSource::window_tokens))
+    /// the fleet — all three sample as **absent**. That is D-054's rule applied
+    /// to the seam rather than to one vendor: an unavailable gauge says
     /// unavailable, and the one thing it may never do is divide by a window
     /// borrowed from a harness that is not this pane's — a number that looks
     /// right and is wrong.
+    ///
+    /// **The window the vendor reported wins over the one the fleet asserts.**
+    /// Codex publishes `context_window = 1048576` in its catalog and then tells
+    /// its own pane `model_context_window = 996147` for the same model in the
+    /// same run — exactly 95% of it (C61). Dividing by the larger figure would
+    /// put a percentage in the rail that disagrees with the percentage the
+    /// operator can see inside codex, which is the two-numbers disagreement
+    /// D-054 exists to prevent. So [`UsageReading::window_tokens`] is consulted
+    /// first and the spec's constant is only the fallback.
     pub fn sample(&self, pane: PaneId) -> Option<ContextGauge> {
         let source = self.0.lock().ok()?.get(&pane).cloned()?;
         let gauge = &source.harness.spec().gauge;
         if !gauge.reads_transcript {
             return None;
         }
-        sample_transcript(&source, gauge.window_tokens?)
+        let reading = source.harness.read_usage(&source)?;
+        let window = reading.window_tokens.or(gauge.window_tokens)?;
+        Some(ContextGauge::new(reading.used_tokens, window))
     }
+}
+
+/// One harness's own accounting of one of its own turns — the numerator, and
+/// the window the vendor said it was measured against.
+///
+/// **Everything on it was written to disk by the vendor.** Nothing here is
+/// derived from the prompt FLEETOR assembled; a harness with no such record
+/// returns `None` rather than constructing one of these (D-054, M22, C24).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UsageReading {
+    /// How full the pane's context is, as the vendor itself counted it.
+    pub used_tokens: u32,
+    /// The window *the vendor reported for this turn*, when it reports one.
+    ///
+    /// `None` means the harness stated no window and the fleet's own
+    /// [`GaugeSource::window_tokens`](crate::placement::harness::GaugeSource::window_tokens)
+    /// applies — which is Claude Code's case, and the reason D-054's constant
+    /// still exists. It is never filled in with another harness's number.
+    pub window_tokens: Option<u32>,
 }
 
 // --- the transcript sampler ------------------------------------------------------
@@ -192,12 +223,33 @@ fn latest_transcript(dir: &Path, file_ext: &str) -> Option<PathBuf> {
         .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
 }
 
-fn sample_transcript(source: &TranscriptSource, window_tokens: u32) -> Option<ContextGauge> {
+/// **The default reader** behind
+/// [`Harness::read_usage`](crate::placement::harness::Harness::read_usage): the
+/// `usage` object on the last completed turn of the pane's own transcript.
+///
+/// It reports no window of its own — a harness whose transcript carries usage
+/// but not the window it was measured against is exactly the case D-054's
+/// constant was written for, and stating `None` here is what routes the pane
+/// back to the window its spec asserts rather than to one this function
+/// invented.
+pub fn transcript_usage(source: &TranscriptSource) -> Option<UsageReading> {
     let path =
         latest_transcript(&project_dir(source), source.harness.spec().transcript.file_ext)?;
     let text = std::fs::read_to_string(&path).ok()?;
-    let used = last_turn_usage(&text)?;
-    Some(ContextGauge::new(used, window_tokens))
+    Some(UsageReading { used_tokens: last_turn_usage(&text)?, window_tokens: None })
+}
+
+/// The pre-#41 shape of the sampler — transcript reading and division in one
+/// call — kept because six tests written against it are the ones that pin the
+/// honest-sum finding, the `/clear` rule and the two absent cases, and a test
+/// rewritten alongside the code it guards guards less.
+///
+/// Test-only now: production divides in [`GaugeSources::sample`], where the
+/// vendor's own reported window gets to win over the fleet's constant.
+#[cfg(test)]
+fn sample_transcript(source: &TranscriptSource, window_tokens: u32) -> Option<ContextGauge> {
+    let reading = transcript_usage(source)?;
+    Some(ContextGauge::new(reading.used_tokens, reading.window_tokens.unwrap_or(window_tokens)))
 }
 
 /// The last `assistant` line's total prompt usage, or `None` if the
@@ -228,6 +280,165 @@ fn last_turn_usage(transcript: &str) -> Option<u32> {
             + field("cache_read_input_tokens");
         Some(total as u32)
     })
+}
+
+// --- codex's reader: the vendor's own number, joined out of its own files --------
+
+/// **Codex's answer to [`Harness::read_usage`](crate::placement::harness::Harness::read_usage)**
+/// (#41, closing C12's spike through C61): the per-turn `token_usage_record`
+/// the vendor wrote into its own rollout, and the `model_context_window` the
+/// vendor reported for that same turn.
+///
+/// **This is not the estimate C24 and M22 refuse.** Those refuse a figure
+/// synthesized from the prompt FLEETOR assembled. Both numbers here were
+/// written to disk by codex about its own turn, which is the same class of act
+/// as reading `thread_items` for the transcript — and #38 spent the one
+/// authorised turn establishing exactly that.
+///
+/// **The join, and why it is a join.** C61 measured that the thread store
+/// checkpoint 13 names holds *no* usage field — not a column, not inside any
+/// `item_json`, and not under any of the seven `CREATE TABLE`/`ALTER TABLE`
+/// statements this build ships. The number lives in a rollout JSONL somewhere
+/// under `sessions/<yyyy>/<mm>/<dd>/`, and `state_5.sqlite`'s `threads` row
+/// carries the absolute `rollout_path` to it. So the vendor is asked which file
+/// to read rather than the directory layout being reconstructed from a date.
+/// The database is opened **read-only**: this module's observer-only promise is
+/// a flag here, not a claim.
+///
+/// **What is deliberately not read, and it is the trap.** `threads.tokens_used`
+/// sits in the very row this reads `rollout_path` out of, and it is a *running
+/// total for the thread* — after enough turns it exceeds the window while the
+/// pane's actual context is small. A running total standing in for occupancy is
+/// the number that looks right and is wrong, so the numerator comes from the
+/// per-turn record and `tokens_used` is never touched. `thread_token_usage`,
+/// the same quantity inside the rollout, is refused for the same reason.
+///
+/// **This reads a live file, and the archive will not contain it** (#41, C66).
+/// C54's harvest takes checkpoint 13's transcript — the thread store — by
+/// `VACUUM INTO`, and the rollout JSONL is a different file it does not walk.
+/// Extending the harvest to take a second file per harness is a change to
+/// checkpoint 13's contract with its own conformance obligations, and it belongs
+/// to the harvest's ticket rather than being smuggled in behind a gauge. The
+/// consequence is stated rather than discovered: **an archived codex run carries
+/// its transcript without its per-turn usage**, so a Critic reading one cold has
+/// the turns and not the accounting. `state_5.sqlite` happens to travel already,
+/// because the walk filters by extension — but it carries only the thread's
+/// running total, which is the one figure this function refuses to use.
+///
+/// **Believed, not verified** (`docs/notes/codex-usage-notes.md`). The one
+/// measured turn had `cached_input_tokens = 0`, so whether codex's
+/// `input_tokens` is inclusive of cached input is unmeasured. `total_tokens` is
+/// taken verbatim because it is the field the vendor itself printed as "tokens
+/// used" and stored in `threads.tokens_used`; a hand-rolled sum over the six
+/// usage fields would be this module asserting an accounting model the vendor
+/// never stated, which is nearer to reconstruction than to reading. If a codex
+/// pane's gauge is ever seen to *drop* across a turn the way Claude Code's
+/// `input_tokens` alone did, that is the measurement to redo.
+pub fn codex_vendor_usage(state_db: &Path, model_catalog: &Path) -> Option<UsageReading> {
+    let rollout = std::fs::read_to_string(latest_rollout(state_db)?).ok()?;
+    Some(UsageReading {
+        used_tokens: last_turn_total_tokens(&rollout)?,
+        window_tokens: reported_context_window(&rollout)
+            .or_else(|| catalog_context_window(model_catalog)),
+    })
+}
+
+/// The rollout the vendor last wrote to, out of the paths its own state database
+/// names. Most-recently-modified wins, for the same reason
+/// [`latest_transcript`] picks that way: a `/clear` may open a second thread in
+/// a pane's home and the ordering columns that would say which is current are
+/// not among the ones C61 measured. Only `rollout_path` is — so only
+/// `rollout_path` is read.
+fn latest_rollout(state_db: &Path) -> Option<PathBuf> {
+    let conn = rusqlite::Connection::open_with_flags(
+        state_db,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()?;
+    let paths: Vec<PathBuf> = {
+        let mut stmt = conn.prepare("SELECT rollout_path FROM threads").ok()?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0)).ok()?;
+        rows.filter_map(Result::ok).map(PathBuf::from).collect()
+    };
+    paths
+        .into_iter()
+        .filter(|p| p.is_file())
+        .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+}
+
+/// The last completed turn's `total_tokens`, scanning from the end.
+///
+/// `turn_token_usage` by name, falling back to the record's own `usage`. The two
+/// were byte-identical in the one measured turn, so this is not a switch between
+/// two meanings — it is the unambiguously-named field, with the ambiguous one
+/// behind it. `thread_token_usage`, the third sibling, is never read: its name
+/// says it accumulates, and a thread total is not a context reading.
+fn last_turn_total_tokens(rollout: &str) -> Option<u32> {
+    rollout.lines().rev().find_map(|line| {
+        let entry: serde_json::Value = serde_json::from_str(line).ok()?;
+        if entry.get("type")?.as_str()? != "token_usage_record" {
+            return None;
+        }
+        let payload = entry.get("payload")?;
+        let turn = payload.get("turn_token_usage").or_else(|| payload.get("usage"))?;
+        Some(turn.get("total_tokens")?.as_u64()? as u32)
+    })
+}
+
+/// The window **codex told its own pane about**, off the last `token_count`
+/// event — `payload.info.model_context_window`.
+///
+/// This is what the rail divides by, and C61 is why: the catalog publishes
+/// 1048576 and this reports 996147 for the same model in the same run. The
+/// operator can see the vendor's own percentage; a rail computed against the
+/// other figure disagrees with it by 5% and is therefore wrong on screen even
+/// though every number in it is real.
+fn reported_context_window(rollout: &str) -> Option<u32> {
+    rollout.lines().rev().find_map(|line| {
+        let entry: serde_json::Value = serde_json::from_str(line).ok()?;
+        if entry.get("type")?.as_str()? != "event_msg" {
+            return None;
+        }
+        let payload = entry.get("payload")?;
+        if payload.get("type")?.as_str()? != "token_count" {
+            return None;
+        }
+        Some(payload.get("info")?.get("model_context_window")?.as_u64()? as u32)
+    })
+}
+
+/// The fallback: the window the harness's **own published catalog** states, out
+/// of the `models.json` the pane's `model_catalog_json` points at — never a
+/// FLEETOR constant, which is the acceptance criterion this satisfies.
+///
+/// **Unanimity or nothing.** [`TranscriptSource`] does not carry which model the
+/// seat runs, so a catalog whose entries disagree cannot be resolved to this
+/// pane's window and this answers `None`. A catalog that publishes one window
+/// for every model it offers publishes this pane's window whatever it runs —
+/// which is what C61 observed across all three of the operator's models — and
+/// that is the only case this returns a number in. Guessing an entry would be
+/// the number that looks right and is wrong.
+///
+/// **Believed, not verified.** The field name is C61's; the enclosing shape —
+/// a top-level `models` array of objects — is inferred from the fixtures in
+/// `placement::codex`, not measured character-for-character against a real
+/// catalog. It fails safe in either direction: a shape this does not recognize
+/// yields `None`, which is `unavailable`, never a wrong denominator. It is also
+/// a fallback for a case not yet observed to occur, since the measured run wrote
+/// `token_count` one line after `token_usage_record`.
+fn catalog_context_window(model_catalog: &Path) -> Option<u32> {
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(model_catalog).ok()?).ok()?;
+    let mut agreed: Option<u32> = None;
+    for model in doc.get("models")?.as_array()? {
+        let window = model.get("context_window")?.as_u64()? as u32;
+        match agreed {
+            None => agreed = Some(window),
+            Some(seen) if seen == window => {}
+            Some(_) => return None,
+        }
+    }
+    agreed
 }
 
 // --- the spawn-time estimate (the Loadout counter) -------------------------------
@@ -645,6 +856,319 @@ mod tests {
 
         assert_eq!(sources.sample(PaneId::Worker(2)).map(|g| g.pct), Some(5));
         assert_eq!(sources.sample(PaneId::Worker(3)), None, "an unrecorded peer stays absent");
+    }
+
+    // --- codex: the vendor's own number, or unavailable ----------------------------
+    //
+    // Fabricated end to end. Nothing here spends a token, launches a binary or
+    // reads the operator's own `~/.codex` — the layout is planted in a scratch
+    // directory in the shape `docs/notes/codex-usage-notes.md` measured, and #38
+    // is the only arm in this arc that was ever authorised to spend.
+
+    /// The window codex reported to its own pane in the measured run.
+    const REPORTED_WINDOW: u32 = 996_147;
+    /// What the catalog published for the same model in the same run — 95% larger,
+    /// and the figure a gauge must *not* silently divide by (C61).
+    const CATALOG_WINDOW: u32 = 1_048_576;
+
+    /// A live `state_5.sqlite` naming one rollout, plus the running thread total
+    /// that sits in the very same row and must never become a numerator.
+    ///
+    /// **The connection is returned and the caller must hold it** — #39's fixture
+    /// rule. Closing the last one checkpoints the write-ahead log into the main
+    /// file and unlinks the `-shm`, and a live WAL database with its `-shm` beside
+    /// it is precisely the state a codex pane's home is in while the gauge samples
+    /// it. It is also what makes the read-only open in [`latest_rollout`] the real
+    /// case rather than a convenient one.
+    fn plant_state_db(home: &Path, rollout: &Path, running_total: u64) -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open(home.join("state_5.sqlite")).unwrap();
+        conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+        conn.execute(
+            "CREATE TABLE threads (id TEXT, tokens_used INTEGER, rollout_path TEXT)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO threads (id, tokens_used, rollout_path) VALUES (?1, ?2, ?3)",
+            rusqlite::params![
+                "01a0779e-9ae7-7181-ad8f-596038c2a862",
+                running_total,
+                rollout.to_string_lossy()
+            ],
+        )
+        .unwrap();
+        conn
+    }
+
+    /// One `token_usage_record`, in the shape the note quotes verbatim — including
+    /// the `thread_token_usage` sibling, which is what makes the running-total
+    /// trap assertable at all.
+    fn token_usage_record(turn_total: u64, thread_total: u64) -> String {
+        serde_json::json!({
+            "type": "token_usage_record",
+            "payload": {
+                "thread_id": "01a0779e-9ae7-7181-ad8f-596038c2a862",
+                "turn_id": "01a0779e-9af8-7903-a7c8-e00ae99ae884",
+                "usage": {
+                    "input_tokens": turn_total - 15, "cached_input_tokens": 0,
+                    "cache_write_input_tokens": 0, "output_tokens": 15,
+                    "reasoning_output_tokens": 13, "total_tokens": turn_total
+                },
+                "turn_token_usage": { "total_tokens": turn_total },
+                "thread_token_usage": { "total_tokens": thread_total }
+            }
+        })
+        .to_string()
+    }
+
+    /// The `token_count` event codex writes one line later, carrying the window it
+    /// told the pane about.
+    fn token_count_event(window: u32) -> String {
+        serde_json::json!({
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "total_token_usage": { "total_tokens": 0 },
+                    "last_token_usage": { "total_tokens": 0 },
+                    "model_context_window": window
+                }
+            }
+        })
+        .to_string()
+    }
+
+    /// A rollout at the vendor's own dated depth, so the fixture exercises the
+    /// join rather than a path this module could have guessed.
+    fn plant_rollout(home: &Path, name: &str, lines: &[String]) -> PathBuf {
+        let dir = home.join("sessions/2026/09/06");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("rollout-{name}.jsonl"));
+        std::fs::write(&path, lines.join("\n")).unwrap();
+        path
+    }
+
+    fn plant_catalog(home: &Path, windows: &[u32]) {
+        let models: Vec<serde_json::Value> = windows
+            .iter()
+            .enumerate()
+            .map(|(i, w)| serde_json::json!({"id": format!("model-{i}"), "context_window": w}))
+            .collect();
+        std::fs::write(
+            home.join("models.json"),
+            serde_json::json!({ "models": models }).to_string(),
+        )
+        .unwrap();
+    }
+
+    fn codex_pane(home: &Path) -> GaugeSources {
+        let sources = GaugeSources::default();
+        sources.record(
+            PaneId::Worker(1),
+            TranscriptSource {
+                harness: crate::placement::codex::codex(),
+                config_dir: home.to_path_buf(),
+                cwd: home.join("worktree"),
+            },
+        );
+        sources
+    }
+
+    /// The whole of #41's positive answer, through the seam: a codex pane's gauge
+    /// is the vendor's own per-turn figure over the vendor's own reported window.
+    ///
+    /// **And the second assertion is the one C61 warned about.** The same
+    /// numerator over the catalog's `context_window` is a different percentage —
+    /// 47 rather than 50 — and it is the one an operator looking at codex's own
+    /// display would not recognize. Pinning both is what makes "the reported
+    /// window divides" a property rather than a coincidence of one fixture.
+    #[test]
+    fn a_codex_pane_divides_by_the_window_the_vendor_reported_not_the_one_it_published() {
+        let home = temp_dir("codex-window");
+        let rollout = plant_rollout(
+            &home,
+            "one",
+            &[token_usage_record(500_000, 500_000), token_count_event(REPORTED_WINDOW)],
+        );
+        plant_catalog(&home, &[CATALOG_WINDOW]);
+        let _state = plant_state_db(&home, &rollout, 500_000);
+
+        let gauge = codex_pane(&home).sample(PaneId::Worker(1)).expect("the vendor wrote a turn");
+        assert_eq!(gauge.used_tokens, 500_000, "the numerator is the vendor's own total_tokens");
+        assert_eq!(gauge.window_tokens, REPORTED_WINDOW, "the window codex told its own pane");
+        assert_eq!(gauge.pct, 50);
+
+        let by_catalog = ContextGauge::new(500_000, CATALOG_WINDOW);
+        assert_eq!(by_catalog.pct, 47, "the fixture only pins anything if the two figures differ");
+        assert_ne!(
+            gauge.pct, by_catalog.pct,
+            "the catalog's 1048576 is what divided — a rail that disagrees with the vendor's \
+             own display by 5% is the two-numbers failure D-054 forbids (C61)",
+        );
+    }
+
+    /// The catalog is the fallback and reachable, so the acceptance criterion
+    /// "the window comes from the harness's own published catalog, not a FLEETOR
+    /// constant" is satisfied by a path that runs rather than by an argument.
+    #[test]
+    fn with_no_reported_window_the_harnesss_own_catalog_divides_and_no_fleet_constant_does() {
+        let home = temp_dir("codex-catalog");
+        let rollout = plant_rollout(&home, "one", &[token_usage_record(500_000, 500_000)]);
+        plant_catalog(&home, &[CATALOG_WINDOW, CATALOG_WINDOW]);
+        let _state = plant_state_db(&home, &rollout, 500_000);
+
+        let gauge = codex_pane(&home).sample(PaneId::Worker(1)).expect("a turn with no token_count");
+        assert_eq!(gauge.window_tokens, CATALOG_WINDOW);
+        assert_eq!(gauge.pct, 47);
+        assert_ne!(
+            gauge.window_tokens, WORKER_WINDOW_TOKENS,
+            "D-054's constant is Claude Code's answer and must never divide a codex reading",
+        );
+    }
+
+    /// A catalog that publishes different windows for different models cannot be
+    /// resolved to this pane's, because nothing on [`TranscriptSource`] says which
+    /// model the seat runs. Picking one would be a guess wearing a measurement's
+    /// clothes.
+    #[test]
+    fn a_catalog_whose_models_disagree_reads_unavailable_rather_than_picking_one() {
+        let home = temp_dir("codex-catalog-split");
+        let rollout = plant_rollout(&home, "one", &[token_usage_record(500_000, 500_000)]);
+        plant_catalog(&home, &[CATALOG_WINDOW, 200_000]);
+        let _state = plant_state_db(&home, &rollout, 500_000);
+
+        assert_eq!(
+            codex_pane(&home).sample(PaneId::Worker(1)),
+            None,
+            "two published windows and no way to say which is this pane's",
+        );
+    }
+
+    /// **The running-total trap.** `threads.tokens_used` and the rollout's
+    /// `thread_token_usage` are both cumulative across a thread; a gauge that used
+    /// either would climb past its window while the pane's actual context stayed
+    /// small. Only the last turn's own figure is a context reading.
+    #[test]
+    fn the_numerator_is_the_last_turns_figure_never_the_threads_running_total() {
+        let home = temp_dir("codex-running-total");
+        let rollout = plant_rollout(
+            &home,
+            "one",
+            &[
+                token_usage_record(120_000, 120_000),
+                token_usage_record(200_000, 320_000),
+                token_count_event(REPORTED_WINDOW),
+            ],
+        );
+        plant_catalog(&home, &[CATALOG_WINDOW]);
+        // The same running total the vendor keeps in the row this reads
+        // `rollout_path` out of — deliberately a number that would look plausible.
+        let _state = plant_state_db(&home, &rollout, 320_000);
+
+        let gauge = codex_pane(&home).sample(PaneId::Worker(1)).expect("two completed turns");
+        assert_eq!(
+            gauge.used_tokens, 200_000,
+            "the second turn's own total, not 320000 — a thread total is not an occupancy",
+        );
+    }
+
+    /// A thread the vendor never wrote a usage record for reads **unavailable**,
+    /// with a plausible running total sitting right there in the row the join went
+    /// through. That figure is not synthesized from what FLEETOR sent — it is the
+    /// vendor's — and it is still refused, because it does not answer the question
+    /// the gauge asks.
+    #[test]
+    fn no_token_usage_record_reads_unavailable_even_though_a_plausible_number_is_at_hand() {
+        let home = temp_dir("codex-no-record");
+        let rollout = plant_rollout(&home, "one", &[token_count_event(REPORTED_WINDOW)]);
+        plant_catalog(&home, &[CATALOG_WINDOW]);
+        let _state = plant_state_db(&home, &rollout, 12_548);
+
+        assert_eq!(
+            codex_pane(&home).sample(PaneId::Worker(1)),
+            None,
+            "12548 is on disk and would have rendered as 1% — an unavailable gauge says \
+             unavailable (D-054, M22, C24)",
+        );
+    }
+
+    #[test]
+    fn a_codex_home_with_no_state_database_reads_unavailable() {
+        let home = temp_dir("codex-no-state");
+        assert_eq!(codex_pane(&home).sample(PaneId::Worker(1)), None);
+    }
+
+    /// The vendor names the file; if that file is not there, there is nothing to
+    /// read and nothing to guess. The `sessions/<yyyy>/<mm>/<dd>/` layout is never
+    /// walked as a substitute.
+    #[test]
+    fn a_rollout_path_naming_a_file_that_is_not_there_reads_unavailable() {
+        let home = temp_dir("codex-dangling");
+        plant_catalog(&home, &[CATALOG_WINDOW]);
+        let _state = plant_state_db(&home, &home.join("sessions/2026/09/06/gone.jsonl"), 12_548);
+
+        assert_eq!(codex_pane(&home).sample(PaneId::Worker(1)), None);
+    }
+
+    /// A `/clear` can leave a second thread in one pane's home, and the ordering
+    /// columns that would say which is current are not among the ones C61
+    /// measured. Most-recently-written wins — the same rule, and the same reason,
+    /// as [`latest_transcript`].
+    #[test]
+    fn the_most_recently_written_rollout_wins_when_a_home_holds_two() {
+        let home = temp_dir("codex-two-threads");
+        plant_catalog(&home, &[CATALOG_WINDOW]);
+        let older = plant_rollout(
+            &home,
+            "older",
+            &[token_usage_record(900_000, 900_000), token_count_event(REPORTED_WINDOW)],
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let newer = plant_rollout(
+            &home,
+            "newer",
+            &[token_usage_record(100_000, 100_000), token_count_event(REPORTED_WINDOW)],
+        );
+
+        let conn = plant_state_db(&home, &older, 900_000);
+        conn.execute(
+            "INSERT INTO threads (id, tokens_used, rollout_path) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["second-thread", 100_000, newer.to_string_lossy()],
+        )
+        .unwrap();
+
+        let gauge = codex_pane(&home).sample(PaneId::Worker(1)).expect("two threads, one current");
+        assert_eq!(
+            gauge.used_tokens, 100_000,
+            "the newer thread's usage must win, not the larger older one",
+        );
+    }
+
+    /// Absence is a decision this module makes, not a wire that was never
+    /// connected: the identical fixture with and without the vendor's record
+    /// samples a real number and then nothing.
+    #[test]
+    fn a_codex_gauge_is_present_or_absent_for_a_reason_and_the_same_home_shows_both() {
+        let home = temp_dir("codex-both-ways");
+        plant_catalog(&home, &[CATALOG_WINDOW]);
+        let rollout = plant_rollout(&home, "one", &[token_count_event(REPORTED_WINDOW)]);
+        let _state = plant_state_db(&home, &rollout, 500_000);
+        assert_eq!(
+            codex_pane(&home).sample(PaneId::Worker(1)),
+            None,
+            "no turn record yet, so nothing honest to report",
+        );
+
+        std::fs::write(
+            &rollout,
+            [token_usage_record(500_000, 500_000), token_count_event(REPORTED_WINDOW)].join("\n"),
+        )
+        .unwrap();
+        assert_eq!(
+            codex_pane(&home).sample(PaneId::Worker(1)).map(|g| g.pct),
+            Some(50),
+            "the same home, once the vendor has written a turn",
+        );
     }
 
     // --- estimate_tokens / spawn_estimate_notice_text -----------------------------

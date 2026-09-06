@@ -246,7 +246,7 @@ pub const OPERATOR_DIR: &str = ".codex";
 ///    knowledge merges only after review. Left out until a ticket asks for it.
 const SNAPSHOT_ENTRIES: &[&str] = &[
     // Checkpoint 4's "the model catalog": the file `model_catalog_json` names.
-    "models.json",
+    MODEL_CATALOG,
     // The operator's skills.
     "skills",
     // Custom prompts, when the operator has any.
@@ -407,6 +407,21 @@ const WORKER_FEATURE_OVERRIDES: &[(&str, &str)] = &[
 /// The file `CODEX_HOME` is read from — checkpoint 4's seed file, and checkpoint
 /// 14's trust file, which for this harness are the same document.
 const CONFIG_FILE: &str = "config.toml";
+
+/// The model catalog inside a pane's own `CODEX_HOME` — the copy
+/// `model_catalog_json` is rewritten to point at (C6), and checkpoint 11's
+/// fallback denominator.
+const MODEL_CATALOG: &str = "models.json";
+
+/// Where the vendor records which rollout each thread is writing — checkpoint
+/// 11's join, not checkpoint 13's transcript.
+///
+/// **Generation-numbered, exactly like `thread_history_1`** (C12): the `_5` is
+/// codex's own compatibility signal, and a build that moves to `state_6` should
+/// make this gauge read `unavailable` rather than silently find nothing in a
+/// file whose shape it no longer knows. That is what naming it here buys — one
+/// literal, one place, in the harness whose fact it is.
+const STATE_DB: &str = "state_5.sqlite";
 
 /// Checkpoint 2's file: the pane's brief, beside the seed, named by
 /// [`BriefCarrier::config_key`] (#27, C3).
@@ -677,8 +692,16 @@ pub const CODEX_SPEC: HarnessSpec = HarnessSpec {
     // 11 — gauge source and window. Codex publishes `context_window` per model in
     // its own catalog, which is strictly better than the fleet asserting one, so
     // there is no window to export and no variable to export it through (D-054).
-    // Whether per-turn usage is persisted at all is the open question C12 names
-    // and #40's to answer.
+    //
+    // **C12's open question is closed and the answer was "not where we looked"**
+    // (#38, C61). Per-turn usage is not in the thread store checkpoint 13 names —
+    // no column, no `item_json` field, no migration in this build that would add
+    // one — but it *is* on disk twice in the same `CODEX_HOME`, written by the
+    // vendor. So `reads_transcript` stays `true`: there is a reader, and it is
+    // [`Harness::read_usage`] below rather than the transcript sampler. Both
+    // window fields stay `None` because the numbers this harness divides by are
+    // its own — the `model_context_window` it reports per turn, and its catalog
+    // behind that — and neither is a constant the fleet could export to a pane.
     gauge: GaugeSource { reads_transcript: true, window_tokens: None, window_env: None },
 
     // 12 — orphan-sweep names (C11). A native binary, so one word — no interpreter
@@ -735,6 +758,28 @@ pub const CODEX_SPEC: HarnessSpec = HarnessSpec {
 impl Harness for CodexCli {
     fn spec(&self) -> &'static HarnessSpec {
         &CODEX_SPEC
+    }
+
+    /// **Checkpoint 11's behavioural half** (#41, C61, C65): the vendor's own
+    /// per-turn accounting, out of the two files in the pane's own `CODEX_HOME`
+    /// that hold it — never the thread store, which C61 measured to hold none.
+    ///
+    /// The reading itself lives in [`crate::context_gauge::codex_vendor_usage`],
+    /// where the gauge's other honesty rules already are; what belongs here is
+    /// *which files*, because generation-numbered filenames are this harness's
+    /// facts and nothing else should be spelling them.
+    ///
+    /// Both are inside [`Seed::config_dir`], so this reads nothing outside the
+    /// layout placement handed the pane, and neither is the operator's own
+    /// `~/.codex`.
+    fn read_usage(
+        &self,
+        source: &crate::context_gauge::TranscriptSource,
+    ) -> Option<crate::context_gauge::UsageReading> {
+        crate::context_gauge::codex_vendor_usage(
+            &source.config_dir.join(STATE_DB),
+            &source.config_dir.join(MODEL_CATALOG),
+        )
     }
 
     /// The same canonicalization Claude Code uses, and for the same reason: on

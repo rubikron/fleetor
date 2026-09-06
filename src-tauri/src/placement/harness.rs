@@ -517,8 +517,23 @@ pub struct CommandChannel {
 /// number that looks right and is wrong.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GaugeSource {
-    /// Whether usage is read out of the pane's own transcript (checkpoint 13)
-    /// rather than from a separate store.
+    /// Whether the gauge has a reader for this harness's usage at all, under the
+    /// pane's own configuration directory. `false` means the number is somewhere
+    /// this module cannot reach, and the rail says unavailable.
+    ///
+    /// **The name is now narrower than the thing** (#41, C65), and saying so is
+    /// cheaper than a rename that would touch every checkpoint-11 literal while
+    /// three tickets are in flight. It was written when the only reader was Claude
+    /// Code's `assistant`-line `usage` object, so "reads the transcript" and "has a
+    /// reader" were the same sentence. C61 measured that they are not: codex's
+    /// *transcript* — the `thread_history_1.sqlite` checkpoint 13 names — holds no
+    /// usage field at all, and its number lives in two other files in the same
+    /// `CODEX_HOME`. Both harnesses still answer `true`, and what that gates is
+    /// unchanged: placement hands the gauge a source, and [`Harness::read_usage`]
+    /// reads under it. **What would force the rename** is a third harness that
+    /// needs to distinguish *which* reader, at which point this bool becomes a
+    /// named enum the way `file_move_is_safe` became [`Transport`] (C54) — one
+    /// bool that means more than it says is exactly what that decision corrected.
     pub reads_transcript: bool,
     /// The window the gauge divides by, when the fleet is the one asserting it.
     /// `Some(WORKER_WINDOW_TOKENS)` here: Claude Code does not recognize the
@@ -962,6 +977,37 @@ pub trait Harness: std::fmt::Debug + Send + Sync + 'static {
     /// Code ignores [`Seat::model`] — its model travels in
     /// [`Posture::model_env`] beside the command rather than inside it.
     fn command_args(&self, seat: &Seat<'_>) -> Vec<String>;
+
+    /// **Checkpoint 11's behavioural half:** this harness's own accounting of its
+    /// own turn, read back off the pane's configuration directory (#41, C61, C65).
+    ///
+    /// **A method rather than a fifteenth field, and C54 called this in advance.**
+    /// Where a number *lives* is a static fact and belongs on [`GaugeSource`];
+    /// getting it out is a computation over files under the pane's own config
+    /// directory, and C54 already found that shape — `project_transcript_dir`,
+    /// `trust_candidates` — to be a method every time. Claude Code's answer is a
+    /// `usage` object on the last `assistant` line of its own transcript, so that
+    /// is the default; a harness that keeps the number somewhere else overrides
+    /// this and no arm in the gauge has to name it.
+    ///
+    /// **The one rule, and it is absolute (D-054, M22, C24).** What is returned is
+    /// a figure *the vendor itself wrote to disk*. It is never derived from the
+    /// prompt FLEETOR assembled, never a chars/4 estimate, and never a running
+    /// total standing in for occupancy. A harness with no such record on disk
+    /// answers `None` and the rail says unavailable — an absent gauge is strictly
+    /// better than a number that looks right and is wrong.
+    ///
+    /// [`UsageReading::window_tokens`](crate::context_gauge::UsageReading::window_tokens)
+    /// is how a harness reports the window *it* was measured against, which takes
+    /// precedence over [`GaugeSource::window_tokens`] for exactly the reason that
+    /// field exists: a rail that disagrees with the vendor's own display is the
+    /// two-numbers failure D-054 forbids.
+    fn read_usage(
+        &self,
+        source: &crate::context_gauge::TranscriptSource,
+    ) -> Option<crate::context_gauge::UsageReading> {
+        crate::context_gauge::transcript_usage(source)
+    }
 }
 
 // --- Claude Code --------------------------------------------------------------
