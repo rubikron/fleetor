@@ -190,6 +190,40 @@ export function SeatRow({ label, gate, seat, sentinel, onHarness, onModel, aside
         </button>
       </div>
       <p className="seat-row__facts">{factsFor(offer)}</p>
+      {/* **The way out, beside what is wrong** (#51). The line above is the vendor's
+          own sentence about the state and it is correct and it is a dead end; this
+          is the move. Everything in it — the sentence, the command, the variable —
+          arrives on the wire from `HarnessSpec::login`, so nothing here knows which
+          harness it is describing or which of the three not-usable shapes it is in.
+
+          **There is no field to paste a credential into, here or anywhere.** Only
+          the vendor's own login writes where the vendor reads, so FLEETOR names the
+          command and the operator runs it. The `Re-check logins` button below asks
+          every harness again, which is how a login done in another terminal lands
+          without restarting the app. */}
+      {offer?.guidance != null && (
+        <p className="seat-row__howto">
+          {offer.guidance.sentence}
+          {offer.guidance.command !== null && (
+            <>
+              {" "}
+              <span className="mono">{offer.guidance.command}</span>
+              {offer.guidance.then !== null && (
+                <>
+                  {" then "}
+                  <span className="mono">{offer.guidance.then}</span>
+                </>
+              )}
+            </>
+          )}
+          {offer.guidance.variable !== null && (
+            <>
+              {" "}
+              <span className="mono">{offer.guidance.variable}</span>
+            </>
+          )}
+        </p>
+      )}
       {offer !== undefined && offer.resolved !== null && !offer.readings_agree && (
         <p className="seat-row__warn">
           the <span className="mono">{offer.invoked}</span> on your PATH is a wrapper: it and the

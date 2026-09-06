@@ -732,6 +732,15 @@ pub struct HarnessOffer {
     /// exactly when this machine looks logged in, because that is the only state
     /// where an unqualified green would mislead anybody.
     caveat: Option<&'static str>,
+    /// **What the operator can do about it** (#51) — the move out of the state
+    /// `reason` describes, which until this ticket was a dead end.
+    ///
+    /// Computed by `HarnessReadiness::login_guidance` off `HarnessSpec::login`, so
+    /// the card renders whatever the harness declared and a third one registered
+    /// tomorrow needs no interface edit. `None` for a harness that is logged in and
+    /// for one that is not installed, where `reason` already carries the only
+    /// actionable sentence there is.
+    guidance: Option<LoginHelp>,
     /// The vendor's own version string.
     version: Option<String>,
     /// The provider the vendor resolved — a fact, never a control (C2, C9).
@@ -752,6 +761,36 @@ pub struct HarnessOffer {
 pub struct ModelOffer {
     slug: String,
     display_name: String,
+}
+
+/// **The way out of a harness that cannot take a seat**, in the shape the card
+/// renders (#51).
+///
+/// Three slots and no verdict word: the interface lays out whichever are present and
+/// switches on nothing. `harness::LoginGuidance` decided which of the three shapes
+/// this machine is in, and it decided it once.
+#[derive(Serialize, Clone)]
+pub struct LoginHelp {
+    /// Why the operator rather than FLEETOR is the one who has to act.
+    sentence: String,
+    /// What to type. Absent when no command would help.
+    command: Option<&'static str>,
+    /// The second step, for a harness whose login lives inside what `command`
+    /// starts.
+    then: Option<&'static str>,
+    /// The environment variable to set, for the shape no command fixes.
+    variable: Option<String>,
+}
+
+impl From<harness::LoginGuidance> for LoginHelp {
+    fn from(guidance: harness::LoginGuidance) -> Self {
+        Self {
+            sentence: guidance.sentence,
+            command: guidance.command,
+            then: guidance.then,
+            variable: guidance.variable,
+        }
+    }
 }
 
 /// **The whole of what the start gate renders from** (M15).
@@ -786,7 +825,11 @@ impl HarnessOffer {
         use harness::LoginState;
         let (status, account, reason) = match &readiness.login {
             LoginState::LoggedIn(shape) => ("logged-in", Some(shape.display()), None),
-            LoginState::NoCredential { summary } => ("no-credential", None, Some(summary.clone())),
+            LoginState::NoCredential { summary, .. } => (
+                "no-credential",
+                None,
+                Some(summary.clone()),
+            ),
             // The sentence is `harness::not_on_the_path`'s rather than this file's,
             // because the start refusal says the same thing about the same machine
             // (#36) and an operator told two different things about one installation
@@ -810,6 +853,7 @@ impl HarnessOffer {
             account,
             reason,
             caveat: readiness.login.caveat(),
+            guidance: readiness.login_guidance().map(LoginHelp::from),
             version: readiness.version.clone(),
             provider: readiness.provider.clone(),
             models,
@@ -2601,7 +2645,7 @@ mod tests {
         let seats = seats_on("claude-code", "claude-code");
         let out = vec![reading(
             "claude-code",
-            LoginState::NoCredential { summary: "records no login in ~/.claude.json".into() },
+            LoginState::NoCredential { summary: "records no login in ~/.claude.json".into(), provider_key: None },
         )];
 
         let refused = StartVerdict::for_seats(&seats, &out, true, Vec::new());
@@ -2644,7 +2688,7 @@ mod tests {
         let seats = seats_on("claude-code", "codex");
         let readings = vec![
             logged_in("claude-code", AccountShape::ApiKey),
-            reading("codex", LoginState::NoCredential { summary: "no Codex credentials".into() }),
+            reading("codex", LoginState::NoCredential { summary: "no Codex credentials".into(), provider_key: None }),
         ];
 
         assert!(

@@ -103,6 +103,31 @@ export function canTakeASeat(harness: HarnessOffer): boolean {
   return !CANNOT_TAKE_A_SEAT.includes(harness.status);
 }
 
+/// **The way out of a harness that cannot take a seat** (WP-25 #51).
+///
+/// Every field is the backend's answer, computed from `HarnessSpec::login` — this
+/// file names no command, no variable and no vendor. The card lays out whichever
+/// slots are present and switches on nothing, which is what makes a third harness
+/// registered tomorrow arrive with its own guidance and no edit here.
+///
+/// **There is no field for a credential, and there is no control that would fill
+/// one.** Each vendor's login writes where that vendor reads — a keychain entry for
+/// one, a file inside its own configuration directory for another — so a token
+/// pasted into FLEETOR would land somewhere nobody reads. The operator runs the
+/// command; the vendor writes its own credential; Re-check logins picks it up.
+export interface LoginHelp {
+  /// Why the operator rather than FLEETOR is the one who has to act.
+  sentence: string;
+  /// What to type. Null when no command would help — the shape whose fix is a
+  /// variable, and the one that is already working.
+  command: string | null;
+  /// A second step, for a harness whose login is a command inside what `command`
+  /// starts rather than a subcommand of it.
+  then: string | null;
+  /// The environment variable to set, for the shape no command fixes.
+  variable: string | null;
+}
+
 /// One model a harness would accept, as the vendor names it. The slug goes on the
 /// argv; the display name is what a person recognises.
 export interface ModelOffer {
@@ -123,6 +148,10 @@ export interface HarnessOffer {
   /// **What a passing check does not prove.** Present exactly when this machine
   /// looks logged in, which is the only state where an unqualified green misleads.
   caveat: string | null;
+  /// **What to do about it**, where there is something to do. Null when the harness
+  /// is logged in, and when it is not installed — there `reason` already carries the
+  /// only actionable sentence there is.
+  guidance: LoginHelp | null;
   version: string | null;
   /// The provider the vendor resolved — a fact, never a control. There is no
   /// provider picker anywhere.

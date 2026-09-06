@@ -236,6 +236,86 @@ fn no_harness_is_hidden_and_a_refused_one_carries_its_reason() {
     );
 }
 
+// --- the way out of a harness that cannot take a seat (#51) -------------------
+
+/// The instruction block the gate renders under a seat's facts line.
+fn the_instruction(gate: &str) -> String {
+    between(gate, "offer?.guidance != null &&", "</p>", "the login instruction")
+}
+
+/// Every credential surface a screen could grow, by the markup that would make one.
+///
+/// **The screen this is pointed at already spends real money.** A field here would
+/// be FLEETOR holding an OAuth token it has no business holding — and, decisively, a
+/// token pasted into it would not land where the vendor reads from (#49 measured
+/// both: a login-keychain entry for one harness, a file inside its own configuration
+/// directory for the other), so the control would look like it worked and change
+/// nothing.
+fn credential_surfaces_in(text: &str) -> Vec<&'static str> {
+    let lowered = production_text(text).to_lowercase();
+    ["type=\"password\"", "apikey", "api_key", "access_token", "secret", "paste your"]
+        .into_iter()
+        .filter(|marker| lowered.contains(marker))
+        .collect()
+}
+
+/// **A harness that cannot take a seat is told what to run** (#51).
+///
+/// The state this closes was correct and useless: `codex — not logged in`, disabled,
+/// with the vendor's own sentence beside it and no next move. The move now arrives
+/// on the wire from `HarnessSpec::login`, which is why the check below is that the
+/// gate *reads all of it* — a card that rendered only the sentence would drop the
+/// command, and the command is the half an operator acts on.
+#[test]
+fn a_harness_that_cannot_take_a_seat_is_told_what_to_run() {
+    let gate = production_text(&read(GATE));
+    let told = the_instruction(&gate);
+    for field in ["guidance.sentence", "guidance.command", "guidance.then", "guidance.variable"] {
+        assert!(
+            told.contains(field),
+            "the gate no longer renders `{field}`. All four arrive together from \
+             `HarnessReadiness::login_guidance`, and a card that renders some of them tells \
+             one of the three not-usable shapes the wrong thing:\n{told}",
+        );
+    }
+    let wire = read(WIRE);
+    assert!(
+        wire.contains("export interface LoginHelp {"),
+        "`LoginHelp` is gone from {WIRE} — the guidance has no shape on the interface side",
+    );
+    let backend = read(BACKEND);
+    assert!(
+        backend.contains("guidance: readiness.login_guidance().map(LoginHelp::from)"),
+        "`HarnessOffer` no longer carries the guidance, so the card has nothing to render",
+    );
+    // And it is the *harness's* answer, not the gate's. A command spelled here would
+    // be a command for the harnesses that exist today.
+    assert!(
+        read(HARNESS).contains("pub login: LoginInstruction,"),
+        "`HarnessSpec` no longer declares a login instruction, so the gate's command comes \
+         from somewhere a third harness cannot answer",
+    );
+}
+
+/// **There is nowhere to paste a credential, on the gate or behind it** (#51).
+///
+/// FLEETOR names the command and the operator runs it; the vendor writes its own
+/// credential and `Re-check logins` picks it up. A field that took a token would be
+/// storing one this app has no business holding, on the one screen that already
+/// spends real money — and it would not work, which is the decisive half.
+#[test]
+fn the_gate_offers_nowhere_to_paste_a_credential() {
+    for file in [GATE, PICKERS, WIRE, API] {
+        let found = credential_surfaces_in(&read(file));
+        assert!(
+            found.is_empty(),
+            "{file} carries {found:?} — a credential surface. Only the vendor's own login \
+             writes where the vendor reads, so a token collected here lands nowhere and the \
+             control lies about having worked (#49).",
+        );
+    }
+}
+
 // --- the re-check button ------------------------------------------------------
 
 /// **The re-check button reaches a fresh probe**, link by link.
@@ -731,6 +811,32 @@ fn the_checks_fire_on_a_source_that_violates_them() {
                  this ticket found on every pane head",
             );
         }
+    }
+
+    // A gate that renders the sentence and drops the command — the half-fix that
+    // leaves the operator with prose and nothing to type.
+    let prose = "offer?.guidance != null && (<p>{offer.guidance.sentence}</p>";
+    assert!(
+        !the_instruction(prose).contains("guidance.command"),
+        "the instruction check would not notice a card that renders no command",
+    );
+    assert!(
+        the_instruction(&production_text(&read(GATE))).contains("guidance.command"),
+        "the instruction check reports the real gate, so it says nothing about one that          renders only prose",
+    );
+
+    // A credential field, in the shape somebody would actually add one.
+    let field = "<input type=\"password\" placeholder=\"Paste your token\" />";
+    assert!(
+        !credential_surfaces_in(field).is_empty(),
+        "the credential-surface check would not notice a password field",
+    );
+    for file in [GATE, PICKERS] {
+        assert!(
+            credential_surfaces_in(&read(file)).is_empty(),
+            "the credential-surface check reports {file} itself, so it says nothing about a \
+             card that does collect one",
+        );
     }
 
     // A fifth status word on one side of the wire only.

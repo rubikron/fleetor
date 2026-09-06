@@ -122,6 +122,20 @@ pub struct HarnessSpec {
     /// rides the event and not the record.
     pub mark: &'static str,
 
+    /// **How an operator logs this harness in, in their own terminal** (#51).
+    ///
+    /// Identity like [`name`](Self::name) and [`mark`](Self::mark), and **not** a
+    /// fifteenth checkpoint: nothing in a bring-up reads it. A pane is placed the
+    /// same way whether the operator has logged in or not — what changes is what
+    /// the gate can tell them when they have not.
+    ///
+    /// **It is here for the reason the mark is here.** A gate that answered "what
+    /// do I run to fix this" with `harness === "codex" ? … : …` would answer it
+    /// for the first two vendors and answer it wrong for the third, which is the
+    /// archaeology this seam exists to end (C57). It travels the channel the name
+    /// already travels — onto `HarnessOffer` and out to the card.
+    pub login: LoginInstruction,
+
     /// **Checkpoint 1 — program and base arguments.**
     pub program: Program,
     /// **Checkpoint 2 — brief carrier.**
@@ -157,6 +171,41 @@ pub struct HarnessSpec {
     /// **Checkpoint 14 — project identity and trust seeding** (C17, generalized
     /// from "project-key canonicalization").
     pub project_identity: ProjectIdentityAndTrust,
+}
+
+/// **What the operator types to log one harness in** (#51).
+///
+/// **`'static` data, like everything else here**: nothing in this struct is
+/// discovered by running the vendor. It is the answer to "what would somebody type
+/// in a terminal", which a harness knows about itself before any machine is
+/// probed — the same class of fact as [`Program::bin`], and the reason a login
+/// instruction that *did* need a subprocess would belong on
+/// [`Host`](super::Host) instead.
+///
+/// **FLEETOR never runs it and never collects what it produces.** #49 measured
+/// where each vendor's credential actually lives —
+/// [`credential_home`](Self::credential_home) is that measurement, in the
+/// operator's words — and only the vendor's own login writes there. A field on
+/// this card that took a pasted token would write it somewhere the vendor does not
+/// read, which is a control that looks like it worked and changes nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoginInstruction {
+    /// The command, exactly as it is typed. Claude Code's is the binary itself,
+    /// because its login is a command *inside* its own session; codex's is a
+    /// subcommand and completes on its own.
+    pub command: &'static str,
+    /// The second step, for a harness whose login lives inside what
+    /// [`command`](Self::command) starts. `None` when the command above is the
+    /// whole of it.
+    ///
+    /// Two fields rather than one sentence because the interface renders each as
+    /// something to type, and a sentence with a command inside it is a command
+    /// nobody can copy.
+    pub then: Option<&'static str>,
+    /// Where the vendor writes the credential that login produces, named for the
+    /// operator rather than as a path — the measured half of why FLEETOR does not
+    /// collect one (#49, C9).
+    pub credential_home: &'static str,
 }
 
 /// **Checkpoint 1 — program and base arguments.**
@@ -1120,6 +1169,21 @@ pub const CLAUDE_CODE_SPEC: HarnessSpec = HarnessSpec {
     name: "claude-code",
     mark: "CC",
 
+    // How an operator logs it in (#51). **Two steps, because its login is a
+    // command inside its own session** rather than a subcommand — the move
+    // `placement::mod`'s own note has named since WP-14 ("run `/login` inside that
+    // pane once"), stated here so the gate can say it before a pane exists.
+    //
+    // The credential lands in the operator's login keychain, which #49 measured
+    // and which is the reason FLEETOR does not offer to take it: a token pasted
+    // into this app would not be in the keychain, and the vendor reads the
+    // keychain.
+    login: LoginInstruction {
+        command: "claude",
+        then: Some("/login"),
+        credential_home: "your login keychain",
+    },
+
     // 1 — program and base arguments. `spawn::base_command_with`.
     program: Program { bin: "claude", base_args: &[] },
 
@@ -1509,6 +1573,18 @@ pub enum LoginState {
     NoCredential {
         /// What the vendor said, verbatim — the operator's most actionable line.
         summary: String,
+        /// **The named variable a custom provider authenticates through, when the
+        /// vendor reported one and reported it missing** (#51, C14's third shape).
+        ///
+        /// `None` is the ordinary no-credential state, and its fix is the vendor's
+        /// login command. `Some` is the state where **no login command helps at
+        /// all**: the operator has configured a provider of their own and the key
+        /// it names is not set, and #29 measured that a named `env_key` has no
+        /// ambient fallback to pick up instead. One refusal, two different next
+        /// actions — a field rather than a fifth status word, because the *seat*
+        /// is refused identically either way and the four status words are pinned
+        /// against `ui/src/fleet/types.ts` (C72).
+        provider_key: Option<ProviderKey>,
     },
     /// The harness's binary is not on this machine, so there was nothing to ask.
     NotInstalled,
@@ -1587,6 +1663,80 @@ pub const REACHABILITY_NOT_AUTHORIZATION: &str =
      provider accepted it. A revoked or expired key clears this check and fails on the \
      pane's first turn. The fleet does not spend a token to find out, so if a pane \
      reports an authentication error on turn one, this is why.";
+
+/// **A custom provider and the variable it authenticates through** (#51).
+///
+/// The same two facts [`AccountShape::CustomProvider`] carries when the variable is
+/// *there*, so the logged-in shape and the missing one are described in the same
+/// words. It is a value rather than a formatted sentence for the reason
+/// [`PostureDisagreement`] is: the gate's line and a test's assertion read the same
+/// fields.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProviderKey {
+    /// What the operator called the provider.
+    pub provider: String,
+    /// The environment variable it reads its key from.
+    pub env_var: String,
+}
+
+/// **What the operator can do about a harness that will not take a seat** (#51).
+///
+/// The gate already says what is *wrong* — [`HarnessReadiness::refusal`] carries the
+/// vendor's own sentence, and it is rendered verbatim. This is the other half, and
+/// it is deliberately a different value: a reason and an instruction are not the
+/// same sentence, and merging them would mean either respelling the vendor's words
+/// or burying ours inside them.
+///
+/// **Three shapes, three answers, and the third is not "log in"** (C14, #36):
+///
+///  - no credential at all — [`command`](Self::command), the vendor's own login;
+///  - a custom provider whose key is missing — [`variable`](Self::variable), because
+///    no login command writes an environment variable;
+///  - [`LoginState::Unreadable`] — neither, because it is a *working* installation
+///    whose report this build could not parse, and telling that operator to log in
+///    would be telling them to fix something that is not broken.
+///
+/// **It says nothing about what a passing check does not prove.** That is
+/// [`REACHABILITY_NOT_AUTHORIZATION`], it is said once, and it is said about a
+/// harness that *is* logged in — the opposite state to every one of these.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoginGuidance {
+    /// The sentence that says which of the three shapes this is, and why the
+    /// operator rather than FLEETOR is the one who has to act.
+    pub sentence: String,
+    /// What to type, from [`LoginInstruction::command`]. `None` when no command
+    /// helps.
+    pub command: Option<&'static str>,
+    /// The second step, from [`LoginInstruction::then`], for a harness whose login
+    /// lives inside what `command` starts.
+    pub then: Option<&'static str>,
+    /// The environment variable to set, for the shape no command fixes. `None`
+    /// otherwise.
+    pub variable: Option<String>,
+}
+
+impl LoginGuidance {
+    /// The whole of it as one line, for a feed that has no card to lay it out on
+    /// ([`HarnessReadiness::notices`]).
+    ///
+    /// The same three fields in the same order the gate renders them, so the
+    /// Activity feed and the start card cannot end up telling an operator two
+    /// different things about one machine.
+    pub fn line(&self) -> String {
+        let mut line = self.sentence.clone();
+        if let Some(command) = self.command {
+            line.push_str(&format!(" `{command}`"));
+            if let Some(then) = self.then {
+                line.push_str(&format!(" then `{then}`"));
+            }
+            line.push('.');
+        }
+        if let Some(variable) = &self.variable {
+            line.push_str(&format!(" `{variable}`."));
+        }
+        line
+    }
+}
 
 /// Which shape of credential a machine is logged in with (C14).
 ///
@@ -1782,9 +1932,66 @@ impl HarnessReadiness {
     /// but the operator can only act on the line the vendor wrote.
     pub fn refusal(&self) -> Option<String> {
         match &self.login {
-            LoginState::NoCredential { summary } => Some(summary.clone()),
+            LoginState::NoCredential { summary, .. } => Some(summary.clone()),
             LoginState::NotInstalled => Some(not_on_the_path(&self.invoked)),
             LoginState::LoggedIn(_) | LoginState::Unreadable { .. } => None,
+        }
+    }
+
+    /// **What the operator can do about it, next to what is wrong** (#51).
+    ///
+    /// [`refusal`](Self::refusal) is the vendor's sentence about the state; this is
+    /// the move out of it, and the two are separate values because they are separate
+    /// sentences — "codex — not logged in" is correct and is a dead end, which is
+    /// the whole of what this ticket is about.
+    ///
+    /// **The command is the spec's, never this file's.** It comes off
+    /// [`HarnessSpec::login`], so a third harness registered tomorrow gets guidance
+    /// on the day it is registered rather than on the day somebody remembers to
+    /// widen a branch.
+    ///
+    /// `None` for a harness that is logged in — there is nothing to do — and for
+    /// [`LoginState::NotInstalled`], where [`not_on_the_path`] already says the only
+    /// actionable thing there is: the binary is absent from the `PATH` *this app*
+    /// inherited, which a login command cannot change and an install may not either.
+    pub fn login_guidance(&self) -> Option<LoginGuidance> {
+        let name = self.harness.name;
+        let login = &self.harness.login;
+        match &self.login {
+            LoginState::NoCredential { provider_key: Some(key), .. } => Some(LoginGuidance {
+                sentence: format!(
+                    "No login command will help here: this machine resolves {name} to {}, a \
+                     provider of your own, and the key it names is not set. A named provider \
+                     key has no ambient fallback, so nothing else is picked up instead. Set \
+                     this in the environment FLEETOR is launched from:",
+                    key.provider,
+                ),
+                command: None,
+                then: None,
+                variable: Some(key.env_var.clone()),
+            }),
+            LoginState::NoCredential { .. } => Some(LoginGuidance {
+                sentence: format!(
+                    "{name} keeps its credential in {}, and only its own login puts one \
+                     there — FLEETOR writes no credential and asks you for none. In a \
+                     terminal of your own, run:",
+                    login.credential_home,
+                ),
+                command: Some(login.command),
+                then: login.then,
+                variable: None,
+            }),
+            LoginState::Unreadable { .. } => Some(LoginGuidance {
+                sentence: format!(
+                    "Nothing to log in to: this is a working {name} installation whose \
+                     diagnostic this build could not read, not a logged-out one. A seat on \
+                     it is still offered, and logging in again would change nothing.",
+                ),
+                command: None,
+                then: None,
+                variable: None,
+            }),
+            LoginState::NotInstalled | LoginState::LoggedIn(_) => None,
         }
     }
 
@@ -1903,14 +2110,18 @@ impl HarnessReadiness {
                 ));
                 return notices;
             }
-            LoginState::NoCredential { summary } => {
+            LoginState::NoCredential { summary, .. } => {
+                // **The move out, from the spec rather than guessed from the binary
+                // name** (#51). This line used to read "log in with `claude`", which
+                // is not a login command for either registered harness — the
+                // program name is checkpoint 1 and the login is
+                // `HarnessSpec::login`, and they are only the same string by
+                // coincidence.
+                let guidance =
+                    self.login_guidance().map(|g| format!(" {}", g.line())).unwrap_or_default();
                 notices.push((
                     NoticeLevel::Warn,
-                    format!(
-                        "{name} has no usable credential on this machine: {summary}. \
-                         Log in with `{}` before giving a seat to {name}.",
-                        self.invoked,
-                    ),
+                    format!("{name} has no usable credential on this machine: {summary}.{guidance}"),
                 ));
                 return notices;
             }
@@ -2055,7 +2266,13 @@ fn claude_code_login(home: Option<&Path>) -> LoginState {
     let text = match std::fs::read_to_string(&file) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return LoginState::NoCredential { summary: no_login_recorded(&file) }
+            return LoginState::NoCredential {
+                summary: no_login_recorded(&file),
+                // Claude Code publishes no custom-provider reading at all, so this
+                // shape cannot arise for it — an honest `None` rather than an
+                // invented one (#51).
+                provider_key: None,
+            }
         }
         Err(e) => {
             let why = format!("{} could not be read: {e}", file.display());
@@ -2076,7 +2293,7 @@ fn claude_code_login(home: Option<&Path>) -> LoginState {
         Some(account) if !account.is_null() => {
             LoginState::LoggedIn(AccountShape::SubscriptionPlan { plan: None })
         }
-        _ => LoginState::NoCredential { summary: no_login_recorded(&file) },
+        _ => LoginState::NoCredential { summary: no_login_recorded(&file), provider_key: None },
     }
 }
 
@@ -2188,6 +2405,133 @@ mod tests {
             "two harnesses share a mark, so two panes running different vendors are \
              indistinguishable in exactly the place the mark exists to distinguish them",
         );
+    }
+
+    /// **Every registered harness states how an operator logs it in** (#51).
+    ///
+    /// The property that makes "a third harness needs no `ui/` change" true on the
+    /// backend side, exactly as the mark's does above: the card renders whatever
+    /// arrives on `HarnessOffer::guidance`, and this is what says something will
+    /// arrive. A harness registered without an answer here would render a refusal
+    /// with an empty instruction under it, which is the dead end this ticket
+    /// closed with different words in it.
+    ///
+    /// **`'static` and nothing else.** The command is a fact a harness knows about
+    /// itself; one that could only be discovered by running the vendor would be a
+    /// process read inside `placement` and would belong on `Host`.
+    #[test]
+    fn every_registered_harness_states_how_to_log_it_in() {
+        for entry in registered() {
+            let spec = entry.spec();
+            let login = &spec.login;
+            assert!(
+                !login.command.trim().is_empty(),
+                "`{}` declares no login command, so the gate can say what is wrong with it \
+                 and not what to do about it — the state #51 exists to end.",
+                spec.name,
+            );
+            assert!(
+                login.then.is_none_or(|then| !then.trim().is_empty()),
+                "`{}` declares an empty second step. Absent means one step; empty means a \
+                 row telling an operator to type nothing.",
+                spec.name,
+            );
+            assert!(
+                !login.credential_home.trim().is_empty(),
+                "`{}` does not say where its credential lands. That sentence is the measured \
+                 reason FLEETOR asks for no token (#49), and without it the instruction is \
+                 an order rather than an explanation.",
+                spec.name,
+            );
+        }
+    }
+
+    /// **The three not-usable shapes get three different answers** (#51; C14, #36,
+    /// #29).
+    ///
+    /// The one place the distinction is decided. Every one of these is a machine
+    /// the gate has something to say about, and saying the same thing about all
+    /// three would be worse than saying nothing: two of them are not fixed by
+    /// logging in.
+    #[test]
+    fn the_three_not_usable_shapes_are_told_three_different_things() {
+        let spec = &CLAUDE_CODE_SPEC;
+        let readiness = |login: LoginState| HarnessReadiness {
+            login,
+            ..HarnessReadiness::not_installed(spec)
+        };
+
+        // 1 — no credential at all: the vendor's own login command, with whatever
+        // second step the spec declared.
+        let none = readiness(LoginState::NoCredential {
+            summary: "no login recorded".into(),
+            provider_key: None,
+        })
+        .login_guidance()
+        .expect("a machine with no credential is told what to run");
+        assert_eq!(none.command, Some(spec.login.command));
+        assert_eq!(none.then, spec.login.then);
+        assert_eq!(none.variable, None, "there is no variable to set in this shape");
+        assert!(
+            none.sentence.contains(spec.login.credential_home),
+            "the operator is told to run something and not why only they can: {}",
+            none.sentence,
+        );
+
+        // 2 — a custom provider whose key is missing: no command helps, and the
+        // variable is the whole of the fix (#29 — no ambient fallback).
+        let missing = readiness(LoginState::NoCredential {
+            summary: "the configured provider's key is missing".into(),
+            provider_key: Some(ProviderKey {
+                provider: "the operator's own".into(),
+                env_var: "OPERATORS_SHELL_KEY".into(),
+            }),
+        })
+        .login_guidance()
+        .expect("a provider missing its key is told about the variable");
+        assert_eq!(
+            missing.command, None,
+            "a login command was offered for a state no login command fixes",
+        );
+        assert_eq!(missing.variable.as_deref(), Some("OPERATORS_SHELL_KEY"));
+        assert!(
+            missing.sentence.contains("No login command will help"),
+            "the sentence does not say that this is the shape logging in does not fix: {}",
+            missing.sentence,
+        );
+
+        // 3 — `Unreadable`: a working installation, and telling this operator to
+        // log in would be telling them to fix something that is not broken.
+        let unreadable = readiness(LoginState::Unreadable { why: "an unknown format".into() })
+            .login_guidance()
+            .expect("an unreadable report is told what it is");
+        assert_eq!(unreadable.command, None);
+        assert_eq!(unreadable.variable, None);
+        assert!(
+            unreadable.sentence.contains("Nothing to log in to"),
+            "an operator with a working installation is being told to log in: {}",
+            unreadable.sentence,
+        );
+
+        // The two states with nothing to say. `NotInstalled`'s reason already
+        // carries the only actionable sentence there is, and a logged-in harness
+        // has nothing to fix.
+        assert_eq!(readiness(LoginState::NotInstalled).login_guidance(), None);
+        assert_eq!(
+            readiness(LoginState::LoggedIn(AccountShape::ApiKey)).login_guidance(),
+            None,
+        );
+
+        // **And none of the three respells the caveat.** That sentence is about a
+        // machine that *is* logged in — the opposite state to all three — and it is
+        // said once, from `REACHABILITY_NOT_AUTHORIZATION`.
+        for guidance in [&none, &missing, &unreadable] {
+            assert!(
+                !guidance.sentence.contains("revoked or expired key clears this check"),
+                "a guidance sentence respells the reachability caveat: {}",
+                guidance.sentence,
+            );
+        }
     }
 
     #[test]
@@ -2367,7 +2711,7 @@ mod tests {
     fn what_may_not_take_a_seat_is_exactly_what_refuses_a_start() {
         let states = [
             LoginState::LoggedIn(AccountShape::ApiKey),
-            LoginState::NoCredential { summary: "no Codex credentials".into() },
+            LoginState::NoCredential { summary: "no Codex credentials".into(), provider_key: None },
             LoginState::NotInstalled,
             LoginState::Unreadable { why: "unknown report format".into() },
         ];
@@ -2383,7 +2727,7 @@ mod tests {
         // The two that refuse carry the vendor's own words, and the not-installed
         // sentence is the one `HarnessOffer::from` puts on the row (`not_on_the_path`).
         let refused = HarnessReadiness {
-            login: LoginState::NoCredential { summary: "no Codex credentials".into() },
+            login: LoginState::NoCredential { summary: "no Codex credentials".into(), provider_key: None },
             ..logged_in()
         };
         assert_eq!(refused.refusal().as_deref(), Some("no Codex credentials"));
@@ -2422,7 +2766,7 @@ mod tests {
         // Not on a machine with no credential: there is no green check to qualify,
         // and a caveat beside a refusal reads as a second problem.
         let refused = HarnessReadiness {
-            login: LoginState::NoCredential { summary: "no Codex credentials".to_string() },
+            login: LoginState::NoCredential { summary: "no Codex credentials".to_string(), provider_key: None },
             ..logged_in()
         };
         assert!(

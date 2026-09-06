@@ -258,6 +258,252 @@ fn a_long_model_name_reaches_the_field_uncut() {
     );
 }
 
+// --- the way out of a harness that cannot take a seat (#51) -------------------
+
+/// The instruction paragraph out of one rendered row, or `None` when the row
+/// rendered none.
+///
+/// **The class name is the component's, never the probe's** — a row that stopped
+/// rendering the paragraph makes every assertion below fail rather than pass
+/// vacuously, which is the whole reason these are read out of markup and not out of
+/// the fixture.
+fn instruction(row: &str) -> Option<String> {
+    let open = "<p class=\"seat-row__howto\">";
+    let start = row.find(open)? + open.len();
+    let rest = &row[start..];
+    let end = rest.find("</p>").expect("an opened paragraph closes");
+    Some(rest[..end].to_string())
+}
+
+/// Every `<span class="mono">…</span>` in one paragraph, in order — the things the
+/// operator is being told to type.
+fn typed(paragraph: &str) -> Vec<String> {
+    let open = "<span class=\"mono\">";
+    let mut out = Vec::new();
+    let mut rest = paragraph;
+    while let Some(at) = rest.find(open) {
+        rest = &rest[at + open.len()..];
+        let end = rest.find("</span>").expect("an opened span closes");
+        out.push(rest[..end].to_string());
+        rest = &rest[end..];
+    }
+    out
+}
+
+/// **A harness that cannot take a seat shows what to run, not only what is wrong**
+/// — the whole of this ticket, asserted on markup React actually produced.
+///
+/// The row still carries the vendor's reason in its facts line (the test above);
+/// this is the line beneath it, and the command in it is a thing to copy rather
+/// than a sentence to read.
+#[test]
+fn a_harness_that_cannot_take_a_seat_says_what_to_run() {
+    let Some(all) = rendered() else { return };
+    let row = markup(&all, "guidance_login_command");
+    let told = instruction(&row).unwrap_or_else(|| {
+        panic!(
+            "a row on a harness that cannot take a seat renders no instruction at all — the \
+             dead end #51 exists to close:\n{row}"
+        )
+    });
+    assert!(
+        told.contains("In a terminal of your own, run:"),
+        "the instruction lost the sentence that says who runs the command:\n{told}"
+    );
+    assert_eq!(
+        typed(&told),
+        vec!["beta-cli login".to_string()],
+        "the command is no longer rendered as something to type. A sentence with a command \
+         buried in it is a command nobody can copy:\n{told}"
+    );
+    // The reason is still there and is still the vendor's, unchanged by this row
+    // gaining a second line: diagnosis and instruction are two sentences.
+    assert!(
+        row.contains("<p class=\"seat-row__facts\">no OAuth token found"),
+        "the instruction replaced the vendor's own reason instead of following it:\n{row}"
+    );
+}
+
+/// **A login that lives inside the harness's own session renders both steps.**
+///
+/// One registered harness logs in with a subcommand and the other with a command
+/// inside its own prompt; the row states whichever the harness declared, and knows
+/// which is which for neither.
+#[test]
+fn a_two_step_login_renders_both_of_its_steps() {
+    let Some(all) = rendered() else { return };
+    let told = instruction(&markup(&all, "guidance_two_step"))
+        .expect("a two-step login still renders an instruction");
+    assert_eq!(
+        typed(&told),
+        vec!["gamma-cli".to_string(), "/signin".to_string()],
+        "a harness whose login is a command inside its own session lost one of its two \
+         steps, so the instruction is one an operator cannot follow:\n{told}"
+    );
+    assert!(
+        told.contains("then"),
+        "the two steps render with nothing between them saying they are ordered:\n{told}"
+    );
+}
+
+/// **A custom provider whose key is missing names the variable and no command**
+/// (C14's third shape, #29).
+///
+/// The distinction is the point: no login command writes an environment variable,
+/// so a row that offered one here would be sending the operator to do something
+/// that cannot work.
+#[test]
+fn a_custom_provider_missing_its_key_names_a_variable_and_no_command() {
+    let Some(all) = rendered() else { return };
+    let told = instruction(&markup(&all, "guidance_provider_key"))
+        .expect("a provider missing its key still renders an instruction");
+    assert_eq!(
+        typed(&told),
+        vec!["OPERATORS_SHELL_KEY".to_string()],
+        "the row no longer names exactly the variable the provider reads its key from — \
+         either it has stopped naming it, or it has offered a login command beside it, and \
+         no login command sets an environment variable:\n{told}"
+    );
+    assert!(
+        told.contains("No login command will help here"),
+        "the row stopped saying that this is the shape no login fixes:\n{told}"
+    );
+}
+
+/// **An unreadable harness is told it is not logged out** (C14, #36).
+///
+/// A working installation whose report this build could not parse. It is not
+/// refused — the option stays selectable — and it is given nothing to type, because
+/// there is nothing wrong with its login.
+#[test]
+fn an_unreadable_harness_is_not_told_to_log_in() {
+    let Some(all) = rendered() else { return };
+    let row = markup(&all, "guidance_unreadable");
+    let told = instruction(&row).expect("an unreadable harness still renders an instruction");
+    assert!(
+        typed(&told).is_empty(),
+        "an operator whose harness works is being told to type something. `Unreadable` is a \
+         parse failure on this side of the wire, and #36 deliberately does not refuse it:\n{told}"
+    );
+    assert!(
+        told.contains("Nothing to log in to"),
+        "the row no longer distinguishes a report this build could not read from a machine \
+         with no credential:\n{told}"
+    );
+    assert!(
+        row.contains("<option value=\"epsilon-cli\"") && !row.contains("epsilon-cli\" disabled"),
+        "the unreadable harness's option was disabled — refusing a working installation on \
+         the strength of a parse error, which is the failure C14's narrowness exists to \
+         avoid:\n{row}"
+    );
+}
+
+/// **A refused harness the machine has nothing to suggest about renders no
+/// instruction**, rather than an empty one.
+///
+/// The same rule the pane head keeps about a mark nobody supplied (#50): an absent
+/// fact is absent, and a row with a blank instruction under it reads as a broken
+/// screen.
+#[test]
+fn a_harness_with_nothing_to_suggest_renders_no_instruction() {
+    let Some(all) = rendered() else { return };
+    let row = markup(&all, "guidance_absent");
+    assert!(
+        instruction(&row).is_none(),
+        "a harness the backend offered no guidance for rendered an instruction anyway:\n{row}"
+    );
+    assert!(
+        row.contains("<p class=\"seat-row__facts\">`zeta-cli` is not on the PATH"),
+        "the row lost the reason as well, so it now says nothing at all:\n{row}"
+    );
+}
+
+/// **Registering a third harness needs no `ui/` change** — asserted rather than
+/// asserted about, the way `pane_head_renders.rs` asserts the same criterion.
+///
+/// Every harness rendered above is registered in **no build**: `beta-cli`,
+/// `gamma-cli`, `delta-cli`, `epsilon-cli` and `zeta-cli` appear in no
+/// `HarnessSpec` and in no file under `ui/`. The card renders each one's own
+/// instruction without ever having been edited for any of them, because the
+/// sentence, the command and the variable all arrive on the wire from
+/// `HarnessSpec::login`. A component that chose its wording by asking which harness
+/// this is would render all five blank — and would fail
+/// `gate_pickers.rs::the_gate_spells_no_vendors_name` by construction.
+///
+/// The shape is compared and not merely the strings: whatever wrapper one
+/// unregistered harness's instruction gets, the others get too.
+#[test]
+fn a_harness_this_build_never_registered_gets_its_own_guidance() {
+    let Some(all) = rendered() else { return };
+    let shapes: Vec<(&str, String)> = ["guidance_login_command", "guidance_two_step",
+        "guidance_provider_key", "guidance_unreadable"]
+        .into_iter()
+        .map(|key| (key, markup(&all, key)))
+        .collect();
+    for (key, row) in &shapes {
+        assert_eq!(
+            row.matches("seat-row__howto").count(),
+            1,
+            "`{key}` renders its instruction a different number of times than once — the \
+             wrapper is the component's and every harness must get the same one:\n{row}"
+        );
+        assert_eq!(
+            row.matches("seat-row__facts").count(),
+            1,
+            "`{key}` renders a different number of facts lines than the others:\n{row}"
+        );
+    }
+    // The five names are the probe's own, and none of them is registered anywhere.
+    let component =
+        std::fs::read_to_string(repo_root().join(COMPONENT)).expect("component reads");
+    for invented in ["beta-cli", "gamma-cli", "delta-cli", "epsilon-cli", "zeta-cli"] {
+        assert!(
+            !component.contains(invented),
+            "{COMPONENT} names `{invented}`, so the guidance above is not evidence that an \
+             unregistered harness renders — the component was edited for it"
+        );
+    }
+}
+
+/// **There is no credential field on this card** (#51's fourth criterion), asserted
+/// on what actually renders rather than on what the source says.
+///
+/// FLEETOR names the command and writes no credential: each vendor's login writes
+/// where that vendor reads, so a token pasted here would land nowhere. The one text
+/// input a seat row has is the model, and it says so.
+#[test]
+fn no_row_renders_anywhere_to_put_a_credential() {
+    let Some(all) = rendered() else { return };
+    for key in [
+        "orchestrator",
+        "worker_on_refused_harness",
+        "guidance_login_command",
+        "guidance_provider_key",
+        "guidance_unreadable",
+    ] {
+        let row = markup(&all, key);
+        assert_eq!(
+            row.matches("<input").count(),
+            1,
+            "`{key}` renders more than the one model field. The second input on a row that \
+             has just been told to log in is the credential field this ticket refuses:\n{row}"
+        );
+        assert!(
+            row.contains("aria-label=\"worker 1 model\"")
+                || row.contains("aria-label=\"worker 3 model\"")
+                || row.contains("aria-label=\"orchestrator model\""),
+            "`{key}`'s one input is no longer the model field:\n{row}"
+        );
+        for forbidden in ["type=\"password\"", "autocomplete=\"", "name=\"token"] {
+            assert!(
+                !row.contains(forbidden),
+                "`{key}` renders `{forbidden}` — a credential surface on the one screen that \
+                 already spends real money:\n{row}"
+            );
+        }
+    }
+}
+
 /// **The probe cannot fake a pass.** The strings the assertions above look for must
 /// come out of `SeatRow`/`optionLabel`/`factsFor`, not out of the probe's own
 /// source — otherwise a component that stopped rendering any of them would still
@@ -269,8 +515,10 @@ fn the_probe_supplies_data_and_never_the_markup() {
         "— not logged in",
         "seat-row__facts",
         "seat-row__harness",
+        "seat-row__howto",
         "<option",
         "disabled=",
+        "<span class=",
     ] {
         assert!(
             !probe.contains(phrase),

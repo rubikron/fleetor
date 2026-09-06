@@ -12,6 +12,12 @@
 // check and still be unreachable, or restructured into something that no longer
 // mounts the way the source implies.
 //
+// **Since #51 it also renders the way out of a harness that cannot take a seat**
+// (C72). Five of the six harnesses below are registered in no build and named in
+// no `ui/` file — which is how "registering a third harness needs no `ui/` change"
+// is asserted here rather than claimed: the card renders each one's own
+// instruction without ever having been edited for any of them.
+//
 // **This is not a JavaScript test runner and must not become one** (C24). No
 // describe/it, no assertion library, no watcher, no config file — the runner is
 // `cargo test`, and this is a subprocess it shells out to, the same shape
@@ -31,6 +37,7 @@ const RUNNABLE: HarnessOffer = {
   account: "Pro Plan",
   reason: null,
   caveat: null,
+  guidance: null,
   version: "4.2.0",
   provider: "alpha-cloud",
   models: [
@@ -50,6 +57,16 @@ const REFUSED: HarnessOffer = {
   account: null,
   reason: "no OAuth token found in ~/.beta/auth.json — run `beta-cli login` and try again.",
   caveat: null,
+  /// The first of the three not-usable shapes: no credential at all, and the
+  /// vendor's own login is what fixes it. One command, no second step.
+  guidance: {
+    sentence:
+      "beta-cli keeps its credential in a place only its own login writes, and FLEETOR " +
+      "writes no credential and asks you for none. In a terminal of your own, run:",
+    command: "beta-cli login",
+    then: null,
+    variable: null,
+  },
   version: null,
   provider: null,
   models: [],
@@ -57,8 +74,76 @@ const REFUSED: HarnessOffer = {
   resolved: null,
 };
 
+/// The same shape, for a harness whose login is a command **inside its own
+/// session** rather than a subcommand — the second slot, which one of the two
+/// registered harnesses needs and the other does not.
+const TWO_STEP: HarnessOffer = {
+  ...REFUSED,
+  name: "gamma-cli",
+  invoked: "gamma-cli",
+  reason: "no session recorded.",
+  guidance: {
+    sentence: "In a terminal of your own, run:",
+    command: "gamma-cli",
+    then: "/signin",
+    variable: null,
+  },
+};
+
+/// **The second not-usable shape**: a provider of the operator's own whose key is
+/// not set. No login command helps, so the guidance names a variable and no
+/// command at all — the distinction this ticket exists to make.
+const PROVIDER_KEY: HarnessOffer = {
+  ...REFUSED,
+  name: "delta-cli",
+  invoked: "delta-cli",
+  reason: "the configured provider's credential is missing.",
+  guidance: {
+    sentence:
+      "No login command will help here: this machine resolves delta-cli to the operator's " +
+      "own, a provider of your own, and the key it names is not set. Set this in the " +
+      "environment FLEETOR is launched from:",
+    command: null,
+    then: null,
+    variable: "OPERATORS_SHELL_KEY",
+  },
+};
+
+/// **The third shape**: a working installation whose diagnostic this build could
+/// not parse. It is *not* a refusal — the seat is still offered — and telling this
+/// operator to log in would be telling them to fix something that works.
+const UNREADABLE: HarnessOffer = {
+  ...REFUSED,
+  name: "epsilon-cli",
+  invoked: "epsilon-cli",
+  status: "unreadable",
+  reason: "its report is not readable as JSON.",
+  guidance: {
+    sentence:
+      "Nothing to log in to: this is a working epsilon-cli installation whose diagnostic " +
+      "this build could not read, not a logged-out one. A seat on it is still offered, and " +
+      "logging in again would change nothing.",
+    command: null,
+    then: null,
+    variable: null,
+  },
+};
+
+/// A harness that cannot take a seat and about which the machine has **nothing to
+/// suggest** — the not-installed state, where the reason already carries the only
+/// actionable sentence there is. Its row must render no instruction rather than an
+/// empty one.
+const NO_GUIDANCE: HarnessOffer = {
+  ...REFUSED,
+  name: "zeta-cli",
+  invoked: "zeta-cli",
+  status: "not-installed",
+  reason: "`zeta-cli` is not on the PATH this app was launched with.",
+  guidance: null,
+};
+
 const GATE: GateState = {
-  harnesses: [RUNNABLE, REFUSED],
+  harnesses: [RUNNABLE, REFUSED, TWO_STEP, PROVIDER_KEY, UNREADABLE, NO_GUIDANCE],
   seats: {
     orch: { harness: RUNNABLE.name, model: null },
     workers: [
@@ -124,6 +209,51 @@ process.stdout.write(
         label: "worker 4",
         gate: GATE,
         seat: { harness: RUNNABLE.name, model: null },
+        sentinel: "deepseek-v4-flash",
+        onHarness: noop,
+        onModel: noop,
+      }),
+      // The four guidance shapes (#51), each on a harness this build registers
+      // nowhere and no `ui/` file names. A component that chose its wording by
+      // asking which harness this is would render every one of these blank.
+      guidance_login_command: row({
+        label: "worker 1",
+        gate: GATE,
+        seat: { harness: REFUSED.name, model: null },
+        sentinel: "deepseek-v4-flash",
+        onHarness: noop,
+        onModel: noop,
+      }),
+      guidance_two_step: row({
+        label: "worker 1",
+        gate: GATE,
+        seat: { harness: TWO_STEP.name, model: null },
+        sentinel: "deepseek-v4-flash",
+        onHarness: noop,
+        onModel: noop,
+      }),
+      guidance_provider_key: row({
+        label: "worker 1",
+        gate: GATE,
+        seat: { harness: PROVIDER_KEY.name, model: null },
+        sentinel: "deepseek-v4-flash",
+        onHarness: noop,
+        onModel: noop,
+      }),
+      guidance_unreadable: row({
+        label: "worker 1",
+        gate: GATE,
+        seat: { harness: UNREADABLE.name, model: null },
+        sentinel: "deepseek-v4-flash",
+        onHarness: noop,
+        onModel: noop,
+      }),
+      // A refused harness the machine has nothing to suggest about: the row must
+      // carry no instruction rather than an empty one.
+      guidance_absent: row({
+        label: "worker 1",
+        gate: GATE,
+        seat: { harness: NO_GUIDANCE.name, model: null },
         sentinel: "deepseek-v4-flash",
         onHarness: noop,
         onModel: noop,

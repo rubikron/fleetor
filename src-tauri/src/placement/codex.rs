@@ -192,9 +192,10 @@ use toml_edit::{DocumentMut, Item, Table, Value};
 
 use super::harness::{
     AccountShape, BriefCarrier, CommandChannel, ConfigAndCredentialIsolation, ConfigDir,
-    Credentials, GaugeSource, GuardrailInstall, Harness, HarnessReadiness, HarnessSpec, LoginState,
-    ModelChoice, OrphanNames, Outbound, Posture, PostureExpectation, ProjectIdentityAndTrust,
-    Program, ResolvedPosture, Seat, Seed, Transcript, Transport, TypingProfile,
+    Credentials, GaugeSource, GuardrailInstall, Harness, HarnessReadiness, HarnessSpec,
+    LoginInstruction, LoginState, ModelChoice, OrphanNames, Outbound, Posture, PostureExpectation,
+    ProjectIdentityAndTrust, Program, ProviderKey, ResolvedPosture, Seat, Seed, Transcript,
+    Transport, TypingProfile,
 };
 
 // --- the vendor's own shape ----------------------------------------------------
@@ -458,6 +459,19 @@ pub struct CodexCli;
 pub const CODEX_SPEC: HarnessSpec = HarnessSpec {
     name: "codex",
     mark: "CX",
+
+    // How an operator logs it in (#51). **One step, because the login is its own
+    // subcommand** — the command this module's own notes already name as the thing
+    // that changes `auth.json` (see this module's header and `login_state`).
+    //
+    // The credential is that file, inside the configuration directory `CODEX_HOME`
+    // names, which is why a fenced pane holds none of the operator's and why a
+    // token pasted into FLEETOR would land nowhere the vendor reads.
+    login: LoginInstruction {
+        command: "codex login",
+        then: None,
+        credential_home: "auth.json in its own configuration directory",
+    },
 
     // 1 — program and base arguments. A native binary, no interpreter, no flags
     // every seat shares.
@@ -2310,8 +2324,22 @@ fn login_state(report: &serde_json::Value, provider: Option<&str>) -> LoginState
             env_var: Some(variable),
         });
     }
+    // **The same reading, the other suffix** (#51). `"X (missing)"` is the refusal
+    // the arm above tests the presence half of, and until this ticket the variable's
+    // name was read and then dropped — so the gate refused the seat and could not
+    // say what would fix it. It is carried rather than turned into a fifth state:
+    // the seat is refused identically either way, and only the *next action*
+    // differs, which is a login command in one case and no command at all in this
+    // one (#29 — a named provider key has no ambient fallback).
+    let provider_key = env_var
+        .as_deref()
+        .and_then(|v| v.trim().strip_suffix("(missing)"))
+        .map(|v| ProviderKey {
+            provider: provider.unwrap_or("an unnamed provider").to_string(),
+            env_var: v.trim().to_string(),
+        });
     if status == "fail" {
-        return LoginState::NoCredential { summary: summary.to_string() };
+        return LoginState::NoCredential { summary: summary.to_string(), provider_key };
     }
     if ambient.as_deref().is_some_and(|v| !v.is_empty() && v != "none") {
         return LoginState::LoggedIn(AccountShape::ApiKey);
@@ -2322,7 +2350,7 @@ fn login_state(report: &serde_json::Value, provider: Option<&str>) -> LoginState
             env_var: None,
         });
     }
-    LoginState::NoCredential { summary: summary.to_string() }
+    LoginState::NoCredential { summary: summary.to_string(), provider_key }
 }
 
 /// What the vendor's catalog resolution offers, filtered to what it would show a
@@ -4685,7 +4713,7 @@ args = ["--root", "~/notes"]
         );
         assert_eq!(
             none,
-            LoginState::NoCredential { summary: "no Codex credentials were found".to_string() },
+            LoginState::NoCredential { summary: "no Codex credentials were found".to_string(), provider_key: None },
             "the vendor's own sentence is the operator's most actionable line",
         );
         assert_eq!(none.caveat(), None, "there is nothing to caveat about a refusal");
