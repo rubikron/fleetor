@@ -136,10 +136,12 @@ not.
 
 ## With no entry at all
 
-The pane parks on the gate and waits (row 1). Nothing times out, nothing proceeds, and the
-selection defaults to `1. Yes, continue` without ever being pressed. **It is observable
-without a human**: the literal string `Do you trust the contents of this directory` reaches
-the pty within about three seconds, which is what every gate row above is detecting.
+The pane parks on the gate (row 1). `1. Yes, continue` is pre-selected but nothing presses
+it: no arm ever saw a gated pane proceed on its own, though the longest any was watched is
+the probe's 14-second budget, so "parks indefinitely" is the reasonable reading rather than
+a measured one. What *is* measured is that it is **observable without a human**: the literal
+string `Do you trust the contents of this directory` reaches the pty within about three
+seconds, which is what every gate row above detects.
 
 The non-interactive path fails differently and more loudly: `codex exec` in the same
 directory prints
