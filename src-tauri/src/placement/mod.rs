@@ -572,7 +572,7 @@ fn place_orch(
     std::fs::create_dir_all(target).map_err(|e| format!("create orchestrator cwd: {e}"))?;
     let config_dir = layout.pane_config(pane);
     harness.seed_config_dir(&config_dir, target)?;
-    notices.extend(guardrail_notices(layout, pane, &config_dir, target, context)?);
+    notices.extend(guardrail_notices(harness, layout, pane, &config_dir, target, context)?);
 
     // One Activity line per pane launch (WP-04's spawn-time "Loadout" counter):
     // the size of the brief this pane was just handed, estimated from text already
@@ -671,7 +671,7 @@ fn place_worker(
         None => None,
     };
 
-    notices.extend(guardrail_notices(layout, pane, &config_dir, &cwd, context)?);
+    notices.extend(guardrail_notices(harness, layout, pane, &config_dir, &cwd, context)?);
 
     // The WP-04 spawn-time "Loadout" counter, from text already in memory.
     let rendered = fleetor_core::brief::render_worker(
@@ -764,7 +764,7 @@ fn place_evaluator(
 
     let config_dir = evaluator::config_dir(layout.root());
     harness.seed_config_dir(&config_dir, &cwd)?;
-    let notices = guardrail_notices(layout, pane, &config_dir, &cwd, context)?;
+    let notices = guardrail_notices(harness, layout, pane, &config_dir, &cwd, context)?;
 
     let command = spawn::evaluator_command_with(
         harness,
@@ -832,7 +832,7 @@ fn place_critic(
 
     let config_dir = critic::config_dir(layout.root());
     harness.seed_config_dir(&config_dir, &cwd)?;
-    let notices = guardrail_notices(layout, pane, &config_dir, &cwd, context)?;
+    let notices = guardrail_notices(harness, layout, pane, &config_dir, &cwd, context)?;
 
     let command = spawn::critic_command_with(
         harness,
@@ -1044,6 +1044,7 @@ pub fn machine_notices(host: &Host, pane: PaneId) -> Vec<(NoticeLevel, String)> 
 /// lives here, has no second spelling, and is reached from a test the only way
 /// production reaches it — through [`place`].
 fn guardrail_notices(
+    harness: &'static dyn Harness,
     layout: &Layout,
     pane: PaneId,
     config_dir: &Path,
@@ -1071,7 +1072,12 @@ fn guardrail_notices(
     } else {
         guardrail::roots_for(cwd, &shell, &context.launch.fence_allow)
     };
+    // Checkpoint 7 arrives as data, and only the vendor's half of it: the settings
+    // file, the event and the matcher. The roots above are placement's own and no
+    // harness can widen them, which is Tier 1.7 held structurally rather than by
+    // review.
     guardrail::install(
+        &harness.spec().guardrail,
         config_dir,
         pane,
         &roots,

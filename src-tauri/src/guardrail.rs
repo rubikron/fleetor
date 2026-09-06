@@ -51,11 +51,15 @@ use std::path::{Path, PathBuf};
 use fleetor_core::event::NoticeLevel;
 use fleetor_core::pane::PaneId;
 
+use crate::placement::harness::GuardrailInstall;
+
 /// The decision, baked in. Written into each pane's config dir at spawn so the
 /// hook command can name it by absolute path.
 const HOOK_SCRIPT: &str = include_str!("write_guardrail.py");
 
-/// What it is called on disk, inside the pane's `CLAUDE_CONFIG_DIR`.
+/// What it is called on disk, inside the pane's config dir. The fleet's name for
+/// the fleet's script, which is why it is a constant here and
+/// [`GuardrailInstall::hook_file`] names it rather than repeating it.
 pub const HOOK_FILE: &str = "write-guardrail.py";
 
 /// The interpreter, by absolute path rather than by name: a pane's PATH is
@@ -63,11 +67,17 @@ pub const HOOK_FILE: &str = "write-guardrail.py";
 /// operator's shell would be a different program.
 const INTERPRETER: &str = "/usr/bin/python3";
 
-/// The tools the hook is registered for — a `matcher` regex in `settings.json`.
+/// The tools the hook is registered for — Claude Code's `matcher` regex.
 /// `Read`, `Grep`, `Glob` and everything else never invoke it at all, which is
 /// what makes "reads stay open" a property of the wiring rather than a promise
 /// inside the script.
-const WRITE_TOOLS: &str = "Bash|Write|Edit|MultiEdit|NotebookEdit";
+///
+/// **Named by [`GuardrailInstall::tool_matcher`] rather than repeated there**, so
+/// the two cannot drift by editing one side. The value is this vendor's tool
+/// names, so it is the spec that decides which matcher a pane is installed with;
+/// this constant is where Claude Code's answer is written down until #23 moves
+/// the literal.
+pub const WRITE_TOOLS: &str = "Bash|Write|Edit|MultiEdit|NotebookEdit";
 
 /// Where refusals accumulate for the Activity feed. One file for the whole
 /// fleet, under `_shell` like everything else the running fleet owns.
@@ -103,12 +113,21 @@ pub fn roots_for(cwd: &Path, shell: &Path, extra: &[String]) -> Vec<PathBuf> {
 /// Returns the notices the caller should emit — carried rather than emitted so
 /// this module needs no store, the same shape `crate::prompts` uses.
 ///
+/// **Checkpoint 7, read off the harness rather than assumed** (M23). The script,
+/// the interpreter, the arguments and the journal are the fleet's and identical
+/// for every harness, so they stay constants here. What the vendor decides — the
+/// settings file this is written into, the event a refusal has to hang on to be a
+/// refusal rather than a report, and the tools it is matched against — arrives in
+/// `spec`. **Tier 1.7 is not among them:** the roots are the caller's, computed
+/// from the pane's own cwd, and no field of `spec` can widen them.
+///
 /// **A missing interpreter is loud and does not stop the pane.** A guardrail
 /// that quietly does nothing is worse than no guardrail, because the operator
 /// believes in it; a pane that refuses to spawn over a hook is worse than both.
 /// So the hook is installed either way and the operator is told, in the same
 /// spirit as the missing-`fleet`-binary warning.
 pub fn install(
+    spec: &GuardrailInstall,
     config_dir: &Path,
     pane: PaneId,
     roots: &[PathBuf],
@@ -118,7 +137,7 @@ pub fn install(
     std::fs::create_dir_all(config_dir)
         .map_err(|e| format!("create config dir {}: {e}", config_dir.display()))?;
 
-    let script = config_dir.join(HOOK_FILE);
+    let script = config_dir.join(spec.hook_file);
     // Overwritten on every spawn, unlike the gitconfig seed: this file ships
     // with the binary and a stale copy from an older build would be a guardrail
     // enforcing last version's rules.
@@ -126,10 +145,10 @@ pub fn install(
         .map_err(|e| format!("write {}: {e}", script.display()))?;
 
     let command = hook_command(&script, pane, roots, policy, journal);
-    let settings = config_dir.join("settings.json");
+    let settings = config_dir.join(spec.settings_file);
     let existing = std::fs::read_to_string(&settings).ok();
-    let text = merge_hook(existing.as_deref(), &command)?;
-    let tmp = settings.with_extension("json.tmp");
+    let text = merge_hook(existing.as_deref(), &command, spec)?;
+    let tmp = config_dir.join(format!("{}.tmp", spec.settings_file));
     std::fs::write(&tmp, text).map_err(|e| format!("write {}: {e}", tmp.display()))?;
     std::fs::rename(&tmp, &settings)
         .map_err(|e| format!("install {}: {e}", settings.display()))?;
@@ -149,7 +168,7 @@ pub fn install(
     Ok(notices)
 }
 
-/// The shell command Claude Code runs for every matched tool call.
+/// The shell command the harness runs for every matched tool call.
 ///
 /// Everything variable is an argument, so `write_guardrail.py` is byte-identical
 /// in every pane and the *policy* is the command line — one place per pane where
@@ -184,15 +203,24 @@ fn quote(raw: &str) -> String {
     format!("'{}'", raw.replace('\'', r"'\''"))
 }
 
-/// Put our hook into `settings.json`, keeping everything else the operator has
-/// put there.
+/// Put our hook into the harness's settings file, keeping everything else the
+/// operator has put there.
+///
+/// The event, the matcher and the file name are `spec`'s; the *merge* is not —
+/// preserving an operator's own keys and replacing only our own entry is the
+/// fleet's rule for every harness, and a harness that could opt out of it would
+/// be a harness that could clobber the file D-062 invites them to write.
 ///
 /// Merge, never clobber — the same rule `placement::spawn::seed_config_dir` follows, and it
 /// matters more here: D-062 explicitly invites the operator to populate
 /// `pane-config/orch/` themselves, and their own hooks living in this file is the
 /// obvious way to do it. Our own entry is replaced rather than appended to, so a
 /// relaunch does not accumulate five copies of the same hook.
-fn merge_hook(existing: Option<&str>, command: &str) -> Result<String, String> {
+fn merge_hook(
+    existing: Option<&str>,
+    command: &str,
+    spec: &GuardrailInstall,
+) -> Result<String, String> {
     let mut root = existing
         .and_then(|t| serde_json::from_str::<serde_json::Value>(t).ok())
         .filter(|v| v.is_object())
@@ -206,28 +234,31 @@ fn merge_hook(existing: Option<&str>, command: &str) -> Result<String, String> {
         *hooks = serde_json::Value::Object(serde_json::Map::new());
     }
     let hooks = hooks.as_object_mut().expect("just ensured it is an object");
-    let pre = hooks.entry("PreToolUse").or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    let pre = hooks.entry(spec.hook_event).or_insert_with(|| serde_json::Value::Array(Vec::new()));
     if !pre.is_array() {
         *pre = serde_json::Value::Array(Vec::new());
     }
     let pre = pre.as_array_mut().expect("just ensured it is an array");
-    pre.retain(|entry| !mentions_our_hook(entry));
+    pre.retain(|entry| !mentions_our_hook(entry, spec.hook_file));
     pre.push(serde_json::json!({
-        "matcher": WRITE_TOOLS,
+        "matcher": spec.tool_matcher,
         "hooks": [{ "type": "command", "command": command }],
     }));
 
     serde_json::to_string_pretty(&root).map_err(|e| format!("encode settings: {e}"))
 }
 
-/// Is this `PreToolUse` entry one of ours, from a previous launch?
-fn mentions_our_hook(entry: &serde_json::Value) -> bool {
+/// Is this pre-tool entry one of ours, from a previous launch?
+///
+/// Recognized by the hook file's name, which is the fleet's for every harness, so
+/// a relaunch replaces our entry and leaves the operator's alone.
+fn mentions_our_hook(entry: &serde_json::Value, hook_file: &str) -> bool {
     entry
         .get("hooks")
         .and_then(|h| h.as_array())
         .map(|hooks| {
             hooks.iter().any(|h| {
-                h.get("command").and_then(|c| c.as_str()).is_some_and(|c| c.contains(HOOK_FILE))
+                h.get("command").and_then(|c| c.as_str()).is_some_and(|c| c.contains(hook_file))
             })
         })
         .unwrap_or(false)
@@ -303,6 +334,12 @@ fn notice_for(line: &str) -> Option<(NoticeLevel, String)> {
 mod tests {
     use super::*;
 
+    /// Checkpoint 7 for the one registered harness, reached the way production
+    /// reaches it — through the harness, not through a literal typed here.
+    fn cc() -> &'static GuardrailInstall {
+        &crate::placement::harness::claude_code().spec().guardrail
+    }
+
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "fleetor-guardrail-{tag}-{}-{:?}",
@@ -334,7 +371,7 @@ mod tests {
         let cwd = shell.join("worktrees/worker-1");
         let roots = roots_for(&cwd, &shell, &[]);
 
-        install(&dir, PaneId::Worker(1), &roots, &policy_dir(&shell), &journal_path(&shell))
+        install(cc(), &dir, PaneId::Worker(1), &roots, &policy_dir(&shell), &journal_path(&shell))
             .unwrap();
 
         assert!(dir.join(HOOK_FILE).exists(), "the decision itself must be on disk");
@@ -389,7 +426,7 @@ mod tests {
         );
         assert_eq!(roots.len(), 4);
 
-        install(&dir, PaneId::Worker(3), &roots, &policy_dir(&shell), &journal_path(&shell))
+        install(cc(), &dir, PaneId::Worker(3), &roots, &policy_dir(&shell), &journal_path(&shell))
             .unwrap();
         let command = installed_command(&dir);
         assert!(command.contains("--root '/Users/me/scratch'"), "{command}");
@@ -412,6 +449,7 @@ mod tests {
 
         let shell = PathBuf::from("/fleetor/_shell");
         install(
+            cc(),
             &dir,
             PaneId::Orch,
             &roots_for(Path::new("/target"), &shell, &[]),
@@ -439,7 +477,7 @@ mod tests {
         let shell = PathBuf::from("/fleetor/_shell");
         let roots = roots_for(Path::new("/wt"), &shell, &[]);
         for _ in 0..3 {
-            install(&dir, PaneId::Worker(1), &roots, &policy_dir(&shell), &journal_path(&shell))
+            install(cc(), &dir, PaneId::Worker(1), &roots, &policy_dir(&shell), &journal_path(&shell))
                 .unwrap();
         }
         let pre = settings(&dir)["hooks"]["PreToolUse"].as_array().unwrap().len();
@@ -456,6 +494,7 @@ mod tests {
         std::fs::write(dir.join("settings.json"), "{not json").unwrap();
         let shell = PathBuf::from("/fleetor/_shell");
         install(
+            cc(),
             &dir,
             PaneId::Worker(1),
             &roots_for(Path::new("/wt"), &shell, &[]),

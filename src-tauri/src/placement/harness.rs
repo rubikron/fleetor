@@ -634,7 +634,7 @@ pub const CLAUDE_CODE_SPEC: HarnessSpec = HarnessSpec {
     guardrail: GuardrailInstall {
         settings_file: "settings.json",
         hook_event: "PreToolUse",
-        tool_matcher: "Bash|Write|Edit|MultiEdit|NotebookEdit",
+        tool_matcher: guardrail::WRITE_TOOLS,
         hook_file: guardrail::HOOK_FILE,
     },
 
