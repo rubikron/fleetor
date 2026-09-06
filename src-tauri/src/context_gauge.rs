@@ -522,7 +522,10 @@ mod tests {
                     fn project_key(&self, cwd: &Path) -> String {
                         claude_code().project_key(cwd)
                     }
-                    fn seed_config_dir(&self, seed: &Seed<'_>) -> Result<(), String> {
+                    fn seed_config_dir(
+                        &self,
+                        seed: &Seed<'_>,
+                    ) -> Result<Vec<(fleetor_core::event::NoticeLevel, String)>, String> {
                         claude_code().seed_config_dir(seed)
                     }
                     fn command_args(&self, brief: &str, mode: Option<&str>) -> Vec<String> {

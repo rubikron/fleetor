@@ -78,6 +78,10 @@ const RECORDED_BUILD: &str = "codex-cli 0.153.4";
 /// The notes that carry the measurements, version-stamped to [`RECORDED_BUILD`].
 const NOTES: &str = "docs/notes/codex-spike-notes.md";
 
+/// This file, relative to the repository root — it reads its own source, because
+/// since #27 it stands up a loopback provider of its own.
+const THIS_FILE: &str = "src-tauri/tests/vendor_binary_tier.rs";
+
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("src-tauri has a parent").to_path_buf()
 }
@@ -261,22 +265,37 @@ fn the_probe_addresses_nothing_but_loopback() {
     let root = repo_root();
     let src = fs::read_to_string(root.join(PROBE)).expect("the probe is committed, not pasted");
 
+    // **This file too, since #27.** The brief-carrier arm stands up its own
+    // loopback provider in Rust rather than shelling out to the probe, so the
+    // property has to be checked where the URL now lives as well.
+    let here = fs::read_to_string(root.join(THIS_FILE)).expect("this tier reads its own source");
+
     let offenders: Vec<&str> = src
         .split("://")
         .skip(1)
+        // The scanner's own `"://"` literal is the one occurrence in this file
+        // that is not an address, and it is recognisable because what follows it
+        // is the end of that string literal rather than a host.
+        .chain(here.split("://").skip(1).filter(|rest| !rest.starts_with('"')))
         .filter(|rest| !rest.starts_with("127.0.0.1"))
         .map(|rest| rest.split_whitespace().next().unwrap_or(rest))
         .collect();
 
     assert!(
         offenders.is_empty(),
-        "{PROBE} must address nothing but 127.0.0.1 — the zero-token property of this whole \
-         tier (C13) is that the model provider is a local capture server. Found: {offenders:?}"
+        "{PROBE} and {THIS_FILE} must address nothing but 127.0.0.1 — the zero-token property \
+         of this whole tier (C13) is that the model provider is a local capture server. \
+         Found: {offenders:?}"
     );
     assert!(
         src.contains("127.0.0.1"),
         "{PROBE} no longer stands up a loopback capture server, so nothing guarantees a run \
          of this tier spends nothing"
+    );
+    assert!(
+        here.contains("127.0.0.1"),
+        "{THIS_FILE} no longer stands up a loopback capture server of its own, so the \
+         brief-carrier arm is either gone or pointed somewhere that can charge for it"
     );
 }
 
@@ -379,9 +398,19 @@ fn the_seeded_codex_home_loads_in_the_real_binary_and_the_trap_reproduces() {
     );
 
     // Arm 2 — seeded. The same installation, through the harness.
+    //
+    // The brief is spelled out because #27 made an absent one a refusal rather
+    // than a quiet seed. Note that `model_instructions_file` is now a key FLEETOR
+    // *owns*, so in the seeded arm its tilde is replaced outright rather than
+    // relocated — arm 1, the verbatim copy, is where the trap still lives, and the
+    // relocation itself is pinned in-crate by
+    // `no_seeded_value_resolves_against_the_panes_private_home`.
     let seeded = root.join("seeded");
     codex()
-        .seed_config_dir(&Seed::new(&seeded, &cwd, Some(&operator_home)))
+        .seed_config_dir(
+            &Seed::new(&seeded, &cwd, Some(&operator_home))
+                .with_brief("a fifty-character sentinel brief for the pane"),
+        )
         .expect("seeding a pane's CODEX_HOME");
     let accepted = run(&seeded);
     let said = format!(
@@ -403,6 +432,568 @@ fn the_seeded_codex_home_loads_in_the_real_binary_and_the_trap_reproduces() {
         operator_config,
         "seeding wrote back into the operator's own installation",
     );
+
+    fs::remove_dir_all(&root).ok();
+}
+
+// --- checkpoint 2, against the wire (#27, C3, C37) ---------------------------
+
+/// A loopback capture server: a model provider that records the literal request
+/// body and completes the stream without ever answering.
+///
+/// **This is the zero-token property, as a mechanism rather than a promise.** The
+/// provider a codex pane is pointed at for the length of this arm is a
+/// `TcpListener` on `127.0.0.1`, so the request the vendor builds is readable in
+/// full and nothing reaches an endpoint that could charge for it.
+///
+/// Hand-rolled rather than pulled in, for this file's stated reason: it has no
+/// dependencies, and an integration test cannot reach the crate's own anyway.
+struct Capture {
+    port: u16,
+    bodies: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl Capture {
+    fn start() -> Self {
+        use std::io::{BufRead, BufReader, Read};
+        use std::net::TcpListener;
+        use std::sync::{Arc, Mutex};
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+        let port = listener.local_addr().expect("its address").port();
+        let bodies = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&bodies);
+
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let mut reader = BufReader::new(&stream);
+                let mut length = 0usize;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                        break;
+                    }
+                    if let Some(n) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = n.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0u8; length];
+                if reader.read_exact(&mut body).is_ok() {
+                    recorded
+                        .lock()
+                        .expect("the capture lock")
+                        .push(String::from_utf8_lossy(&body).into_owned());
+                }
+                let mut out = &stream;
+                let _ = Write::write_all(
+                    &mut out,
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+                      Connection: close\r\n\r\ndata: [DONE]\n\n",
+                );
+                let _ = Write::flush(&mut out);
+            }
+        });
+
+        Self { port, bodies }
+    }
+
+    /// The first request body this server saw, or `None` if the vendor never
+    /// spoke to it.
+    fn first(&self) -> Option<String> {
+        self.bodies.lock().expect("the capture lock").first().cloned()
+    }
+}
+
+/// One JSON string literal's worth of escaping — enough to look for a rendered
+/// brief inside a captured body without parsing the body.
+///
+/// The brief is markdown: newlines, quotes and backslashes are the only three
+/// things the vendor's serializer will have changed, and a needle that survives
+/// all three is a needle that proves the whole document arrived.
+fn as_json_text(raw: &str) -> String {
+    raw.chars()
+        .map(|c| match c {
+            '"' => "\\\"".to_string(),
+            '\\' => "\\\\".to_string(),
+            '\n' => "\\n".to_string(),
+            '\r' => "\\r".to_string(),
+            '\t' => "\\t".to_string(),
+            other => other.to_string(),
+        })
+        .collect()
+}
+
+/// **Checkpoint 2, proven rather than asserted: the brief FLEETOR seeds actually
+/// replaces the vendor's own system prompt** (#27, C3, C37).
+///
+/// This is the arm the whole tier exists for. `placement::codex`'s in-crate tests
+/// prove FLEETOR wrote `model_instructions_file` and wrote a file for it to name;
+/// **nothing they can observe proves the vendor honoured either**, and this is a
+/// checkpoint that fails by looking healthy — a pane that never got its brief
+/// still renders a prompt, still accepts a paste and still answers, having never
+/// been told it is part of a fleet.
+///
+/// So the pane's `CODEX_HOME` is seeded through `Harness::seed_config_dir` with a
+/// **real rendered worker brief**, the real binary is run against it, and the
+/// request body it builds is read off a loopback socket.
+///
+/// Three assertions, and the third is the one that makes the first two mean
+/// anything:
+///
+///  1. **The brief is in the request**, whole, and it arrives ahead of the first
+///     `user` message — so it is the pane's instructions and not the in-band
+///     `AGENTS.md` shape C3 measured and rejected.
+///  2. **`You are Codex` is absent from the entire body.** That is *replace*
+///     rather than append (D-043), which is the property the fleet's brief depends
+///     on.
+///  3. **The negative control**: the identical run against an *un-seeded*
+///     `CODEX_HOME` carries the vendor's own prompt and not the brief. Without it
+///     a vendor that had stopped sending a system prompt at all would read as a
+///     pass.
+///
+/// **What did not fit the recorded shape, stated plainly.** C3 and C37 quote
+/// `instructions` — a top-level field — because both drove a *cloned catalog
+/// entry* (`probe.py`'s `probe-model`). Against the build's own default model the
+/// prompt travels instead as the first `developer` message in `input`. The
+/// carrier's behaviour is unchanged and so is the decision; what changed is which
+/// wire slot the prompt occupies, which is why this arm asserts on the body rather
+/// than on a field name.
+///
+/// **Zero tokens**, and nothing here reads or writes the operator's real
+/// `~/.codex`: the operator installation is fabricated under a scratch root and
+/// handed down on `Seed::operator_home`.
+#[test]
+fn the_seeded_brief_replaces_the_vendor_prompt_on_the_wire() {
+    use fleetor_core::pane::{PaneId, WORKER_SLOTS};
+    use fleetor_shell::placement::codex::{codex, OPERATOR_DIR};
+    use fleetor_shell::placement::Seed;
+
+    let Some(vendor) = on_path(VENDOR_BIN) else {
+        announce(&[
+            format!("SKIPPED: the codex brief-carrier arm — `{VENDOR_BIN}` is not on PATH."),
+            format!("  Recorded against {RECORDED_BUILD}. Nothing below was measured:"),
+            "    seeded-brief-replaces-the-vendor-prompt (#27, C3)".into(),
+            "  The in-crate tests still prove FLEETOR wrote the carrier key and the file".into(),
+            "  it names. They cannot prove the vendor honoured it, and a pane that never".into(),
+            "  got its brief looks exactly like one that did.".into(),
+        ]);
+        return;
+    };
+
+    let root = std::env::temp_dir().join(format!(
+        "fleetor-codex-brief-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("a clock")
+            .as_millis()
+    ));
+    let operator_home = root.join("operator");
+    let pane_home = root.join("pane-home");
+    let cwd = root.join("work");
+    let bare = root.join("bare");
+    fs::create_dir_all(operator_home.join(OPERATOR_DIR)).expect("a fabricated installation");
+    fs::create_dir_all(&pane_home).expect("the Fence's private HOME");
+    fs::create_dir_all(&cwd).expect("a pane cwd");
+    fs::create_dir_all(&bare).expect("an un-seeded CODEX_HOME");
+
+    // The real thing: what `place_worker` renders and hands to `Seed::with_brief`,
+    // fragments composed in and all.
+    let brief = fleetor_core::brief::worker_brief(
+        PaneId::Worker(1),
+        &PaneId::roster(&WORKER_SLOTS),
+        &cwd.to_string_lossy(),
+    );
+    let seeded = root.join("seeded");
+    codex()
+        .seed_config_dir(&Seed::new(&seeded, &cwd, Some(&operator_home)).with_brief(&brief))
+        .expect("seeding a pane's CODEX_HOME");
+
+    // One turn against a loopback provider, for each of the two homes. The exit
+    // status is deliberately not gated on: the capture server completes no
+    // response, so the vendor exits non-zero having already sent the request that
+    // is the whole measurement.
+    let turn = |codex_home: &Path| {
+        let capture = Capture::start();
+        let base_url = format!("http://127.0.0.1:{}", capture.port);
+        let over = |key: &str, value: &str| ["-c".to_string(), format!("{key}={value}")];
+        let args: Vec<String> = ["exec", "--skip-git-repo-check"]
+            .iter()
+            .map(|a| (*a).to_string())
+            .chain(over("model_provider", "probe"))
+            .chain(over("model_providers.probe.name", "\"probe\""))
+            .chain(over("model_providers.probe.base_url", &format!("\"{base_url}\"")))
+            .chain(over("model_providers.probe.wire_api", "\"responses\""))
+            .chain(over("model_providers.probe.experimental_bearer_token", "\"sk-probe\""))
+            .chain(over("model_providers.probe.request_max_retries", "0"))
+            .chain(over("model_providers.probe.stream_max_retries", "0"))
+            .collect();
+
+        let mut child = Command::new(&vendor)
+            .args(&args)
+            .env("HOME", &pane_home)
+            .env("CODEX_HOME", codex_home)
+            .current_dir(&cwd)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap_or_else(|e| panic!("could not run {}: {e}", vendor.display()));
+        Write::write_all(child.stdin.as_mut().expect("a stdin pipe"), b"hi\n").expect("the turn");
+        drop(child.stdin.take());
+        let out = child.wait_with_output().expect("the vendor exits");
+        capture.first().unwrap_or_else(|| {
+            panic!(
+                "no request reached the loopback provider, so nothing was measured:\n{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            )
+        })
+    };
+
+    // 1 and 2 — the seeded pane.
+    let body = turn(&seeded);
+    // `trim_end`, because the vendor drops the file's trailing newline and a
+    // needle that carried one would fail on a whole brief that arrived intact.
+    let needle = as_json_text(brief.trim_end());
+    let at = body.find(&needle).unwrap_or_else(|| {
+        panic!(
+            "the brief FLEETOR seeded never reached the request. `model_instructions_file` is \
+             written and the file it names exists — the in-crate tests prove that — so either \
+             the vendor stopped honouring the key or the seeder stopped pointing at the file. \
+             Body was {} bytes.",
+            body.len()
+        )
+    });
+    assert!(
+        !body.contains("You are Codex"),
+        "the vendor's own system prompt came back alongside the brief. The carrier is supposed \
+         to *replace* it (D-043, C3); a brief underneath the vendor's instructions is a \
+         different product, and every pane in the fleet would be running it."
+    );
+    let first_user = body.find("\"role\": \"user\"").or_else(|| body.find("\"role\":\"user\""));
+    assert!(
+        first_user.is_none_or(|user| at < user),
+        "the brief arrived at or after the first `user` message — which is the shape of the \
+         `AGENTS.md` carrier C3 measured and rejected: in-band, spending the pane's own \
+         context, reading as though the operator typed it."
+    );
+
+    // The two fragments, on the wire rather than in a rendered string (§4).
+    for clause in ["did **not** deliver", "Never reply to a broadcast unless it names you"] {
+        assert!(
+            body.contains(&as_json_text(clause)),
+            "the brief reached the model without `{clause}` — the delivery contract and the \
+             broadcast rule are the two clauses the fleet cannot run without",
+        );
+    }
+
+    // 3 — the control. Same command, same provider, an un-seeded CODEX_HOME.
+    let control = turn(&bare);
+    assert!(
+        control.contains("You are Codex"),
+        "the negative control did not carry the vendor's own prompt either, so the run above \
+         proves nothing: a vendor that had stopped sending a system prompt at all would read \
+         exactly like a brief that replaced one."
+    );
+    assert!(
+        !control.contains(&needle),
+        "an un-seeded CODEX_HOME carried FLEETOR's brief, so the brief is arriving from \
+         somewhere other than the seed and this arm is measuring the wrong thing."
+    );
+
+    fs::remove_dir_all(&root).ok();
+}
+
+/// **The fence is real, the socket is reachable through it, and the seeded file
+/// is what the vendor resolves its posture from** (WP-25 phase 2, #28; C5, C7,
+/// C21).
+///
+/// This is the arm the ticket exists for. Everything `placement::codex`'s own
+/// tests can see is what FLEETOR *wrote*; a checkpoint that fails by looking
+/// healthy needs the vendor's own answer, and `codex` gives two zero-token
+/// instruments that between them supply it:
+///
+///  - **`codex sandbox <cmd>`** runs a command under the **real seatbelt** with no
+///    model and no network, so what the trio's values actually permit and refuse
+///    is measured rather than inferred.
+///  - **`codex doctor --json`** resolves the configuration in a `CODEX_HOME` and
+///    reports the posture it arrived at — `sandbox.helpers` for the fence,
+///    `config.load`'s enabled-feature list for C21's four.
+///
+/// **Two instruments rather than one, because neither is sufficient and the
+/// reason is a measurement.** `codex sandbox` takes its sandbox from `-c`
+/// overrides and **ignores `sandbox_mode` in `config.toml` entirely** — a file
+/// saying `danger-full-access` still runs the command read-only. So it can prove
+/// what the trio's *values* do and can prove nothing about the *file*. `doctor`
+/// is the other way round: it reads the file and names the resolved posture, and
+/// runs nothing under a seatbelt. Together they close the loop. Apart, either one
+/// is the artifact assertion this tier exists to replace.
+///
+/// **The inside-the-workspace arm is the load-bearing one.** A fence that refuses
+/// every write passes a "cannot write outside the worktree" assertion perfectly,
+/// and is exactly the failure C7 named when it rejected the newer permission-profile
+/// generation: *"falling back to read-only"* — a worker that spawns clean and
+/// silently cannot work. Asserting the refusal without asserting the permission
+/// measures nothing.
+///
+/// Zero tokens. No completion is requested at any point; `doctor` makes a
+/// provider *reachability* probe that this test reads nothing from, and every
+/// assertion below still holds on a machine with no network.
+#[test]
+fn the_sandbox_trio_fences_a_real_pane_and_the_fleet_socket_still_reaches_it() {
+    use fleetor_shell::placement::codex::{codex, CODEX_SPEC, OPERATOR_DIR};
+    use fleetor_shell::placement::Seed;
+    use std::io::Read;
+    use std::os::unix::net::UnixListener;
+
+    const FOUR: [&str; 4] =
+        ["multi_agent", "browser_use", "computer_use", "in_app_local_automation"];
+
+    let Some(vendor) = on_path(VENDOR_BIN) else {
+        announce(&[
+            format!("SKIPPED: the codex containment arm — `{VENDOR_BIN}` is not on PATH."),
+            format!("  Recorded against {RECORDED_BUILD}. Nothing below was measured:"),
+            "    fence-refuses-outside, fence-permits-inside, socket-reachable,".into(),
+            "    socket-refused-without-the-lever, seeded-posture-resolves,".into(),
+            "    four-features-off-on-a-worker, orchestrator-keeps-them (#28, C5, C7, C21)".into(),
+            "  The in-crate tests still prove what FLEETOR wrote. Only the real".into(),
+            "  seatbelt can prove the vendor honoured it, and this checkpoint is".into(),
+            "  precisely one that fails by looking healthy.".into(),
+        ]);
+        return;
+    };
+
+    let root = std::env::temp_dir().join(format!(
+        "fleetor-codex-fence-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("a clock")
+            .as_millis()
+    ));
+    let operator_home = root.join("operator");
+    let operator_dir = operator_home.join(OPERATOR_DIR);
+    let pane_home = root.join("pane-home");
+    let cwd = root.join("worktree");
+    fs::create_dir_all(&operator_dir).expect("a fabricated operator installation");
+    fs::create_dir_all(&pane_home).expect("the Fence's private HOME");
+    fs::create_dir_all(&cwd).expect("a pane worktree");
+
+    // **`$TMPDIR` is one of `workspace-write`'s default writable roots**, measured
+    // here rather than assumed: with the ambient `TMPDIR` left alone, a scratch
+    // root under `std::env::temp_dir()` is *inside* the fence and the outside-write
+    // arm below passes for the wrong reason. Production is not arranged that way —
+    // the Fence's private `HOME` is `~/.fleetor/_shell/homes/worker-N` and the
+    // fleet's socket is under `~/.fleetor` — so the child is handed a `TMPDIR`
+    // inside its own worktree, which reproduces the real layout rather than
+    // relaxing the posture under test. Nothing about the trio changes.
+    let pane_tmp = cwd.join("tmp");
+    fs::create_dir_all(&pane_tmp).expect("the pane's own TMPDIR");
+
+    // **A hostile operator configuration**, which is the case the two FLEETOR-owned
+    // keys exist for: someone who turned the sandbox off months ago for unrelated
+    // reasons, and narrowed its network access. Inherited verbatim this is an
+    // unfenced pane that cannot talk.
+    fs::write(
+        operator_dir.join("config.toml"),
+        "sandbox_mode = \"danger-full-access\"\n\
+         approval_policy = \"on-request\"\n\
+         [sandbox_workspace_write]\n\
+         network_access = false\n",
+    )
+    .expect("operator config");
+
+    // --- part one: what the trio's values actually do, under the real seatbelt ---
+
+    // The rows are read off the spec rather than spelled here, so a row that
+    // changed to something that does not fence goes red here and not in review.
+    let trio: Vec<String> = CODEX_SPEC
+        .posture
+        .sandbox_keys
+        .iter()
+        .chain(CODEX_SPEC.outbound.reachability_keys)
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect();
+    assert_eq!(trio.len(), 3, "the trio was measured as three rows together: {trio:?}");
+
+    let under_seatbelt = |overrides: &[String], argv: &[&str]| {
+        let mut command = Command::new(&vendor);
+        command.arg("sandbox");
+        for over in overrides {
+            command.args(["-c", over]);
+        }
+        command
+            .args(argv)
+            .env("HOME", &pane_home)
+            .env("TMPDIR", &pane_tmp)
+            .env("CODEX_HOME", &operator_dir)
+            .current_dir(&cwd)
+            .output()
+            .unwrap_or_else(|e| panic!("could not run {}: {e}", vendor.display()))
+    };
+    let said = |out: &std::process::Output| {
+        format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
+    };
+
+    // Arm 1 — a write outside the worktree is refused, and no file is created.
+    let escaped = pane_home.join("probe");
+    let outside = under_seatbelt(&trio, &["sh", "-c", "echo x > \"$HOME/probe\""]);
+    assert_ne!(
+        outside.status.code(),
+        Some(0),
+        "a codex pane wrote outside its worktree under the trio FLEETOR seeds.\n{}",
+        said(&outside),
+    );
+    assert!(
+        !escaped.exists(),
+        "the command failed but the file is there — a refusal after the write is not a fence",
+    );
+
+    // Arm 2 — **and a write inside it succeeds.** Without this, a read-only
+    // fallback passes arm 1 and ships a worker that cannot do any work (C7).
+    let inside = under_seatbelt(&trio, &["sh", "-c", "echo ok > ./inside-the-worktree"]);
+    assert_eq!(
+        inside.status.code(),
+        Some(0),
+        "a codex worker cannot write inside its own worktree. That is the \
+         `falling back to read-only` failure C7 rejected the newer permission-profile \
+         generation over, and it looks perfectly healthy at spawn.\n{}",
+        said(&inside),
+    );
+    assert!(cwd.join("inside-the-worktree").is_file(), "exit 0 but nothing was written");
+
+    // Arms 3 and 4 — the socket, and the lever that makes it reachable. Skipped
+    // together rather than faked, since a probe needs an interpreter to be one.
+    match on_path("python3") {
+        None => announce(&[
+            "SKIPPED: the codex socket arms — no `python3` to connect with.".into(),
+            "  socket-reachable and socket-refused-without-the-lever were not measured.".into(),
+        ]),
+        Some(python) => {
+            const PROBE: &str = "import socket, sys\n\
+                 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n\
+                 s.connect(sys.argv[1])\n\
+                 s.sendall(b'HELLO-FLEET')\n\
+                 print('CONNECTED')\n";
+            // Outside the worktree, the way the fleet's own socket is: this is a
+            // network permission rather than a filesystem one, and a socket that
+            // happened to sit inside the writable root would not show that.
+            let socket = root.join("fleet.sock");
+            let listener = UnixListener::bind(&socket).expect("the fleet's own socket");
+            let heard = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().expect("a pane connected");
+                let mut body = Vec::new();
+                stream.read_to_end(&mut body).expect("what it sent");
+                body
+            });
+
+            let probe = [python.to_string_lossy().into_owned(), "-c".into(), PROBE.into(), socket
+                .to_string_lossy()
+                .into_owned()];
+            let argv: Vec<&str> = probe.iter().map(String::as_str).collect();
+
+            let connected = under_seatbelt(&trio, &argv);
+            assert!(
+                said(&connected).contains("CONNECTED"),
+                "a fenced codex pane could not reach the fleet socket. Every `fleet send` from \
+                 it would fail, and the pane would look perfectly alive.\n{}",
+                said(&connected),
+            );
+            assert_eq!(
+                heard.join().expect("the listener thread"),
+                b"HELLO-FLEET",
+                "the connect succeeded but the listener got nothing — connecting is not talking",
+            );
+
+            // The negative control, and it is what makes the arm above mean
+            // anything: with the one lever off, the identical probe is refused.
+            // This is C5's measurement reproduced, and the reason no bridge exists
+            // on the message path.
+            let without: Vec<String> = trio
+                .iter()
+                .map(|row| row.replace("network_access=true", "network_access=false"))
+                .collect();
+            assert_ne!(
+                without, trio,
+                "the negative control changed nothing, so it controls for nothing",
+            );
+            let refused = under_seatbelt(&without, &argv);
+            assert_ne!(
+                refused.status.code(),
+                Some(0),
+                "the socket was reachable with the network lever off, so arm 3 was not \
+                 measuring the lever.\n{}",
+                said(&refused),
+            );
+        }
+    }
+
+    // --- part two: the seeded file is what the vendor resolves its posture from ---
+
+    let seeded = |dir: &Path, operators_own: bool| {
+        let seed = Seed::new(dir, &cwd, Some(&operator_home)).with_brief("a fenced pane's brief");
+        let seed = if operators_own { seed.for_the_operator() } else { seed };
+        codex().seed_config_dir(&seed).expect("seeding a pane's CODEX_HOME");
+    };
+    let worker = root.join("worker-1");
+    let orch = root.join("orch");
+    seeded(&worker, false);
+    seeded(&orch, true);
+
+    let report = |codex_home: &Path| -> serde_json::Value {
+        let out = Command::new(&vendor)
+            .args(["doctor", "--json"])
+            .env("HOME", &pane_home)
+            .env("CODEX_HOME", codex_home)
+            .current_dir(&cwd)
+            .output()
+            .unwrap_or_else(|e| panic!("could not run {}: {e}", vendor.display()));
+        serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+            panic!("`{VENDOR_BIN} doctor --json` stopped emitting JSON ({e}):\n{}", said(&out))
+        })
+    };
+
+    // Arm 5 — the vendor's own reading of the seeded document. `restricted` and
+    // `Never` are what the operator's `danger-full-access` / `on-request` would
+    // *not* have produced, which is what makes this an assertion about FLEETOR's
+    // keys winning rather than about codex's defaults.
+    let worker_report = report(&worker);
+    let helpers = &worker_report["checks"]["sandbox.helpers"]["details"];
+    assert_eq!(
+        helpers["filesystem sandbox"].as_str(),
+        Some("restricted"),
+        "the vendor resolved the seeded config to an unfenced pane: {helpers}",
+    );
+    assert_eq!(
+        helpers["approval policy"].as_str(),
+        Some("Never"),
+        "a worker has no human to answer an approval prompt, so it would park looking \
+         perfectly healthy: {helpers}",
+    );
+
+    // Arms 6 and 7 — C21's asymmetry, read off the vendor's own resolved list.
+    let enabled = |report: &serde_json::Value| -> Vec<String> {
+        report["checks"]["config.load"]["details"]["enabled feature flags"]
+            .as_str()
+            .unwrap_or_else(|| panic!("`doctor` stopped reporting the resolved feature flags"))
+            .split(',')
+            .map(|name| name.trim().to_string())
+            .collect()
+    };
+    let on_the_worker = enabled(&worker_report);
+    let on_the_orchestrator = enabled(&report(&orch));
+    for feature in FOUR {
+        assert!(
+            !on_the_worker.contains(&feature.to_string()),
+            "`{feature}` is still on for a codex worker. The sandbox bounds the filesystem \
+             and the network; it does not bound a pane driving a browser or a desktop, or one \
+             fanning out into threads the run manifest never sees (C21).",
+        );
+        assert!(
+            on_the_orchestrator.contains(&feature.to_string()),
+            "`{feature}` was turned off on the orchestrator. That is the operator's own pane \
+             and it inherits their flags untouched — the asymmetry is the product (C21).",
+        );
+    }
 
     fs::remove_dir_all(&root).ok();
 }

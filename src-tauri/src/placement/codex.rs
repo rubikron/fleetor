@@ -1,5 +1,5 @@
-//! Codex — checkpoints 4 and 6, and the one reader the three key lists share
-//! (WP-25 phase 2, issue #26; C6, C9, C16, C17, C31, C32, C36).
+//! Codex — checkpoints 2, 4 and 6, and the one reader the three key lists share
+//! (WP-25 phase 2, issues #26 and #27; C3, C6, C9, C16, C17, C31, C32, C36, C37).
 //!
 //! Codex is the second harness and the first that is *configured* rather than
 //! flagged: almost everything Claude Code takes as an environment variable or an
@@ -18,15 +18,42 @@
 //!
 //! | field | checkpoint | filled by |
 //! |---|---|---|
-//! | [`Posture::sandbox_keys`] | 3 | #28 — the sandbox trio and the feature overrides |
+//! | [`Posture::sandbox_keys`] | 3 | **#28 — filled**: the sandbox trio's first two rows |
 //! | [`Credentials::provider_keys`] | 5 | #29 — the FLEETOR provider |
 //! | [`Credentials::scrubbed_env`] | 5 | #29 — the same ticket, the other half |
-//! | [`Outbound::reachability_keys`] | 8 | #28 — the socket lever is one of the trio |
+//! | [`Outbound::reachability_keys`] | 8 | **#28 — filled**: the socket lever, the trio's third |
+//!
+//! Two of the four are filled as of #28, and they needed **no new mechanism, only
+//! rows** — which is the shape C36 predicted when it left the reader for the
+//! ticket that would first have something to write. What #28 did add is a *seat*:
+//! [`Seed::operators_own_seat`], because four of codex's 47 default-on features
+//! reach past the fence and are turned off on every pane FLEETOR drives, while the
+//! orchestrator inherits the operator's flags untouched (C21).
 //!
 //! An empty list here is not a stub that will pass quietly: the conformance suite
 //! refuses an empty `scrubbed_env` and refuses a harness whose spec answers
 //! nothing, which is exactly why **codex is not registered yet** and why #33 is
 //! the single moment it joins [`registered`](super::harness::registered).
+//!
+//! ## Checkpoint 2 is a file in this directory, not a flag (#27, C3)
+//!
+//! The brief a codex pane runs on is the **same rendered text** a Claude Code pane
+//! of the same seat runs on — one `orch.md`, one `worker.md`, every harness
+//! (D-042) — and only the carrier varies. Codex's carrier is
+//! `model_instructions_file`, a key naming a file, and it **replaces** the
+//! vendor's built-in prompt rather than appending to it: measured off the wire,
+//! `instructions` went from 17,730 characters of "You are Codex" to the sentinel
+//! file's 50 (C3), and it stays that way across a `/clear` (C37).
+//!
+//! So the brief is written into the pane's own `CODEX_HOME` as [`BRIEF_FILE`],
+//! beside the seed and in the same atomic pass, and **nothing is written into the
+//! pane's checkout** — no `.git/info/exclude` line, no story about keeping
+//! `git status` honest. Two other carriers were measured and are not reachable
+//! from here by construction: `base_instructions` in a custom `model_catalog_json`
+//! is *not honoured* (the built-in prompt is sent anyway; the field is a
+//! descriptor), and an `AGENTS.md` in the pane's cwd arrives as a **`user`
+//! message** — in-band, spending the pane's own context, and re-injected on every
+//! clear.
 //!
 //! ## The three key lists get their one reader here (C36)
 //!
@@ -82,6 +109,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use fleetor_core::event::NoticeLevel;
 use toml_edit::{DocumentMut, Item, Table, Value};
 
 use super::harness::{
@@ -153,9 +181,65 @@ const SNAPSHOT_ENTRIES: &[&str] = &[
 /// in their shell profile. Naming a variable is not a secret, and following it is.
 const PROVIDER_CREDENTIAL_KEYS: &[&str] = &["experimental_bearer_token", "env_key"];
 
+/// **The four default-on features FLEETOR turns off on every seat but the
+/// operator's own** (#28, C21) — five rows, because `browser_use` carries a
+/// companion.
+///
+/// `codex doctor --all` reports **47 feature flags enabled by default**. Four of
+/// them reach past the fence [`CODEX_SPEC`]'s sandbox trio actually enforces: the
+/// seatbelt bounds the filesystem and the network, and it does not bound a pane
+/// driving a browser, a pane driving a desktop, or a pane fanning out into threads
+/// the run manifest never sees.
+///
+/// **That last one is the sharpest.** WP-11's archive claims to be the evidence of
+/// what a run did, and D-029/D-030 deleted headless supervision on purpose, so a
+/// worker quietly re-growing it is a regression wearing a feature flag.
+///
+/// `browser_use_full_cdp_access` is the fifth row for four features: C21 names it
+/// in the same breath as `browser_use` because it is separately on by default and
+/// separately grants full remote-debugging access. Disabling the parent should be
+/// enough; a row that is redundant narrows nothing further and costs a line,
+/// where a missing one is a browser a fenced pane can still drive.
+///
+/// **Here rather than on [`HarnessSpec`]** for C31's reason and the same one
+/// [`PROVIDER_CREDENTIAL_KEYS`] is: these are vendor feature names, read by the
+/// one method that writes them, and a spec field for "keys set on every seat but
+/// the operator's" would be a field every other harness answers with an empty
+/// list. What *is* general — which seat this is — is on
+/// [`Seed::operators_own_seat`], because only the caller knows it.
+///
+/// **The key spelling is the vendor's own**, quoted from `codex features --help`:
+/// `--disable <FEATURE>` is documented as "Equivalent to `-c features.<name>=false`".
+const WORKER_FEATURE_OVERRIDES: &[(&str, &str)] = &[
+    // A worker spawning its own subagent threads — the run manifest never sees them.
+    ("features.multi_agent", "false"),
+    // A pane driving a browser, and the full remote-debugging access that comes with it.
+    ("features.browser_use", "false"),
+    ("features.browser_use_full_cdp_access", "false"),
+    // A pane driving the desktop.
+    ("features.computer_use", "false"),
+    // And the same reach under the vendor's in-app name for it.
+    ("features.in_app_local_automation", "false"),
+];
+
 /// The file `CODEX_HOME` is read from — checkpoint 4's seed file, and checkpoint
 /// 14's trust file, which for this harness are the same document.
 const CONFIG_FILE: &str = "config.toml";
+
+/// Checkpoint 2's file: the pane's brief, beside the seed, named by
+/// [`BriefCarrier::config_key`] (#27, C3).
+///
+/// **Here rather than on the spec, for [`OPERATOR_DIR`]'s reason** (C31, C32).
+/// The spec says *which key names the brief*, which is the vendor's contract and
+/// the thing a conformance suite can assert; what FLEETOR calls the file it writes
+/// into a directory it owns is not a checkpoint, and a `brief_file` field would be
+/// a spec entry every harness that carries its brief in argv answers with a name
+/// nothing reads.
+///
+/// **`fleetor-` prefixed on purpose.** `CODEX_HOME` is the vendor's directory —
+/// `config.toml`, `models.json`, `prompts/`, its own sqlite stores — and a bare
+/// `brief.md` there is a file whose author nobody can tell from the outside.
+const BRIEF_FILE: &str = "fleetor-brief.md";
 
 /// Checkpoint 14's affirmative answer, which for this harness is a **string**
 /// rather than Claude Code's `true`.
@@ -187,7 +271,8 @@ pub const CODEX_SPEC: HarnessSpec = HarnessSpec {
     // absent from the whole body. It is a config key rather than an argv flag, so
     // unlike cursor's `.mdc` nothing is written into the pane's checkout and there
     // is no `.git/info/exclude` line to keep `git status` honest. C37 measured
-    // that it survives `/clear`.
+    // that it survives `/clear`. The key is written and the file it names is
+    // installed by `install_brief`, out of `Seed::brief` (#27).
     brief: BriefCarrier {
         argv_flag: None,
         config_key: Some("model_instructions_file"),
@@ -202,7 +287,25 @@ pub const CODEX_SPEC: HarnessSpec = HarnessSpec {
         model_env: None,
         model_flag: Some("--model"),
         permission_flag: None,
-        sandbox_keys: &[],
+        // **The sandbox trio, two of its three rows** (#28, C7). The third is
+        // checkpoint 8's and lives on `outbound` because it is the socket lever
+        // rather than the fence — but all three were measured together on
+        // `0.153.4` and only make sense together: `workspace-write` without
+        // `never` is a pane that parks on an approval prompt no human will answer,
+        // and `never` without `workspace-write` is a pane auto-running under
+        // whatever posture the operator's own config happened to carry.
+        //
+        // `never` rather than `on-request` for the reason the whole fence exists:
+        // `on-request` lets the model decide when to ask a human, and **a worker
+        // has no human**, so it parks looking perfectly healthy.
+        //
+        // **Both rows are FLEETOR's on every codex pane, and that is deliberate.**
+        // `sandbox_mode` lives in the operator's own configuration, so an operator
+        // who set it months ago for unrelated reasons would otherwise get a fleet
+        // whose panes cannot write — or one that is not fenced at all. Every key
+        // FLEETOR writes over an operator's answer gets an Activity feed line;
+        // see `install`.
+        sandbox_keys: &[("sandbox_mode", "workspace-write"), ("approval_policy", "never")],
     },
 
     // 4 — config dir and its seeding. The two seed keys are this ticket's own and
@@ -261,7 +364,20 @@ pub const CODEX_SPEC: HarnessSpec = HarnessSpec {
     // tried and do not: they configure the network-proxy layer, not the seatbelt.
     // `socket_reachable` is `true` because it is reachable *as FLEETOR configures
     // it*; the key that makes it so is #28's, alongside the rest of the trio.
-    outbound: Outbound { sandboxed: true, socket_reachable: true, reachability_keys: &[] },
+    outbound: Outbound {
+        sandboxed: true,
+        socket_reachable: true,
+        // **One key, and it is all-or-nothing** (#28, C5). `true` is the boolean
+        // rather than the word, by codex's own `-c key=value` rule (C39) — the
+        // dotted path becomes a `[sandbox_workspace_write]` table on the way in.
+        //
+        // This is the second key that is FLEETOR's rather than inherited, and it
+        // is load-bearing for messaging rather than for comfort: an operator who
+        // narrowed their sandbox's network access would get a fleet of panes that
+        // cannot reach the fleet socket, which is a pane that looks alive and
+        // cannot talk.
+        reachability_keys: &[("sandbox_workspace_write.network_access", "true")],
+    },
 
     // 9 — typing profile (C22). A bracketed paste followed by CR into a real pty
     // submits the turn: the request reached the capture server carrying a sentinel
@@ -365,7 +481,8 @@ impl Harness for CodexCli {
     ///    one — that is what [`ConfigDir::seed_merges`] means here, and it is what
     ///    keeps the previous target's trust row alive across a target switch — and
     ///    otherwise the operator's own, transformed by [`seeded_document`].
-    /// 3. **FLEETOR's keys last, so they win.** The isolation keys, then the three
+    /// 3. **FLEETOR's keys last, so they win.** The isolation keys, then
+    ///    checkpoint 2's brief file and the key naming it, then the three
     ///    checkpoint key lists in checkpoint order, then the trust record. M10's
     ///    "overlays are additive and deny wins" gains its inverse here (C21): the
     ///    keys FLEETOR owns overwrite the operator's, because a snapshot that
@@ -373,7 +490,7 @@ impl Harness for CodexCli {
     /// 4. **The refusal.** [`refuse_home_relative`] before anything is installed.
     /// 5. **Temp file and rename**, because a half-written `config.toml` is a pane
     ///    that dies at spawn.
-    fn seed_config_dir(&self, seed: &Seed<'_>) -> Result<(), String> {
+    fn seed_config_dir(&self, seed: &Seed<'_>) -> Result<Vec<(NoticeLevel, String)>, String> {
         install(self.spec(), &self.project_key(seed.cwd), seed)
     }
 
@@ -381,9 +498,10 @@ impl Harness for CodexCli {
     ///
     /// **The brief does not travel in argv for this harness** — it is
     /// `model_instructions_file`, a config key naming a file — so what this
-    /// returns carries no brief, and the file it names is written beside the
-    /// seed. That is #27's ticket, and until it lands a codex pane would get the
-    /// vendor's own prompt, which is one more reason codex is not registered.
+    /// returns carries no brief, and the file it names is written beside the seed
+    /// by [`install_brief`] out of [`Seed::brief`] (#27, C3). The argument is
+    /// ignored here rather than at the call site, because which of the two
+    /// carriers a harness uses is [`BriefCarrier`]'s answer and not the caller's.
     fn command_args(&self, _brief: &str, _permission_mode: Option<&str>) -> Vec<String> {
         self.spec().program.base_args.iter().map(|a| (*a).to_string()).collect()
     }
@@ -399,8 +517,14 @@ impl Harness for CodexCli {
 /// resolve rather than repeat. The tests below hand this function a stand-in spec
 /// whose lists are full, so the mechanism the next three tickets write into is
 /// tested now and not when they get there.
-fn install(spec: &'static HarnessSpec, project_key: &str, seed: &Seed<'_>) -> Result<(), String> {
+fn install(
+    spec: &'static HarnessSpec,
+    project_key: &str,
+    seed: &Seed<'_>,
+) -> Result<Vec<(NoticeLevel, String)>, String> {
     let dir = seed.config_dir;
+    let seat = seat_label(dir);
+    let mut notices = Vec::new();
     std::fs::create_dir_all(dir).map_err(|e| format!("create config dir {}: {e}", dir.display()))?;
 
     let source = seed.operator_home.map(|home| home.join(OPERATOR_DIR)).filter(|d| d.is_dir());
@@ -423,11 +547,26 @@ fn install(spec: &'static HarnessSpec, project_key: &str, seed: &Seed<'_>) -> Re
 
     // 3. FLEETOR's keys, last so they win.
     for (key, value) in isolation_keys(spec, dir) {
-        set_path(&mut doc, &[key], Value::from(value));
+        set_owned(&mut doc, &[key], Value::from(value), &seat, ISOLATION_WHY, &mut notices);
+    }
+    if let Some(key) = spec.brief.config_key {
+        set_path(&mut doc, &[key], Value::from(install_brief(dir, seed.brief)?));
     }
     for (key, value) in checkpoint_keys(spec) {
-        set_path(&mut doc, &key.split('.').collect::<Vec<_>>(), toml_value(value));
+        let path: Vec<&str> = key.split('.').collect();
+        set_owned(&mut doc, &path, toml_value(value), &seat, CONTAINMENT_WHY, &mut notices);
     }
+    // The rows that are the *seat's* rather than the harness's (C21). The
+    // orchestrator is the operator's own pane and inherits their flags untouched;
+    // every other seat is one FLEETOR drives, and `operators_own_seat` defaults to
+    // `false` so a seat nobody thought about is fenced rather than trusted.
+    if !seed.operators_own_seat {
+        for (key, value) in WORKER_FEATURE_OVERRIDES {
+            let path: Vec<&str> = key.split('.').collect();
+            set_owned(&mut doc, &path, toml_value(value), &seat, FEATURES_WHY, &mut notices);
+        }
+    }
+    notices.push(narrowing_notice(spec, &seat, seed.operators_own_seat));
     for key in spec.project_identity.trust_keys {
         set_path(&mut doc, &["projects", project_key, key], Value::from(TRUST_AFFIRMATIVE));
     }
@@ -438,7 +577,9 @@ fn install(spec: &'static HarnessSpec, project_key: &str, seed: &Seed<'_>) -> Re
     // 5. Temp file, then rename.
     let tmp = installed.with_extension("toml.tmp");
     std::fs::write(&tmp, doc.to_string()).map_err(|e| format!("write {}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, &installed).map_err(|e| format!("install {}: {e}", installed.display()))
+    std::fs::rename(&tmp, &installed)
+        .map_err(|e| format!("install {}: {e}", installed.display()))?;
+    Ok(notices)
 }
 
 /// Codex, by name. Not in the registry — #33 puts it there.
@@ -605,6 +746,44 @@ fn isolation_keys(spec: &'static HarnessSpec, pane_dir: &Path) -> Vec<(&'static 
     spec.config_dir.seed_keys.iter().map(|key| (*key, here.clone())).collect()
 }
 
+/// **Checkpoint 2, written** (#27, C3): the pane's brief beside its seed, and the
+/// absolute path the carrier key is set to.
+///
+/// The brief itself is not this module's — it is `fleetor-core::brief`'s rendered
+/// `orch.md` / `worker.md`, byte-identical to what a Claude Code pane of the same
+/// seat is handed, because D-042 holds across every harness and only the carrier
+/// varies. What is this module's is *where it lands and how it is named*, and the
+/// answer is the pane's own `CODEX_HOME`: nothing is written into the pane's
+/// checkout, so there is no `.git/info/exclude` line and no story about keeping
+/// `git status` honest. That whole class of cost is cursor's alone (M5).
+///
+/// **An empty brief is refused rather than installed**, for the reason
+/// [`refuse_home_relative`] exists: a codex pane whose carrier key is absent runs
+/// on the vendor's built-in 17,730-character prompt — it renders a prompt, accepts
+/// a paste and answers, having never been told it is part of a fleet. That is this
+/// arc's signature failure and it is invisible from the outside, so the last place
+/// that can see it says so.
+///
+/// Temp file and rename, for `install`'s reason one line down: the vendor reads
+/// this file at startup and again after a `/clear` (C37), and a torn brief is a
+/// pane briefed with half a document.
+fn install_brief(dir: &Path, brief: &str) -> Result<String, String> {
+    if brief.trim().is_empty() {
+        return Err(format!(
+            "the codex seed for {} carries no brief. The carrier is a config key naming a \
+             file, so an absent brief is not a pane with a shorter prompt — it is a pane \
+             running the vendor's own, which looks perfectly healthy and has never been \
+             told it is part of a fleet",
+            dir.display()
+        ));
+    }
+    let at = dir.join(BRIEF_FILE);
+    let tmp = at.with_extension("md.tmp");
+    std::fs::write(&tmp, brief).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, &at).map_err(|e| format!("install {}: {e}", at.display()))?;
+    Ok(at.to_string_lossy().into_owned())
+}
+
 /// **The one reader of the three key lists** (C36), in checkpoint order.
 ///
 /// Checkpoint 3's sandbox posture, checkpoint 5's provider wiring and checkpoint
@@ -635,6 +814,129 @@ fn checkpoint_keys(spec: &'static HarnessSpec) -> Vec<(&'static str, &'static st
 /// through in `codex-spike-notes.md`.
 fn toml_value(raw: &str) -> Value {
     raw.parse::<Value>().map(|v| v.decorated(" ", "")).unwrap_or_else(|_| Value::from(raw))
+}
+
+// --- what the operator is told (#28, C21, story 23) ----------------------------
+
+/// Why the two isolation keys are FLEETOR's, in the operator's own terms.
+const ISOLATION_WHY: &str =
+    "a pane's thread history and logs are its own — a shared store puts four panes' \
+     history in one file, which is the arrangement the fenced config directory exists to \
+     prevent";
+
+/// Why the sandbox trio is FLEETOR's on **every** codex pane.
+const CONTAINMENT_WHY: &str =
+    "a codex pane's containment is the fleet's on every seat: a pane FLEETOR did not fence \
+     is not a worker, and one whose sandbox cannot reach the fleet socket is a pane that \
+     looks alive and cannot talk";
+
+/// Why the four features are off, and the one seat they are not off on.
+const FEATURES_WHY: &str =
+    "the sandbox bounds the filesystem and the network, and it does not bound a pane \
+     driving a browser or a desktop, or one fanning out into threads the run manifest \
+     never sees. Your orchestrator keeps this flag — it is your own pane";
+
+/// The pane this seed is for, by name.
+///
+/// **The configuration directory's own last segment**, which is the pane's name by
+/// construction: [`Layout::pane_config`](crate::placement::Layout::pane_config) is
+/// `pane-config/<pane>`. The seeder is deliberately not handed a `PaneId` as well
+/// as [`Seed::operators_own_seat`] — the seat is *one* question, and two fields
+/// answering it is two chances for them to disagree. The full path is the fallback
+/// because a label that could be empty is worse than a long one.
+fn seat_label(dir: &Path) -> String {
+    dir.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| dir.display().to_string())
+}
+
+/// Set one key FLEETOR owns, and say so **only if it replaced an answer the
+/// operator actually gave**.
+///
+/// This is [`crate::prompts`]'s rule in the seeder: an override that loads is
+/// announced, and an ordinary machine with nothing to say stays quiet. The
+/// condition is what makes the line worth reading — "my setting did not apply" is
+/// a mystery only for an operator who had a setting, and a feed that says the same
+/// nine things every run is a feed nobody reads the tenth line of.
+///
+/// A **`Warn`** rather than an `Info`, and that is the same judgement `prompts.rs`
+/// makes when it refuses a broken override: the operator wrote something down and
+/// it is not in effect. Nothing is wrong, but they are owed the sentence.
+fn set_owned(
+    doc: &mut DocumentMut,
+    segments: &[&str],
+    value: Value,
+    seat: &str,
+    why: &str,
+    notices: &mut Vec<(NoticeLevel, String)>,
+) {
+    let before = value_at(doc, segments);
+    let after = rendered(&value);
+    set_path(doc, segments, value);
+    let Some(before) = before.filter(|before| *before != after) else {
+        return;
+    };
+    notices.push((
+        NoticeLevel::Warn,
+        format!(
+            "{seat}: your codex `{}` = {before} did not apply — FLEETOR sets it to {after}, \
+             because {why}.",
+            segments.join("."),
+        ),
+    ));
+}
+
+/// The one line every codex pane gets, whether or not it overrode anything.
+///
+/// **Unconditional, and the four features are why.** Codex's 47 feature flags are
+/// on by *default* rather than by a line in anyone's `config.toml`, so
+/// [`set_owned`] has nothing to compare against and would say nothing at all —
+/// yet turning four of them off is the most consequential thing this seeder does
+/// to a pane. An operator debugging why a codex worker will not drive a browser
+/// deserves to find the answer in the feed rather than in this file.
+///
+/// The containment half is read back off the spec rather than spelled here, so a
+/// row added to [`Posture::sandbox_keys`] or [`Outbound::reachability_keys`]
+/// appears in the sentence without anyone remembering to edit it.
+fn narrowing_notice(
+    spec: &'static HarnessSpec,
+    seat: &str,
+    operators_own_seat: bool,
+) -> (NoticeLevel, String) {
+    let containment = checkpoint_keys(spec)
+        .into_iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let tail = if operators_own_seat {
+        "Your codex feature flags are untouched on this seat — it is your own pane.".to_string()
+    } else {
+        format!(
+            "Four default-on features are off here — {} — because the sandbox does not bound \
+             a pane driving a browser or a desktop, or one fanning out into threads the run \
+             manifest never sees.",
+            WORKER_FEATURE_OVERRIDES
+                .iter()
+                .map(|(key, _)| key.trim_start_matches("features."))
+                .collect::<Vec<_>>()
+                .join(", "),
+        )
+    };
+    (NoticeLevel::Info, format!("{seat}: codex containment is FLEETOR's — {containment}. {tail}"))
+}
+
+/// One value as it will read in the seeded document, for a notice that quotes it.
+fn rendered(value: &Value) -> String {
+    value.to_string().trim().to_string()
+}
+
+/// What is at a dotted path today, or `None` when nothing is.
+fn value_at(doc: &DocumentMut, segments: &[&str]) -> Option<String> {
+    let mut item: &Item = doc.as_item();
+    for segment in segments {
+        item = item.as_table_like()?.get(segment)?;
+    }
+    item.as_value().map(rendered)
 }
 
 /// Set one dotted path, creating the tables on the way down.
@@ -821,6 +1123,11 @@ mod tests {
     use super::*;
     use crate::placement::harness::registered;
 
+    /// What a pane is briefed with when a test is not about the brief. Short and
+    /// recognisable rather than a rendered `worker.md` — the tests that care that
+    /// it is the *real* brief render one and say so.
+    const A_BRIEF: &str = "SENTINEL-BRIEF\nYou are a FLEETOR worker pane.";
+
     /// One fabricated machine: an operator installation, a pane's config dir, and
     /// a pane cwd, all under one scratch root that is removed on drop.
     struct Machine {
@@ -868,11 +1175,53 @@ mod tests {
             self.seed_at(pane, &self.cwd())
         }
 
-        fn seed_at(&self, pane: &str, cwd: &Path) -> Result<PathBuf, String> {
+        /// The Activity feed lines one ordinary (fenced) seat's seeding produced.
+        fn notices(&self, pane: &str) -> Vec<(NoticeLevel, String)> {
             let dir = self.pane_dir(pane);
             let home = self.operator_home();
-            codex().seed_config_dir(&Seed::new(&dir, cwd, Some(&home)))?;
+            codex()
+                .seed_config_dir(&Seed::new(&dir, &self.cwd(), Some(&home)).with_brief(A_BRIEF))
+                .expect("seed")
+        }
+
+        /// The same, for the operator's own seat.
+        fn notices_for_the_operator(&self, pane: &str) -> Vec<(NoticeLevel, String)> {
+            let dir = self.pane_dir(pane);
+            let home = self.operator_home();
+            codex()
+                .seed_config_dir(
+                    &Seed::new(&dir, &self.cwd(), Some(&home))
+                        .with_brief(A_BRIEF)
+                        .for_the_operator(),
+                )
+                .expect("seed")
+        }
+
+        /// Seed one pane as the operator's own — the orchestrator's arm.
+        fn seed_for_the_operator(&self, pane: &str) -> Result<PathBuf, String> {
+            self.notices_for_the_operator(pane);
+            Ok(self.pane_dir(pane))
+        }
+
+        fn seed_at(&self, pane: &str, cwd: &Path) -> Result<PathBuf, String> {
+            self.seed_briefed(pane, cwd, A_BRIEF)
+        }
+
+        /// The same seeding, with this pane's brief spelled out — the seam #27
+        /// added, and the reason every other test here can stay about the
+        /// snapshot: a codex seed with no brief is refused, so the brief is
+        /// stated once here rather than at fourteen call sites.
+        fn seed_briefed(&self, pane: &str, cwd: &Path, brief: &str) -> Result<PathBuf, String> {
+            let dir = self.pane_dir(pane);
+            let home = self.operator_home();
+            codex().seed_config_dir(&Seed::new(&dir, cwd, Some(&home)).with_brief(brief))?;
             Ok(dir)
+        }
+
+        /// The pane's installed brief.
+        fn brief(&self, pane: &str) -> String {
+            std::fs::read_to_string(self.pane_dir(pane).join(BRIEF_FILE))
+                .expect("the pane's brief file")
         }
 
         /// The seeded `config.toml`, parsed.
@@ -1216,7 +1565,9 @@ args = ["--root", "~/notes"]
         let machine = Machine::new("bare");
         let dir = machine.pane_dir("worker-1");
         let cwd = machine.cwd();
-        codex().seed_config_dir(&Seed::new(&dir, &cwd, None)).expect("seed against nothing");
+        codex()
+            .seed_config_dir(&Seed::new(&dir, &cwd, None).with_brief(A_BRIEF))
+            .expect("seed against nothing");
 
         let seeded: DocumentMut = std::fs::read_to_string(dir.join(CONFIG_FILE))
             .expect("a seed file all the same")
@@ -1226,6 +1577,286 @@ args = ["--root", "~/notes"]
             seeded["projects"][codex().project_key(&cwd)]["trust_level"].as_str(),
             Some(TRUST_AFFIRMATIVE),
         );
+    }
+
+    // --- checkpoints 3 and 8, directly (#28; C5, C7, C21) -----------------------
+
+    /// Every `(key, value)` FLEETOR writes into a seat's own document, whichever
+    /// list it came from — the handle a containment test needs, so a row that
+    /// stopped being written cannot pass by being asserted somewhere else.
+    fn fleetor_owned(seat_is_the_operators: bool) -> Vec<(String, String)> {
+        let mut rows: Vec<(String, String)> = checkpoint_keys(&CODEX_SPEC)
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        if !seat_is_the_operators {
+            rows.extend(
+                WORKER_FEATURE_OVERRIDES.iter().map(|(k, v)| (k.to_string(), v.to_string())),
+            );
+        }
+        rows
+    }
+
+    #[test]
+    fn the_sandbox_trio_lands_on_every_codex_pane() {
+        // **Checkpoint 3 and checkpoint 8, which are one measurement** (C5, C7).
+        // The three rows were measured together on `0.153.4` and only make sense
+        // together, so they are asserted together even though two of them live on
+        // `posture` and the third on `outbound`.
+        //
+        // What this test can and cannot prove is the whole reason
+        // `tests/vendor_binary_tier.rs` has an arm of its own: this says FLEETOR
+        // *wrote* the keys. Only the real seatbelt can say the vendor honoured
+        // them, and a checkpoint that fails by looking healthy has to be measured
+        // rather than inferred.
+        let machine = Machine::new("trio");
+        a_full_installation(&machine);
+        machine.seed("worker-1").expect("seed");
+        machine.seed("orch-seat").expect("seed");
+
+        for pane in ["worker-1", "orch-seat"] {
+            let seeded = machine.seeded(pane);
+            assert_eq!(
+                seeded["sandbox_mode"].as_str(),
+                Some("workspace-write"),
+                "{pane}: the fence itself",
+            );
+            assert_eq!(
+                seeded["approval_policy"].as_str(),
+                Some("never"),
+                "{pane}: `on-request` lets the model decide when to ask a human, and a \
+                 worker has no human — it would park looking perfectly healthy",
+            );
+            assert_eq!(
+                seeded["sandbox_workspace_write"]["network_access"].as_bool(),
+                Some(true),
+                "{pane}: the socket lever, and `true` is the boolean rather than the word",
+            );
+        }
+    }
+
+    #[test]
+    fn the_operators_own_sandbox_answers_are_replaced_and_the_operator_is_told() {
+        // Two keys are FLEETOR's rather than inherited, and both are load-bearing
+        // for messaging: an operator who enabled the sandbox months ago for
+        // unrelated reasons, or narrowed its network access, would otherwise get a
+        // fleet whose panes cannot talk. So the snapshot's own answers lose — and
+        // the operator gets the sentence, the way `prompts.rs` announces a loaded
+        // override (C21, story 23).
+        let machine = Machine::new("replaced");
+        machine.operator_file(
+            CONFIG_FILE,
+            "sandbox_mode = \"read-only\"\n\
+             approval_policy = \"on-request\"\n\
+             [sandbox_workspace_write]\nnetwork_access = false\n",
+        );
+        let notices = machine.notices("worker-1");
+
+        let seeded = machine.seeded("worker-1");
+        assert_eq!(seeded["sandbox_mode"].as_str(), Some("workspace-write"));
+        assert_eq!(seeded["approval_policy"].as_str(), Some("never"));
+        assert_eq!(seeded["sandbox_workspace_write"]["network_access"].as_bool(), Some(true));
+
+        for key in ["sandbox_mode", "approval_policy", "sandbox_workspace_write.network_access"] {
+            let told = notices
+                .iter()
+                .find(|(level, text)| *level == NoticeLevel::Warn && text.contains(key))
+                .unwrap_or_else(|| panic!("nothing on the Activity feed named {key}: {notices:?}"));
+            assert!(
+                told.1.contains("did not apply"),
+                "the line has to say the operator's answer lost, not merely mention the key: {}",
+                told.1,
+            );
+            assert!(told.1.contains("worker-1"), "and which pane it was: {}", told.1);
+        }
+    }
+
+    #[test]
+    fn an_operator_who_set_none_of_it_is_not_warned_about_any_of_it() {
+        // The other half of `prompts.rs`'s rule, and the one that keeps the feed
+        // worth reading: "my setting did not apply" is a mystery only for an
+        // operator who had a setting. A default installation gets the one Info
+        // line saying what FLEETOR narrowed, and no warnings at all.
+        let machine = Machine::new("quiet");
+        machine.operator_file(CONFIG_FILE, "model = \"deepseek-v4-flash\"\n");
+        let notices = machine.notices("worker-1");
+
+        assert!(
+            !notices.iter().any(|(level, _)| *level == NoticeLevel::Warn),
+            "an operator who overrode nothing was warned anyway: {notices:?}",
+        );
+        assert_eq!(notices.len(), 1, "one line per pane, not one per key: {notices:?}");
+    }
+
+    #[test]
+    fn the_four_features_are_off_on_a_worker_and_untouched_on_the_orchestrator() {
+        // **C21, both halves.** The sandbox bounds the filesystem and the network;
+        // it does not bound a pane driving a browser or a desktop, and it does not
+        // bound a pane fanning out into threads the run manifest never sees — the
+        // sharpest of the four, because D-029/D-030 deleted headless supervision
+        // deliberately and a worker re-growing it is a regression wearing a
+        // feature flag.
+        //
+        // The orchestrator is the operator's own pane, so it inherits their flags
+        // untouched. That asymmetry is the product, and it is the only thing
+        // `Seed::operators_own_seat` exists to say.
+        let machine = Machine::new("features");
+        a_full_installation(&machine);
+        machine.seed("worker-1").expect("seed");
+        machine.seed_for_the_operator("orch").expect("seed");
+
+        let worker = machine.seeded("worker-1");
+        let orch = machine.seeded("orch");
+        for (key, _) in WORKER_FEATURE_OVERRIDES {
+            let name = key.trim_start_matches("features.");
+            assert_eq!(
+                worker["features"][name].as_bool(),
+                Some(false),
+                "a worker can still reach past the fence through `{key}`",
+            );
+            assert!(
+                orch.get("features").and_then(|f| f.get(name)).is_none(),
+                "the orchestrator is the operator's own pane and `{key}` is theirs to set",
+            );
+        }
+        // Four features, five rows: `browser_use` carries its full-CDP companion.
+        assert_eq!(WORKER_FEATURE_OVERRIDES.len(), 5);
+    }
+
+    #[test]
+    fn a_feature_the_operator_turned_on_by_hand_is_turned_off_and_announced() {
+        // The features are on by *default* rather than by a line in anyone's
+        // config, so `set_owned` usually has nothing to compare against and the
+        // unconditional line is what carries them. An operator who wrote one down
+        // is the case where both fire, and they should.
+        let machine = Machine::new("explicit-feature");
+        machine.operator_file(CONFIG_FILE, "[features]\nmulti_agent = true\n");
+        let notices = machine.notices("worker-1");
+
+        assert_eq!(machine.seeded("worker-1")["features"]["multi_agent"].as_bool(), Some(false));
+        assert!(
+            notices.iter().any(|(level, text)| *level == NoticeLevel::Warn
+                && text.contains("features.multi_agent")
+                && text.contains("did not apply")),
+            "the operator wrote it down and it is not in effect: {notices:?}",
+        );
+    }
+
+    #[test]
+    fn every_codex_pane_is_told_what_fleetor_narrowed_even_with_nothing_to_override() {
+        // The unconditional line, and why it is unconditional: turning four
+        // default-on features off is the most consequential thing this seeder does
+        // to a pane, and no operator file records a default. An operator debugging
+        // why a codex worker will not drive a browser should find the answer in the
+        // feed rather than in this file.
+        let machine = Machine::new("narrowing");
+        a_full_installation(&machine);
+
+        let worker = machine.notices("worker-1");
+        let line = worker
+            .iter()
+            .find(|(level, _)| *level == NoticeLevel::Info)
+            .expect("every codex pane gets one");
+        for (key, value) in fleetor_owned(false) {
+            let named = if key.starts_with("features.") {
+                key.trim_start_matches("features.").to_string()
+            } else {
+                format!("{key}={value}")
+            };
+            assert!(line.1.contains(&named), "the line does not name {named}: {}", line.1);
+        }
+
+        let orch = machine.notices_for_the_operator("orch");
+        let line = orch
+            .iter()
+            .find(|(level, _)| *level == NoticeLevel::Info)
+            .expect("the orchestrator gets one too — the trio is still FLEETOR's");
+        assert!(
+            line.1.contains("untouched"),
+            "the orchestrator's line has to say its flags are the operator's: {}",
+            line.1,
+        );
+        for (key, _) in WORKER_FEATURE_OVERRIDES {
+            assert!(
+                !line.1.contains(key.trim_start_matches("features.")),
+                "the orchestrator's line names a feature it does not disable: {}",
+                line.1,
+            );
+        }
+    }
+
+    #[test]
+    fn the_operators_other_answers_survive_including_the_ones_that_deny() {
+        // FLEETOR overwrites the keys it owns and nothing else, which is how an
+        // operator's explicit deny rules stay honoured: they are not on any of
+        // FLEETOR's lists, so the snapshot carries them through untouched. M10's
+        // "overlays are additive and deny wins" holds, with C21's inverse applying
+        // only to the rows above.
+        let machine = Machine::new("denies");
+        machine.operator_file(
+            CONFIG_FILE,
+            "[sandbox_workspace_write]\n\
+             writable_roots = []\n\
+             exclude_tmpdir_env_var = true\n\
+             [mcp_servers.notes]\ncommand = \"note-server\"\nenabled = false\n",
+        );
+        machine.seed("worker-1").expect("seed");
+        let seeded = machine.seeded("worker-1");
+
+        assert!(
+            seeded["sandbox_workspace_write"]["writable_roots"].as_array().is_some_and(|a| a
+                .is_empty()),
+            "an operator's narrowing of the sandbox's writable roots was dropped",
+        );
+        assert_eq!(seeded["sandbox_workspace_write"]["exclude_tmpdir_env_var"].as_bool(), Some(true));
+        assert_eq!(seeded["mcp_servers"]["notes"]["enabled"].as_bool(), Some(false));
+        // And FLEETOR's own row is in the same table, beside them rather than
+        // instead of them.
+        assert_eq!(seeded["sandbox_workspace_write"]["network_access"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn the_newer_permission_profile_generation_is_not_written() {
+        // Deliberately not used (C7). It is where the vendor is visibly heading —
+        // a `.sandbox_migration` marker exists in a default install — but nothing
+        // about it was measured, and the binary carries an explicit "derived
+        // permission profile cannot be represented as a legacy sandbox policy;
+        // falling back to read-only" path. That is a worker that spawns clean and
+        // silently cannot write, which is the exact failure class C7 and C21 exist
+        // to prevent. The legacy keys ship; #37's gate tripwire is what makes that
+        // survivable.
+        let machine = Machine::new("legacy");
+        a_full_installation(&machine);
+        machine.seed("worker-1").expect("seed");
+        let seeded = machine.seeded("worker-1");
+
+        assert!(seeded.get("permissions").is_none(), "the newer generation was written");
+        assert!(seeded.get("default_permissions").is_none(), "and so was its selector");
+        for (key, _) in fleetor_owned(false) {
+            assert!(
+                !key.starts_with("permissions"),
+                "a key list reached for the unmeasured generation: {key}",
+            );
+        }
+    }
+
+    #[test]
+    fn the_narrow_socket_lever_is_not_reached_for_again() {
+        // Found, tried in three variations including `--enable network_proxy`, and
+        // it does not work: `network.unix_sockets` and
+        // `network.dangerously_allow_all_unix_sockets` configure the network-*proxy*
+        // layer, not the seatbelt profile, and all three left the refusal in place
+        // (C5). Recorded as *tried* rather than *unconsidered*, in the one form
+        // that survives someone skimming this file — a red test.
+        for (key, _) in fleetor_owned(false) {
+            assert!(
+                !key.starts_with("network."),
+                "`{key}` reads like a targeted unix-socket allowance. It was measured and it \
+                 does not lift the seatbelt's refusal — see C5 before spending an afternoon \
+                 on it. The all-or-nothing `sandbox_workspace_write.network_access` is the \
+                 only lever there is.",
+            );
+        }
     }
 
     // --- the reader the next three tickets write into ---------------------------
@@ -1267,7 +1898,11 @@ args = ["--root", "~/notes"]
         a_full_installation(&machine);
         let dir = machine.pane_dir("worker-1");
         let cwd = machine.cwd();
-        install(&ALL_THREE_LISTS, "/a/project", &Seed::new(&dir, &cwd, Some(&machine.operator_home())))
+        install(
+            &ALL_THREE_LISTS,
+            "/a/project",
+            &Seed::new(&dir, &cwd, Some(&machine.operator_home())).with_brief(A_BRIEF),
+        )
             .expect("seed with all three lists full");
 
         let seeded: DocumentMut =
@@ -1308,14 +1943,20 @@ args = ["--root", "~/notes"]
     }
 
     #[test]
-    fn the_spec_leaves_exactly_the_four_lists_its_own_tickets_fill() {
+    fn the_spec_leaves_exactly_the_two_lists_its_own_ticket_still_owes() {
         // A reminder in test form, so #33 cannot register codex while a checkpoint
         // is still empty: the conformance suite refuses an empty `scrubbed_env` and
-        // an empty `seed_keys`, and these four are the ones phase 2 still owes.
-        assert!(CODEX_SPEC.posture.sandbox_keys.is_empty(), "#28 fills the sandbox trio");
-        assert!(CODEX_SPEC.outbound.reachability_keys.is_empty(), "#28 fills the socket lever");
+        // an empty `seed_keys`. #26 wrote this pinning **four** empty lists; #28
+        // filled two of them, and the pin is updated rather than deleted so it
+        // still names exactly what phase 2 owes — which is now #29's two.
         assert!(CODEX_SPEC.credentials.provider_keys.is_empty(), "#29 fills the provider");
         assert!(CODEX_SPEC.credentials.scrubbed_env.is_empty(), "#29 fills the scrub");
+        // And the two #28 filled are filled, so a later edit cannot empty them back
+        // out without this going red — a codex worker with an empty `sandbox_keys`
+        // is an unfenced pane, and one with an empty `reachability_keys` is a mute
+        // one.
+        assert!(!CODEX_SPEC.posture.sandbox_keys.is_empty(), "#28 filled the sandbox trio");
+        assert!(!CODEX_SPEC.outbound.reachability_keys.is_empty(), "#28 filled the socket lever");
         // Everything else is answered from a measurement.
         assert_eq!(CODEX_SPEC.config_dir.env_var, "CODEX_HOME");
         assert_eq!(CODEX_SPEC.isolation.config_env, CODEX_SPEC.config_dir.env_var);
@@ -1324,5 +1965,182 @@ args = ["--root", "~/notes"]
         const { assert!(CODEX_SPEC.isolation.private_home, "the Fence still wants one") };
         const { assert!(!CODEX_SPEC.transcript.file_move_is_safe, "WAL-mode: never `cp`") };
         assert!(!CODEX_SPEC.config_dir.seed_keys.is_empty());
+    }
+
+    // --- checkpoint 2 (#27, C3, C37) ------------------------------------------
+
+    /// The brief lands **beside the seed**, and the carrier names it by absolute
+    /// path.
+    ///
+    /// The absolute path is not decoration: `CODEX_HOME` is not the pane's cwd, and
+    /// a relative `model_instructions_file` would resolve against whichever
+    /// directory the pane happens to be started in — a brief that is found in
+    /// testing and missing in a worktree.
+    #[test]
+    fn the_brief_lands_beside_the_seed_and_the_carrier_names_it() {
+        let machine = Machine::new("brief-file");
+        let dir = machine.seed("worker-1").expect("seed");
+
+        assert_eq!(machine.brief("worker-1"), A_BRIEF, "the brief is written verbatim");
+
+        let key = CODEX_SPEC.brief.config_key.expect("codex carries its brief in a config key");
+        let named = machine.seeded("worker-1")[key].as_str().expect("the carrier is set").to_string();
+        assert_eq!(
+            named,
+            dir.join(BRIEF_FILE).to_string_lossy(),
+            "the carrier names the file that was just written, absolutely",
+        );
+        assert!(Path::new(&named).is_file(), "and that file is there before the pane is");
+        assert!(!dir.join(BRIEF_FILE.to_string() + ".tmp").exists(), "no temp file survives");
+    }
+
+    /// **D-042, asserted rather than assumed:** a codex pane's brief is the *same
+    /// rendered text* a Claude Code pane of the same seat is handed. One
+    /// `worker.md`, one `orch.md`, every harness — only the carrier varies.
+    #[test]
+    fn a_codex_pane_gets_the_same_rendered_brief_a_claude_code_pane_gets() {
+        use fleetor_core::pane::{PaneId, WORKER_SLOTS};
+
+        let machine = Machine::new("same-brief");
+        let cwd = machine.cwd();
+        let me = PaneId::Worker(2);
+        // What `place_worker` renders and hands to `Seed::with_brief` — and, for a
+        // Claude Code pane, what it hands to `--system-prompt` instead.
+        let rendered =
+            fleetor_core::brief::worker_brief(me, &PaneId::roster(&WORKER_SLOTS), &cwd.to_string_lossy());
+        machine.seed_briefed("worker-2", &cwd, &rendered).expect("seed");
+
+        assert_eq!(machine.brief("worker-2"), rendered, "byte-identical, not a codex dialect");
+
+        // And the same text is what Claude Code's carrier would have carried, so
+        // the two harnesses differ in transport and in nothing else.
+        let cc = registered()[0];
+        let flag = cc.spec().brief.argv_flag.expect("Claude Code briefs through argv");
+        let argv = cc.command_args(&rendered, Some("acceptEdits"));
+        let at = argv.iter().position(|a| a == flag).expect("the flag is there");
+        assert_eq!(argv[at + 1], rendered);
+        assert!(
+            codex().command_args(&rendered, Some("acceptEdits")).iter().all(|a| a != &rendered),
+            "and codex's argv carries no brief at all — its carrier is the config key",
+        );
+    }
+
+    /// **The two fragments survive into the rendered codex brief** (`building.md`
+    /// §4). The delivery contract is the only reason a model can tell a failed send
+    /// from a good one; the broadcast rule is the only mitigation left for
+    /// amplification after the rate limiter was removed (D-031).
+    ///
+    /// Asserted against **literals from the fragment files**, not against the
+    /// placeholder or the fragment constants: a test that checked `{broadcast_rule}`
+    /// was gone would pass on a template that dropped the placeholder entirely.
+    #[test]
+    fn the_two_fragments_survive_into_the_rendered_codex_brief() {
+        use fleetor_core::pane::{PaneId, WORKER_SLOTS};
+
+        let machine = Machine::new("fragments");
+        let cwd = machine.cwd();
+        let rendered = fleetor_core::brief::worker_brief(
+            PaneId::Worker(1),
+            &PaneId::roster(&WORKER_SLOTS),
+            &cwd.to_string_lossy(),
+        );
+        machine.seed_briefed("worker-1", &cwd, &rendered).expect("seed");
+        let installed = machine.brief("worker-1");
+
+        for (fragment, clause) in [
+            ("delivery-contract.md", "did **not** deliver"),
+            ("broadcast-rule.md", "Never reply to a broadcast unless it names you"),
+        ] {
+            assert!(
+                installed.contains(clause),
+                "{fragment}'s clause is missing from the brief a codex pane will run on",
+            );
+        }
+        assert!(
+            !installed.contains("{delivery_contract}") && !installed.contains("{broadcast_rule}"),
+            "the placeholders were composed into the brief, not carried into it",
+        );
+        assert!(installed.contains("fleet send"), "and the verbs reached the pane");
+    }
+
+    /// **Nothing is written into the pane's checkout** — the whole of M5's cost
+    /// that C3 says does not transfer. No brief file in the worktree, so no
+    /// `.git/info/exclude` line and no story about keeping `git status` honest.
+    #[test]
+    fn the_brief_is_not_written_into_the_panes_checkout() {
+        let machine = Machine::new("no-worktree-file");
+        let cwd = machine.cwd();
+        std::fs::write(cwd.join("README.md"), "the operator's own\n").expect("a checkout");
+        let before = contents(&cwd);
+
+        machine.seed("worker-1").expect("seed");
+
+        assert_eq!(contents(&cwd), before, "the pane's checkout is untouched by seeding");
+        const { assert!(!CODEX_SPEC.brief.writes_into_worktree) };
+        const { assert!(CODEX_SPEC.brief.replaces_system_prompt, "D-043 — replace, not append") };
+        const { assert!(CODEX_SPEC.brief.argv_flag.is_none(), "and it never travels in argv") };
+    }
+
+    /// **Neither rejected carrier is reached for** (C3), asserted against the
+    /// seeded document rather than against this module's source.
+    ///
+    /// `base_instructions` in a custom `model_catalog_json` is a *descriptor* — the
+    /// built-in prompt is sent anyway — and an `AGENTS.md` in the pane's cwd
+    /// arrives as a `user` message, in-band, re-injected on every clear (C37).
+    #[test]
+    fn neither_rejected_carrier_is_reached_for() {
+        let machine = Machine::new("rejected-carriers");
+        let cwd = machine.cwd();
+        let dir = machine.seed("worker-1").expect("seed");
+
+        let seeded = machine.seeded("worker-1").to_string();
+        assert!(
+            !seeded.contains("base_instructions"),
+            "the model catalog's instruction field is not honoured — it is not a carrier",
+        );
+        assert!(!cwd.join("AGENTS.md").exists(), "an AGENTS.md would be in-band, as a user message");
+        assert!(!dir.join("AGENTS.md").exists());
+        assert!(
+            !seeded.contains("experimental_instructions_file"),
+            "that key does not exist in the recorded build",
+        );
+    }
+
+    /// **A seed with no brief is refused rather than installed.**
+    ///
+    /// This is the signature failure of the whole arc: a codex pane whose carrier
+    /// key is absent runs the vendor's built-in prompt, renders a prompt, accepts a
+    /// paste and answers — having never been told it is part of a fleet. Nothing
+    /// downstream can see it, so the seeder is the last place that can.
+    #[test]
+    fn a_seed_carrying_no_brief_is_refused() {
+        let machine = Machine::new("no-brief");
+        let cwd = machine.cwd();
+
+        let why = machine.seed_briefed("worker-1", &cwd, "").expect_err("an empty brief is refused");
+        assert!(why.contains("no brief"), "the refusal says what is missing: {why}");
+        assert!(
+            !machine.pane_dir("worker-1").join(CONFIG_FILE).exists(),
+            "and nothing is installed — a half-seeded pane is the thing being prevented",
+        );
+        assert!(machine.seed_briefed("worker-2", &cwd, "   \n").is_err(), "whitespace is not a brief");
+    }
+
+    /// A re-seed rewrites the brief and keeps the carrier pointing at it — the
+    /// merge path (`seed_merges`), which is what a target switch goes through.
+    #[test]
+    fn a_reseed_rewrites_the_brief_and_keeps_the_carrier() {
+        let machine = Machine::new("reseed");
+        let cwd = machine.cwd();
+        machine.seed_briefed("worker-1", &cwd, "the first brief").expect("seed");
+        machine.seed_briefed("worker-1", &cwd, "the second brief").expect("re-seed");
+
+        assert_eq!(machine.brief("worker-1"), "the second brief");
+        let key = CODEX_SPEC.brief.config_key.expect("a config key");
+        assert_eq!(
+            machine.seeded("worker-1")[key].as_str(),
+            Some(machine.pane_dir("worker-1").join(BRIEF_FILE).to_string_lossy().as_ref()),
+            "the carrier survives the merge that keeps the previous target's trust row",
+        );
     }
 }

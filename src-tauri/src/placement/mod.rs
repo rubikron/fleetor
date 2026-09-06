@@ -580,18 +580,28 @@ fn place_orch(
     }
 
     std::fs::create_dir_all(target).map_err(|e| format!("create orchestrator cwd: {e}"))?;
-    let config_dir = layout.pane_config(pane);
-    harness.seed_config_dir(&Seed::new(&config_dir, target, host.operator_home.as_deref()))?;
-    notices.extend(guardrail_notices(harness, layout, pane, &config_dir, target, context)?);
 
-    // One Activity line per pane launch (WP-04's spawn-time "Loadout" counter):
-    // the size of the brief this pane was just handed, estimated from text already
-    // in memory — never a file read, never a tokenizer call.
+    // This pane's brief, rendered once — **before the seed**, because a harness
+    // whose brief carrier is a config key writes it into the configuration
+    // directory in the same pass that writes the rest of the seed (#27, C3). A
+    // harness that carries it in argv ignores the field.
     let rendered = fleetor_core::brief::render_orch(
         &context.orch_template,
         &fleetor_core::pane::PaneId::roster(&fleetor_core::pane::WORKER_SLOTS),
         &target.display().to_string(),
     );
+
+    let config_dir = layout.pane_config(pane);
+    notices.extend(harness.seed_config_dir(
+        &Seed::new(&config_dir, target, host.operator_home.as_deref())
+            .with_brief(&rendered)
+            .for_the_operator(),
+    )?);
+    notices.extend(guardrail_notices(harness, layout, pane, &config_dir, target, context)?);
+
+    // One Activity line per pane launch (WP-04's spawn-time "Loadout" counter):
+    // the size of the brief this pane was just handed, estimated from text already
+    // in memory — never a file read, never a tokenizer call.
     notices.push((
         NoticeLevel::Info,
         context_gauge::spawn_estimate_notice_text(pane, &rendered, None),
@@ -658,8 +668,19 @@ fn place_worker(
         }
     };
 
+    // This pane's brief, rendered once — before the seed, for `place_orch`'s
+    // reason (#27, C3).
+    let rendered = fleetor_core::brief::render_worker(
+        &context.worker_template,
+        pane,
+        &fleetor_core::pane::PaneId::roster(&fleetor_core::pane::WORKER_SLOTS),
+        &cwd.display().to_string(),
+    );
+
     let config_dir = layout.pane_config(pane);
-    harness.seed_config_dir(&Seed::new(&config_dir, &cwd, host.operator_home.as_deref()))?;
+    notices.extend(harness.seed_config_dir(
+        &Seed::new(&config_dir, &cwd, host.operator_home.as_deref()).with_brief(&rendered),
+    )?);
 
     // The Fence (WP-08): a private HOME, created and seeded before the process
     // exists — same reason the config dir is seeded here rather than at the target
@@ -773,8 +794,10 @@ fn place_evaluator(
     let brief = evaluator::render_brief(&mission, &cwd)?;
 
     let config_dir = evaluator::config_dir(layout.root());
-    harness.seed_config_dir(&Seed::new(&config_dir, &cwd, host.operator_home.as_deref()))?;
-    let notices = guardrail_notices(harness, layout, pane, &config_dir, &cwd, context)?;
+    let mut notices = harness.seed_config_dir(
+        &Seed::new(&config_dir, &cwd, host.operator_home.as_deref()).with_brief(&brief),
+    )?;
+    notices.extend(guardrail_notices(harness, layout, pane, &config_dir, &cwd, context)?);
 
     let command = spawn::evaluator_command_with(
         harness,
@@ -841,8 +864,10 @@ fn place_critic(
     let brief = critic::render_brief(&context.critic_template, &cwd)?;
 
     let config_dir = critic::config_dir(layout.root());
-    harness.seed_config_dir(&Seed::new(&config_dir, &cwd, host.operator_home.as_deref()))?;
-    let notices = guardrail_notices(harness, layout, pane, &config_dir, &cwd, context)?;
+    let mut notices = harness.seed_config_dir(
+        &Seed::new(&config_dir, &cwd, host.operator_home.as_deref()).with_brief(&brief),
+    )?;
+    notices.extend(guardrail_notices(harness, layout, pane, &config_dir, &cwd, context)?);
 
     let command = spawn::critic_command_with(
         harness,

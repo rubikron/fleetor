@@ -70,6 +70,8 @@
 
 use std::path::Path;
 
+use fleetor_core::event::NoticeLevel;
+
 use crate::guardrail;
 
 // --- the fourteen checkpoints -------------------------------------------------
@@ -547,6 +549,23 @@ pub struct ProjectIdentityAndTrust {
 /// hands a scratch path cannot reach `~/.codex` even by accident.
 #[derive(Debug, Clone, Copy)]
 pub struct Seed<'a> {
+    /// **Whether this is the operator's own pane** — the field #28 added, and the
+    /// one that lets a harness narrow a pane FLEETOR drives without narrowing the
+    /// pane the operator sits at.
+    ///
+    /// Codex is the first harness that needs it. Four of its 47 default-on
+    /// features reach past the seatbelt it configures (C21), and they are turned
+    /// off on every seat except the orchestrator's, which inherits the operator's
+    /// flags untouched *because it is their own pane*. A harness with no per-seat
+    /// answer ignores it, the way Claude Code's seeder does.
+    ///
+    /// **`false` is the default and that is the load-bearing half.** The narrowed
+    /// answer is the safe one, so a seat nobody thought about — a fifth `place_*`
+    /// arm, a harness added later — is fenced rather than trusted, and only
+    /// [`place_orch`](crate::placement) says otherwise, in one line, on purpose.
+    /// A `PaneId` here would read more precisely and would have no safe default at
+    /// all under the builder shape C39 settled on.
+    pub operators_own_seat: bool,
     /// The pane's own configuration directory. **Every byte this call writes lands
     /// under here**, and a harness that writes anywhere else is the bug this field
     /// exists to make obvious.
@@ -566,13 +585,52 @@ pub struct Seed<'a> {
     /// answer and lives in its [`Harness::seed_config_dir`], for the same reason
     /// the document format does (C31, C32).
     pub operator_home: Option<&'a Path>,
+    /// **This pane's rendered brief** — the same text a Claude Code pane of the
+    /// same seat is handed, because D-042 holds and only the *carrier* varies
+    /// (#27, C3).
+    ///
+    /// It is here because for a harness whose [`BriefCarrier::config_key`] is set,
+    /// the brief is a **file inside the configuration directory** and the key
+    /// naming it is a line in the same seed document — so writing it anywhere but
+    /// here would be a second write of `config.toml` on every spawn, and a second
+    /// chance for a pane to reach its prompt with half a configuration. A harness
+    /// that carries its brief in argv ignores this field, exactly as the Claude
+    /// Code seeder ignores [`operator_home`](Self::operator_home).
+    ///
+    /// Empty is the *unset* value rather than a legitimate one: a harness whose
+    /// carrier is a config key refuses an empty brief rather than seeding a pane
+    /// that would run on the vendor's own prompt while looking perfectly healthy.
+    pub brief: &'a str,
 }
 
 impl<'a> Seed<'a> {
     /// The ordinary case: a pane's directory, its cwd, and the machine's operator
     /// `HOME`.
+    ///
+    /// The brief is unset. A harness that carries its brief in argv needs nothing
+    /// more; one whose carrier is a config key refuses this seed, so the omission
+    /// cannot pass quietly — see [`with_brief`](Self::with_brief).
     pub fn new(config_dir: &'a Path, cwd: &'a Path, operator_home: Option<&'a Path>) -> Self {
-        Self { config_dir, cwd, operator_home }
+        Self { operators_own_seat: false, config_dir, cwd, operator_home, brief: "" }
+    }
+
+    /// The same seed, for the one pane the operator sits at (#28, C21).
+    ///
+    /// Said affirmatively and in exactly one place, so the default stays the
+    /// narrow answer: a harness that fences what FLEETOR drives fences everything
+    /// it was not explicitly told to leave alone.
+    pub fn for_the_operator(self) -> Self {
+        Self { operators_own_seat: true, ..self }
+    }
+
+    /// The same seed carrying this pane's rendered brief.
+    ///
+    /// **A builder rather than a fourth positional argument**, for the reason C39
+    /// gave for making this a struct at all: #29 and #30 add fields to the same
+    /// call, and a constructor whose arity grows once per ticket is four `place_*`
+    /// edits per ticket.
+    pub fn with_brief(self, brief: &'a str) -> Self {
+        Self { brief, ..self }
     }
 }
 
@@ -617,7 +675,22 @@ pub trait Harness: std::fmt::Debug + Send + Sync + 'static {
     /// [`Outbound::reachability_keys`] (C36). One reader for all three, per
     /// harness, because a harness's config keys have exactly one place they get
     /// written and three readers would be three answers to that question.
-    fn seed_config_dir(&self, seed: &Seed<'_>) -> Result<(), String>;
+    ///
+    /// **What it returns is Activity feed lines, and #28 is why** (C21, story 23).
+    /// A harness that seeds from the operator's own configuration
+    /// ([`ConfigAndCredentialIsolation::seeds_from_operator`]) sometimes writes
+    /// over a value the operator set on purpose — codex's sandbox mode and its
+    /// sandbox network access are both FLEETOR's on every pane, and both are
+    /// ordinary keys an operator may already have an opinion about. This is the
+    /// only place that can tell: the call site sees a directory, and only the
+    /// seeder sees the document it replaced. Returned rather than emitted, which
+    /// is [`crate::prompts`]'s rule for the same reason — a notice a store has to
+    /// exist to observe is a notice no test asserts.
+    ///
+    /// A harness with nothing to announce returns an empty vector, which is
+    /// Claude Code's answer: its configuration directory is fleet-owned and
+    /// nothing of the operator's is being overridden in it.
+    fn seed_config_dir(&self, seed: &Seed<'_>) -> Result<Vec<(NoticeLevel, String)>, String>;
 
     /// **Checkpoints 1, 2 and 3's behavioural half:** the argv one pane is
     /// launched with, given its brief and — for the seats that get one — its
@@ -780,8 +853,10 @@ impl Harness for ClaudeCode {
         super::spawn::project_key(cwd)
     }
 
-    fn seed_config_dir(&self, seed: &Seed<'_>) -> Result<(), String> {
-        super::spawn::seed_config_dir(self, seed)
+    fn seed_config_dir(&self, seed: &Seed<'_>) -> Result<Vec<(NoticeLevel, String)>, String> {
+        // Nothing to announce: this directory is the fleet's own, so no key
+        // written into it is standing on top of an answer the operator gave.
+        super::spawn::seed_config_dir(self, seed).map(|()| Vec::new())
     }
 
     fn command_args(&self, brief: &str, permission_mode: Option<&str>) -> Vec<String> {

@@ -263,3 +263,95 @@ them is accepted, but no zero-token instrument was found that opens the thread
 store — `codex sandbox`, `codex features list` and `codex plugin marketplace list`
 all leave the directory empty. #40 reads that store for the gauge and will observe
 it either way.
+
+---
+
+## Appended by #27 — which wire slot the system prompt occupies is *model*-dependent
+
+**The carrier's behaviour is unchanged. What is model-dependent is where the prompt
+lands in the request body**, and it is worth recording because C3 and C37 both quote a
+field name that the build's own default model does not use.
+
+Both of those measurements drove a **cloned catalog entry** — `probe.py` copies
+`codex debug models`' first entry and renames it `probe-model` — and against that entry
+the prompt is the top-level `instructions` field: 17,730 characters of "You are Codex"
+without the carrier, the brief file's contents with it.
+
+Against the build's **default** model (`gpt-6-astra`, resolved with no `models.json` and
+no `model` key in `CODEX_HOME`), there is **no `instructions` field in the body at all**.
+The prompt travels as the first `developer` message in `input`, ahead of the vendor's
+own `<skills_instructions>` and `<multi_agent_role>` blocks and ahead of both `user`
+messages. Measured on the same instrument: a fabricated `[model_providers.probe]`
+pointed at a loopback capture server, one `codex exec` turn, zero tokens.
+
+With `model_instructions_file` set, `input[1]` is the brief verbatim and `You are Codex`
+is absent from the whole 31 KB body. With it unset, `input[1]` is the built-in prompt and
+`You are Codex` is present at offset 21,822 of a 52 KB body. **Replace, not append,
+either way** — which is the property D-043 needs and the only one the fleet depends on.
+
+Two consequences:
+
+- `src-tauri/tests/vendor_binary_tier.rs`'s brief-carrier arm asserts on the **body**,
+  not on a field name: the brief arrives whole and ahead of the first `user` message (so
+  it is not the in-band `AGENTS.md` shape), and the vendor's own prompt is gone. A
+  negative control against an un-seeded `CODEX_HOME` inverts both.
+- The vendor drops the brief file's **trailing newline**. The needle is `trim_end`ed;
+  nothing else about the document changes.
+
+**Not measured:** whether any model the fleet would actually run a worker on uses the
+`instructions` field, and whether the two slots differ in caching or truncation
+behaviour. Neither changes the carrier decision.
+
+## Appended by #28 — the fence measured from both sides, and the instrument that reads the file (C5, C7, C21)
+
+Arm 2 above measured that a write **outside** the workspace is refused. It never measured
+that a write **inside** it is permitted, and those are not the same claim: a sandbox that
+refuses everything passes the first assertion perfectly and ships a worker that cannot do
+any work. That is precisely the *"derived permission profile cannot be represented as a
+legacy sandbox policy; falling back to read-only"* path C7 rejected the newer generation
+over, and it looks perfectly healthy at spawn. Both directions are now asserted, in
+`src-tauri/tests/vendor_binary_tier.rs`.
+
+**`codex sandbox` takes its sandbox from `-c` and ignores `sandbox_mode` in
+`config.toml`.** Measured three ways: a `CODEX_HOME/config.toml` saying
+`danger-full-access` still ran the command read-only, one saying `workspace-write` did
+too, and `-c sandbox_mode=danger-full-access` on the same directory wrote freely. Adding
+the project's `trust_level = "trusted"` row changed nothing, so it is not a trust gate.
+
+So the subcommand can prove **what the trio's values do** and can prove **nothing about
+the file** — which matters, because the file is how a pane actually gets them. The second
+instrument closes it:
+
+**`codex doctor --json` resolves the configuration in a `CODEX_HOME` and reports the
+posture it arrived at**, in 1.3 s, with no completion requested:
+
+- `checks["sandbox.helpers"].details` — `"filesystem sandbox"` (`restricted` under
+  FLEETOR's seed, `unrestricted` under an operator's `danger-full-access`) and
+  `"approval policy"` (`Never` vs `OnRequest`). A real discriminator in both fields.
+- `checks["config.load"].details["enabled feature flags"]` — the **resolved** feature
+  list. This is C21's instrument: the four names are absent from a worker's seed and
+  present in the orchestrator's, read off the vendor's own resolution rather than off
+  what FLEETOR wrote.
+
+**`workspace-write`'s default writable roots include `$TMPDIR` and `/tmp`.** Found the
+hard way: a scratch root under `std::env::temp_dir()` is *inside* the fence, so an
+"outside the worktree" probe pointed there passes for the wrong reason. Production is not
+arranged that way — the Fence's private `HOME` is `~/.fleetor/_shell/homes/worker-N` and
+the socket is under `~/.fleetor` — and the test hands the child a `TMPDIR` inside its own
+worktree to reproduce the real layout. The vendor exposes `exclude_tmpdir_env_var` and
+`exclude_slash_tmp` for this; FLEETOR sets neither, and an operator who does keeps it.
+
+**The feature key spelling is the vendor's own**, quoted from `codex features --help`:
+`--disable <FEATURE>` is documented as "Equivalent to `-c features.<name>=false`".
+
+**Noted, and deliberately not acted on: `codex sandbox --allow-unix-socket <PATH>`
+exists.** It is a flag on the `sandbox` *subcommand* — a targeted allowance of exactly the
+shape C5 went looking for and did not find. It has **no configuration-key equivalent**, so
+a codex TUI pane cannot be given one, and a pane is what the fleet runs. C5 stands
+unchanged: `sandbox_workspace_write.network_access` is the only lever a pane can be
+configured with, and it is all-or-nothing. If a later build exposes this as a config key,
+that is the measurement that would reopen it.
+
+Also observed while reading the socket flags: `codex sandbox -C <dir>` **requires**
+`--permission-profile <NAME>`, which is the newer generation. Another reason the legacy
+keys are what ship (C7).
