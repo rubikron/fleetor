@@ -38,6 +38,7 @@ The Blackboard vision, split into nine session-sized work packages. The vision i
 | 21 | `21-the-critic-interviews.md` | The Critic interviews, on the operator's word | 20 | L | **stage A landed** — B (dynamics) and C (proposals) not started |
 | 22 | (from TEMPLATE) | The evaluator becomes a view | 20 | S/M | **landed** (D-073, ahead of its own package) |
 | 23 | (from TEMPLATE) | The Critic | 20, 22 | M | **landed** (D-076, ahead of its own package) |
+| 24 | `24-multi-tui.md` | Multi-TUI — harness and model per pane (Claude Code + Cursor) | 20 | L | not-started — spec in [issue #12](https://github.com/rubikron/fleetor/issues/12), decisions M1–M28 |
 
 WP-13..19 are filed by [`12-self-improving-loop.md`](./12-self-improving-loop.md), which
 carries their design, the diagrams and the invariant arguments already had. Write each
@@ -63,6 +64,8 @@ WP-11 ─→ WP-12 (arc) ─┬─→ WP-13 ─┐
 
 WP-20 (arc) ─→ WP-21 ─┬─→ stage B (dynamics)
                       └─→ stage C (proposals, into WP-12's ledger)
+
+WP-20 (placement) ─→ WP-24 (multi-TUI — the Harness seam lands in placement)
 
 rewind harness (separate repo, no WP — fully parallel, no dependencies)
 ```
