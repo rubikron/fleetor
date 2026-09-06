@@ -100,6 +100,28 @@ pub struct HarnessSpec {
     /// cannot start reasoning about which peer is "weaker".
     pub name: &'static str,
 
+    /// This harness's **mark** — a monogram of two characters or fewer, for the
+    /// operator's rail (#50, C56). Identity like [`name`](Self::name), and **not**
+    /// a fifteenth checkpoint: nothing in a bring-up reads it.
+    ///
+    /// **It is here so that no interface has to switch on a harness's name.** A
+    /// rail that told a codex pane apart from a Claude Code one with
+    /// `harness === "codex" ? … : …` would be a branch written for the first two
+    /// vendors, and the third would be invisible on the day it registered — which
+    /// is the archaeology this seam exists to end (C57). The mark travels beside
+    /// the name on [`FleetEvent::PaneState`](fleetor_core::FleetEvent::PaneState),
+    /// so a harness supplies its own the way it supplies its name.
+    ///
+    /// **A monogram rather than the vendor's logo**, deliberately: an interface
+    /// carrying trademarked artwork would have to hold one file per vendor, which
+    /// is the same switch with images in it.
+    ///
+    /// It is deliberately **not** written into `manifest.json`. The archive stores
+    /// the name and looks the spec up with [`by_name`] (M24, C56); the interface
+    /// has no registry to look anything up in, and that asymmetry is why this
+    /// rides the event and not the record.
+    pub mark: &'static str,
+
     /// **Checkpoint 1 — program and base arguments.**
     pub program: Program,
     /// **Checkpoint 2 — brief carrier.**
@@ -1096,6 +1118,7 @@ pub struct ClaudeCode;
 /// the `tests` module below against their originals.
 pub const CLAUDE_CODE_SPEC: HarnessSpec = HarnessSpec {
     name: "claude-code",
+    mark: "CC",
 
     // 1 — program and base arguments. `spawn::base_command_with`.
     program: Program { bin: "claude", base_args: &[] },
@@ -2119,6 +2142,54 @@ mod tests {
     /// identical spec, and Claude Code is still among them. A registry that swapped
     /// one sole harness for another would be a description again, which is why
     /// both names are asserted rather than only the new one.
+    /// **Every registered harness supplies its own mark, and no two share one**
+    /// (#50, closing C56).
+    ///
+    /// The rail tells a mixed fleet apart by this glyph, so a harness that supplied
+    /// none would be a pane with no mark and a harness that shared one would be two
+    /// panes wearing the same. Neither is a compile error and neither shows up as
+    /// anything but a rail that reads oddly.
+    ///
+    /// **A property over the registry, not a list of the two.** A third harness
+    /// arrives with this rule already applied to it, which is what makes "no `ui/`
+    /// change" true: the interface renders whatever comes off the wire, and this is
+    /// what says something will.
+    #[test]
+    fn every_registered_harness_supplies_its_own_mark() {
+        let all = registered();
+        for entry in all {
+            let spec = entry.spec();
+            assert!(
+                !spec.mark.is_empty(),
+                "`{}` supplies no mark. The rail has nothing to render and no way to \
+                 derive one — deriving it would be a branch on the name (#50).",
+                spec.name,
+            );
+            let width = spec.mark.chars().count();
+            assert!(
+                width <= 2,
+                "`{}`'s mark is {width} characters (`{}`). It sits in a tab beside a \
+                 status word and a gauge; a mark that has to be read is the reading \
+                 this ticket removed.",
+                spec.name,
+                spec.mark,
+            );
+        }
+
+        let mut marks: Vec<&str> = all.iter().map(|h| h.spec().mark).collect();
+        marks.sort_unstable();
+        let unique = {
+            let mut u = marks.clone();
+            u.dedup();
+            u
+        };
+        assert_eq!(
+            marks, unique,
+            "two harnesses share a mark, so two panes running different vendors are \
+             indistinguishable in exactly the place the mark exists to distinguish them",
+        );
+    }
+
     #[test]
     fn the_registry_holds_two_distinct_harnesses_and_names_resolve() {
         let all = registered();

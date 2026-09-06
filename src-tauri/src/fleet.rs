@@ -1317,6 +1317,9 @@ pub(crate) fn spawn_pane(
         from: PaneState::Dead,
         to: PaneState::Spawning,
         harness: Some(placed.harness.name.to_string()),
+        // The rail's mark, off the same spec the name came off — so the interface
+        // never has to ask which harness this is (#50).
+        mark: Some(placed.harness.mark.to_string()),
         model: placed.model.clone(),
     }) {
         eprintln!("fleet: could not append the spawn event: {e}");

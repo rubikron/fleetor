@@ -22,6 +22,7 @@ import {
   type FleetConfig,
   type FleetEvent,
   type MessageEvent,
+  type PaneIdentityMap,
   type TaskEvent,
 } from "./types";
 
@@ -33,6 +34,14 @@ export interface FleetView {
   commands: CommandEvent[];
   tasks: TaskEvent[];
   config: FleetConfig | null;
+  /// What each pane was placed as, folded out of the spawn events (#50).
+  ///
+  /// **A fold rather than a query**, for the reason there is no query to make: the
+  /// roster is harness-free and stays that way (M25), so the spawn event is the
+  /// only per-pane channel carrying a harness — which is exactly what C56 said a
+  /// badge would need and expected to cost a new command. It did not: the event was
+  /// already on the wire and already rendered in the feed.
+  panes: PaneIdentityMap;
   refreshConfig: () => void;
   start: () => Promise<void>;
 }
@@ -47,6 +56,7 @@ export function useFleet(): FleetView {
   const [commands, setCommands] = useState<CommandEvent[]>([]);
   const [tasks, setTasks] = useState<TaskEvent[]>([]);
   const [config, setConfig] = useState<FleetConfig | null>(null);
+  const [panes, setPanes] = useState<PaneIdentityMap>({});
   const [configNonce, setConfigNonce] = useState(0);
   const listenerReady = useRef(false);
 
@@ -63,6 +73,13 @@ export function useFleet(): FleetView {
           if (isMessage(event)) setMessages((m) => [event, ...m]);
           if (isCommand(event)) setCommands((c) => [event, ...c]);
           if (isTask(event)) setTasks((t) => [event, ...t]);
+          // Only a spawn carries a harness; every other transition leaves the
+          // pane's identity exactly as it was rather than clearing it, so a pane
+          // that has died still says what it ran.
+          if (event.type === "pane-state" && event.harness) {
+            const { pane, harness, mark, model } = event;
+            setPanes((p) => ({ ...p, [pane]: { harness, mark, model } }));
+          }
         });
         if (cancelled) {
           unlisten();
@@ -115,6 +132,7 @@ export function useFleet(): FleetView {
     commands,
     tasks,
     config,
+    panes,
     refreshConfig: () => setConfigNonce((n) => n + 1),
     start,
   };

@@ -51,7 +51,10 @@ use std::process::Command;
 
 /// The renderer under test, and the two call sites that must reach it.
 const COMPONENT: &str = "ui/src/components/PaneGauge.tsx";
-const PANE_HEAD: &str = "ui/src/components/TerminalPane.tsx";
+/// The pane head moved out of `TerminalPane.tsx` in #50, so that it could be
+/// rendered without a pty. `<PaneGauge` moved with it — this is still the same call
+/// site, in the file that now holds it.
+const PANE_HEAD: &str = "ui/src/components/PaneHead.tsx";
 const TAB_STRIP: &str = "ui/src/components/TerminalGrid.tsx";
 const STYLES: &str = "ui/src/styles.css";
 /// The probe this file drives. Its own doc comment explains why it asserts nothing.

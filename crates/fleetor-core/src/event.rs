@@ -133,12 +133,22 @@ pub enum FleetEvent {
     /// honest absence [`crate::pane::PaneEntry`] keeps elsewhere — the operator's
     /// own pane runs their login, and the model that account defaults to is not a
     /// name this side of the pty knows (M2).
+    ///
+    /// **`mark` rides beside `harness` for the interface's sake** (#50, C56). It is
+    /// the harness's own monogram, carried here rather than looked up because the
+    /// lookup — `harness::by_name`, which is what a manifest reader uses — exists
+    /// only on this side of the wire. An interface that had to derive a mark from
+    /// the name would be deriving it with a branch, and a branch written for the
+    /// registered harnesses is a third harness rendered as nothing. It travels with
+    /// the name and is absent exactly when the name is.
     PaneState {
         pane: PaneId,
         from: PaneState,
         to: PaneState,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         harness: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mark: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<String>,
     },
@@ -220,6 +230,7 @@ mod tests {
                 from: PaneState::Spawning,
                 to: PaneState::Live,
                 harness: None,
+                mark: None,
                 model: None,
             },
             FleetEvent::Notice { level: NoticeLevel::Warn, text: "no fleet binary".into() },

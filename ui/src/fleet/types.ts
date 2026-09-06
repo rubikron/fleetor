@@ -338,9 +338,40 @@ export type FleetEvent =
       from: string;
       to: string;
       harness?: string;
+      /// The harness's own monogram for the rail (#50), off `HarnessSpec::mark`.
+      /// **Nothing here derives it**: a mark computed from `harness` would be a
+      /// branch written for the registered harnesses, and the third one would
+      /// render as nothing on the day it was registered.
+      mark?: string;
       model?: string;
     }
   | { seq: number; type: "notice"; level: NoticeLevel; text: string };
+
+/// **What a pane was actually placed as**, folded out of its spawn event (#50,
+/// M24, C56).
+///
+/// Every field arrives on the wire. There is no vendor name and no vendor artwork
+/// anywhere in this interface, and that is structural rather than a convention kept
+/// by hand: `src-tauri/tests/gate_pickers.rs` asserts the pane chrome spells no
+/// registered harness's name or program, so a rail that told two harnesses apart
+/// with a branch would fail a test rather than reach a screenshot.
+///
+/// **Absent means unknown, never a default.** A pane that has not spawned has no
+/// identity, and the head renders neither a harness nor a mark rather than
+/// inventing one — the same rule `GaugeReading` keeps about a figure.
+export interface PaneIdentity {
+  /// The harness's name, exactly as its `HarnessSpec` spells it.
+  harness: string;
+  /// Its monogram, for the tab strip. Absent when the spawn event carried none —
+  /// an older run replayed, or a harness that supplies no mark.
+  mark?: string;
+  /// The model it was pointed at. Absent on an attended seat, which runs the
+  /// operator's own login and names no model (M2).
+  model?: string;
+}
+
+/// What every pane was placed as, by pane. A pane with no entry has not spawned.
+export type PaneIdentityMap = Partial<Record<PaneId, PaneIdentity>>;
 
 export type MessageEvent = Extract<FleetEvent, { type: "message" }>;
 export type CommandEvent = Extract<FleetEvent, { type: "command" }>;

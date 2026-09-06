@@ -21,9 +21,8 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import { warmTheme, warmThemeLight } from "../theme";
 import { onPaneExit, onPaneOutput, resizePane, spawnPane, writePane } from "../fleet/api";
-import { statusTone, STATUS_LABEL } from "../lib/statusTone";
-import { PaneGauge } from "./PaneGauge";
-import type { GaugeReading, PaneId, PaneStatus } from "../fleet/types";
+import { PaneHead } from "./PaneHead";
+import type { GaugeReading, PaneId, PaneIdentity, PaneStatus } from "../fleet/types";
 import type { Theme } from "../ui/useTheme";
 
 // Raw pty bytes arrive base64-encoded so escape sequences and multibyte UTF-8
@@ -56,8 +55,11 @@ interface TerminalPaneProps {
   /// detail the dashboard band used to duplicate now lives only here and in
   /// the worker tab strip.
   status: PaneStatus;
-  /// The model running this pane, shown alongside the label when known.
-  model?: string;
+  /// **What this pane was actually placed as** — its harness, that harness's mark
+  /// and the model it was pointed at, as the spawn event reported them (#50).
+  /// Absent until the pane spawns, and the head shows no harness rather than
+  /// guessing one.
+  identity?: PaneIdentity;
   /// What this pane's rail says about its context (WP-04, #48) — a reading,
   /// not a gauge. Never rendered as 0%, and an absent figure is no longer
   /// rendered as nothing: `unavailable` says the word, `pending` says the
@@ -90,7 +92,7 @@ export function TerminalPane({
   scrollback,
   started,
   status,
-  model,
+  identity,
   gauge,
   fontSize,
   theme,
@@ -343,19 +345,14 @@ export function TerminalPane({
       className={`terminal-pane ${isFocused ? "terminal-pane--focused" : ""}`}
       onClick={focusTerminal}
     >
-      <div className="pane__head">
-        <span className={`dot dot--${statusTone(status)}`} />
-        <span className="mono pane__title">{label}</span>
-        {model && <span className="mono pane__meta">{model}</span>}
-        <PaneGauge reading={gauge} block="pane__gauge" className="mono pane__meta" />
-        <span className="grow" style={{ flex: "1 1 auto" }} />
-        <span className="pane__status">{STATUS_LABEL[status]}</span>
-        {started && onRestart && (
-          <button className="pane__ctl" onClick={onRestart}>
-            Restart
-          </button>
-        )}
-      </div>
+      <PaneHead
+        label={label}
+        status={status}
+        identity={identity}
+        gauge={gauge}
+        started={started}
+        onRestart={onRestart}
+      />
       <div className="terminal-wrap">
         <div ref={hostRef} className="terminal-host" />
         {scrolledUp && (

@@ -457,6 +457,7 @@ pub struct CodexCli;
 /// `docs/notes/codex-spike-notes.md` against `codex-cli 0.153.4`.
 pub const CODEX_SPEC: HarnessSpec = HarnessSpec {
     name: "codex",
+    mark: "CX",
 
     // 1 — program and base arguments. A native binary, no interpreter, no flags
     // every seat shares.

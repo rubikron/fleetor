@@ -36,6 +36,19 @@ use std::path::{Path, PathBuf};
 /// The interface's own declarations, which are what this file reads.
 const GATE: &str = "ui/src/components/StartGate.tsx";
 const PICKERS: &str = "ui/src/ui/useSeatPickers.ts";
+
+/// **The pane chrome** — the operator's rail, added by #50.
+///
+/// #35's vendor-name check was pointed at the gate's own two files, and caught
+/// nothing when `TerminalGrid.tsx` shipped `orchestrator · claude` on every pane
+/// head of a mixed fleet. The check was right and was simply not pointed here. The
+/// harness, its mark and its model all arrive on the spawn event, so these three
+/// files are under exactly the rule the gate's two are.
+const CHROME: [&str; 3] = [
+    "ui/src/components/TerminalGrid.tsx",
+    "ui/src/components/TerminalPane.tsx",
+    "ui/src/components/PaneHead.tsx",
+];
 const WIRE: &str = "ui/src/fleet/types.ts";
 const API: &str = "ui/src/fleet/api.ts";
 
@@ -265,6 +278,38 @@ fn the_recheck_button_forces_a_probe_rather_than_re_rendering_one() {
 
 // --- one vendor, or any vendor ------------------------------------------------
 
+/// Every word a registered harness spells itself with — its name, and the program
+/// it is invoked as.
+///
+/// **The bin is here because the name alone would not have caught the bug #50
+/// fixed.** The spec is named `claude-code` and the pane head said `claude`, which
+/// is checkpoint 1's `Program::bin` — a vendor's name by any reading, and not a
+/// substring of the spec's. A check that knew only the spec name would have gone on
+/// passing over the literal it was written to find.
+fn registered_vendor_words() -> Vec<String> {
+    let mut words = registered_names();
+    let harness = read(HARNESS);
+    let codex = read(CODEX);
+    for (text, spec, what) in [
+        (&harness, "pub const CLAUDE_CODE_SPEC: HarnessSpec = HarnessSpec {", "CLAUDE_CODE_SPEC"),
+        (&codex, "pub const CODEX_SPEC: HarnessSpec = HarnessSpec {", "CODEX_SPEC"),
+    ] {
+        let tail = text
+            .split(spec)
+            .nth(1)
+            .unwrap_or_else(|| panic!("{what} is gone — this file reads it"))
+            .to_string();
+        let bin_body = between(&tail, "bin:", ",", &format!("{what}'s `Program::bin`"));
+        let bin = quoted(&bin_body).into_iter().next().unwrap_or_else(|| {
+            panic!("{what}'s `Program::bin` is no longer a literal — this file reads it")
+        });
+        if !words.contains(&bin) {
+            words.push(bin);
+        }
+    }
+    words
+}
+
 /// Every registered harness's name, read out of the spec that declares it.
 fn registered_names() -> Vec<String> {
     let harness = read(HARNESS);
@@ -283,9 +328,24 @@ fn registered_names() -> Vec<String> {
     names
 }
 
+/// `word` with its first character upper-cased — the other spelling of the literal
+/// #50 removed, used by the negative control below.
+fn upper(word: &str) -> String {
+    let mut chars = word.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
 /// Where a vendor's own name is spelled in a file that must not know one.
+///
+/// Case-insensitively, since #50: a head reading `· Claude` is the same wrong
+/// sentence as one reading `· claude`, and an exact-case check would have let the
+/// capitalised half of the bug through.
 fn vendor_names_spelled_in(source: &str, names: &[String]) -> Vec<String> {
-    names.iter().filter(|name| source.contains(name.as_str())).cloned().collect()
+    let lowered = source.to_lowercase();
+    names.iter().filter(|name| lowered.contains(&name.to_lowercase())).cloned().collect()
 }
 
 /// **The interface knows no vendor's name.**
@@ -298,7 +358,7 @@ fn vendor_names_spelled_in(source: &str, names: &[String]) -> Vec<String> {
 /// that stops the gate becoming the ninth.
 #[test]
 fn the_gate_spells_no_vendors_name() {
-    let names = registered_names();
+    let names = registered_vendor_words();
     for file in [GATE, PICKERS] {
         let found = vendor_names_spelled_in(&production_text(&read(file)), &names);
         assert!(
@@ -306,6 +366,35 @@ fn the_gate_spells_no_vendors_name() {
             "{file} spells {found:?}. Every harness's name, label, model list and reason \
              arrives on the wire from `HarnessOffer`; a literal here is a third harness \
              that is offered and then handled by a branch written for the first two.",
+        );
+    }
+}
+
+/// **The pane chrome knows no vendor's name either** (#50, closing C56).
+///
+/// The same rule as the gate's, pointed at the operator's rail — which is where it
+/// was needed and was not applied. `TerminalGrid.tsx` labelled every pane
+/// `orchestrator · claude` and `worker-N · claude`, so a codex worker announced the
+/// wrong vendor beside the right model, and the archive of that run knew what it
+/// ran while the live screen did not. The check above passed throughout, because its
+/// file list was the gate's.
+///
+/// **The harness, its mark and its model now all arrive on the spawn event**
+/// (`FleetEvent::PaneState`, M24), so there is nothing left here for a literal to
+/// stand in for. A per-harness mark chosen with `harness === "…" ? … : …` would fail
+/// this test by construction, which is the point: registering a third harness must
+/// not require an edit under `ui/`.
+#[test]
+fn the_pane_chrome_spells_no_vendors_name() {
+    let names = registered_vendor_words();
+    for file in CHROME {
+        let found = vendor_names_spelled_in(&production_text(&read(file)), &names);
+        assert!(
+            found.is_empty(),
+            "{file} spells {found:?}. This is the bug #50 fixed: the pane head stated a \
+             vendor the pane was not running, which is worse than stating none. The harness, \
+             its mark and its model all arrive on `FleetEvent::PaneState` — read them, and \
+             never name one here.",
         );
     }
 }
@@ -623,6 +712,27 @@ fn the_checks_fire_on_a_source_that_violates_them() {
          the ones that do",
     );
 
+    // #50's literal, in the shape it actually shipped in: the *program* name, in a
+    // pane label, in whichever case somebody typed it. The spec-name list alone
+    // would not contain it, which is why `registered_vendor_words` reads the bin.
+    let words = registered_vendor_words();
+    let bins: Vec<&String> = words.iter().filter(|w| !names.contains(w)).collect();
+    assert!(
+        !bins.is_empty(),
+        "no registered harness's `Program::bin` differs from its spec name, so the pane-chrome \
+         check is only reading the names again — the literal #50 removed was a bin",
+    );
+    for bin in bins {
+        for shipped in [format!("label=\"orchestrator · {bin}\""), format!("· {}", upper(bin))] {
+            assert_eq!(
+                vendor_names_spelled_in(&production_text(&shipped), &words),
+                vec![bin.clone()],
+                "the vendor-name check would not notice `{shipped}` — which is the literal \
+                 this ticket found on every pane head",
+            );
+        }
+    }
+
     // A fifth status word on one side of the wire only.
     let five = "export type HarnessStatus = \"logged-in\" | \"no-credential\" | \
                 \"not-installed\" | \"unreadable\" | \"expired\";";
@@ -653,7 +763,10 @@ fn the_checks_fire_on_a_source_that_violates_them() {
 /// quietly stopped existing.
 #[test]
 fn the_declarations_this_file_reads_still_exist() {
-    for rel in [GATE, PICKERS, WIRE, API, BACKEND, COMMANDS, HARNESS, CODEX] {
+    for rel in [GATE, PICKERS, WIRE, API, BACKEND, COMMANDS, HARNESS, CODEX]
+        .into_iter()
+        .chain(CHROME)
+    {
         let file = repo_root().join(rel);
         assert!(file.is_file(), "{} is read by this file and is gone", file.display());
     }

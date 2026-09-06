@@ -236,7 +236,7 @@ export function App() {
                 statuses={statuses}
                 unreadWorkers={unreadWorkers}
                 onRegisterFocus={registerPaneFocus}
-                config={fleet.config}
+                panes={fleet.panes}
                 fontSize={zoom.terminalFontSize}
                 theme={themeControls.theme}
                 onStatus={onStatus}

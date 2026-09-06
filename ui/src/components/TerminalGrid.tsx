@@ -13,12 +13,13 @@ import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { TerminalPane } from "./TerminalPane";
 import { statusTone, STATUS_LABEL } from "../lib/statusTone";
 import { PaneGauge } from "./PaneGauge";
+import { HarnessMark } from "./PaneHead";
 import {
   ORCH,
   WORKER_SLOTS,
   workerPane,
-  type FleetConfig,
   type PaneId,
+  type PaneIdentityMap,
   type PaneStatus,
 } from "../fleet/types";
 import { OUT_OF_SCOPE, type ContextGaugeMap } from "../fleet/useContextGauge";
@@ -34,10 +35,14 @@ interface TerminalGridProps {
   selected: number;
   onSelect: (slot: number) => void;
   statuses: Record<PaneId, PaneStatus>;
-  /// Model info for the orchestrator/worker pane heads — this is what the
-  /// dashboard band used to show in its own grid; it now lives only in the
-  /// pane it describes.
-  config: FleetConfig | null;
+  /// **What each pane was actually placed as** (#50) — its harness, that
+  /// harness's mark and its model, folded out of the spawn events by
+  /// `useFleet`. This replaced the fleet-wide launch config the heads used to
+  /// print a model from: one `worker_backend` cannot describe a mixed fleet,
+  /// and beside it the vendor was a literal that was simply wrong for half the
+  /// seats. A pane with no entry has not spawned and its head says so by
+  /// showing no harness at all.
+  panes: PaneIdentityMap;
   /// xterm fontSize in px, from the app-wide zoom factor — forwarded
   /// unchanged to every pane so all five terminals zoom in lockstep.
   fontSize: number;
@@ -65,7 +70,7 @@ export function TerminalGrid({
   selected,
   onSelect,
   statuses,
-  config,
+  panes,
   fontSize,
   theme,
   onStatus,
@@ -74,8 +79,6 @@ export function TerminalGrid({
   onRegisterFocus,
   gauges,
 }: TerminalGridProps) {
-  const leadModel = config?.lead_model ?? "opus (operator)";
-  const workerModel = config?.worker_backend ?? "…";
   const orchStatus = statuses[ORCH] ?? "idle";
 
   return (
@@ -83,11 +86,11 @@ export function TerminalGrid({
       <Panel defaultSize={52} minSize={30} className="pane-slot">
         <TerminalPane
           pane={ORCH}
-          label="orchestrator · claude"
+          label="orchestrator"
           scrollback={ORCH_SCROLLBACK}
           started={started}
           status={orchStatus}
-          model={leadModel}
+          identity={panes[ORCH]}
           fontSize={fontSize}
           theme={theme}
           onStatus={onStatus}
@@ -120,6 +123,7 @@ export function TerminalGrid({
                 >
                   <span className={`dot dot--${statusTone(status)}`} />
                   <span className="mono">worker-{slot}</span>
+                  <HarnessMark identity={panes[pane]} block="tab__mark" />
                   <span className="tab__status">{STATUS_LABEL[status]}</span>
                   <PaneGauge reading={gauge} block="tab__gauge" />
                   {!isSelected && unreadWorkers.has(slot) && (
@@ -139,11 +143,11 @@ export function TerminalGrid({
               >
                 <TerminalPane
                   pane={pane}
-                  label={`worker-${slot} · claude`}
+                  label={pane}
                   scrollback={WORKER_SCROLLBACK}
                   started={started}
                   status={statuses[pane] ?? "idle"}
-                  model={workerModel}
+                  identity={panes[pane]}
                   fontSize={fontSize}
                   theme={theme}
                   onStatus={onStatus}

@@ -848,6 +848,28 @@ body,
 .pane__head .grow { flex: 1 1 auto; }
 .pane__title { color: var(--fg-dim); }
 .pane__meta { color: var(--fg-mute); }
+/* Which harness this pane is running, and the model it was pointed at (#50).
+   One group, because they are one fact: the vendor and what it was aimed at.
+   A pane that has not spawned renders none of it — see `PaneHead.tsx`. */
+.pane__harness { display: inline-flex; align-items: baseline; gap: 0.4375rem; min-width: 0; }
+/* The per-harness mark. A monogram off `HarnessSpec::mark`, boxed so a mixed
+   fleet reads as different *shapes* from across the room rather than as two
+   words that have to be read. Deliberately not coloured per harness: colour is
+   already spoken for by status (`.dot`) and by the gauge's 80% line, and a
+   third meaning on the same axis is how a rail stops being scannable. */
+.harness-mark {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: var(--t-label);
+  letter-spacing: 0.06em;
+  line-height: 1;
+  color: var(--fg-dim);
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.1875rem 0.3125rem;
+}
+.pane__mark { align-self: center; }
 .pane__status { font-size: var(--t-label); color: var(--fg-mute); }
 /* The WP-04 live gauge, in the pane head next to the model. Muted by
    default — this is awareness, not an alarm — and gold only once a pane
@@ -1299,6 +1321,10 @@ body,
   border-color: var(--border);
 }
 .tab__status { font-size: var(--t-label); color: var(--fg-mute); }
+/* The mark's second home — the reason it exists at all. The tab strip is where
+   four workers are compared at a glance, so the harness has to be visible
+   without selecting the tab to read its head. */
+.tab__mark { padding: 0.125rem 0.25rem; }
 /* The WP-04 live gauge's second home — the same figure the pane head shows,
    so a worker's usage is visible from the tab strip without switching to it.
    Same muted/gold split as `.pane__gauge`, single-sourced in
