@@ -430,8 +430,6 @@ export function StartGate({ config, onStart, onTargetChanged }: StartGateProps) 
   const pickers = useSeatPickers();
 
   const targetPath = config?.target_path ?? "";
-  const backend = config?.worker_backend ?? "…";
-  const hasWorkers = backend !== "none" && backend !== "…";
 
   const shown = draft ?? targetPath;
 
@@ -504,7 +502,7 @@ export function StartGate({ config, onStart, onTargetChanged }: StartGateProps) 
       <div className="pane-gate__card">
         <h3 className="pane-gate__title">Start the fleet</h3>
         <p className="pane-gate__body">
-          Spawns the orchestrator{hasWorkers ? ` and ${WORKER_SLOTS.length} worker terminals` : ""},
+          Spawns the orchestrator and {WORKER_SLOTS.length} worker terminals,
           each on the harness named below, all wired to the hub. It will spend tokens.
         </p>
         {/* **How many seats are about to spend the plan** (#49). Separate from the
@@ -549,108 +547,99 @@ export function StartGate({ config, onStart, onTargetChanged }: StartGateProps) 
                 onModel={(model) => pickers.chooseModel(ORCH, model)}
                 aside="Runs your own login, and the provider it resolved — inherited and displayed, never picked."
               />
-              {!hasWorkers ? (
-                <li className="pane-gate__fact">
-                  <span className="k">workers</span>
-                  <span className="v">none — this build places no worker seats</span>
-                </li>
-              ) : (
+              {/* **Whose usage the four workers spend, above the rows that
+                  each say it for themselves** (C78). Placed here rather than
+                  at the top of the card so it sits with the seats it writes:
+                  which harness a seat runs and whose account it spends are two
+                  questions, and this is the one that costs money. */}
+              <CredentialSourcePicker
+                chosen={pickers.workersCredential}
+                withALogin={gate.harnesses_with_a_login}
+                hasFleetKey={gate.has_fleet_key}
+                spending={workerHarnesses}
+                onChoose={pickers.chooseWorkersCredential}
+              />
+              {/* **The disclosure now lives under the label it controls** (defect
+                  6): a "workers" header row, so the toggle is never a line an
+                  operator finds floating under four rows with no clear owner. It
+                  also says in words whether the four currently agree, since
+                  "disabled, with a tooltip on hover" is not itself discoverable. */}
+              <li className="seat-group-header">
+                <span className="k">workers</span>
+                <div className="seat-group-header__row">
+                  <span className="seat-group-header__note">
+                    {pickers.expanded
+                      ? pickers.workersAgree
+                        ? "shown separately"
+                        : "shown separately — they differ"
+                      : "one row speaks for all four"}
+                  </span>
+                  <button
+                    type="button"
+                    className="seat-disclosure__toggle"
+                    aria-expanded={pickers.expanded}
+                    disabled={!pickers.workersAgree}
+                    title={
+                      pickers.workersAgree
+                        ? undefined
+                        : "the four workers differ, so one row cannot speak for them"
+                    }
+                    onClick={() => pickers.setExpanded(!pickers.expanded)}
+                  >
+                    {pickers.expanded
+                      ? "▾ one harness for all four"
+                      : "▸ give each worker its own harness"}
+                  </button>
+                </div>
+              </li>
+              {pickers.expanded ? (
                 <>
-                  {/* **Whose usage the four workers spend, above the rows that
-                      each say it for themselves** (C78). Placed here rather than
-                      at the top of the card so it sits with the seats it writes:
-                      which harness a seat runs and whose account it spends are two
-                      questions, and this is the one that costs money. */}
-                  <CredentialSourcePicker
-                    chosen={pickers.workersCredential}
-                    withALogin={gate.harnesses_with_a_login}
-                    hasFleetKey={gate.has_fleet_key}
-                    spending={workerHarnesses}
-                    onChoose={pickers.chooseWorkersCredential}
-                  />
-                  {/* **The disclosure now lives under the label it controls** (defect
-                      6): a "workers" header row, so the toggle is never a line an
-                      operator finds floating under four rows with no clear owner. It
-                      also says in words whether the four currently agree, since
-                      "disabled, with a tooltip on hover" is not itself discoverable. */}
-                  <li className="seat-group-header">
-                    <span className="k">workers</span>
-                    <div className="seat-group-header__row">
-                      <span className="seat-group-header__note">
-                        {pickers.expanded
-                          ? pickers.workersAgree
-                            ? "shown separately"
-                            : "shown separately — they differ"
-                          : "one row speaks for all four"}
-                      </span>
-                      <button
-                        type="button"
-                        className="seat-disclosure__toggle"
-                        aria-expanded={pickers.expanded}
-                        disabled={!pickers.workersAgree}
-                        title={
-                          pickers.workersAgree
-                            ? undefined
-                            : "the four workers differ, so one row cannot speak for them"
-                        }
-                        onClick={() => pickers.setExpanded(!pickers.expanded)}
-                      >
-                        {pickers.expanded
-                          ? "▾ one harness for all four"
-                          : "▸ give each worker its own harness"}
-                      </button>
-                    </div>
-                  </li>
-                  {pickers.expanded ? (
-                    <>
-                      {WORKER_SLOTS.map((slot) => {
-                        const seat = workers[slot - 1];
-                        if (seat === undefined) return null;
-                        return (
-                          <SeatRow
-                            key={slot}
-                            label={`worker ${slot}`}
-                            gate={gate}
-                            seat={seat}
-                            sentinel={seatSentinel(seat, workerDefault)}
-                            onHarness={(harness) => pickers.chooseHarness(workerPane(slot), harness)}
-                            onModel={(model) => pickers.chooseModel(workerPane(slot), model)}
-                            onCredential={(credential) =>
-                              pickers.chooseCredential(workerPane(slot), credential)
-                            }
-                            // **Once per harness group, not once per seat** (C78).
-                            // Four seats on two harnesses printed the same two
-                            // sentences twice each; identical text under identical
-                            // rows trains the eye to skip all four.
-                            showFacts={workers[slot - 2]?.harness !== seat.harness}
-                          />
-                        );
-                      })}
-                    </>
-                  ) : (
-                    firstWorker !== undefined && (
+                  {WORKER_SLOTS.map((slot) => {
+                    const seat = workers[slot - 1];
+                    if (seat === undefined) return null;
+                    return (
                       <SeatRow
-                        label={`${WORKER_SLOTS.length} workers`}
+                        key={slot}
+                        label={`worker ${slot}`}
                         gate={gate}
-                        seat={firstWorker}
-                        sentinel={seatSentinel(firstWorker, workerDefault)}
-                        onHarness={pickers.chooseWorkersHarness}
-                        onModel={pickers.chooseWorkersModel}
-                        onCredential={pickers.chooseWorkersCredential}
-                        // **The aside is now a function of the credential** (C78).
-                        // "Fenced, on FLEETOR's own provider and key — never your
-                        // login" was true of every worker and is true of half of
-                        // them now; a fixed sentence here would be the card
-                        // stating the opposite of what the row above it says.
-                        aside={
-                          firstWorker.credential === "plan"
-                            ? "Fenced, on your own login — copied into each pane at spawn, never written back."
-                            : "Fenced, on FLEETOR's own provider and the key you supplied — never your login."
+                        seat={seat}
+                        sentinel={seatSentinel(seat, workerDefault)}
+                        onHarness={(harness) => pickers.chooseHarness(workerPane(slot), harness)}
+                        onModel={(model) => pickers.chooseModel(workerPane(slot), model)}
+                        onCredential={(credential) =>
+                          pickers.chooseCredential(workerPane(slot), credential)
                         }
+                        // **Once per harness group, not once per seat** (C78).
+                        // Four seats on two harnesses printed the same two
+                        // sentences twice each; identical text under identical
+                        // rows trains the eye to skip all four.
+                        showFacts={workers[slot - 2]?.harness !== seat.harness}
                       />
-                    )
-                  )}
+                    );
+                  })}
                 </>
+              ) : (
+                firstWorker !== undefined && (
+                  <SeatRow
+                    label={`${WORKER_SLOTS.length} workers`}
+                    gate={gate}
+                    seat={firstWorker}
+                    sentinel={seatSentinel(firstWorker, workerDefault)}
+                    onHarness={pickers.chooseWorkersHarness}
+                    onModel={pickers.chooseWorkersModel}
+                    onCredential={pickers.chooseWorkersCredential}
+                    // **The aside is now a function of the credential** (C78).
+                    // "Fenced, on FLEETOR's own provider and key — never your
+                    // login" was true of every worker and is true of half of
+                    // them now; a fixed sentence here would be the card
+                    // stating the opposite of what the row above it says.
+                    aside={
+                      firstWorker.credential === "plan"
+                        ? "Fenced, on your own login — copied into each pane at spawn, never written back."
+                        : "Fenced, on FLEETOR's own provider and the key you supplied — never your login."
+                    }
+                  />
+                )
               )}
             </>
           )}

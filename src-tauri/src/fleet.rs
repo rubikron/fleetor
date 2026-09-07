@@ -87,8 +87,11 @@ pub struct FleetConfig {
     target_path: String,
     /// That repo's current git branch (best-effort).
     branch: String,
-    /// What fills the worker seats: the model, or `"none"` when no key is
-    /// available and the fleet can only run its orchestrator.
+    /// What fills the worker seats by default: the model on the fleet's key,
+    /// or `"plan"` when there is none and seats spend the operator's own
+    /// login instead — never `"none"`. A worker seat has not required a key
+    /// since a seat can authenticate on the operator's plan (C78); this field
+    /// is display-only and does not gate whether worker seats exist.
     worker_backend: String,
     /// The model in the orchestrator seat — the operator's own Opus.
     lead_model: String,
@@ -2602,12 +2605,12 @@ fn fleet_config_for(target: &Path) -> FleetConfig {
         target: name,
         target_path: target.to_string_lossy().into_owned(),
         branch: git_branch(target),
-        // What a click will actually spend. Without a key the worker panes cannot
-        // start at all, and the gate must say so rather than offering four seats
-        // that fail on spawn.
+        // What a click will spend by default, absent a per-seat override — never
+        // gates whether worker seats exist (C78): a seat with no fleet key still
+        // spends the operator's own plan.
         worker_backend: match load_api_key() {
             Ok(_) => "deepseek-v4-flash".to_string(),
-            Err(_) => "none".to_string(),
+            Err(_) => "plan".to_string(),
         },
         lead_model: "opus (operator)".to_string(),
         gate: "shell gate + peer review".to_string(),
