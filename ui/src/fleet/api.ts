@@ -205,6 +205,17 @@ export function deleteRun(id: string): Promise<void> {
 /// Save a run's JSON export. Opens a native save dialog on the Rust side, so no
 /// dialog plugin is needed here. Resolves to `null` when the operator dismissed
 /// it — a cancel, not a failure, and it must not be shown as one.
+/// Reopen a past run: the fleet you have now is archived, and that run's five
+/// panes come back on their own recorded sessions (WP-27, R2, R5).
+///
+/// Resolves to the same `BootSnapshot` a fresh start does, because reopening *is*
+/// a start — one with a seeded log. Rejects with a sentence naming the seat or the
+/// harness when the run cannot be restored (R8), and rejects **before** anything is
+/// torn down, so a refusal leaves the live fleet running.
+export function reopenRun(id: string): Promise<BootSnapshot> {
+  return invoke<BootSnapshot>("run_reopen", { id });
+}
+
 export function exportRun(id: string): Promise<string | null> {
   return invoke<string | null>("run_export", { id });
 }

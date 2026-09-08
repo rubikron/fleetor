@@ -408,6 +408,11 @@ pub fn rotate(shell: &Path, runs: &Path, now_ms: i64) -> Vec<(NoticeLevel, Strin
     match record_for(&dest, &id, meta.target.as_deref()) {
         Ok(mut record) => {
             record.transcripts = transcripts;
+            // The two identity fields a reopen is gated on (R4, R1). They come off
+            // the live meta rather than the log, because neither is derivable from
+            // what the panes said — the same reason `target` is carried here.
+            record.sessions = meta.sessions.clone();
+            record.parent = meta.parent.clone();
             if let Err(e) = write_agent_view(&dest, &record, &meta.panes) {
                 notices.push((
                     NoticeLevel::Warn,
@@ -1425,6 +1430,94 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(dir.join(MANIFEST_JSON)).unwrap()).unwrap();
         let layout = manifest["layout"]["transcripts/"].as_str().unwrap();
         assert!(layout.contains("orch"), "a cold reader is told orch is in there: {layout}");
+    }
+
+    /// **The manifest carries each seat's resumable session id** (WP-27, R6) —
+    /// checkpoint 15's reader, run at rotation, keyed off the harness
+    /// `record_pane` already wrote down.
+    ///
+    /// Claude Code's id is its transcript's own filename, so this plants a
+    /// session and asserts the *stem* comes back — the read is exercised, not the
+    /// shape of the field.
+    #[test]
+    fn a_rotated_runs_manifest_carries_each_seats_resumable_session_id() {
+        let root = scratch("session-ids");
+        let shell = root.join("_shell");
+        let runs = runs_dir(&root);
+
+        let session = "9f3c-a-real-looking-session";
+        for seat in ["orch", "worker-1"] {
+            let project =
+                shell.join("pane-config/run-1").join(seat).join("projects").join("-tmp-slug");
+            std::fs::create_dir_all(&project).unwrap();
+            std::fs::write(project.join(format!("{session}.jsonl")), r#"{"type":"user"}"#).unwrap();
+        }
+        begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("run-1"), None);
+        record_pane(&shell, "orch", crate::placement::harness::claude_code().spec(), None);
+        record_pane(&shell, "worker-1", crate::placement::harness::claude_code().spec(), None);
+        write_live(&shell, &["take the parser"]);
+
+        rotate(&shell, &runs, 0);
+
+        let all = list(&runs);
+        let dir = runs.join(&all[0].id);
+        let manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join(MANIFEST_JSON)).unwrap())
+                .unwrap();
+        for seat in ["orch", "worker-1"] {
+            assert_eq!(
+                manifest["panes"][seat]["session_id"], session,
+                "{seat} has no resumable id in the manifest: {manifest}",
+            );
+        }
+        // And the run says which seat directory it used, which is what makes a
+        // reopen point at the right one and R15 able to count a lineage.
+        assert_eq!(manifest["run"]["sessions"], "run-1");
+        // With every seat answered, nothing blocks reopening it.
+        assert_eq!(all[0].cannot_reopen, None, "{:?}", all[0]);
+    }
+
+    /// **A seat that recorded no session makes the whole run unopenable** (R8),
+    /// and the reason names the seat rather than saying "something went wrong".
+    #[test]
+    fn a_seat_with_no_recorded_session_blocks_the_whole_run_by_name() {
+        let root = scratch("blocked");
+        let shell = root.join("_shell");
+        let runs = runs_dir(&root);
+
+        // orch wrote a session; worker-1 was placed and never wrote one.
+        let project = shell.join("pane-config/run-1/orch/projects/-tmp-slug");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("abc.jsonl"), r#"{"type":"user"}"#).unwrap();
+        begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("run-1"), None);
+        record_pane(&shell, "orch", crate::placement::harness::claude_code().spec(), None);
+        record_pane(&shell, "worker-1", crate::placement::harness::claude_code().spec(), None);
+        write_live(&shell, &["take the parser"]);
+
+        rotate(&shell, &runs, 0);
+
+        let all = list(&runs);
+        let why = all[0].cannot_reopen.as_deref().expect("a run missing a seat's session is blocked");
+        assert!(why.contains("worker-1"), "the refusal must name the seat: {why}");
+        // And the gate a caller actually consults agrees with the row.
+        assert!(reopen_blocker_for(&runs, &all[0].id).is_some());
+    }
+
+    /// **A run archived before WP-27 says so, and says it once** (R8).
+    #[test]
+    fn a_run_from_before_sessions_were_recorded_is_unopenable_and_explains_itself() {
+        let root = scratch("legacy");
+        let shell = root.join("_shell");
+        let runs = runs_dir(&root);
+        // No `begin`, so no recorded seat directory — exactly a pre-WP-27 archive.
+        write_live(&shell, &["take the parser"]);
+
+        rotate(&shell, &runs, 1_800_000_000_000);
+
+        let all = list(&runs);
+        let why = all[0].cannot_reopen.as_deref().expect("a pre-WP-27 run cannot be reopened");
+        assert!(why.contains("archived before"), "{why}");
+        assert!(why.contains("still export"), "it must say what is not lost: {why}");
     }
 
     /// One live WAL-mode thread store, shaped like the one a codex pane leaves

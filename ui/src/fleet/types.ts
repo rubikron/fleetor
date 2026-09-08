@@ -481,10 +481,24 @@ export interface RunRecord {
   messages: number;
   tasks: number;
   bytes: number;
-  /// Worker session transcripts archived with the run. `orch` never contributes
-  /// one — its transcript lives in the operator's own config dir, outside
-  /// `~/.fleetor`, and this app does not reach in there.
+  /// Worker session transcripts archived with the run. `orch` contributes one
+  /// too, since WP-14 gave it a fleet-owned config dir.
   transcripts: number;
+  /// Which `pane-config/<id>/` this run's seats live in (WP-27, R4) — its own id
+  /// for a fresh run, the lineage root's for a reopened one. Absent on a run
+  /// archived before WP-27, which is one reason it cannot be reopened.
+  sessions?: string;
+  /// The run this one was reopened from (R1).
+  parent?: string;
+  /// How many times this lineage has been reopened. Derived from `parent` links
+  /// at list time, never stored — so it cannot drift from the archives.
+  ///
+  /// It is also what explains the row's totals: `messages` spans the whole
+  /// lineage, because a reopened run's log opens as a copy of its parent's (R1).
+  reopened: number;
+  /// Why this run cannot be reopened, if it cannot (R8, R10) — a sentence naming
+  /// the seat or the harness responsible. Absent means it opens.
+  cannot_reopen?: string;
 }
 
 /// The live fleet configuration: what a click will actually run, and where.
