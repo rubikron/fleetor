@@ -229,7 +229,14 @@ export function App() {
             {/* Terminals. Kept mounted; see L7. Hidden before start so empty
                 frames don't bleed through the gate's backdrop. */}
             <div className={`stage-view ${view === "fleet" && started ? "" : "is-hidden"}`}>
+              {/* Keyed on the reopen generation (WP-27, R2): a reopen kills every
+                  pane and re-enters bootstrap, and `TerminalPane` spawns from a
+                  mount effect — so without a remount the operator lands on five
+                  dead terminals. This is the one place a stage-view is allowed to
+                  unmount (building.md §7.5's exception), because the buffers being
+                  discarded belong to the run that just ended. */}
               <TerminalGrid
+                key={`fleet-${runs.generation}`}
                 started={started}
                 selected={selectedWorker}
                 onSelect={selectWorker}

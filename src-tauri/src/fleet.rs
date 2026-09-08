@@ -1428,6 +1428,25 @@ pub fn fleet_bootstrap(
     // are its own (R4). `placement.rs`'s
     // `a_placed_pane_is_seeded_under_its_own_runs_sessions_id` fails without it.
     context.sessions = sessions.clone();
+    // **And which session each seat reopens** (R6). Empty on an ordinary boot, so
+    // the spawn path's choice stays a lookup rather than a flag. Resolved through
+    // the lineage, not the parent alone, for the reason the reopen gate is:
+    // a reopen quit before its panes registered still knows its seats.
+    context.resume = match &reopened {
+        Some(r) => runs::lineage_session_ids(&runs_dir, &r.parent),
+        None => Default::default(),
+    };
+    if let Some(r) = &reopened {
+        note(
+            &store,
+            NoticeLevel::Info,
+            &format!(
+                "reopened from run {} — {} of 5 seats resume their own session",
+                r.parent,
+                context.resume.len()
+            ),
+        );
+    }
 
     // Every notice the prompt resolver produced, from the read at the top of this
     // function — an override that silently did nothing is the one failure the whole

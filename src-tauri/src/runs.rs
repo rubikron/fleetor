@@ -307,6 +307,23 @@ pub fn request_reopen(shell: &Path, id: &str) -> Result<(), String> {
         .map_err(|e| format!("write {}: {e}", reopen_request(shell).display()))
 }
 
+/// **Each seat's resumable session id for a lineage** (WP-27, R6) — what the
+/// spawn path hands its harness so a pane comes back on the session it left.
+///
+/// Resolved through the lineage rather than one run, for [`lineage_panes`]'s
+/// reason: a reopen quit before its panes registered still knows its seats through
+/// its parent, and every member shares one seat directory.
+pub fn lineage_session_ids(runs: &Path, id: &str) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    let Some(panes) = lineage_panes(runs, id) else { return out };
+    for (seat, rec) in panes {
+        if let Some(session) = rec.get("session_id").and_then(|v| v.as_str()) {
+            out.insert(seat, session.to_string());
+        }
+    }
+    out
+}
+
 /// What a reopen tells [`begin`] about the run it is starting (WP-27, R1, R4).
 pub struct Reopened {
     /// The lineage's seat directory — the parent's, because a lineage shares one.

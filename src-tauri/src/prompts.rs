@@ -103,6 +103,15 @@ pub struct PaneContext {
     /// `placement.rs`'s `a_placed_pane_is_seeded_under_its_own_runs_sessions_id`
     /// fails if that line is ever lost.
     pub sessions: crate::placement::SessionsId,
+    /// **Which recorded session each seat reopens, when this run is a reopen**
+    /// (WP-27, R6). Keyed by seat name — `orch`, `worker-1` — the same key the
+    /// manifest and the seat directories use.
+    ///
+    /// Empty on an ordinary boot, which is what makes the spawn path's choice a
+    /// lookup rather than a flag: a seat with an entry is placed through
+    /// [`Harness::resume_args`](crate::placement::harness::Harness::resume_args),
+    /// a seat without one through `command_args`, and a fresh run simply has none.
+    pub resume: std::collections::BTreeMap<String, String>,
     /// Announcements for the Activity feed, in the order they happened. Carried
     /// rather than emitted so this module stays testable without a store.
     pub notices: Vec<(NoticeLevel, String)>,
@@ -119,6 +128,7 @@ impl PaneContext {
             critic_template: crate::critic::DEFAULT_BRIEF.to_string(),
             launch,
             sessions: crate::placement::SessionsId::new(crate::placement::UNASSIGNED_SESSIONS),
+            resume: std::collections::BTreeMap::new(),
             // A complaint here is a bug in what we shipped, not in what the
             // operator wrote, so it is an error rather than a warning.
             notices: complaints
@@ -149,6 +159,7 @@ impl PaneContext {
             // Resolving templates says nothing about which run is booting; the
             // caller sets this (see the field's own note).
             sessions: baked.sessions,
+            resume: baked.resume,
             notices: baked
                 .notices
                 .into_iter()

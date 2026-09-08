@@ -175,6 +175,31 @@ fn apply_attended_config(cmd: &mut CommandBuilder, spec: &'static HarnessSpec, c
 // forbidden to read for itself, which is the trade D-075 made deliberately — the
 // three siblings above carry the same attribute for the same reason.
 #[allow(clippy::too_many_arguments)]
+/// **How this seat is brought up: fresh, or reopening the session it left**
+/// (WP-27, R6).
+///
+/// The one place the choice is made, so a seat cannot come up resumed on one path
+/// and fresh on another. A seat with a recorded id in
+/// [`PaneContext::resume`](crate::prompts::PaneContext::resume) is placed through
+/// checkpoint 15's argv; every other seat, and every seat of an ordinary boot,
+/// goes through `command_args` exactly as before.
+///
+/// **A harness that declares no resume support falls back rather than failing.**
+/// It cannot reach here in practice — R8 refuses the whole run before any pane is
+/// placed — but a fallback that comes up fresh is the safe end of that branch: the
+/// alternative is a pane with no argv at all.
+fn args_for(
+    harness: &'static dyn Harness,
+    seat: &Seat<'_>,
+    pane: PaneId,
+    ctx: &PaneContext,
+) -> Vec<String> {
+    ctx.resume
+        .get(&pane.to_string())
+        .and_then(|session| harness.resume_args(seat, session))
+        .unwrap_or_else(|| harness.command_args(seat))
+}
+
 pub(super) fn orch_command_with(
     harness: &'static dyn Harness,
     model: Option<&str>,
@@ -205,7 +230,7 @@ pub(super) fn orch_command_with(
         Some(model) => seat.with_model(model),
         None => seat,
     };
-    let mut cmd = base_command_with(harness, program, &harness.command_args(&seat));
+    let mut cmd = base_command_with(harness, program, &args_for(harness, &seat, PaneId::Orch, ctx));
     cmd.cwd(cwd);
     apply_pane_env(&mut cmd, PaneId::Orch, socket, path.to_string());
     // Checkpoint 3's other model channel, for the one attended seat that may now
@@ -414,7 +439,7 @@ pub(super) fn worker_command_with(
                 Some(model) => seat.with_model(model),
                 None => seat,
             };
-            harness.command_args(&seat)
+            args_for(harness, &seat, pane, ctx)
         },
     );
     cmd.cwd(cwd);

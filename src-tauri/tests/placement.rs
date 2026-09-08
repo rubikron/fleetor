@@ -1327,3 +1327,66 @@ fn critic_brief(command: &portable_pty::CommandBuilder) -> String {
         .find(|a| a.contains("You are the Critic"))
         .expect("the rendered brief is on the command")
 }
+
+/// **A reopened seat is placed with the vendor's own resume verb** (WP-27, R6) —
+/// the wiring, not the trait method.
+///
+/// This is the test the first attempt at S1 did not have, and its absence cost a
+/// live run: `resume_args` was implemented, conformance-tested against every
+/// registered harness, and called by *nothing*. The panes came up fresh, which
+/// looks exactly like a working fleet until you read what is in them. Checkpoint
+/// 15 answering correctly proves the harness knows how; only this proves the
+/// spawn path asks.
+///
+/// Driven on `orch` alone deliberately: a worker seat needs a credential this
+/// scratch host has no business holding, and the branch under test is the same
+/// one for every seat.
+#[test]
+fn a_reopened_seat_is_placed_with_its_own_recorded_session() {
+    let scratch = Scratch::new("reopen-argv");
+    let host = host_with_fleet_bin(&scratch.root.join("fleet"));
+
+    let mut reopening = PaneContext::baked();
+    reopening.resume.insert("orch".to_string(), "SESSION-ORCH".to_string());
+    let placed = placement::place(
+        PaneSpec::orch(claude_code()),
+        &scratch.layout,
+        &host,
+        &scratch.target,
+        &reopening,
+    )
+    .expect("the orchestrator is placed");
+    let argv: Vec<String> =
+        placed.command.get_argv().iter().map(|a| a.to_string_lossy().into_owned()).collect();
+    assert!(
+        argv.iter().any(|a| a == "--resume"),
+        "orch was placed with no resume verb, so it comes up on a fresh session: {argv:?}",
+    );
+    assert!(
+        argv.iter().any(|a| a == "SESSION-ORCH"),
+        "the recorded session id never reached the argv: {argv:?}",
+    );
+    // R13: the session already holds the brief it was started with, and a second
+    // copy would leave the pane reconciling two versions of its instructions.
+    assert!(
+        !argv.iter().any(|a| a.contains("orchestrator")),
+        "a reopened pane must not be handed a second brief: {argv:?}",
+    );
+
+    // The other branch, so a partially recorded lineage cannot silently hand a
+    // seat somebody else's session: no entry means a fresh pane, as before.
+    let fresh = placement::place(
+        PaneSpec::orch(claude_code()),
+        &scratch.layout,
+        &host,
+        &scratch.target,
+        &PaneContext::baked(),
+    )
+    .expect("the orchestrator is placed");
+    let argv: Vec<String> =
+        fresh.command.get_argv().iter().map(|a| a.to_string_lossy().into_owned()).collect();
+    assert!(
+        !argv.iter().any(|a| a == "--resume"),
+        "a seat with no recorded session must come up fresh: {argv:?}",
+    );
+}

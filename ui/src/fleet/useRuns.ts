@@ -24,6 +24,16 @@ export interface RunsView {
   /// The run currently being reopened, so the row can say so and the list can
   /// refuse a second click while five panes are being torn down and respawned.
   opening: string | null;
+  /// Bumped once per successful reopen (WP-27, R2).
+  ///
+  /// **The terminal grid keys off this, and it is load-bearing rather than
+  /// cosmetic.** A reopen kills all five panes and re-enters bootstrap, but
+  /// `TerminalPane` spawns from a *mount* effect — so panes that stay mounted
+  /// across the reopen are never respawned, and the operator is left looking at
+  /// five dead terminals with RESTART buttons. Changing this remounts them, which
+  /// is also correct on its own terms: the buffers belong to the run that just
+  /// ended, not to the one being opened.
+  generation: number;
   refresh: () => void;
   rename: (id: string, label: string) => Promise<void>;
   remove: (id: string) => Promise<void>;
@@ -42,6 +52,7 @@ export function useRuns(): RunsView {
   const [runs, setRuns] = useState<RunRecord[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [opening, setOpening] = useState<string | null>(null);
+  const [generation, setGeneration] = useState(0);
   const [saved, setSaved] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
 
@@ -86,6 +97,7 @@ export function useRuns(): RunsView {
       setError(null);
       try {
         await reopenRun(id);
+        setGeneration((g) => g + 1);
         refresh();
       } catch (e) {
         setError(String(e));
@@ -103,5 +115,5 @@ export function useRuns(): RunsView {
     return where;
   }, []);
 
-  return { runs, error, opening, refresh, rename, remove, reopen, save, saved };
+  return { runs, error, opening, generation, refresh, rename, remove, reopen, save, saved };
 }
