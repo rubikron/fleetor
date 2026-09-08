@@ -26,7 +26,7 @@ The capability is a harness answer, not a Claude Code feature. A fifteenth check
 - [ ] A test asserts rotation **copies** rather than moves: after `rotate`, the session file is present in both `pane-config/<run-id>/<seat>/` and `runs/<id>/transcripts/<seat>/`, byte-identical.
 - [ ] A test asserts an archived run's directory holds only that run's sessions — write two runs' sessions and confirm run 1's archive does not contain run 2's.
 - [ ] A test asserts the reopen refusal (R8) fires from the manifest **before** any teardown: a run with a seat missing `session_id` refuses and the live registry is untouched.
-- [ ] A test asserts delete removes `runs/<id>/` and leaves `pane-config/<lineage-root>/` standing while another run in that lineage still exists, and removes it with the last one.
+- [ ] A test asserts delete is lineage-scoped (R15): deleting a row that has been reopened twice removes all three `runs/<id>/` directories, their index entries and `pane-config/<root-id>/`, and leaves every archive outside that lineage present.
 - [ ] `src-tauri/tests/views.rs`'s rail/restore-list tripwire still passes with whatever the History view becomes.
 - [ ] A render test (the `tests/*_probe/render.tsx` + `renderToStaticMarkup` shape already used by `pane_head_renders.rs`) proves a row that cannot be reopened renders its reason and offers no open affordance — a dropped reason fails a test, not a screen.
 - [ ] No file under `prompts/` changes; a diff against it is empty.
@@ -102,7 +102,7 @@ The capability is a harness answer, not a Claude Code feature. A fifteenth check
 - `PaneRecord::session_id` and the run's session-directory id in `manifest.json` (R6, R9).
 - The reopen operation: confirm → teardown → rotate → copy the frozen log into `_shell/state.db` → spawn five resumed panes (R1, R2).
 - History as a session switcher: one row per lineage, click to open, rows that cannot open saying why, Export/Rename/Delete secondary (R5, R12, R8, R10).
-- Lineage-aware delete (R9).
+- Lineage-scoped delete: one row is one session (R15, superseding R9's refcount half).
 - A `Notice` when a resumed worker's worktree was used by a later run (R7).
 - A harness-authoring guide carrying all fifteen checkpoints (R11).
 
@@ -112,13 +112,13 @@ The capability is a harness answer, not a Claude Code feature. A fifteenth check
 - **Restoring worktree state.** A resumed worker gets its worktree as it stands (R7).
 - **Per-seat degradation.** All five or none (R8).
 - **Going back to an earlier point in a lineage.** The sessions moved on; only the newest is reopenable (R12).
-- **Auto-pruning beyond R9's lineage rule.** No retention policy, no size cap.
+- **Auto-pruning beyond R15's lineage delete.** No retention policy, no size cap.
 - **Cross-machine anything.** Local only, no backend.
 - **`RunSource::Archived`.** Still constructed nowhere; pointing a Critic at a past run is a different gesture and stays unbuilt.
 
 ## Design
 
-The fourteen settled decisions are in `decisions.md` under "History redesign — resume past runs" as **R0–R14**, each with its rejected alternatives and the reason. That section is authoritative; this is the shape they add up to.
+The settled decisions are in `decisions.md` under "History redesign — resume past runs" as **R0–R15**, each with its rejected alternatives and the reason. That section is authoritative; this is the shape they add up to.
 
 **A run's state is three things, separated the same way.** Its events are a database (`runs/<id>/state.db`). Its sessions are a directory (`pane-config/<run-id>/<seat>/`). Its evidence is a copy of both (`runs/<id>/`). R4 is the whole trick: making sessions a *directory* per run means selecting a run's sessions needs no query, no mtime window, and no vendor schema — which is what keeps a third harness to a spec entry.
 
@@ -126,27 +126,27 @@ The fourteen settled decisions are in `decisions.md` under "History redesign —
 
 **The log copy is what makes the UI trivial.** The task board has no table; it is folded from `task` events. Copying the parent's log forward is what brings the board back, and it is also why Messages, Tasks and Activity need no past-run-aware code — `spawn_follower` replays from seq 0 and finds that run's events already there.
 
-**A lineage is the unit the operator sees.** Reopen R and you get R′; both archives persist and both export, but they share one live session, so History shows one row. Trying to offer both would hand back R′'s panes under R's label.
+**A lineage is the unit the operator sees, and the unit Delete acts on.** Reopen R and you get R′; both archives persist and both export, but they share one live session, so History shows one row. Trying to offer both would hand back R′'s panes under R's label. Delete follows the same unit (R15): the row's archives are snapshots of one conversation, so removing the row removes all of them and the lineage's session directory, and reaches nothing outside it.
 
 ## Open questions
 
 Recommended default given for each. The five marked **(mockup)** were found by drawing the UI, not by the interview.
 
-1. **R9 and R12 collide — resolve first. (mockup)** R9 deletes a session directory with the last run of its lineage; R12 collapsed a lineage to one row. So deleting that row would destroy three archives with one click. **Recommended:** the row's Delete removes only the newest archive and steps the row back to its parent; the lineage's session directory goes when the last ancestor is deleted. One click, one run. **This is a conflict between two settled decisions, not a detail — it needs an answer before anything is built.**
+1. **Nothing names which session is open. (mockup)** Once History is a switcher, the pane view should say what you are typing into. **Recommended:** the topbar carries the run's label, and marks a reopened one. Drawn in the mockup as `reopened · Sep 3`.
 
-2. **Nothing names which session is open. (mockup)** Once History is a switcher, the pane view should say what you are typing into. **Recommended:** the topbar carries the run's label, and marks a reopened one. Drawn in the mockup as `reopened · Sep 3`.
+2. **The duration chip spans a lineage. (mockup)** Is `2h 14m` this sitting or wall-clock across three sittings weeks apart? **Recommended:** show the newest sitting's duration and let `reopened N×` carry the rest; a summed duration across a fortnight's gap means nothing.
 
-3. **The duration chip spans a lineage. (mockup)** Is `2h 14m` this sitting or wall-clock across three sittings weeks apart? **Recommended:** show the newest sitting's duration and let `reopened N×` carry the rest; a summed duration across a fortnight's gap means nothing.
+3. **The live session is not in the list. (mockup)** It appears only after the next rotation. As "History" that was a mechanism; as "your sessions" it reads as a gap. **Recommended:** show it first, marked as the one you are in and not clickable.
 
-4. **The live session is not in the list. (mockup)** It appears only after the next rotation. As "History" that was a mechanism; as "your sessions" it reads as a gap. **Recommended:** show it first, marked as the one you are in and not clickable.
+4. **Every archive on disk today is unopenable. (mockup)** They predate checkpoint 15. First launch after this ships shows a list where nothing opens. **Recommended:** the empty-ish state says it once at the top of the list rather than repeating a reason on every row.
 
-5. **Every archive on disk today is unopenable. (mockup)** They predate checkpoint 15. First launch after this ships shows a list where nothing opens. **Recommended:** the empty-ish state says it once at the top of the list rather than repeating a reason on every row.
+5. **What the Delete confirm says. (mockup, narrowed by R15)** Delete now removes a whole conversation — three archives and its sessions for a row reopened twice. **Recommended:** the confirm states the count ("3 archived sittings and their sessions"), since the row shows one label and the operator has no other way to know what is behind it.
 
 6. **What happens to the existing flat `pane-config/<seat>/`?** R4 changes the layout. **Recommended:** leave the old directories in place, untouched and unreferenced, and start writing `pane-config/<run-id>/<seat>/`. Deleting an operator's existing sessions to tidy a layout change is not a trade this package gets to make.
 
 7. **Does a fresh per-run seat directory start cold in a way that matters?** R4's flagged risk. Claude Code's two-key seed (D-030) covers it; codex's snapshot allowlist (C39 — `models.json`, `skills/`, `prompts/`) has not been checked for sufficiency. **Spike-first.**
 
-8. **Disk growth is unmeasured.** R3 keeps a session live *and* archived; R4 keeps a directory per run. **Recommended:** measure across ten runs before deciding whether R9's lineage rule is the whole retention story.
+8. **Disk growth is unmeasured.** R3 keeps a session live *and* archived; R4 keeps a directory per run. **Recommended:** measure across ten runs before deciding whether R15's lineage delete is the whole retention story.
 
 **Spike-first (building.md §4), before any of the above is built:**
 
@@ -164,7 +164,7 @@ Vertical tracer bullets. Each ends in something demoable; none is a foundation l
 
 **S2 — honesty.** R8's whole-run refusal from the manifest before teardown, R10's declared refusal in the spec and on the row, the pre-checkpoint-15 rows, the conformance test. *Demo: a run that cannot open says exactly why, and the live fleet survives the attempt.*
 
-**S3 — lineage.** R12's one-row-per-lineage, `reopened N×`, R9's delete after open question 1 is answered, R7's worktree `Notice`. *Demo: reopen twice, see one row, delete it correctly.*
+**S3 — lineage.** R12's one-row-per-lineage, `reopened N×`, R15's lineage-scoped delete, R7's worktree `Notice`. *Demo: reopen twice, see one row, delete it and watch every other row survive.*
 
 **S4 — codex parity and the guide.** Checkpoint 15's codex answer, the `tui.resume_cwd` finding re-verified, R11's harness-authoring guide covering all fifteen. *Demo: a mixed fleet reopens; a reader can register a third harness from the doc alone.*
 
@@ -180,11 +180,7 @@ Do not re-explore the codebase for anything in the doc's "Current state" section
 anchors were verified 2026-09-07. Re-verify them mechanically before you commit, and say
 so if any moved.
 
-Before writing any code: open question 1 (R9/R12 collide over delete) is a conflict
-between two settled decisions and needs an operator answer. Ask it, with your
-recommendation, and wait.
-
-Then the two vendor spikes, in the spike-first shape building.md §4 requires: a throwaway
+Start with the two vendor spikes, in the spike-first shape building.md §4 requires: a throwaway
 under examples/ plus a version-stamped docs/notes/reopen-spike-notes.md. They need live
 spend — name it and get approval before spending (building.md §9.5). Where a spike and
 this doc disagree, the spike wins and the doc gets corrected in the same commit.
