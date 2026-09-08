@@ -271,7 +271,7 @@ export function App() {
                 from archived logs — so no live list can ever be handed a past
                 run's events, and no past run can be sent to. */}
             <div className={`stage-view ${view === "history" ? "" : "is-hidden"}`}>
-              <RunHistory runs={runs} />
+              <RunHistory runs={runs} onOpened={() => setView("fleet")} />
             </div>
 
             {/* The Critic (WP-20, D-076). A view like every other: always

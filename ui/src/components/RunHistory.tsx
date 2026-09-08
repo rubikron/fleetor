@@ -182,7 +182,19 @@ function RunRow({
   );
 }
 
-export function RunHistory({ runs }: { runs: RunsView }) {
+export function RunHistory({
+  runs,
+  onOpened,
+}: {
+  runs: RunsView;
+  /// Called once a run has actually reopened, to put the operator in front of it.
+  ///
+  /// **R5's whole point, and it was missing.** History is a switcher: clicking a
+  /// row is meant to land you in the panes, not leave you on a list that looks
+  /// unchanged while five terminals quietly come up on another view. It fires only
+  /// on success — a refused reopen leaves the operator here, where the reason is.
+  onOpened: () => void;
+}) {
   const nothingOpens = runs.runs.length > 0 && runs.runs.every((r) => r.cannot_reopen);
 
   return (
@@ -226,7 +238,7 @@ export function RunHistory({ runs }: { runs: RunsView }) {
               run={run}
               opening={runs.opening === run.id}
               busy={runs.opening !== null}
-              onOpen={() => void runs.reopen(run.id).catch(() => {})}
+              onOpen={() => void runs.reopen(run.id).then(onOpened).catch(() => {})}
               onRename={(label) => void runs.rename(run.id, label)}
               onDelete={() => void runs.remove(run.id)}
               onSave={() => void runs.save(run.id)}
