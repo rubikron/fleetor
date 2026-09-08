@@ -29,6 +29,7 @@ The capability is a harness answer, not a Claude Code feature. A fifteenth check
 - [ ] A test asserts delete is lineage-scoped (R15): deleting a row that has been reopened twice removes all three `runs/<id>/` directories, their index entries and `pane-config/<root-id>/`, and leaves every archive outside that lineage present.
 - [ ] `src-tauri/tests/views.rs`'s rail/restore-list tripwire still passes with whatever the History view becomes.
 - [ ] A render test (the `tests/*_probe/render.tsx` + `renderToStaticMarkup` shape already used by `pane_head_renders.rs`) proves a row that cannot be reopened renders its reason and offers no open affordance — a dropped reason fails a test, not a screen.
+- [ ] A test asserts the Claude Code trust key is seeded against the **resolved** cwd (R16c) — seed a path through a symlinked parent and confirm the key names the realpath. Without it a reopened pane sits on a trust gate forever.
 - [ ] No file under `prompts/` changes; a diff against it is empty.
 
 ### Semantic
@@ -144,17 +145,17 @@ Recommended default given for each. The five marked **(mockup)** were found by d
 
 6. **What happens to the existing flat `pane-config/<seat>/`?** R4 changes the layout. **Recommended:** leave the old directories in place, untouched and unreferenced, and start writing `pane-config/<run-id>/<seat>/`. Deleting an operator's existing sessions to tidy a layout change is not a trade this package gets to make.
 
-7. **Does a fresh per-run seat directory start cold in a way that matters?** R4's flagged risk. Claude Code's two-key seed (D-030) covers it; codex's snapshot allowlist (C39 — `models.json`, `skills/`, `prompts/`) has not been checked for sufficiency. **Spike-first.**
+7. **Does a fresh per-run seat directory start cold in a way that matters?** R4's flagged risk, now **partly measured** (R16c): Claude Code's two-key seed covers it *only if* the trust key names the resolved path — otherwise the reopened pane hangs on a trust gate. Codex's snapshot allowlist (C39) is still unchecked for sufficiency, as is a credential-seeded Claude Code reopen. **Recommended:** fold both into S1, where the seeding code is already in hand.
 
 8. **Disk growth is unmeasured.** R3 keeps a session live *and* archived; R4 keeps a directory per run. **Recommended:** measure across ten runs before deciding whether R15's lineage delete is the whole retention story.
 
-**Spike-first (building.md §4), before any of the above is built:**
+**Spikes: done** (2026-09-08, `docs/notes/reopen-spike-notes.md`, R16). What they settled:
 
-- **Does `claude --resume <id>` actually bring a pane up inside the Fence, with the fleet's config dir and no login wall?** Help-verified only; never run in a fenced pane. Version-stamp `docs/notes/reopen-spike-notes.md`.
-- **Does `codex resume <uuid>` work against a per-run `CODEX_HOME`, and is `-c tui.resume_cwd=current` still needed at the installed version?** The picker fact is carried, not measured.
-- **Both:** does a resumed pane's transcript keep landing in the same seat directory, so the gauge and the next rotation still find it?
+- **Neither vendor forks on resume**, so R3/R4/R6 are mechanically sound. A resumed Claude Code turn appends to the same `.jsonl` (one `sessionId` throughout, equal to the filename stem); a resumed codex turn appends to the same thread, zero new threads.
+- **codex's working-directory picker is cwd-*dependent*, not unconditional** — correcting the fact WP-27 carried. Keep `-c tui.resume_cwd=current` as a defence for the *mismatch* case only: under R7 cwds normally match, but a worktree recreated elsewhere raises a gate that R13 guarantees nobody answers, and the pane hangs.
+- **Claude Code's trust key is keyed by the RESOLVED path**, widening D-030. R4's fresh-per-run seat directory raises this gate on every reopen, so seeding must use the realpath or the pane sits on "Quick safety check" forever.
 
-Live spend is required for the two vendor spikes and must be named and operator-approved first (building.md §9.5). Expect it to be small — one turn per harness is enough to answer all three.
+**Still unmeasured, and it is open question 7's real content:** every Claude Code turn in the spike returned `Not logged in`, so that half spent nothing and its no-fork result proves the *session plumbing* appends, not that a successful assistant turn does. The credential is in the keychain and the product seeds it (`harness.rs` `write_operator_login`); the probe does not. **A credential-seeded re-run through the product's own seeding path closes this, and should happen inside S1 rather than as a separate spike** — by then the seeding code is in hand.
 
 ## Slices
 
@@ -180,12 +181,15 @@ Do not re-explore the codebase for anything in the doc's "Current state" section
 anchors were verified 2026-09-07. Re-verify them mechanically before you commit, and say
 so if any moved.
 
-Start with the two vendor spikes, in the spike-first shape building.md §4 requires: a throwaway
-under examples/ plus a version-stamped docs/notes/reopen-spike-notes.md. They need live
-spend — name it and get approval before spending (building.md §9.5). Where a spike and
-this doc disagree, the spike wins and the doc gets corrected in the same commit.
+The vendor spikes are DONE — read docs/notes/reopen-spike-notes.md before you start, and
+re-run examples/reopen-spike/probe.py --reuse (free) if you want to see the arms go green.
+Three findings change what you build: neither vendor forks on resume; codex's cwd picker
+fires only on a cwd MISMATCH; and Claude Code's trust key must name the RESOLVED path or a
+reopened pane hangs on a trust gate. One thing the spike could not measure is a live turn
+through a fenced Claude Code config dir (it seeds no credential) — close that inside S1,
+where the product's own seeding is in hand, and say plainly in your report whether it held.
 
-Then build S1 only, and stop there for review. S1 is: rotation copies transcripts instead
+Build S1 only, and stop there for review. S1 is: rotation copies transcripts instead
 of moving them; pane-config gains a run-id level; checkpoint 15 lands on HarnessSpec and
 Harness with Claude Code's answer; manifest.json carries session_id per seat; the reopen
 operation runs confirm -> teardown -> rotate -> copy the frozen log into _shell/state.db ->
