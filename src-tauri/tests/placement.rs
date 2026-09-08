@@ -59,7 +59,7 @@ impl Scratch {
     /// The shell command Claude Code will run for every matched tool call, read
     /// out of the `settings.json` placement just wrote for this pane.
     fn hook_command(&self, pane: PaneId) -> String {
-        let settings = self.layout.pane_config(pane).join("settings.json");
+        let settings = self.layout.pane_config(&fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), pane).join("settings.json");
         let value: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
         value["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
@@ -395,7 +395,7 @@ fn placing_the_orchestrator_returns_the_notices_the_operator_should_read() {
     // Then the one notice standing between the operator and a pane that looks
     // perfectly healthy while being logged out (WP-14, D-062).
     assert_eq!(placed.notices[1].0, NoticeLevel::Info);
-    let config_dir = scratch.layout.pane_config(PaneId::Orch);
+    let config_dir = scratch.layout.pane_config(&fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), PaneId::Orch);
     assert!(placed.notices[1].1.contains(&config_dir.display().to_string()));
     assert!(placed.notices[1].1.contains("Not logged in"));
     assert!(placed.notices[1].1.contains("/login"));
@@ -493,14 +493,14 @@ fn placing_against_a_scratch_layout_writes_inside_it_and_nowhere_else() {
 
     // The seed and the policy really did land, so the check above is not passing
     // by virtue of placement having done nothing.
-    let config_dir = scratch.layout.pane_config(PaneId::Orch);
+    let config_dir = scratch.layout.pane_config(&fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), PaneId::Orch);
     assert!(config_dir.join(".claude.json").is_file(), "the L1 config seed");
     assert!(config_dir.join("settings.json").is_file(), "the guardrail policy");
     assert!(config_dir.join("write-guardrail.py").is_file(), "the guardrail hook itself");
 
     // The worker's own three, so its half of the walk above is not passing by
     // virtue of the worker having done nothing either.
-    let worker_config = scratch.layout.pane_config(PaneId::Worker(1));
+    let worker_config = scratch.layout.pane_config(&fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), PaneId::Worker(1));
     assert!(worker_config.join(".claude.json").is_file(), "the worker's L1 config seed");
     assert!(worker_config.join("settings.json").is_file(), "the worker's guardrail policy");
     assert!(
@@ -571,7 +571,7 @@ fn switching_targets_re_seeds_the_worker_and_keeps_the_first_targets_trust() {
     let second_cwd = two.gauge.expect("a worker records a gauge source").cwd;
     assert_ne!(first_cwd, second_cwd, "a target switch must move the worker's checkout");
 
-    let seed = scratch.layout.pane_config(PaneId::Worker(1)).join(".claude.json");
+    let seed = scratch.layout.pane_config(&fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), PaneId::Worker(1)).join(".claude.json");
     let value: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&seed).unwrap()).unwrap();
 
@@ -797,7 +797,7 @@ fn a_worker_gets_its_own_worktree_and_branch_in_a_real_repository() {
     // placement, which is strictly earlier than the pty the caller has yet to spawn.
     let gauge = placed.gauge.expect("a worker records a gauge source");
     assert_eq!(gauge.cwd, worktree, "the gauge samples the worker's own checkout");
-    assert_eq!(gauge.config_dir, scratch.layout.pane_config(PaneId::Worker(1)));
+    assert_eq!(gauge.config_dir, scratch.layout.pane_config(&fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), PaneId::Worker(1)));
 
     // Everything downstream followed the worktree rather than the target.
     assert_eq!(
@@ -807,7 +807,7 @@ fn a_worker_gets_its_own_worktree_and_branch_in_a_real_repository() {
     );
     assert_eq!(
         env_on(&placed.command, "CLAUDE_CONFIG_DIR").as_deref(),
-        Some(scratch.layout.pane_config(PaneId::Worker(1)).display().to_string().as_str()),
+        Some(scratch.layout.pane_config(&fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), PaneId::Worker(1)).display().to_string().as_str()),
     );
 }
 
@@ -828,7 +828,7 @@ fn the_config_seed_is_keyed_to_the_target_the_pane_will_run_in() {
     )
     .expect("placing orch against a scratch layout");
 
-    let seed = scratch.layout.pane_config(PaneId::Orch).join(".claude.json");
+    let seed = scratch.layout.pane_config(&fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), PaneId::Orch).join(".claude.json");
     let value: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&seed).unwrap()).unwrap();
     assert_eq!(value["hasCompletedOnboarding"], serde_json::json!(true));

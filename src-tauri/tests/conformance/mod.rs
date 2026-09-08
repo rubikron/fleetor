@@ -441,6 +441,18 @@ impl Pass {
         std::fs::create_dir_all(&shell).expect("the layout's own shell directory");
         std::fs::write(shell.join("state.db"), b"not a database; rotation archives it anyway")
             .expect("a previous run for rotation to archive");
+        // **Which seat directory this run's transcripts are in** (WP-27, R4).
+        // Production's bootstrap writes this; without it rotation is looking at a
+        // run that records no session directory and correctly archives none — so
+        // the harness has to do what a boot does, or checkpoint 13 asserts against
+        // a harvest that was never asked to run.
+        runs::begin(
+            &shell,
+            1_700_000_000_000,
+            &self.target,
+            &self.context.sessions,
+            None,
+        );
 
         let runs_root = self.root.join("runs");
         runs::rotate(&shell, &runs_root, 1_700_000_000_000);

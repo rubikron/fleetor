@@ -164,7 +164,7 @@ impl Bench {
         } else if pane.is_critic() {
             critic::config_dir(self.layout.root())
         } else {
-            self.layout.pane_config(pane)
+            self.layout.pane_config(&fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), pane)
         }
     }
 

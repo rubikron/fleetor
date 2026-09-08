@@ -211,18 +211,26 @@ impl Layout {
         self.shell().join("fleet.sock")
     }
 
-    /// One pane's `CLAUDE_CONFIG_DIR`, by pane name.
+    /// One pane's `CLAUDE_CONFIG_DIR`, by run and pane name.
     ///
     /// Deliberately *not* the Phase-2 `cc-config/worker-*` dirs: those were built
     /// by headless `-p` runs and carry no onboarding keys at all, which is
     /// precisely L1 (`docs/notes/tui-spawn-notes.md` §1).
     ///
     /// Every pane with a config dir lives under this one root, `orch` included
-    /// since WP-14 — which is what makes `runs::harvest_transcripts` archive
-    /// `orch`'s transcript with no code of its own: it already walks
-    /// `pane-config/*`.
-    pub fn pane_config(&self, pane: PaneId) -> PathBuf {
-        pane_config_root(&self.shell()).join(pane.to_string())
+    /// since WP-14 — which is what makes rotation archive `orch`'s transcript with
+    /// no code of its own: it already walks the run's directory.
+    ///
+    /// **The [`SessionsId`] is an argument rather than a field on [`Layout`]**
+    /// (WP-27, R4). A run's sessions are a directory the way its events are a
+    /// database, so the id is part of the path — but it is *this run's* id, not a
+    /// fact about where the fleet lives, and a `Layout` that carried it would be
+    /// a path value that silently means a different path per run. Passing it
+    /// makes every call site name the run it is placing, and makes forgetting one
+    /// a compile error rather than a pane quietly seeded into the wrong run's
+    /// directory.
+    pub fn pane_config(&self, sessions: &SessionsId, pane: PaneId) -> PathBuf {
+        pane_config_run(&self.shell(), sessions).join(pane.to_string())
     }
 
     /// A worker's private `HOME` (WP-08, the Fence): `~/.ssh`, the operator's real
@@ -280,6 +288,62 @@ impl Layout {
 /// derives the name from here instead of restating it.
 pub(crate) fn pane_config_root(shell: &Path) -> PathBuf {
     shell.join("pane-config")
+}
+
+/// **Which run's seat directories** — the level WP-27 added under the root above
+/// (R4).
+///
+/// A run's sessions are a directory the way its events are a database: the same
+/// physical separation D-058 rests on, with no query and no vendor schema
+/// involved, which is what keeps "archive only this run's sessions" from needing
+/// a mtime window on one harness and a SQL extraction on another.
+///
+/// **The root above deliberately did not move.** The guardrail denies writes to
+/// `pane_config_root` and must go on denying *every* run's directory, so it stays
+/// pointed at the parent; only the two things that mean "this run" — placement's
+/// seeding and rotation's harvest — take an id. That is the same argument the
+/// root's own header makes about its four callers, applied one level down.
+pub(crate) fn pane_config_run(shell: &Path, sessions: &SessionsId) -> PathBuf {
+    pane_config_root(shell).join(sessions.as_str())
+}
+
+/// Which run's seat directories a placement or a harvest is talking about
+/// (WP-27, R4).
+///
+/// **A newtype rather than a `&str`, and it earns the ceremony.** The two things
+/// that take one — seeding a pane's config dir and archiving a run's sessions —
+/// sit beside calls carrying a run *archive* id, a pane name and a target slug,
+/// all of them strings. Passing the wrong one would put a reopened pane in a
+/// directory that exists and is not its own: a pane that comes up, renders
+/// somebody else's session, and reports nothing wrong.
+///
+/// **For a reopened run this is the parent's id, not the child's** (R4, R15). A
+/// lineage shares one directory, so the value here is the lineage root's — which
+/// is why `manifest.json` records it per run rather than deriving it from the run
+/// id, and why R15 can delete a lineage's sessions by asking which runs name it.
+/// The id a [`PaneContext`](crate::prompts::PaneContext) carries before a run has
+/// assigned one. Production overwrites it at the one place a fleet boots; a test
+/// that places panes without booting one lands here, which is why the tests spell
+/// it through this constant rather than repeating the literal.
+pub const UNASSIGNED_SESSIONS: &str = "unassigned";
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SessionsId(String);
+
+impl SessionsId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for SessionsId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
 }
 
 /// The directory name a target's worktrees live under: its own name plus a short
@@ -892,7 +956,7 @@ fn place_orch(
         &target.display().to_string(),
     );
 
-    let config_dir = layout.pane_config(pane);
+    let config_dir = layout.pane_config(&context.sessions, pane);
     notices.extend(harness.seed_config_dir(
         &Seed::new(&config_dir, target, host.operator_home.as_deref())
             .with_brief(&rendered)
@@ -1042,7 +1106,7 @@ fn place_worker(
         &cwd.display().to_string(),
     );
 
-    let config_dir = layout.pane_config(pane);
+    let config_dir = layout.pane_config(&context.sessions, pane);
     let seed = Seed::new(&config_dir, &cwd, host.operator_home.as_deref()).with_brief(&rendered);
     let seed = match credential_source {
         CredentialSource::OperatorsPlan(login) => seed.on_the_operators_plan(login),
@@ -1607,7 +1671,7 @@ mod tests {
             layout.testbed(),
             layout.config_file(),
             layout.socket(),
-            layout.pane_config(PaneId::Orch),
+            layout.pane_config(&SessionsId::new("run-1"), PaneId::Orch),
             layout.worker_home(2),
             layout.fleet_toolchain().cargo_home,
             layout.fleet_toolchain().rustup_home,

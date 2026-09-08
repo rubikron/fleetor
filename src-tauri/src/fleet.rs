@@ -1340,7 +1340,7 @@ pub fn fleet_bootstrap(
     // unpicked fleet is. Its notices wait for a feed to exist (below) — an override
     // that silently did nothing is the one failure the whole override path is built
     // to avoid, and it is the *emit* that has to wait, not the read.
-    let context = PaneContext::resolve(&prompts::override_dir(layout.root()));
+    let mut context = PaneContext::resolve(&prompts::override_dir(layout.root()));
 
     // **What each harness makes of this machine** (WP-25 #34; C8, C14) — held on the
     // gate, which has almost always probed already: the start gate renders at app
@@ -1373,7 +1373,15 @@ pub fn fleet_bootstrap(
     // `runs/` and this one opens an empty database. Held rather than emitted —
     // there is no store to append a notice to yet.
     let started_ms = fleetor_core::time::now_ms();
-    let rotation = runs::rotate(&dir, &runs::runs_dir(layout.root()), started_ms);
+    let runs_dir = runs::runs_dir(layout.root());
+    let rotation = runs::rotate(&dir, &runs_dir, started_ms);
+
+    // **Reopening a past run is this same path with a seeded slot** (WP-27, R2).
+    // Rotation has just archived whatever was live, so the slot is empty; if the
+    // operator asked for a past run, its frozen log is copied in here — after the
+    // archive, before the store opens, which is the only window where the slot is
+    // both empty and unopened. Every ordinary boot gets `None` and starts empty.
+    let reopened = runs::apply_reopen(&dir, &runs_dir)?;
 
     // The observability core: real store, wrapped once so every append publishes.
     let bcast = Arc::new(BroadcastStore::new(Arc::new(
@@ -1408,7 +1416,18 @@ pub fn fleet_bootstrap(
     // Stamp what this run is, for the History row it becomes at the next start.
     // The target is only ever prose inside a notice in the log, so a run that
     // ended without this marker lists with an unknown target rather than a guess.
-    runs::begin(&dir, started_ms, &target.get());
+    // **Which seat directory this run's panes live in** (WP-27, R4). A fresh run
+    // gets its own; a reopened one inherits its parent's, because a lineage shares
+    // one directory and that is what lets its panes resume in place with no copy.
+    let sessions = match &reopened {
+        Some(r) => r.sessions.clone(),
+        None => placement::SessionsId::new(runs::timestamp_id_for(started_ms)),
+    };
+    runs::begin(&dir, started_ms, &target.get(), &sessions, reopened.as_ref().map(|r| r.parent.as_str()));
+    // The one line that tells every placement in this run which seat directories
+    // are its own (R4). `placement.rs`'s
+    // `a_placed_pane_is_seeded_under_its_own_runs_sessions_id` fails without it.
+    context.sessions = sessions.clone();
 
     // Every notice the prompt resolver produced, from the read at the top of this
     // function — an override that silently did nothing is the one failure the whole
@@ -2431,6 +2450,50 @@ pub fn run_delete(id: String) -> Result<(), String> {
 /// added for it — `fleet_pick_target` set the pattern. `Ok(None)` means the
 /// operator dismissed the dialog, which is not an error and must not be shown
 /// as one.
+/// **Reopen a past run** (WP-27, R2, R5, R8) — the whole of what clicking a
+/// History row does.
+///
+/// One sequenced operation, in the order that makes each step safe:
+///
+///  1. **Refuse first, from the manifest.** A run that cannot be fully restored
+///     does not reopen (R8), and finding that out *after* five panes are gone
+///     would be the worst version of this feature — so the check runs while the
+///     live fleet is still up and returns it untouched.
+///  2. **Tear the panes down.** Rotation's transcript walk and the archive move
+///     are only safe with no pane alive; `rotate` has assumed that since D-058 and
+///     still does.
+///  3. **Drop the fleet**, which closes the store and releases `state.db`. Without
+///     this the slot cannot be rotated *or* seeded, and `fleet_bootstrap` would
+///     short-circuit on the fleet already in the guard.
+///  4. **Leave the request** and re-enter bootstrap, which rotates the run being
+///     left into History, copies the requested log into the empty slot, and brings
+///     the five panes back on their own recorded sessions.
+///
+/// **It is deliberately not a second archive path.** R2 makes reopening *be* a
+/// rotation; everything here is sequencing plus one marker file.
+#[tauri::command]
+pub fn run_reopen(
+    app: AppHandle,
+    state: State<'_, FleetState>,
+    registry: State<'_, Arc<PaneRegistry>>,
+    gate: State<'_, Arc<GateHold>>,
+    id: String,
+) -> Result<BootSnapshot, String> {
+    let layout = layout();
+    let runs_dir = runs::runs_dir(layout.root());
+    if let Some(why) = runs::reopen_blocker_for(&runs_dir, &id) {
+        return Err(format!("\u{201c}{id}\u{201d} can\u{2019}t be opened: {why}"));
+    }
+
+    crate::pty::kill_all(&registry);
+    {
+        let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+        *guard = None;
+    }
+    runs::request_reopen(&layout.shell(), &id)?;
+    fleet_bootstrap(app, state, registry, gate)
+}
+
 #[tauri::command]
 pub fn run_export(app: AppHandle, id: String) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
@@ -2749,12 +2812,16 @@ mod tests {
     /// while that was arranged, or four panes lose their trust flags at once.
     #[test]
     fn every_panes_config_dir_is_a_sibling_under_one_root() {
-        let orch = layout().pane_config(PaneId::Orch);
-        let worker = layout().pane_config(PaneId::Worker(2));
-        assert!(orch.ends_with("pane-config/orch"), "{}", orch.display());
-        assert!(worker.ends_with("pane-config/worker-2"), "{}", worker.display());
-        assert_eq!(orch.parent(), worker.parent(), "harvest_transcripts walks the parent");
-        assert_eq!(worker.parent().unwrap(), layout().shell().join("pane-config"));
+        let orch = layout().pane_config(&placement::SessionsId::new("run-1"), PaneId::Orch);
+        let worker = layout().pane_config(&placement::SessionsId::new("run-1"), PaneId::Worker(2));
+        // WP-27 R4: one level per run, and the seats are siblings *within* it.
+        assert!(orch.ends_with("pane-config/run-1/orch"), "{}", orch.display());
+        assert!(worker.ends_with("pane-config/run-1/worker-2"), "{}", worker.display());
+        assert_eq!(orch.parent(), worker.parent(), "the transcript walk walks the parent");
+        assert_eq!(worker.parent().unwrap(), layout().shell().join("pane-config").join("run-1"));
+        // And a different run is a different directory — the whole of R4.
+        let other = layout().pane_config(&placement::SessionsId::new("run-2"), PaneId::Orch);
+        assert_ne!(orch, other, "two runs must not share a seat directory");
     }
 
     /// A picked target must land in the config without costing the operator

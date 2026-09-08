@@ -847,9 +847,76 @@ pub const CODEX_SPEC: HarnessSpec = HarnessSpec {
         trust_file: CONFIG_FILE,
         trust_keys: &["trust_level"],
     },
+
+    // 15 — reopening a recorded session (WP-27, R6). `codex resume <uuid>` takes
+    // the thread id directly and appends to that same thread. Measured in
+    // `docs/notes/reopen-spike-notes.md` §1 and §4.
+    resume: super::harness::Resume::Supported,
 };
 
+impl CodexCli {
+    /// Codex's thread store inside a seat directory: the generation-numbered
+    /// `thread_history_<n>.sqlite` (C12), told apart from the five other `.sqlite`
+    /// files codex keeps beside it (`state_`, `logs_`, `memories_`, `queue_`,
+    /// `goals_`) **by name rather than extension** — picking "any `.sqlite`" would
+    /// read `goals_1.sqlite`, find no `thread_items`, and report a session that is
+    /// really there as absent.
+    fn thread_store(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+        std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).find(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("thread_history_") && n.ends_with(".sqlite"))
+        })
+    }
+}
+
 impl Harness for CodexCli {
+    /// **Codex reopens with `codex resume <uuid>`**, a subcommand that must lead
+    /// the argv; the vendor takes the thread id directly.
+    ///
+    /// **`-c tui.resume_cwd=current` is a defence, not an unconditional need**
+    /// (WP-27 R16b, correcting a fact the design carried). Measured at 0.153.4:
+    /// stock `codex resume` opens the "Choose working directory to resume this
+    /// session" picker **only when the launch cwd differs from the one recorded in
+    /// the session**; matching cwds resume straight through. R7 puts a reopened
+    /// worker back in its own worktree, so cwds normally match — but a worktree
+    /// recreated elsewhere would raise a gate that R13 guarantees nobody answers,
+    /// and the pane would hang. `current` rather than `session` because the fleet
+    /// decides where a pane works; the recorded directory may have moved.
+    ///
+    /// No brief rides along, for [`ClaudeCode::resume_args`]'s reason (R13).
+    fn resume_args(&self, _seat: &Seat<'_>, session_id: &str) -> Option<Vec<String>> {
+        Some(vec![
+            "resume".to_string(),
+            session_id.to_string(),
+            "-c".to_string(),
+            "tui.resume_cwd=current".to_string(),
+        ])
+    }
+
+    /// Codex's resumable id lives **inside** its thread store rather than in a
+    /// filename: it is the `thread_id` on a recorded item (C12), the UUID `codex
+    /// resume` addresses.
+    ///
+    /// The **most recently written** thread, because R3 leaves sessions in place
+    /// and a lineage's store accumulates one thread per reopen — the id worth
+    /// recording for this run is the one it last wrote. Read-only; `None` on any
+    /// read failure or an empty store.
+    fn session_id(&self, seat_dir: &std::path::Path) -> Option<String> {
+        let db = Self::thread_store(seat_dir)?;
+        let conn = rusqlite::Connection::open_with_flags(
+            &db,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .ok()?;
+        conn.query_row(
+            "SELECT thread_id FROM thread_items ORDER BY created_at_ms DESC LIMIT 1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+    }
+
     /// **Codex's login is a file inside the directory this module replaces**
     /// (C6, C73) — `auth.json` under the operator's own `CODEX_HOME`.
     ///

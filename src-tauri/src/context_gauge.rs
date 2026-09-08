@@ -751,6 +751,16 @@ mod tests {
                     ) -> Vec<String> {
                         claude_code().command_args(seat)
                     }
+                    fn resume_args(
+                        &self,
+                        seat: &crate::placement::harness::Seat<'_>,
+                        session_id: &str,
+                    ) -> Option<Vec<String>> {
+                        claude_code().resume_args(seat, session_id)
+                    }
+                    fn session_id(&self, seat_dir: &Path) -> Option<String> {
+                        claude_code().session_id(seat_dir)
+                    }
                 }
             };
         }

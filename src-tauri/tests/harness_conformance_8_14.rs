@@ -33,7 +33,7 @@ use conformance::{
 use fleetor_core::pane::PaneId;
 use fleetor_core::{Command, ALLOWED_COMMANDS};
 use fleetor_shell::context_gauge::GaugeSources;
-use fleetor_shell::placement::harness::Transport;
+use fleetor_shell::placement::harness::{Seat, Transport};
 use fleetor_shell::placement::MISSING_FLEET_BIN;
 
 /// A body nothing would type by accident, so finding it on the far end of a pty
@@ -556,7 +556,7 @@ fn checkpoint_12_the_sweep_can_confirm_the_program_every_seat_is_actually_launch
 /// first writes. So the test plants one, and deliberately does not re-derive the
 /// per-project directory's name — see checkpoint 11's note on the same gap.
 #[test]
-fn checkpoint_13_transcripts_live_under_the_panes_config_dir_and_the_harvest_moves_them() {
+fn checkpoint_13_transcripts_live_under_the_panes_config_dir_and_the_archive_copies_them() {
     for_each_registered("cp13", |pass| {
         let transcript = &pass.spec.transcript;
         // **`subdir` is no longer required to be non-empty, and that is a
@@ -659,7 +659,42 @@ fn checkpoint_13_transcripts_live_under_the_panes_config_dir_and_the_harvest_mov
             }
         }
 
+        // **D-059's accumulation bug, planted before the harvest and asserted
+        // against its new answer** (WP-27 R4). A session belonging to a *different*
+        // run sits under a different seat directory, so it is not in this run's
+        // walk at all — the property that replaces "move it out so it cannot be
+        // archived twice". Planted for every seat, so a walk that reached one level
+        // too high would be caught for any of them.
+        for (seat, _) in pass.seats() {
+            let elsewhere = pass
+                .layout
+                .shell()
+                .join("pane-config")
+                .join("some-other-run")
+                .join(pane_of(seat).to_string())
+                .join(transcript.subdir);
+            std::fs::create_dir_all(&elsewhere).expect("another run's seat directory");
+            std::fs::write(
+                elsewhere.join(format!("stray.{}", transcript.file_ext)),
+                TRANSCRIPT_MARK,
+            )
+            .expect("another run's session");
+        }
+
         let run = pass.harvest_into_a_run();
+        for (seat, _) in pass.seats() {
+            let stray = run
+                .join("transcripts")
+                .join(pane_of(seat).to_string())
+                .join(format!("stray.{}", transcript.file_ext));
+            assert!(
+                !stray.exists(),
+                "{}/{seat}: the archive reached into another run's seat directory — the \
+                 accumulation D-059 moved transcripts to prevent, now prevented by the \
+                 directory instead (R4)",
+                pass.spec.name,
+            );
+        }
         let taken = files_containing(&run, TRANSCRIPT_MARK);
         assert_eq!(
             taken.len(),
@@ -679,10 +714,18 @@ fn checkpoint_13_transcripts_live_under_the_panes_config_dir_and_the_harvest_mov
                 pass.spec.name,
                 filed.display(),
             );
+            // **The original survives, and that is WP-27 R3 rather than a
+            // regression.** D-059 moved transcripts out so an archive would not
+            // accumulate its predecessors; R4's per-run seat directory now carries
+            // that property, and leaving the session where its vendor keeps it is
+            // what makes reopening a plain `--resume <id>` against a file that
+            // never moved — with no restore step that could half-fail. The
+            // accumulation half is asserted immediately below, against the
+            // mechanism that actually prevents it now.
             assert!(
-                !kept.exists(),
-                "{}/{seat}: the harvest copied instead of moving, so the next run's archive \
-                 will hold this one's transcripts too",
+                kept.exists(),
+                "{}/{seat}: the archive consumed the vendor's own session, so there is nothing \
+                 left for this harness to reopen (R3)",
                 pass.spec.name,
             );
             assert!(
@@ -691,6 +734,7 @@ fn checkpoint_13_transcripts_live_under_the_panes_config_dir_and_the_harvest_mov
                 pass.spec.name,
                 transcript.file_ext,
             );
+
 
             // **The database half, and it is three claims rather than one.** That
             // the archived file contains the mark is already asserted above, by
@@ -728,16 +772,12 @@ fn checkpoint_13_transcripts_live_under_the_panes_config_dir_and_the_harvest_mov
                          it is a file copy of a live database rather than a backup of one",
                         pass.spec.name,
                     );
-                    let left = kept.with_file_name(format!(
-                        "{}{suffix}",
-                        kept.file_name().unwrap_or_default().to_string_lossy(),
-                    ));
-                    assert!(
-                        !left.exists(),
-                        "{}/{seat}: the harvest took the database and left its `{suffix}` \
-                         behind, so the next run's archive will hold a fragment of this one",
-                        pass.spec.name,
-                    );
+                    // **The source keeps its own journal, and that is R3.** The
+                    // archive is a `VACUUM INTO` snapshot; the live store belongs
+                    // to its vendor, which is still what `codex resume <id>`
+                    // reopens, so deleting its `-wal` would be deleting part of a
+                    // database the fleet does not own. The fragment D-059 feared is
+                    // prevented by the per-run directory instead, asserted above.
                 }
             }
         }
@@ -1031,4 +1071,62 @@ fn is_affirmative(answer: &serde_json::Value) -> bool {
         serde_json::Value::Array(items) => !items.is_empty(),
         serde_json::Value::Object(map) => !map.is_empty(),
     }
+}
+
+// --- checkpoint 15 (WP-27) ------------------------------------------------------
+
+/// **Checkpoint 15 — the spec's claim and the argv builder must agree** (WP-27,
+/// R6, R10).
+///
+/// A harness may legally answer [`Resume::NotSupported`]; what it may not do is
+/// *say* it resumes and then fail to build the argv, or the reverse. That is the
+/// half-registration this seam exists to prevent, and it is why checkpoint 15 is
+/// two things that have to be checked against each other rather than one trait
+/// method with a default.
+///
+/// **The id must reach the argv**, because a resume that drops it reopens the
+/// wrong session or none — and both of those look like a working pane.
+#[test]
+fn checkpoint_15_a_harness_that_claims_it_resumes_can_build_the_argv_that_does_it() {
+    let seen = for_each_registered("cp15", |pass| {
+        let claimed = pass.spec.resume.is_supported();
+        let built = pass.harness.resume_args(&Seat::new("BRIEF"), "SESSION-XYZ");
+
+        assert_eq!(
+            claimed,
+            built.is_some(),
+            "{}: checkpoint 15's two halves disagree — the spec says resume is {}, the argv \
+             builder says {}. A harness cannot be half-registered for reopening any more than \
+             it can for archiving (Transport's rule, applied to WP-27).",
+            pass.spec.name,
+            if claimed { "supported" } else { "unsupported" },
+            if built.is_some() { "supported" } else { "unsupported" },
+        );
+
+        if let Some(argv) = built {
+            assert!(
+                argv.iter().any(|arg| arg == "SESSION-XYZ"),
+                "{}: the session id never reached the argv ({argv:?}) — a reopen that drops it \
+                 resumes the wrong session or none, and both look like a working pane",
+                pass.spec.name,
+            );
+            assert!(
+                !argv.iter().any(|arg| arg.contains("BRIEF")),
+                "{}: a reopened pane must not be handed a brief ({argv:?}) — the session already \
+                 holds the one it was started with, and a second copy leaves the pane \
+                 reconciling two versions of its own instructions (R13)",
+                pass.spec.name,
+            );
+        }
+
+        if let fleetor_shell::placement::harness::Resume::NotSupported { why } = pass.spec.resume {
+            assert!(
+                !why.trim().is_empty(),
+                "{}: a declared refusal must say what is missing — History shows this sentence \
+                 to the operator (R10)",
+                pass.spec.name,
+            );
+        }
+    });
+    assert!(seen > 0);
 }

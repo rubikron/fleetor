@@ -89,6 +89,20 @@ pub struct PaneContext {
     /// has to keep, and why none of the prose is checked.
     pub critic_template: String,
     pub launch: LaunchConfig,
+    /// **Which run's seat directories this fleet's panes are placed into**
+    /// (WP-27, R4).
+    ///
+    /// It rides here rather than as a sixth argument to `placement::place`
+    /// because its lifetime is exactly this struct's: resolved once when a fleet
+    /// boots, handed unchanged to every placement in that run. For a *reopened*
+    /// run it is the lineage root's id, not the new run's — a lineage shares one
+    /// directory (R4, R15).
+    ///
+    /// **`baked()` supplies a placeholder, so the tripwire is a test rather than
+    /// the type.** `fleet.rs` sets the real value at the one place a fleet boots;
+    /// `placement.rs`'s `a_placed_pane_is_seeded_under_its_own_runs_sessions_id`
+    /// fails if that line is ever lost.
+    pub sessions: crate::placement::SessionsId,
     /// Announcements for the Activity feed, in the order they happened. Carried
     /// rather than emitted so this module stays testable without a store.
     pub notices: Vec<(NoticeLevel, String)>,
@@ -104,6 +118,7 @@ impl PaneContext {
             worker_template: DEFAULT_WORKER.to_string(),
             critic_template: crate::critic::DEFAULT_BRIEF.to_string(),
             launch,
+            sessions: crate::placement::SessionsId::new(crate::placement::UNASSIGNED_SESSIONS),
             // A complaint here is a bug in what we shipped, not in what the
             // operator wrote, so it is an error rather than a warning.
             notices: complaints
@@ -131,6 +146,9 @@ impl PaneContext {
             worker_template,
             critic_template,
             launch,
+            // Resolving templates says nothing about which run is booting; the
+            // caller sets this (see the field's own note).
+            sessions: baked.sessions,
             notices: baked
                 .notices
                 .into_iter()

@@ -122,6 +122,7 @@ pub fn run() {
             fleet::run_rename,
             fleet::run_delete,
             fleet::run_export,
+            fleet::run_reopen,
             dev::dev_mode_get,
             dev::dev_mode_set,
         ])
