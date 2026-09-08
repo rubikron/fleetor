@@ -40,6 +40,12 @@ The Blackboard vision, split into nine session-sized work packages. The vision i
 | 23 | (from TEMPLATE) | The Critic | 20, 22 | M | **landed** (D-076, ahead of its own package) |
 | 24 | `24-multi-tui.md` | Multi-TUI — register cursor through the seam | 20, 25 | M | **re-scoped by D-C19, and now unblocked** — was the seam + cursor (L); the seam moved to WP-25 and landed, so this is registering cursor through a suite already green with two. Read C57's cost line first: registering codex forced six checkpoint reshapes, so budget for cursor forcing more. Spec in [issue #12](https://github.com/rubikron/fleetor/issues/12) (needs re-scoping), decisions M1–M28 |
 | 25 | `25-codex-tui.md` | The `Harness` seam, and codex as the first harness through it | 20 | L | **landed** — the seam holds two harnesses, conformance green over all fourteen checkpoints for both. 43 commits, 37 tickets (#14–#48), spec in [issue #13](https://github.com/rubikron/fleetor/issues/13), decisions C1–C68 |
+| 27 | `27-reopening-a-run.md` | Reopening a run — History becomes a session switcher | 11, 25 | L | **not-started** — designed on branch `redesign/history`, decisions R0–R14, [visual guide](https://claude.ai/code/artifact/5b6ff072-faeb-49cf-9372-73bd41f0776c). Four vertical slices S1–S4; open question 1 (R9/R12 collide over delete) needs an operator answer before code |
+
+**WP-26 is deliberately absent.** The parked branch `wp-26-view-resume-past-runs` carries
+its own `26-resume-past-runs.md` for an earlier design of the same feature. That work is
+preserved and is **not** the basis for WP-27 (operator's call, 2026-09-07); 27 exists so
+the two never collide at one number.
 
 WP-13..19 are filed by [`12-self-improving-loop.md`](./12-self-improving-loop.md), which
 carries their design, the diagrams and the invariant arguments already had. Write each
@@ -66,7 +72,9 @@ WP-11 ─→ WP-12 (arc) ─┬─→ WP-13 ─┐
 WP-20 (arc) ─→ WP-21 ─┬─→ stage B (dynamics)
                       └─→ stage C (proposals, into WP-12's ledger)
 
-WP-20 (placement) ─→ WP-25 (the Harness seam lands in placement) ─→ WP-24 (cursor)
+WP-20 (placement) ─→ WP-25 (the Harness seam lands in placement) ─┬─→ WP-24 (cursor)
+                                                                 └─→ WP-27 (reopening a run)
+WP-11 (run history) ──────────────────────────────────────────────┘
 
 rewind harness (separate repo, no WP — fully parallel, no dependencies)
 ```
