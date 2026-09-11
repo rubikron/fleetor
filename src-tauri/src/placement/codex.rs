@@ -671,6 +671,9 @@ pub const CODEX_SPEC: HarnessSpec = HarnessSpec {
         // the real `CODEX_HOME` stayed logged in.
         operator_store_follows_home: false,
         private_home: true,
+        // Nothing: codex was not measured writing an installation into `HOME`
+        // (D-082 measured Claude Code only).
+        fenced_env: &[],
         seeds_from_operator: true,
     },
 

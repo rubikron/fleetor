@@ -535,6 +535,18 @@ pub struct ConfigAndCredentialIsolation {
     /// operator's tool rungs, and a worker's first `git commit` needs the
     /// `.gitconfig` seeded into it.
     pub private_home: bool,
+    /// Variables a pane given that private `HOME` is also handed, because the
+    /// vendor would otherwise treat the private `HOME` as an installation of its
+    /// own (D-082). Empty for a harness nothing was measured writing there.
+    ///
+    /// **The cost this closes was disk, not containment.** Claude Code's
+    /// background updater installs the latest release into
+    /// `$HOME/.local/share/claude/versions` and links `$HOME/.local/bin/claude`,
+    /// so four private `HOME`s were four independent installs keeping every
+    /// version — about 190 MB per version per seat, none of it ever run, because a
+    /// worker's PATH has no private-`HOME` rung and keeps resolving the operator's
+    /// own `claude`.
+    pub fenced_env: &'static [(&'static str, &'static str)],
     /// Whether the isolated directory is seeded as a **snapshot of the
     /// operator's own**, rather than created empty. `false` here: a Claude Code
     /// pane gets a fresh directory and reaches the operator's login through the
@@ -1526,6 +1538,11 @@ pub const CLAUDE_CODE_SPEC: HarnessSpec = HarnessSpec {
         // buys nothing once `HOME` has been replaced.
         operator_store_follows_home: true,
         private_home: true,
+        // **Measured** (D-082): the operator's 2.1.266 binary under a private
+        // `HOME` wrote 2.1.267 (200 MB) into it within 90 seconds and printed
+        // "Update installed · Restart to update"; with this set, nothing. The
+        // vendor's own sandbox runner sets the same variable for the same reason.
+        fenced_env: &[("DISABLE_AUTOUPDATER", "1")],
         seeds_from_operator: false,
     },
 

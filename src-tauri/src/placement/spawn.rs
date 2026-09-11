@@ -472,6 +472,11 @@ pub(super) fn worker_command_with(
     // had been conflated.
     if spec.isolation.private_home {
         cmd.env("HOME", home);
+        // The vendor would otherwise install itself into the private HOME it was
+        // just handed — once per seat, every release, never run (D-082).
+        for (var, value) in spec.isolation.fenced_env {
+            cmd.env(var, value);
+        }
     }
     // Checkpoint 4, off the spec: where this pane's own configuration lives. The
     // credential half of checkpoint 6 is deliberately absent here rather than set
@@ -1384,6 +1389,35 @@ mod tests {
             &ctx,
         );
         assert_eq!(worker.get_env("HOME").unwrap(), "/tmp/private-home");
+    }
+
+    /// A private HOME must not become a private Claude Code installation (D-082):
+    /// the vendor's updater would otherwise put ~190 MB per release into each
+    /// seat's HOME, and nothing ever runs it. Orch's updater is the operator's own
+    /// and is left exactly as inherited.
+    #[test]
+    fn a_fenced_worker_does_not_update_claude_code_into_its_private_home() {
+        let socket = PathBuf::from("/tmp/s.sock");
+        let ctx = PaneContext::baked();
+
+        let orch = orch_command(Path::new("/tmp"), &socket, Path::new("/tmp/orch-cfg"), &ctx);
+        assert_eq!(
+            orch.get_env("DISABLE_AUTOUPDATER").map(|s| s.to_os_string()),
+            std::env::var_os("DISABLE_AUTOUPDATER"),
+            "orch's updater is the operator's own"
+        );
+
+        let worker = worker_command(
+            1,
+            Path::new("/tmp"),
+            Path::new("/tmp/private-home"),
+            Path::new("/tmp/cfg"),
+            &socket,
+            "k",
+            None,
+            &ctx,
+        );
+        assert_eq!(worker.get_env("DISABLE_AUTOUPDATER").unwrap(), "1");
     }
 
     /// The other half of the fix, in the same commit as the private HOME: a
