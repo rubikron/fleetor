@@ -59,6 +59,11 @@ on a cold config dir every time — the exact condition that raises this gate. N
 that this is 2.1.263's wording; earlier notes say "Do you trust the files", so any
 wall-detection that matches on prose needs both.
 
+**Correction (R17, 2026-09-10): the vendor fact holds, the product risk did not.** The
+gate appeared because *this probe* seeded the unresolved path. The product's seeding goes
+through `spawn::project_key`, which already canonicalizes, and a reopened run reuses its
+lineage root's seat directory (R4) rather than a cold one.
+
 ## §4 — codex's working-directory picker is cwd-DEPENDENT (corrects a carried claim)
 
 WP-27 carried, from an earlier shakedown, that stock `codex resume` "fires unconditionally
