@@ -210,6 +210,13 @@ pub(crate) fn runs_dir(fleetor: &Path) -> PathBuf {
     fleetor.join("runs")
 }
 
+/// The `_shell/` beside an archive root — [`runs_dir`]'s inverse, for the one
+/// reader handed only the archive root that needs a seat directory: the reopen
+/// gate, asking whether a recorded session is still on disk (R19).
+fn shell_for(runs: &Path) -> PathBuf {
+    runs.parent().unwrap_or(runs).join("_shell")
+}
+
 fn index_path(runs: &Path) -> PathBuf {
     runs.join("index.json")
 }
@@ -292,6 +299,27 @@ pub fn record_pane(shell: &Path, pane: &str, harness: &'static HarnessSpec, mode
 /// and then failed would be the worst version of this feature.
 pub fn reopen_blocker_for(runs: &Path, id: &str) -> Option<String> {
     reopen_blocker(runs, id)
+}
+
+/// Gate, then tear down, then ask the next boot to reopen — **in that order, and
+/// the order is the whole function** (R8, R2).
+///
+/// `teardown` is the caller's: killing the panes and dropping the live fleet are
+/// Tauri state this module never holds. It runs only once the gate has passed, so
+/// a refused reopen leaves the live fleet exactly as it was and writes no request.
+/// One function rather than three lines in `run_reopen` so that the ordering is
+/// something a test can hold, not something a command happens to do.
+pub fn begin_reopen(
+    shell: &Path,
+    runs: &Path,
+    id: &str,
+    teardown: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    if let Some(why) = reopen_blocker(runs, id) {
+        return Err(format!("\u{201c}{id}\u{201d} can\u{2019}t be opened: {why}"));
+    }
+    teardown()?;
+    request_reopen(shell, id)
 }
 
 /// Ask the next bootstrap to reopen run `id` instead of starting empty (R2).
@@ -957,28 +985,34 @@ fn collapse_lineages(records: Vec<RunRecord>) -> Vec<RunRecord> {
 /// The nearest record of **which seats this lineage ran**, walking back from `id`
 /// (WP-27, R12).
 ///
-/// A lineage shares one seat directory, so any member's pane record describes the
-/// same seats; what varies is whether a given member lived long enough to write
-/// one down. Returns the first non-empty answer from `id` backwards, so a reopen
-/// that was quit immediately still resolves through its parent.
+/// A lineage shares one seat directory, so a member's pane record describes a seat
+/// its ancestors ran too; what varies is how many seats a given member lived long
+/// enough to write down. Merged per seat from `id` backwards, nearest first, so a
+/// reopen quit immediately — or partway through placing its panes — still
+/// resolves every seat through whichever ancestor recorded it (R20).
 ///
 /// Bounded by the archives on disk and cycle-guarded, because a hand-edited
 /// manifest could name its own ancestor.
 fn lineage_panes(runs: &Path, id: &str) -> Option<serde_json::Map<String, serde_json::Value>> {
     let mut seen = std::collections::HashSet::new();
     let mut at = Some(id.to_string());
-    let mut empty: Option<serde_json::Map<String, serde_json::Value>> = None;
+    let mut merged: Option<serde_json::Map<String, serde_json::Value>> = None;
     while let Some(current) = at {
         if !seen.insert(current.clone()) {
             break;
         }
         let Ok(dir) = run_dir(runs, &current) else { break };
         let Some(manifest) = manifest_of(&dir) else { break };
+        // **Per seat, nearest record wins** (R20) — not the nearest non-empty map.
+        // Panes are recorded one at a time as they spawn, so a reopen quit after
+        // two of five, or one whose worker seats were refused placement, records
+        // a partial map; taking it whole hid the parent's other seats, and the
+        // next reopen started them on fresh sessions without a word.
         if let Some(panes) = manifest.get("panes").and_then(|p| p.as_object()) {
-            if !panes.is_empty() {
-                return Some(panes.clone());
+            let into = merged.get_or_insert_with(serde_json::Map::new);
+            for (seat, record) in panes {
+                into.entry(seat.clone()).or_insert_with(|| record.clone());
             }
-            empty = Some(panes.clone());
         }
         at = manifest
             .get("run")
@@ -986,7 +1020,7 @@ fn lineage_panes(runs: &Path, id: &str) -> Option<serde_json::Map<String, serde_
             .and_then(|v| v.as_str())
             .map(str::to_string);
     }
-    empty
+    merged
 }
 
 /// What a run's own `manifest.json` says about reopening it (WP-27).
@@ -1006,11 +1040,16 @@ fn manifest_of(dir: &Path) -> Option<serde_json::Value> {
 /// will open; a seat whose harness declares no resume support names the harness;
 /// a seat with no recorded session names the seat.
 fn reopen_blocker(runs: &Path, id: &str) -> Option<String> {
+    use crate::placement::harness::{by_name, Resume};
+
     let manifest = manifest_of(&run_dir(runs, id).ok()?)?;
-    let sessions = manifest.get("run").and_then(|r| r.get("sessions")).and_then(|v| v.as_str());
-    if sessions.is_none() {
-        return Some("archived before sessions were recorded — its log and transcripts are intact and still export".into());
-    }
+    // The cause only. What survives a refusal — the log and the transcripts — is
+    // the same sentence for every cause, so the History row says it, once (R8).
+    let Some(sessions) =
+        manifest.get("run").and_then(|r| r.get("sessions")).and_then(|v| v.as_str())
+    else {
+        return Some("archived before sessions were recorded".into());
+    };
 
     // **The seats come from the lineage, not from this run alone.**
     //
@@ -1027,17 +1066,23 @@ fn reopen_blocker(runs: &Path, id: &str) -> Option<String> {
     if panes.is_empty() {
         return Some("no panes were placed in this run".into());
     }
+    let seats = crate::placement::pane_config_run(&shell_for(runs), &SessionsId::new(sessions));
     for (seat, rec) in &panes {
-        let harness = rec.get("harness").and_then(|v| v.as_str()).unwrap_or("an unknown harness");
-        match crate::placement::harness::by_name(harness).map(|h| h.spec().resume) {
-            Some(crate::placement::harness::Resume::Supported) => {}
-            Some(crate::placement::harness::Resume::NotSupported { why }) => {
-                return Some(format!("{seat} ran {harness}, which {why}"));
-            }
-            None => return Some(format!("{seat} ran {harness}, which this build does not have")),
+        let name = rec.get("harness").and_then(|v| v.as_str()).unwrap_or("an unknown harness");
+        let Some(harness) = by_name(name) else {
+            return Some(format!("{seat} ran {name}, which this build does not have"));
+        };
+        if let Resume::NotSupported { why } = &harness.spec().resume {
+            return Some(format!("{seat} ran {name}, which {why}"));
         }
-        if rec.get("session_id").and_then(|v| v.as_str()).is_none() {
+        let Some(session) = rec.get("session_id").and_then(|v| v.as_str()) else {
             return Some(format!("{seat} recorded no session — it stopped before its harness wrote anything"));
+        };
+        // **Recorded is not present** (R19). The id says the session existed at
+        // rotation; a seat directory deleted since leaves the id behind, and the
+        // vendor's resume would then fail in a pane the live fleet was killed for.
+        if !harness.has_session(&seats.join(seat), session) {
+            return Some(format!("{seat}\u{2019}s session is no longer on disk, so there is nothing to resume"));
         }
     }
     None
@@ -1581,7 +1626,8 @@ mod tests {
         let all = list(&runs);
         let why = all[0].cannot_reopen.as_deref().expect("a pre-WP-27 run cannot be reopened");
         assert!(why.contains("archived before"), "{why}");
-        assert!(why.contains("still export"), "it must say what is not lost: {why}");
+        // What survives the refusal is said by the row, once, for every cause —
+        // asserted where it renders, `tests/history_row_renders.rs`.
     }
 
     /// **A reopened run quit before its panes registered still reopens** (WP-27,
@@ -1631,6 +1677,141 @@ mod tests {
             all[0].cannot_reopen,
         );
         assert!(reopen_blocker_for(&runs, &all[0].id).is_none());
+    }
+
+    /// A one-seat Claude Code run with its session planted and archived — the
+    /// starting point for the reopen gate's refusals below. Returns the run's id.
+    fn an_archived_one_seat_run(shell: &Path, runs: &Path) -> String {
+        let project = shell.join("pane-config/run-1/orch/projects/-tmp-slug");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("abc.jsonl"), r#"{"type":"user"}"#).unwrap();
+        begin(shell, 1_800_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("run-1"), None);
+        record_pane(shell, "orch", crate::placement::harness::claude_code().spec(), None);
+        write_live(shell, &["take the parser"]);
+        rotate(shell, runs, 0);
+        list(runs)[0].id.clone()
+    }
+
+    /// **A session gone from disk refuses the reopen, before the live fleet is
+    /// touched** (R8, R19).
+    ///
+    /// The manifest recorded an id, which says the session existed at rotation —
+    /// not that it still does. Clearing `pane-config/` leaves the id behind, and
+    /// Claude Code's `--resume` then exits 1 ("No conversation found with session
+    /// ID") in a pane the live fleet was already killed for. The gate used to let
+    /// exactly that through.
+    #[test]
+    fn a_session_gone_from_disk_refuses_the_reopen_before_anything_is_torn_down() {
+        let root = scratch("gone");
+        let shell = root.join("_shell");
+        let runs = runs_dir(&root);
+        let id = an_archived_one_seat_run(&shell, &runs);
+        assert_eq!(list(&runs)[0].cannot_reopen, None, "the control: with its session present it opens");
+
+        std::fs::remove_dir_all(shell.join("pane-config")).unwrap();
+
+        let why = list(&runs)[0].cannot_reopen.clone().expect("a session gone from disk blocks the row");
+        assert!(why.contains("orch") && why.contains("no longer on disk"), "{why}");
+
+        let mut torn_down = false;
+        let refused = begin_reopen(&shell, &runs, &id, || {
+            torn_down = true;
+            Ok(())
+        });
+        assert!(refused.is_err(), "the reopen must be refused");
+        assert!(!torn_down, "a refused reopen must not touch the live fleet");
+        assert!(!reopen_request(&shell).exists(), "and must leave no request for the next boot");
+    }
+
+    /// **An openable run is torn down first and only then requested** (R8, R2) —
+    /// the ordering `run_reopen` depends on, held by one function a test can call.
+    #[test]
+    fn an_openable_run_tears_the_live_fleet_down_before_it_requests_the_reopen() {
+        let root = scratch("ordered");
+        let shell = root.join("_shell");
+        let runs = runs_dir(&root);
+        let id = an_archived_one_seat_run(&shell, &runs);
+
+        let mut requested_during_teardown = None;
+        begin_reopen(&shell, &runs, &id, || {
+            requested_during_teardown = Some(reopen_request(&shell).exists());
+            Ok(())
+        })
+        .expect("an openable run reopens");
+
+        assert_eq!(requested_during_teardown, Some(false), "teardown ran, and before the request");
+        assert_eq!(std::fs::read_to_string(reopen_request(&shell)).unwrap(), id);
+    }
+
+    /// **A seat on a harness this build does not have names the seat and the
+    /// harness** (R10) — the branch no registered harness can reach, so it is
+    /// reached by editing the manifest a newer build would have written.
+    #[test]
+    fn a_seat_on_a_harness_this_build_does_not_have_names_both() {
+        let root = scratch("unknown-harness");
+        let shell = root.join("_shell");
+        let runs = runs_dir(&root);
+        let id = an_archived_one_seat_run(&shell, &runs);
+
+        let path = run_dir(&runs, &id).unwrap().join(MANIFEST_JSON);
+        let mut manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        manifest["panes"]["orch"]["harness"] = serde_json::json!("gamma-cli");
+        std::fs::write(&path, manifest.to_string()).unwrap();
+
+        let why = reopen_blocker_for(&runs, &id).expect("an unregistered harness blocks the run");
+        assert!(
+            why.contains("orch") && why.contains("gamma-cli") && why.contains("does not have"),
+            "{why}"
+        );
+    }
+
+    /// **A partly recorded reopen keeps its parent's other seats** (R20).
+    ///
+    /// Panes are recorded one at a time as they spawn. A reopen that placed orch
+    /// and got no further records orch alone; taking that map whole hid the
+    /// parent's worker-1, and the next reopen started worker-1 on a fresh session
+    /// while its real one sat in the shared seat directory.
+    #[test]
+    fn a_partly_recorded_reopen_still_resumes_every_seat_its_lineage_recorded() {
+        let root = scratch("lineage-partial");
+        let shell = root.join("_shell");
+        let runs = runs_dir(&root);
+        let cc = crate::placement::harness::claude_code().spec();
+        for (seat, session) in [("orch", "sess-orch"), ("worker-1", "sess-w1")] {
+            let project = shell.join(format!("pane-config/root-run/{seat}/projects/-tmp-slug"));
+            std::fs::create_dir_all(&project).unwrap();
+            std::fs::write(project.join(format!("{session}.jsonl")), r#"{"type":"user"}"#).unwrap();
+        }
+        begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("root-run"), None);
+        record_pane(&shell, "orch", cc, None);
+        record_pane(&shell, "worker-1", cc, None);
+        write_live(&shell, &["take the parser"]);
+        rotate(&shell, &runs, 0);
+        let parent_id = list(&runs)[0].id.clone();
+
+        // The child placed orch and got no further.
+        begin(
+            &shell,
+            1_900_000_000_000,
+            Path::new("/tmp/logstat"),
+            &SessionsId::new("root-run"),
+            Some(&parent_id),
+        );
+        record_pane(&shell, "orch", cc, None);
+        write_live(&shell, &["still going"]);
+        rotate(&shell, &runs, 0);
+
+        let child_id = list(&runs)[0].id.clone();
+        assert_ne!(child_id, parent_id, "the lineage's row is the child");
+        let resumed = lineage_session_ids(&runs, &child_id);
+        assert_eq!(resumed.get("orch").map(String::as_str), Some("sess-orch"), "{resumed:?}");
+        assert_eq!(
+            resumed.get("worker-1").map(String::as_str),
+            Some("sess-w1"),
+            "worker-1 was recorded by the parent alone, and a partial child must not hide it: {resumed:?}",
+        );
+        assert_eq!(list(&runs)[0].cannot_reopen, None);
     }
 
     /// One live WAL-mode thread store, shaped like the one a codex pane leaves

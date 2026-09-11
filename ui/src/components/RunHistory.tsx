@@ -63,6 +63,7 @@ function RunRow({
   run,
   opening,
   busy,
+  intactSaidAbove,
   onOpen,
   onRename,
   onDelete,
@@ -71,6 +72,8 @@ function RunRow({
   run: RunRecord;
   opening: boolean;
   busy: boolean;
+  /// The note above the list already said what survives, for every row at once.
+  intactSaidAbove: boolean;
   onOpen: () => void;
   onRename: (label: string) => void;
   onDelete: () => void;
@@ -143,7 +146,15 @@ function RunRow({
         </div>
         {run.target && <div className="run__target">{run.target}</div>}
         {opening && <div className="run__why">Opening — archiving the current session first…</div>}
-        {blocked && <div className="run__why">Can’t reopen — {blocked}</div>}
+        {/* The cause, then what survives it (R8). The backend names only the
+            cause; what survives is the same for every cause, so it is said
+            here — and not at all when the note above already said it. */}
+        {blocked && (
+          <div className="run__why">
+            Can’t reopen — {blocked}.
+            {!intactSaidAbove && " Its log and transcripts are intact and still export."}
+          </div>
+        )}
       </div>
 
       <div className="run__actions">
@@ -216,12 +227,12 @@ export function RunHistory({
       {/* Said once, at the top, rather than repeated on every row. Every archive
           made before WP-27 is in this state, so on the first launch after it ships
           the whole list is in it — and a list where nothing opens needs one
-          explanation, not N identical ones. */}
+          sentence about what survives, not N identical ones. Each row still gives
+          its own cause, because causes differ. */}
       {nothingOpens && (
         <div className="run-note">
-          None of these can be reopened — they were archived before sessions were
-          recorded. Their logs and transcripts are intact and still export. Sessions
-          started from now on will reopen.
+          None of these can be reopened — each says why. Their logs and transcripts
+          are intact and still export.
         </div>
       )}
 
@@ -238,6 +249,7 @@ export function RunHistory({
               run={run}
               opening={runs.opening === run.id}
               busy={runs.opening !== null}
+              intactSaidAbove={nothingOpens}
               onOpen={() => void runs.reopen(run.id).then(onOpened).catch(() => {})}
               onRename={(label) => void runs.rename(run.id, label)}
               onDelete={() => void runs.remove(run.id)}

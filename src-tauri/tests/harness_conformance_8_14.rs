@@ -1092,6 +1092,23 @@ fn checkpoint_15_a_harness_that_claims_it_resumes_can_build_the_argv_that_does_i
         let claimed = pass.spec.resume.is_supported();
         let built = pass.harness.resume_args(&Seat::new("BRIEF"), "SESSION-XYZ");
 
+        // The presence check's one universal answer: an empty seat holds no
+        // session. A harness that says yes here lets the reopen gate pass a seat
+        // whose session is gone, and the vendor's resume fails in a pane the live
+        // fleet was already killed for (R19). What a *present* session looks like
+        // is each vendor's own, and is asserted beside each harness.
+        if claimed {
+            let empty = std::env::temp_dir()
+                .join(format!("fleetor-cp15-{}-{}", pass.spec.name, std::process::id()));
+            std::fs::create_dir_all(&empty).expect("an empty seat directory");
+            assert!(
+                !pass.harness.has_session(&empty, "SESSION-XYZ"),
+                "{}: checkpoint 15's presence check found a session in an empty seat directory \
+                 — the reopen gate would pass a seat with nothing to resume",
+                pass.spec.name,
+            );
+        }
+
         assert_eq!(
             claimed,
             built.is_some(),

@@ -2500,16 +2500,14 @@ pub fn run_reopen(
 ) -> Result<BootSnapshot, String> {
     let layout = layout();
     let runs_dir = runs::runs_dir(layout.root());
-    if let Some(why) = runs::reopen_blocker_for(&runs_dir, &id) {
-        return Err(format!("\u{201c}{id}\u{201d} can\u{2019}t be opened: {why}"));
-    }
-
-    crate::pty::kill_all(&registry);
-    {
+    // Gate, teardown, request — the order lives in `begin_reopen`, where a test
+    // holds it (R8): nothing below the gate runs for a run that cannot open.
+    runs::begin_reopen(&layout.shell(), &runs_dir, &id, || {
+        crate::pty::kill_all(&registry);
         let mut guard = state.0.lock().map_err(|e| e.to_string())?;
         *guard = None;
-    }
-    runs::request_reopen(&layout.shell(), &id)?;
+        Ok(())
+    })?;
     fleet_bootstrap(app, state, registry, gate)
 }
 

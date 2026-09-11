@@ -1374,6 +1374,21 @@ pub trait Harness: std::fmt::Debug + Send + Sync + 'static {
     /// started, or one that stopped before its harness wrote anything.
     fn session_id(&self, seat_dir: &Path) -> Option<String>;
 
+    /// **Checkpoint 15's presence check — is session `session_id` still in this
+    /// seat directory?** (WP-27, R19).
+    ///
+    /// Asked by the reopen gate, before anything is torn down. A manifest that
+    /// recorded an id says the session existed at rotation, not that it still
+    /// does: a deleted seat directory leaves the id behind, and the vendor's resume
+    /// then fails in a pane the live fleet was already killed for — Claude Code
+    /// prints "No conversation found with session ID" and exits 1.
+    ///
+    /// **Its own method rather than a comparison against
+    /// [`session_id`](Harness::session_id)**, because that reader answers the
+    /// *newest* session and a lineage's directory can hold several; the gate asks
+    /// about one id in particular, possibly recorded by an ancestor (R20).
+    fn has_session(&self, seat_dir: &Path, session_id: &str) -> bool;
+
     /// **Checkpoint 11's behavioural half:** this harness's own accounting of its
     /// own turn, read back off the pane's configuration directory (#41, C61, C65).
     ///
@@ -1829,6 +1844,16 @@ impl Harness for ClaudeCode {
             }
         }
         newest?.1.file_stem().and_then(|s| s.to_str()).map(str::to_string)
+    }
+
+    /// Present when a transcript named `<session_id>.jsonl` is under the seat —
+    /// the filename rule [`Self::session_id`] reads the id from, asked the other
+    /// way round.
+    fn has_session(&self, seat_dir: &Path, session_id: &str) -> bool {
+        let spec = self.spec();
+        crate::runs::transcript_files_for(&seat_dir.join(spec.transcript.subdir), spec.transcript.file_ext)
+            .iter()
+            .any(|file| file.file_stem().and_then(|s| s.to_str()) == Some(session_id))
     }
 }
 
@@ -3077,6 +3102,27 @@ mod tests {
         let dir = std::env::temp_dir();
         assert_eq!(claude_code().project_key(&dir), super::super::spawn::project_key(&dir));
         assert!(claude_code().spec().project_identity.canonicalize);
+    }
+
+    /// Checkpoint 15's reader and its presence check agree on one session, and the
+    /// check is exact: a prefix of the id is not the session (R19).
+    #[test]
+    fn claude_codes_presence_check_finds_the_session_its_reader_names_and_no_other() {
+        let seat = std::env::temp_dir().join(format!(
+            "fleetor-cc-has-session-{}",
+            fleetor_core::time::now_ms()
+        ));
+        let project = seat.join("projects").join("-tmp-slug");
+        std::fs::create_dir_all(&project).expect("scratch seat");
+        std::fs::write(project.join("abc-123.jsonl"), r#"{"type":"user"}"#).expect("a transcript");
+
+        let cc = claude_code();
+        let id = cc.session_id(&seat).expect("the reader names the session");
+        assert!(cc.has_session(&seat, &id), "the check must find what the reader named");
+        assert!(!cc.has_session(&seat, "abc"), "a prefix of the id is not the session");
+        assert!(!cc.has_session(&seat, "zzz-999"), "an id with no transcript is absent");
+        assert!(!cc.has_session(&seat.join("nowhere"), &id), "a missing seat holds nothing");
+        let _ = std::fs::remove_dir_all(&seat);
     }
 
     #[test]

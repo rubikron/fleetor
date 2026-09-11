@@ -21,14 +21,14 @@ The capability is a harness answer, not a Claude Code feature. A fifteenth check
 ### Technical
 
 - [ ] `cargo test` green across the workspace and the shell; `cargo build` produces no warnings; `npm run build` (`tsc --noEmit && vite build`) clean.
-- [ ] A new conformance test walks `harness::registered()` and fails if any harness leaves checkpoint 15 unanswered — mutation-checked by deleting Claude Code's answer and confirming it turns red.
+- [x] A new conformance test walks `harness::registered()` and fails if any harness leaves checkpoint 15 unanswered — mutation-checked by deleting Claude Code's answer and confirming it turns red. *(S2: mutation-checked 2026-09-10 — Claude Code's argv builder returning `None` turns it red; so does a presence check that always answers yes. Leaving the checkpoint unanswered outright is a compile error, since all three methods are required.)*
 - [ ] A test drives rotation and asserts `manifest.json` carries `panes.<seat>.session_id` for every seat that recorded one, and `panes.<seat>.harness` beside it.
 - [ ] A test asserts rotation **copies** rather than moves: after `rotate`, the session file is present in both `pane-config/<run-id>/<seat>/` and `runs/<id>/transcripts/<seat>/`, byte-identical.
 - [ ] A test asserts an archived run's directory holds only that run's sessions — write two runs' sessions and confirm run 1's archive does not contain run 2's.
-- [ ] A test asserts the reopen refusal (R8) fires from the manifest **before** any teardown: a run with a seat missing `session_id` refuses and the live registry is untouched.
+- [x] A test asserts the reopen refusal (R8) fires from the manifest **before** any teardown: a run with a seat missing `session_id` refuses and the live registry is untouched. *(S2: `runs::begin_reopen` holds the order; `a_session_gone_from_disk_refuses_the_reopen_before_anything_is_torn_down` asserts the teardown never runs and no request is written — mutation-checked by moving teardown above the gate.)*
 - [ ] A test asserts delete is lineage-scoped (R15): deleting a row that has been reopened twice removes all three `runs/<id>/` directories, their index entries and `pane-config/<root-id>/`, and leaves every archive outside that lineage present.
 - [ ] `src-tauri/tests/views.rs`'s rail/restore-list tripwire still passes with whatever the History view becomes.
-- [ ] A render test (the `tests/*_probe/render.tsx` + `renderToStaticMarkup` shape already used by `pane_head_renders.rs`) proves a row that cannot be reopened renders its reason and offers no open affordance — a dropped reason fails a test, not a screen.
+- [x] A render test (the `tests/*_probe/render.tsx` + `renderToStaticMarkup` shape already used by `pane_head_renders.rs`) proves a row that cannot be reopened renders its reason and offers no open affordance — a dropped reason fails a test, not a screen. *(S2: `tests/history_row_renders.rs`, mutation-checked by making the row clickable and by dropping the "intact" sentence.)*
 - [ ] A test pins that the Claude Code trust key is seeded against the **resolved** cwd — seed a path through a symlinked parent and confirm the key names the realpath. The product already does this (`spawn::project_key` canonicalizes, R17); what is missing is a test that goes through a symlink, since `the_project_key_is_the_canonicalization_the_trust_flag_and_the_gauge_share` only compares two calls on the same path.
 - [ ] No file under `prompts/` changes; a diff against it is empty.
 
@@ -166,6 +166,8 @@ Vertical tracer bullets. Each ends in something demoable; none is a foundation l
   **Built, and running it found three gaps its tests did not** (R18): the reopen gate asked only the newest run, so a reopen quit within seconds refused a lineage whose sessions were all present (`2930eb8`); `resume_args` was conformance-tested and called by nothing, and mounted panes were never respawned, so a reopen showed five dead terminals (`16378ab`); and the click reopened without taking the operator to the panes (`00320f0`). Not yet done from S1's criteria: the unopenable-row render test and the symlinked trust-key test.
 
 **S2 — honesty.** R8's whole-run refusal from the manifest before teardown, R10's declared refusal in the spec and on the row, the pre-checkpoint-15 rows, the conformance test. *Demo: a run that cannot open says exactly why, and the live fleet survives the attempt.*
+
+  **Built** (R19–R21). The audit found most of S2's surface already landed with S1; what S2 added was two gate bugs the PRD never listed — a session gone from disk passed the gate (R19), and a partly recorded reopen hid its parent's seats (R20) — plus the ordering test, the render test, the unregistered-harness test and the "what survives" sentence on every blocked row (R21). **Not done:** R12 is still enforced only by the UI; nothing in the backend refuses reopening a lineage's older member.
 
 **S3 — lineage.** R12's one-row-per-lineage, `reopened N×`, R15's lineage-scoped delete, R7's worktree `Notice`. *Demo: reopen twice, see one row, delete it and watch every other row survive.*
 

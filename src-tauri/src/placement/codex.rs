@@ -920,6 +920,26 @@ impl Harness for CodexCli {
         .ok()
     }
 
+    /// Present when any item in the thread store carries `session_id` as its
+    /// thread — the column [`Self::session_id`] reads, asked about one id.
+    /// Read-only; `false` on any read failure, since a store the gate cannot read
+    /// is one `codex resume` cannot either.
+    fn has_session(&self, seat_dir: &std::path::Path, session_id: &str) -> bool {
+        let Some(db) = Self::thread_store(seat_dir) else { return false };
+        let Ok(conn) = rusqlite::Connection::open_with_flags(
+            &db,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        ) else {
+            return false;
+        };
+        conn.query_row(
+            "SELECT 1 FROM thread_items WHERE thread_id = ?1 LIMIT 1",
+            [session_id],
+            |_| Ok(()),
+        )
+        .is_ok()
+    }
+
     /// **Codex's login is a file inside the directory this module replaces**
     /// (C6, C73) — `auth.json` under the operator's own `CODEX_HOME`.
     ///
@@ -3096,6 +3116,36 @@ args = ["--root", "~/notes"]
             std::fs::read_to_string(&installed).expect("still there").contains("~/brief.md"),
             "a refused seed installs nothing, so what was there is what is there",
         );
+    }
+
+    /// Checkpoint 15's reader and its presence check agree on one thread, and a
+    /// thread the store never held is absent (R19). The store is fabricated with
+    /// the two columns both read, not produced by a vendor binary.
+    #[test]
+    fn codexs_presence_check_finds_the_thread_its_reader_names_and_no_other() {
+        let seat = std::env::temp_dir().join(format!(
+            "fleetor-codex-has-session-{}",
+            fleetor_core::time::now_ms()
+        ));
+        std::fs::create_dir_all(&seat).expect("scratch seat");
+        let conn = rusqlite::Connection::open(seat.join("thread_history_1.sqlite")).unwrap();
+        conn.execute(
+            "CREATE TABLE thread_items (thread_id TEXT, created_at_ms INTEGER, item_json TEXT)",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO thread_items VALUES ('thread-old', 1, '{}')", []).unwrap();
+        conn.execute("INSERT INTO thread_items VALUES ('thread-new', 2, '{}')", []).unwrap();
+        drop(conn);
+
+        let codex = crate::placement::harness::by_name(CODEX_SPEC.name).expect("codex is registered");
+        let id = codex.session_id(&seat).expect("the reader names the newest thread");
+        assert_eq!(id, "thread-new");
+        assert!(codex.has_session(&seat, &id));
+        assert!(codex.has_session(&seat, "thread-old"), "an older thread is still present");
+        assert!(!codex.has_session(&seat, "thread-gone"));
+        assert!(!codex.has_session(&seat.join("nowhere"), &id), "a missing seat holds nothing");
+        let _ = std::fs::remove_dir_all(&seat);
     }
 
     #[test]

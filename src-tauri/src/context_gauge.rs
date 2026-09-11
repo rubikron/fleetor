@@ -761,6 +761,9 @@ mod tests {
                     fn session_id(&self, seat_dir: &Path) -> Option<String> {
                         claude_code().session_id(seat_dir)
                     }
+                    fn has_session(&self, seat_dir: &Path, session_id: &str) -> bool {
+                        claude_code().has_session(seat_dir, session_id)
+                    }
                 }
             };
         }
