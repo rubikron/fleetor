@@ -1147,3 +1147,62 @@ fn checkpoint_15_a_harness_that_claims_it_resumes_can_build_the_argv_that_does_i
     });
     assert!(seen > 0);
 }
+
+/// **Checkpoint 15's other half — a reopened pane is the pane it was** (WP-29,
+/// gap 1; R13).
+///
+/// The test above proves a harness can build *an* argv. It does not prove the
+/// argv is as strong as the one a fresh launch gets, and that gap hid a real
+/// defect for the whole of WP-27: `CodexCli::resume_args` took a [`Seat`] named
+/// `_seat` and threw it away, so a reopened codex worker came back on the
+/// operator's default model and without `--dangerously-bypass-hook-trust` — the
+/// argument that makes the fleet's own `PreToolUse` hook run at all. A pane
+/// whose write guardrail is silently absent is exactly what R13 guarantees
+/// nobody in the pane will tell you about.
+///
+/// **The brief is the one thing a resume must drop**, so it and its flag are
+/// excluded; everything else a fresh launch carries must survive. Asserted as
+/// containment rather than equality, because a resume argv legitimately holds
+/// things a fresh one does not — a subcommand, a session id, a vendor's own
+/// defence against its picker.
+#[test]
+fn checkpoint_15_a_reopened_pane_keeps_every_posture_argument_a_fresh_one_gets() {
+    let seen = for_each_registered("cp15-posture", |pass| {
+        if !pass.spec.resume.is_supported() {
+            return;
+        }
+
+        // A fully loaded unattended seat: both posture channels filled, so a
+        // harness that answers either one has something to lose.
+        let seat = Seat::new("CONFORMANCE-BRIEF")
+            .with_model("MODEL-CONFORMANCE")
+            .with_permission_mode("MODE-CONFORMANCE");
+
+        let fresh = pass.harness.command_args(&seat);
+        let resumed = pass
+            .harness
+            .resume_args(&seat, "SESSION-XYZ")
+            .expect("a harness claiming resume support builds an argv");
+
+        let brief_flag = pass.spec.brief.argv_flag;
+        let mut carrying_the_brief = false;
+        for arg in &fresh {
+            if carrying_the_brief {
+                carrying_the_brief = false;
+                continue;
+            }
+            if Some(arg.as_str()) == brief_flag {
+                carrying_the_brief = true;
+                continue;
+            }
+            assert!(
+                resumed.contains(arg),
+                "{}: a fresh launch carries {arg:?} and a reopen does not ({resumed:?}) — a \
+                 reopened pane must come back as the pane it was, and a posture argument \
+                 dropped here fails silently inside a pane R13 forbids telling",
+                pass.spec.name,
+            );
+        }
+    });
+    assert!(seen > 0);
+}

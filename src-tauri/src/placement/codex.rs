@@ -887,14 +887,40 @@ impl Harness for CodexCli {
     /// and the pane would hang. `current` rather than `session` because the fleet
     /// decides where a pane works; the recorded directory may have moved.
     ///
-    /// No brief rides along, for [`ClaudeCode::resume_args`]'s reason (R13).
-    fn resume_args(&self, _seat: &Seat<'_>, session_id: &str) -> Option<Vec<String>> {
-        Some(vec![
+    /// No brief rides along, for [`ClaudeCode::resume_args`]'s reason (R13) — and
+    /// here the brief would land on `codex resume`'s own `[PROMPT]` positional,
+    /// which is a second reason for the same rule.
+    ///
+    /// **The seat's posture rides along, because a reopened pane is the pane it
+    /// was** (WP-29 gap 1). This method ignored its `Seat` until then, so a
+    /// reopened codex worker came back on the operator's default model and,
+    /// worse, without [`BYPASS_HOOK_TRUST`] — the argument that makes the fleet's
+    /// own `PreToolUse` hook run at all (C46, C48). A pane silently missing its
+    /// write guardrail is exactly the shape of failure R13 guarantees nobody in
+    /// the pane will report.
+    ///
+    /// **Both flags are accepted after the subcommand, and that was checked
+    /// rather than assumed** — `codex resume --help` at 0.153.4 lists `-m,
+    /// --model <MODEL>` and `--dangerously-bypass-hook-trust` among its own
+    /// options, not only the top-level ones. A top-level flag appended after a
+    /// subcommand clap did not mark global would have failed every reopened codex
+    /// pane at spawn.
+    fn resume_args(&self, seat: &Seat<'_>, session_id: &str) -> Option<Vec<String>> {
+        let spec = self.spec();
+        let mut args = vec![
             "resume".to_string(),
             session_id.to_string(),
             "-c".to_string(),
             "tui.resume_cwd=current".to_string(),
-        ])
+        ];
+        if let (Some(flag), Some(model)) = (spec.posture.model_flag, seat.model) {
+            args.push(flag.to_string());
+            args.push(model.to_string());
+        }
+        if !seat.operators_own_seat {
+            args.push(BYPASS_HOOK_TRUST.to_string());
+        }
+        Some(args)
     }
 
     /// Codex's resumable id lives **inside** its thread store rather than in a
@@ -4651,6 +4677,54 @@ args = ["--root", "~/notes"]
                 .command_args(&Seat::new("").with_permission_mode("acceptEdits"))
                 .iter()
                 .any(|a| a == BYPASS_HOOK_TRUST),
+        );
+        // **The same asymmetry on a reopen** (WP-29 gap 1). Before the fix this
+        // held for the wrong reason: `resume_args` handed nobody the bypass,
+        // including the four seats whose guardrail depends on it.
+        assert!(
+            codex()
+                .resume_args(&Seat::new("").for_the_operator(), "SESSION-XYZ")
+                .expect("codex resumes")
+                .iter()
+                .all(|a| a != BYPASS_HOOK_TRUST),
+            "the operator's own pane answers hook trust itself on a reopen too",
+        );
+    }
+
+    /// **A reopened codex pane comes back as the pane it was** (WP-29 gap 1).
+    ///
+    /// `resume_args` ignored its [`Seat`] entirely until then, so a reopened
+    /// worker lost two things a fresh one has: the model the fleet chose for it,
+    /// and [`BYPASS_HOOK_TRUST`] — without which the fleet's own `PreToolUse`
+    /// hook is silently skipped (C46, C48) and the pane's write guardrail is
+    /// gone. R13 guarantees nothing in the pane reports either.
+    ///
+    /// The flags are asserted here rather than only in conformance because the
+    /// *spelling* is this vendor's: both are accepted after the `resume`
+    /// subcommand at 0.153.4, checked against `codex resume --help`.
+    #[test]
+    fn a_reopened_seat_keeps_its_model_and_its_bypass() {
+        let argv = codex()
+            .resume_args(&Seat::new("BRIEF").with_model("gpt-5-codex"), "SESSION-XYZ")
+            .expect("codex resumes");
+
+        // The subcommand still leads, and the id still reaches the vendor.
+        assert_eq!(argv.first().map(String::as_str), Some("resume"));
+        assert_eq!(argv.get(1).map(String::as_str), Some("SESSION-XYZ"));
+
+        assert!(
+            argv.windows(2).any(|w| w[0] == "--model" && w[1] == "gpt-5-codex"),
+            "the seat's model rides along: {argv:?}",
+        );
+        assert!(
+            argv.iter().any(|a| a == BYPASS_HOOK_TRUST),
+            "a fenced seat's guardrail survives the reopen: {argv:?}",
+        );
+        // R13, and codex's own second reason: a brief here would land on
+        // `codex resume`'s `[PROMPT]` positional.
+        assert!(
+            !argv.iter().any(|a| a.contains("BRIEF")),
+            "no brief on a reopen: {argv:?}",
         );
     }
 
