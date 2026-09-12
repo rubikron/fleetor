@@ -224,7 +224,8 @@ pub(super) fn orch_command_with(
     // moment this seat could be a different vendor; `None` is the gate's
     // `default (your login)` sentinel, and it is what every caller but the picker
     // passes.
-    let brief = render_orch(&ctx.orch_template, &roster(), &cwd.display().to_string());
+    let brief =
+        render_orch(&ctx.orch_template, &roster(), &cwd.display().to_string(), &ctx.branch_prefix);
     let seat = Seat::new(&brief).for_the_operator();
     let seat = match model {
         Some(model) => seat.with_model(model),
@@ -430,7 +431,13 @@ pub(super) fn worker_command_with(
         // one value, two possible carriers — never both at once, which is what
         // the conformance suite's checkpoint 3 refuses.
         &{
-            let brief = render_worker(&ctx.worker_template, pane, &roster(), &cwd.display().to_string());
+            let brief = render_worker(
+                &ctx.worker_template,
+                pane,
+                &roster(),
+                &cwd.display().to_string(),
+                &ctx.branch_prefix,
+            );
             let seat = Seat::new(&brief).with_permission_mode(&ctx.launch.worker_permission_mode);
             // **The argv half of the same rule** (C80). A harness that takes its
             // model in argv (codex's `--model`) must not be handed the fleet's on

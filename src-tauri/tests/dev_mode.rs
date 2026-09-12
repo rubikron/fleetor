@@ -240,8 +240,8 @@ fn nothing_a_pane_can_read_ever_names_the_evaluator() {
     // 1 and 2. The briefs, rendered the way a real spawn renders them.
     let cwd = "/tmp/fleetor-veil-test";
     for (who, brief) in [
-        ("orch", orch_brief(&roster, cwd)),
-        ("worker-1", worker_brief(PaneId::Worker(1), &roster, cwd)),
+        ("orch", orch_brief(&roster, cwd, "fleet/dev-0000")),
+        ("worker-1", worker_brief(PaneId::Worker(1), &roster, cwd, "fleet/dev-0000")),
     ] {
         assert!(
             !brief.to_lowercase().contains(NAME),
@@ -369,8 +369,8 @@ fn no_brief_and_no_roster_ever_reaches_the_critic() {
     // nothing to do with the briefs.
     let cwd = "/tmp/fleetor-veil-test";
     for (who, brief) in [
-        ("orch", orch_brief(&roster, cwd)),
-        ("worker-1", worker_brief(PaneId::Worker(1), &roster, cwd)),
+        ("orch", orch_brief(&roster, cwd, "fleet/dev-0000")),
+        ("worker-1", worker_brief(PaneId::Worker(1), &roster, cwd, "fleet/dev-0000")),
     ] {
         assert!(
             !brief.to_lowercase().contains(NAME),

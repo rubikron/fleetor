@@ -4215,7 +4215,12 @@ args = ["--root", "~/notes"]
         // What `place_worker` renders and hands to `Seed::with_brief` — and, for a
         // Claude Code pane, what it hands to `--system-prompt` instead.
         let rendered =
-            fleetor_core::brief::worker_brief(me, &PaneId::roster(&WORKER_SLOTS), &cwd.to_string_lossy());
+            fleetor_core::brief::worker_brief(
+                me,
+                &PaneId::roster(&WORKER_SLOTS),
+                &cwd.to_string_lossy(),
+                "fleet/codex-test-0000",
+            );
         machine.seed_briefed("worker-2", &cwd, &rendered).expect("seed");
 
         assert_eq!(machine.brief("worker-2"), rendered, "byte-identical, not a codex dialect");
@@ -4252,6 +4257,7 @@ args = ["--root", "~/notes"]
             PaneId::Worker(1),
             &PaneId::roster(&WORKER_SLOTS),
             &cwd.to_string_lossy(),
+            "fleet/codex-test-0000",
         );
         machine.seed_briefed("worker-1", &cwd, &rendered).expect("seed");
         let installed = machine.brief("worker-1");

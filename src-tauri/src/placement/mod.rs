@@ -327,6 +327,10 @@ pub(crate) fn pane_config_run(shell: &Path, sessions: &SessionsId) -> PathBuf {
 /// it through this constant rather than repeating the literal.
 pub const UNASSIGNED_SESSIONS: &str = "unassigned";
 
+/// The branch prefix a [`PaneContext`](crate::prompts::PaneContext) carries
+/// before a run has named a target, for [`UNASSIGNED_SESSIONS`]' reason (R26).
+pub const UNASSIGNED_BRANCH_PREFIX: &str = "fleet/unassigned";
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SessionsId(String);
 
@@ -356,6 +360,24 @@ pub(crate) fn target_slug(target: &Path) -> String {
         hash = hash.wrapping_mul(31).wrapping_add(byte as u32);
     }
     format!("{name}-{:04x}", hash & 0xFFFF)
+}
+
+/// **The one spelling of a worker's branch name** (R26), and the prefix every
+/// worker on a target shares.
+///
+/// It lives beside [`target_slug`] because it is the same fact — a branch is
+/// named for the target it came from — and it is a function rather than a
+/// `format!` at each site for D-075's reason: the brief and `git worktree add`
+/// must agree, and they did not. D-067 put the slug in the branch name and the
+/// briefs went on naming `fleet/worker-N` for a month, because nothing compared
+/// them (R25).
+pub(crate) fn worker_branch_prefix(target: &Path) -> String {
+    format!("fleet/{}", target_slug(target))
+}
+
+/// The branch one worker's worktree is checked out on.
+pub(crate) fn worker_branch(target: &Path, slot: u8) -> String {
+    format!("{}/worker-{slot}", worker_branch_prefix(target))
 }
 
 // --- the host -----------------------------------------------------------------
@@ -954,6 +976,7 @@ fn place_orch(
         &context.orch_template,
         &fleetor_core::pane::PaneId::roster(&fleetor_core::pane::WORKER_SLOTS),
         &target.display().to_string(),
+        &worker_branch_prefix(target),
     );
 
     let config_dir = layout.pane_config(&context.sessions, pane);
@@ -1111,6 +1134,7 @@ fn place_worker(
         pane,
         &fleetor_core::pane::PaneId::roster(&fleetor_core::pane::WORKER_SLOTS),
         &cwd.display().to_string(),
+        &worker_branch_prefix(target),
     );
 
     let config_dir = layout.pane_config(&context.sessions, pane);
@@ -1149,6 +1173,7 @@ fn place_worker(
         pane,
         &fleetor_core::pane::PaneId::roster(&fleetor_core::pane::WORKER_SLOTS),
         &cwd.display().to_string(),
+        &worker_branch_prefix(target),
     );
     notices.push((
         NoticeLevel::Info,
@@ -1492,8 +1517,7 @@ fn ensure_worktree(layout: &Layout, target: &Path, slot: u8) -> Result<PathBuf, 
     std::fs::create_dir_all(parent).map_err(|e| format!("create worktree root: {e}"))?;
     let _ = git(target, &["worktree", "prune"]);
 
-    let slug = target_slug(target);
-    let branch = format!("fleet/{slug}/worker-{slot}");
+    let branch = worker_branch(target, slot);
     let dir_str = dir.to_string_lossy().into_owned();
     let output = std::process::Command::new("git")
         .arg("-C")
@@ -1900,6 +1924,39 @@ mod tests {
         assert!(said.expect("making one is announced").contains("an empty initial commit"));
         assert_eq!(ensure_repository(&dir, None), Ok(None), "and the second worker finds a repository");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **R26: the brief a worker is handed names the branch its worktree is
+    /// actually on.** Both halves are computed here rather than asserted as
+    /// literals, so this cannot pass by agreeing with a stale spelling — it reads
+    /// the branch out of the worktree `ensure_worktree` just made. The absence of
+    /// this test is why `fleet/worker-N` outlived D-067 by a month (R25).
+    #[test]
+    fn the_brief_names_the_branch_the_worktree_is_actually_on() {
+        let target = loose_dir("branch-agreement");
+        ensure_repository(&target, None).expect("a repository for the worktree to branch from");
+        let layout = Layout::under(target.join("_fleet"));
+        let dir = ensure_worktree(&layout, &target, 3).expect("a worktree for worker-3");
+
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&dir)
+            .args(["branch", "--show-current"])
+            .output()
+            .expect("git reports the branch it checked out");
+        let on = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        assert!(!on.is_empty(), "the worktree is not on a branch at all");
+
+        let brief = fleetor_core::brief::render_worker(
+            fleetor_core::brief::DEFAULT_WORKER,
+            PaneId::Worker(3),
+            &PaneId::roster(&fleetor_core::pane::WORKER_SLOTS),
+            &dir.display().to_string(),
+            &worker_branch_prefix(&target),
+        );
+        assert!(brief.contains(&on), "the brief does not name `{on}`: {brief}");
+
+        let _ = std::fs::remove_dir_all(&target);
     }
 
     #[test]

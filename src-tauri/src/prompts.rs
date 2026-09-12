@@ -103,6 +103,18 @@ pub struct PaneContext {
     /// `placement.rs`'s `a_placed_pane_is_seeded_under_its_own_runs_sessions_id`
     /// fails if that line is ever lost.
     pub sessions: crate::placement::SessionsId,
+    /// **The prefix every worker branch in this run shares** — `fleet/<target
+    /// slug>` (WP-29, R26).
+    ///
+    /// It rides here for [`sessions`](Self::sessions)' reason: a pure function of
+    /// the target, resolved once when a fleet boots and handed unchanged to every
+    /// placement. The spawn path needs it and cannot compute it — a worker's
+    /// `cwd` is its *worktree*, not the target — and deriving it from that path
+    /// would encode the worktree layout in a second place.
+    ///
+    /// **`baked()` supplies a placeholder**, exactly as it does for `sessions`;
+    /// `fleet.rs` sets the real value at the one place a fleet boots.
+    pub branch_prefix: String,
     /// **Which recorded session each seat reopens, when this run is a reopen**
     /// (WP-27, R6). Keyed by seat name — `orch`, `worker-1` — the same key the
     /// manifest and the seat directories use.
@@ -128,6 +140,7 @@ impl PaneContext {
             critic_template: crate::critic::DEFAULT_BRIEF.to_string(),
             launch,
             sessions: crate::placement::SessionsId::new(crate::placement::UNASSIGNED_SESSIONS),
+            branch_prefix: crate::placement::UNASSIGNED_BRANCH_PREFIX.to_string(),
             resume: std::collections::BTreeMap::new(),
             // A complaint here is a bug in what we shipped, not in what the
             // operator wrote, so it is an error rather than a warning.
@@ -159,6 +172,7 @@ impl PaneContext {
             // Resolving templates says nothing about which run is booting; the
             // caller sets this (see the field's own note).
             sessions: baked.sessions,
+            branch_prefix: baked.branch_prefix,
             resume: baked.resume,
             notices: baked
                 .notices
@@ -390,7 +404,8 @@ mod tests {
     #[test]
     fn a_valid_override_is_used_and_announced() {
         let dir = temp_dir("valid");
-        let mine = "# {me} in {cwd}\n\nyou work with {peers}. verbs: fleet send, fleet broadcast, \
+        let mine = "# {me} in {cwd} on {branch}\n\nyou work with {peers}, under {branch_prefix}. \
+             verbs: fleet send, fleet broadcast, \
              fleet reply, fleet cmd, fleet task, fleet done, fleet handoff, fleet roster, \
              fleet whoami.\n\n{delivery_contract}\n\n{broadcast_rule}\n\n{scaffolding}\n";
         std::fs::write(dir.join("worker.md"), mine).unwrap();
@@ -406,7 +421,13 @@ mod tests {
 
         // And it really does reach a rendered brief, fragments intact.
         let brief =
-            render_worker(&ctx.worker_template, PaneId::Worker(2), &PaneId::roster(&WORKER_SLOTS), "/tmp/wt");
+            render_worker(
+                &ctx.worker_template,
+                PaneId::Worker(2),
+                &PaneId::roster(&WORKER_SLOTS),
+                "/tmp/wt",
+                "fleet/wt-0000",
+            );
         assert!(brief.contains("you work with"));
         assert!(brief.contains("exits non-zero"), "the delivery contract survived the override");
         assert!(brief.contains("Never reply to a broadcast unless it names you"), "L5 survived");
@@ -420,8 +441,11 @@ mod tests {
     fn a_broken_override_falls_back_and_says_why() {
         let dir = temp_dir("broken");
         // Everything a brief needs except the fragment it cannot afford to lose.
-        std::fs::write(dir.join("worker.md"), "# {me} in {cwd}\n\nyou work with {peers}. no fragments.\n")
-            .unwrap();
+        std::fs::write(
+            dir.join("worker.md"),
+            "# {me} in {cwd} on {branch}\n\nyou work with {peers}, under {branch_prefix}. no fragments.\n",
+        )
+        .unwrap();
 
         let ctx = PaneContext::resolve(&dir);
         assert_eq!(ctx.worker_template, DEFAULT_WORKER, "a pane must never run a half-valid brief");
