@@ -1038,7 +1038,14 @@ fn manifest_of(dir: &Path) -> Option<serde_json::Value> {
 /// **Whole-run, and the order of the checks is the order the operator can act
 /// on.** A run with no recorded session directory predates the feature and never
 /// will open; a seat whose harness declares no resume support names the harness;
-/// a seat with no recorded session names the seat.
+/// a seat whose recorded session has since left the disk names the seat (R19).
+///
+/// **A seat that recorded no session at all is not a blocker** (R24). Claude Code
+/// writes a seat's transcript only once something happens in that pane, so an
+/// untouched worker — the common case in a short run — has none, and refusing the
+/// whole run over it made most sessions unopenable. That seat comes back fresh:
+/// `ctx.resume` simply has no entry for it and the spawn path falls back to
+/// `command_args`, brief and all.
 fn reopen_blocker(runs: &Path, id: &str) -> Option<String> {
     use crate::placement::harness::{by_name, Resume};
 
@@ -1075,9 +1082,9 @@ fn reopen_blocker(runs: &Path, id: &str) -> Option<String> {
         if let Resume::NotSupported { why } = &harness.spec().resume {
             return Some(format!("{seat} ran {name}, which {why}"));
         }
-        let Some(session) = rec.get("session_id").and_then(|v| v.as_str()) else {
-            return Some(format!("{seat} recorded no session — it stopped before its harness wrote anything"));
-        };
+        // Nothing recorded, nothing to resume, nothing to refuse: this seat comes
+        // back fresh (R24). Only a seat that *had* a session is gated below.
+        let Some(session) = rec.get("session_id").and_then(|v| v.as_str()) else { continue };
         // **Recorded is not present** (R19). The id says the session existed at
         // rotation; a seat directory deleted since leaves the id behind, and the
         // vendor's resume would then fail in a pane the live fleet was killed for.
@@ -1586,10 +1593,15 @@ mod tests {
         assert_eq!(all[0].cannot_reopen, None, "{:?}", all[0]);
     }
 
-    /// **A seat that recorded no session makes the whole run unopenable** (R8),
-    /// and the reason names the seat rather than saying "something went wrong".
+    /// **A seat that recorded no session comes back fresh rather than blocking the
+    /// run** (R24), while the seats that recorded one still resume it.
+    ///
+    /// This reverses what R8 shipped, on measured grounds: Claude Code writes a
+    /// seat's transcript only when something happens in that pane, so a worker
+    /// nobody messaged has none — and two real sessions were refused over exactly
+    /// that.
     #[test]
-    fn a_seat_with_no_recorded_session_blocks_the_whole_run_by_name() {
+    fn a_seat_with_no_recorded_session_comes_back_fresh_instead_of_blocking_the_run() {
         let root = scratch("blocked");
         let shell = root.join("_shell");
         let runs = runs_dir(&root);
@@ -1606,10 +1618,15 @@ mod tests {
         rotate(&shell, &runs, 0);
 
         let all = list(&runs);
-        let why = all[0].cannot_reopen.as_deref().expect("a run missing a seat's session is blocked");
-        assert!(why.contains("worker-1"), "the refusal must name the seat: {why}");
+        assert_eq!(all[0].cannot_reopen, None, "an untouched worker is not a refusal: {:?}", all[0]);
         // And the gate a caller actually consults agrees with the row.
-        assert!(reopen_blocker_for(&runs, &all[0].id).is_some());
+        assert_eq!(reopen_blocker_for(&runs, &all[0].id), None);
+
+        // What the reopen will do with it: orch resumes its own session, worker-1
+        // has no entry at all and so is spawned by `command_args`, brief and all.
+        let resume = lineage_session_ids(&runs, &all[0].id);
+        assert_eq!(resume.get("orch").map(String::as_str), Some("abc"), "{resume:?}");
+        assert_eq!(resume.len(), 1, "a seat with nothing to resume is not invented: {resume:?}");
     }
 
     /// **A run archived before WP-27 says so, and says it once** (R8).

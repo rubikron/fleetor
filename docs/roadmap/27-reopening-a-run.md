@@ -149,6 +149,8 @@ Recommended default given for each. The five marked **(mockup)** were found by d
 
 8. **Disk growth is unmeasured.** R3 keeps a session live *and* archived; R4 keeps a directory per run. **Recommended:** measure across ten runs before deciding whether R15's lineage delete is the whole retention story.
 
+9. **Deferred by the operator (2026-09-11): codex.** Two items, both parked until Claude Code's path is done. (a) S4 as written — codex parity for checkpoint 15 and the C39 allowlist question above. (b) Not WP-27's, parked here so it is not lost: `tests/vendor_binary_tier.rs`'s codex arm `typing-tuned-submits` fails "not submitted", twice in a row at `17050e7`; `examples/codex-spike/probe.py` reads no repo code, and whether it also fails before S2 is unchecked. On the WP-28 suite run (same day) a second arm, `brief-replaces`, also failed once ("instructions=0 chars"; it passed on the D-084 run hours earlier) — unchased, codex being parked.
+
 **Spikes: done** (2026-09-08, `docs/notes/reopen-spike-notes.md`, R16). What they settled:
 
 - **Neither vendor forks on resume**, so R3/R4/R6 are mechanically sound. A resumed Claude Code turn appends to the same `.jsonl` (one `sessionId` throughout, equal to the filename stem); a resumed codex turn appends to the same thread, zero new threads.
@@ -167,7 +169,7 @@ Vertical tracer bullets. Each ends in something demoable; none is a foundation l
 
 **S2 — honesty.** R8's whole-run refusal from the manifest before teardown, R10's declared refusal in the spec and on the row, the pre-checkpoint-15 rows, the conformance test. *Demo: a run that cannot open says exactly why, and the live fleet survives the attempt.*
 
-  **Built** (R19–R21). The audit found most of S2's surface already landed with S1; what S2 added was two gate bugs the PRD never listed — a session gone from disk passed the gate (R19), and a partly recorded reopen hid its parent's seats (R20) — plus the ordering test, the render test, the unregistered-harness test and the "what survives" sentence on every blocked row (R21). **Not done:** R12 is still enforced only by the UI; nothing in the backend refuses reopening a lineage's older member.
+  **Built** (R19–R21, amended by R24). The audit found most of S2's surface already landed with S1; what S2 added was two gate bugs the PRD never listed — a session gone from disk passed the gate (R19), and a partly recorded reopen hid its parent's seats (R20) — plus the ordering test, the render test, the unregistered-harness test and the "what survives" sentence on every blocked row (R21). **Amended 2026-09-11 (R24):** the gate no longer refuses a run because a seat recorded no session — measured on two real sessions, Claude Code writes a seat's transcript only once something happens in that pane, so an untouched worker has none and most runs were unopenable. Such a seat comes back fresh; a seat whose recorded session has since left the disk still refuses (R19). **Not done:** R12 is still enforced only by the UI; nothing in the backend refuses reopening a lineage's older member.
 
 **S3 — lineage.** R12's one-row-per-lineage, `reopened N×`, R15's lineage-scoped delete, R7's worktree `Notice`. *Demo: reopen twice, see one row, delete it and watch every other row survive.*
 

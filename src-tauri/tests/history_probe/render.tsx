@@ -30,12 +30,12 @@ const OPENS: RunRecord = {
   reopened: 0,
 };
 
-/// A session one seat of which recorded nothing to resume.
+/// A session one seat of which has lost its transcript since (R19).
 const BLOCKED: RunRecord = {
   ...OPENS,
   id: "2026-09-10T11-00-00Z-bbbb",
   label: "flaky tests",
-  cannot_reopen: "worker-2 recorded no session — it stopped before its harness wrote anything",
+  cannot_reopen: "worker-2’s session is no longer on disk, so there is nothing to resume",
 };
 
 /// A session archived before sessions were recorded at all.

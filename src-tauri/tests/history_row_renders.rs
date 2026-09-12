@@ -135,10 +135,10 @@ fn a_row_that_cannot_reopen_says_why_and_offers_nothing_to_click() {
 
     let blocked = rows
         .iter()
-        .find(|r| r.contains("worker-2 recorded no session"))
+        .find(|r| r.contains("worker-2’s session is no longer on disk"))
         .unwrap_or_else(|| panic!("the blocked row no longer renders its cause:\n{list}"));
     assert!(
-        blocked.contains("Can’t reopen — worker-2 recorded no session"),
+        blocked.contains("Can’t reopen — worker-2’s session is no longer on disk"),
         "the cause must be stated as a refusal, not left as a bare fragment:\n{blocked}"
     );
     assert!(
