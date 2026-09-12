@@ -1246,6 +1246,27 @@ impl Target {
     }
 }
 
+/// **Archive the session that ended, as the app opens** (D-085).
+///
+/// Rotation used to run only inside [`fleet_bootstrap`], so the session the operator
+/// had just closed was still the live slot on the start gate — not a History row —
+/// and "reopen the app, go back to what I was doing" found nothing to click. Called
+/// from `setup` straight after `orphans::sweep`, so the panes that wrote the slot
+/// are gone before it is frozen, and before anything could open it: bootstrap is
+/// the slot's only opener, and it still rotates too (a reopen archives the fleet
+/// being left there).
+///
+/// The notices wait on the gate, drained onto the feed by bootstrap — there is no
+/// feed yet, and "previous run archived" is worth saying rather than dropping.
+pub fn archive_previous_run(gate: &GateHold) {
+    let layout = Layout::for_operator();
+    archive_previous_run_under(&layout.shell(), &runs::runs_dir(layout.root()), gate);
+}
+
+fn archive_previous_run_under(shell: &Path, runs_dir: &Path, gate: &GateHold) {
+    gate.remember(runs::rotate(shell, runs_dir, fleetor_core::time::now_ms()));
+}
+
 // --- locations ----------------------------------------------------------------
 
 /// The operator's own layout: `~/.fleetor` and everything under it.
@@ -2587,13 +2608,49 @@ pub(crate) fn merge_config_key(
     serde_json::to_string_pretty(&root).map_err(|e| format!("encode config: {e}"))
 }
 
-/// Stop the hub and unlink its socket. Best-effort, called on window close
-/// alongside the pty teardown.
+/// **Quitting archives the session** (WP-28, D-086) — the whole of what closing
+/// the app does to the fleet, in the one order that works.
+///
+/// Panes first, because they are the processes that cost money. Then the fleet,
+/// which closes its store. Then the archive — the same `runs::rotate` launch and
+/// bootstrap call, so there is still one archive path. Launch keeps archiving
+/// (D-085) for the quit this never sees: a crash, a Force Quit, a `kill -9`.
+///
+/// Safe to call twice, and a normal window close does (`CloseRequested`, then
+/// `RunEvent::Exit`): the second call finds no panes, no fleet and no live log.
+pub fn quit(state: &FleetState, registry: &Arc<PaneRegistry>, gate: &GateHold) {
+    let layout = layout();
+    archive_after_teardown(&layout.shell(), &runs::runs_dir(layout.root()), gate, || {
+        crate::pty::kill_all(registry);
+        shutdown(state);
+    });
+}
+
+/// Tear down, **then** archive. A function of its own so the order is something a
+/// test holds rather than two lines that happen to be in sequence: `archive::freeze`
+/// cannot take a database out of WAL mode while another connection has it open, and
+/// rotation would then fall back to moving three files.
+fn archive_after_teardown(shell: &Path, runs_dir: &Path, gate: &GateHold, teardown: impl FnOnce()) {
+    teardown();
+    archive_previous_run_under(shell, runs_dir, gate);
+}
+
+/// Stop the hub and drop the fleet. Best-effort, called on quit after the panes.
+///
+/// **Dropping it is what closes the live log** (D-086). Every task holding the
+/// store — the follower, the hub, delivery, the guardrail feed, the evaluator wake
+/// — runs on the fleet's own runtime, so taking the fleet out of state ends them
+/// and releases the last connection to `state.db`. `run_reopen`'s teardown already
+/// did exactly this before its rotation; quit used to leave the fleet in place.
+///
+/// The runtime goes before the hub can unlink its socket, so the socket is
+/// removed here instead — a quit should leave no stale `fleet.sock` behind.
 pub fn shutdown(state: &FleetState) {
-    if let Ok(guard) = state.0.lock() {
-        if let Some(fleet) = guard.as_ref() {
-            fleet.shutdown.notify_one();
-        }
+    let Ok(mut guard) = state.0.lock() else { return };
+    if let Some(fleet) = guard.take() {
+        fleet.shutdown.notify_one();
+        drop(fleet);
+        let _ = std::fs::remove_file(layout().socket());
     }
 }
 
@@ -2717,6 +2774,84 @@ mod tests {
     /// there is one merge, and WP-16's `dev_mode` goes through the same one.
     fn merge_target(existing: Option<&str>, target: &Path) -> Result<String, String> {
         merge_config_key(existing, "target", target.to_string_lossy().into_owned().into())
+    }
+
+    /// **Quitting closes the live log before archiving it** (WP-28, D-086), which is
+    /// what makes the archive one self-contained file rather than the three-file
+    /// fallback `archive::freeze` forces while anything still holds the database.
+    #[test]
+    fn quitting_closes_the_live_log_before_archiving_it_so_the_archive_is_one_file() {
+        let root = std::env::temp_dir().join(format!("fleetor-quit-archive-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let shell = root.join("_shell");
+        let runs_dir = runs::runs_dir(&root);
+        std::fs::create_dir_all(&shell).unwrap();
+        let store: Arc<dyn Store> = Arc::new(SqliteStore::open(&shell.join("state.db")).unwrap());
+        store
+            .append_event(&FleetEvent::Message {
+                id: fleetor_core::ids::new_id("msg"),
+                from: PaneId::Orch,
+                to: PaneId::Worker(1),
+                body: "take the parser".into(),
+                group: None,
+                accepted: true,
+                detail: None,
+            })
+            .unwrap();
+        assert!(shell.join("state.db-wal").exists(), "precondition: a live WAL-mode log, as a running fleet has");
+        let mut live = Some(store);
+
+        archive_after_teardown(&shell, &runs_dir, &GateHold::default(), || drop(live.take()));
+
+        let rows = runs::list(&runs_dir);
+        assert_eq!(rows.len(), 1, "the session is a run the moment the app has quit");
+        let archive = runs_dir.join(&rows[0].id);
+        assert!(archive.join("state.db").is_file());
+        assert!(
+            !archive.join("state.db-wal").exists(),
+            "frozen into one file, which only works once the fleet's connection is closed",
+        );
+        assert!(!shell.join("state.db").exists(), "and nothing is left live for the next launch to archive");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **Opening the app makes the last session a History row** (D-085), and says
+    /// so on the feed the next fleet opens rather than into the void.
+    #[test]
+    fn the_session_left_in_the_live_slot_is_archived_at_launch_and_announced_later() {
+        let root = std::env::temp_dir().join(format!("fleetor-launch-archive-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let shell = root.join("_shell");
+        let runs_dir = runs::runs_dir(&root);
+        std::fs::create_dir_all(&shell).unwrap();
+        {
+            let store = SqliteStore::open(&shell.join("state.db")).unwrap();
+            store
+                .append_event(&FleetEvent::Message {
+                    id: fleetor_core::ids::new_id("msg"),
+                    from: PaneId::Orch,
+                    to: PaneId::Worker(1),
+                    body: "take the parser".into(),
+                    group: None,
+                    accepted: true,
+                    detail: None,
+                })
+                .unwrap();
+        }
+        let gate = GateHold::default();
+
+        archive_previous_run_under(&shell, &runs_dir, &gate);
+
+        assert!(!shell.join("state.db").exists(), "the live slot is empty for the next fleet");
+        assert_eq!(runs::list(&runs_dir).len(), 1, "and the session is a History row before any fleet starts");
+        let held = gate.take_pending();
+        assert!(held.iter().any(|(_, text)| text.contains("see History")), "held for the feed: {held:?}");
+
+        // A second launch with nothing live archives nothing and says nothing.
+        archive_previous_run_under(&shell, &runs_dir, &gate);
+        assert_eq!(runs::list(&runs_dir).len(), 1);
+        assert!(gate.take_pending().is_empty());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The wiring end to end over a **real unix socket**: bootstrap's hub and the

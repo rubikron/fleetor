@@ -68,6 +68,13 @@ export function App() {
   // works on the start gate, before a fleet exists, which is exactly when the
   // operator is deciding what to do next.
   const runs = useRuns();
+  // Read again whenever History is shown (D-085). The list was fetched once at
+  // mount, so a session archived after that — by a fleet start, or anything else —
+  // stayed invisible until a rename, delete or relaunch.
+  const refreshRuns = runs.refresh;
+  useEffect(() => {
+    if (view === "history") refreshRuns();
+  }, [view, refreshRuns]);
   // The WP-04 live gauge: polls only once the fleet is actually running —
   // before `started`, no pane exists to sample and every tick would just be
   // an empty roster.
@@ -433,7 +440,10 @@ export function App() {
                 onStart={() => {
                   setStatuses({ [ORCH]: "idle" });
                   setView("fleet");
-                  void fleet.start().then(() => setStarted(true));
+                  void fleet.start().then(() => {
+                    setStarted(true);
+                    runs.refresh();
+                  });
                 }}
                 onTargetChanged={fleet.refreshConfig}
               />

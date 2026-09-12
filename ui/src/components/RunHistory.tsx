@@ -238,8 +238,9 @@ export function RunHistory({
 
       {runs.runs.length === 0 && !runs.error ? (
         <div className="run-note">
-          No past sessions yet. The one you are in now appears here the next time the
-          fleet starts — the boundary is cut at start, so a crash never loses one.
+          No past sessions yet. The one you are in now appears here the next time you
+          open the app — it is archived before anything new is written, so a crash
+          never loses one.
         </div>
       ) : (
         <ul className="run-list">

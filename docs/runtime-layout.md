@@ -47,7 +47,9 @@ Everything FLEETOR writes at runtime lives here, and nowhere else — that is Ti
   _shell/            everything the running fleet owns
     fleet.sock         the unix socket the `fleet` CLI dials (fleetor-ipc)
     state.db           the event log of the LIVE run only — one SQLite table,
-                       `events`, WAL mode. Archived to `runs/` at the next start
+                       `events`, WAL mode. Archived to `runs/` when the app
+                       quits (D-086), or at the next launch after a crash
+                       (D-085)
     run.json           what the live run is: when it started, what it points at
     panes.pids         the orphan ledger: spawned pids, swept at next startup
                        (src-tauri/src/orphans.rs)
