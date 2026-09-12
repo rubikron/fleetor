@@ -2135,8 +2135,8 @@ fn apply_target(state: &FleetState, target: &Path) {
                     &fleet.store,
                     NoticeLevel::Warn,
                     &format!(
-                        "{} is not a git repository — workers will share a single \
-                         checkout with no worktrees and no per-worker branches.",
+                        "{} is not a git repository — starting the fleet will `git init` \
+                         it and commit what is there, so each worker gets its own worktree.",
                         target.display()
                     ),
                 );

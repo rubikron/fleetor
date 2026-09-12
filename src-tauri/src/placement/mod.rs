@@ -1009,8 +1009,9 @@ fn place_orch(
 /// the gauge source; then the command.
 ///
 /// Two of those steps are conditional and both conditions live on the [`Host`],
-/// never on the process: a target that is not a git repository degrades to the
-/// shared checkout with a notice, and a machine with no rustup gets the toolchain
+/// never on the process: a target that is not a git repository is made one (D-084),
+/// and only a target that cannot be degrades to the shared checkout with a notice;
+/// a machine with no rustup gets the toolchain
 /// settings **absent** rather than pointing at a directory that does not exist.
 // **Eight arguments, and the eighth is C75's** — the seat's credential source, an
 // answer only the caller has. The alternative clippy is asking for is a struct, and
@@ -1086,10 +1087,16 @@ fn place_worker(
         CredentialSource::OperatorsPlan(_) => "",
     };
 
-    // Its own git worktree, or the announced fallback to the shared checkout. The
-    // notice is returned rather than logged, which is what makes the degraded case
-    // assertable for the first time.
-    let cwd = match ensure_worktree(layout, target, slot) {
+    // Its own git worktree — in a target made a repository first if it was not one
+    // (D-084) — or the announced fallback to the shared checkout. The notices are
+    // returned rather than logged, which is what makes both cases assertable.
+    let worktree = ensure_repository(target, host.operator_home.as_deref()).and_then(|made| {
+        if let Some(text) = made {
+            notices.push((NoticeLevel::Info, text));
+        }
+        ensure_worktree(layout, target, slot)
+    });
+    let cwd = match worktree {
         Ok(dir) => dir,
         Err(why) => {
             notices.push((NoticeLevel::Warn, shared_checkout_warning(slot, &why, target)));
@@ -1392,6 +1399,80 @@ fn shared_checkout_warning(slot: u8, why: &str, target: &Path) -> String {
          reviewed `done` as unreviewed until the target is a git repository.",
         target.display()
     )
+}
+
+/// Make the target a git repository if it is not inside one yet (D-084).
+///
+/// **Before this, a target without `.git` sent every worker into one shared
+/// checkout** — no worktrees, no per-worker branches, peer review meaning nothing —
+/// and the operator's only way out was to notice four warnings and run `git init`
+/// themselves. Starting a fleet is the moment they have already said "work here".
+///
+/// Everything in the directory is committed, not an empty commit: a worktree is a
+/// checkout of a commit, so an empty one would hand each worker none of the
+/// project's files. Authored FLEETOR, with signing and hooks off, because this is
+/// FLEETOR's act and the operator's global git config is not asked to approve it.
+///
+/// `Ok(None)` when the target is already inside a repository — including one with
+/// no commits, which is the operator's and is left alone. Refused for the
+/// operator's home directory and `/`, where `git add -A` would commit a machine.
+fn ensure_repository(target: &Path, operator_home: Option<&Path>) -> Result<Option<String>, String> {
+    if git(target, &["rev-parse", "--git-dir"]) {
+        return Ok(None);
+    }
+    let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let refuse = if operator_home.is_some_and(|home| canonical(home) == canonical(target)) {
+        Some("your home directory")
+    } else if canonical(target).parent().is_none() {
+        Some("the filesystem root")
+    } else {
+        None
+    };
+    if let Some(what) = refuse {
+        return Err(format!("{} is not a git repository, and it is {what}, so FLEETOR will not `git init` it", target.display()));
+    }
+
+    if !git(target, &["init", "-q"]) {
+        return Err(format!("{} is not a git repository and `git init` failed there", target.display()));
+    }
+    let committed = git(target, &["add", "-A"])
+        && git(
+            target,
+            &[
+                "-c",
+                "user.name=FLEETOR",
+                "-c",
+                "user.email=fleetor@localhost",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "--no-verify",
+                "--allow-empty",
+                "-m",
+                "fleet: initial commit",
+            ],
+        );
+    if !committed {
+        return Err(format!("FLEETOR ran `git init` in {} but could not make its initial commit", target.display()));
+    }
+
+    let files = std::process::Command::new("git")
+        .arg("-C")
+        .arg(target)
+        .args(["ls-files", "-z"])
+        .output()
+        .map(|o| o.stdout.split(|b| *b == 0).filter(|name| !name.is_empty()).count())
+        .unwrap_or(0);
+    let what = match files {
+        0 => "an empty initial commit".to_string(),
+        1 => "an initial commit of the 1 file in it".to_string(),
+        n => format!("an initial commit of the {n} files in it"),
+    };
+    Ok(Some(format!(
+        "{} was not a git repository, so FLEETOR ran `git init` there and made {what} \u{2014} each worker branches from that.",
+        target.display()
+    )))
 }
 
 /// A worker's own checkout, created if it is not already there.
@@ -1800,6 +1881,35 @@ mod tests {
             text.contains("treat a reviewed `done` as unreviewed"),
             "the operator needs what to do about it, not only what happened: {text}",
         );
+    }
+
+    /// A scratch directory for [`ensure_repository`], outside any repository so
+    /// the test does not pass by finding this one.
+    fn loose_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("fleetor-ensure-repo-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn an_empty_target_still_gets_a_commit_a_worktree_can_branch_from() {
+        let dir = loose_dir("empty");
+        let said = ensure_repository(&dir, None).expect("an empty directory can be made a repository");
+        assert!(git(&dir, &["rev-parse", "--verify", "-q", "HEAD"]), "`git worktree add` needs a commit");
+        assert!(said.expect("making one is announced").contains("an empty initial commit"));
+        assert_eq!(ensure_repository(&dir, None), Ok(None), "and the second worker finds a repository");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_operators_home_is_never_made_a_repository() {
+        let dir = loose_dir("home");
+        std::fs::write(dir.join("secrets.txt"), "not for a commit").unwrap();
+        let why = ensure_repository(&dir, Some(&dir)).expect_err("`git add -A` in a home commits a machine");
+        assert!(why.contains("your home directory"), "{why}");
+        assert!(!dir.join(".git").exists(), "refused before anything was written");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

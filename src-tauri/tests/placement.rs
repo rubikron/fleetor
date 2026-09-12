@@ -696,26 +696,98 @@ fn a_machine_with_no_toolchain_gets_no_toolchain_settings_at_all() {
     );
 }
 
-/// **A target that is not a repository degrades to the shared checkout, loudly.**
+/// **A target that is not a repository is made one, and the worker gets its own
+/// worktree of it** (D-084).
 ///
-/// The wording has had a test; the trigger has not. A fleet that fell back silently
-/// would look identical to a working one right up until an operator trusted a
-/// reviewed `done` that nobody could have reviewed.
+/// Before D-084 this directory sent all four workers into one checkout. The file
+/// written first is the point: a worktree of an empty commit would be a worktree
+/// with none of the project in it, which is the old failure wearing a branch.
 #[test]
-fn a_target_that_is_not_a_repository_falls_back_and_says_what_review_loses() {
-    let scratch = Scratch::new("fallback");
-    // Deliberately *not* `init_repo` — an ordinary directory, which is exactly the
-    // case the fallback exists for.
+fn a_target_that_is_not_a_repository_is_initialized_and_the_worker_gets_a_worktree_of_it() {
+    let scratch = Scratch::new("init");
+    // Deliberately *not* `init_repo` — an ordinary directory with work in it.
+    std::fs::write(scratch.target.join("notes.txt"), "the operator's own file\n").unwrap();
+    let host = host_for_worker(&scratch.root.join("fleet"));
 
     let placed = placement::place(
         PaneSpec::worker(4, claude_code()),
         &scratch.layout,
-        &host_for_worker(&scratch.root.join("fleet")),
+        &host,
         &scratch.target,
         &PaneContext::baked(),
     )
     .expect("a target that is not a repository still places a worker");
 
+    let worktree = scratch.layout.worktree(&scratch.target, 4);
+    assert!(
+        worktree.join("notes.txt").exists(),
+        "the worktree carries the files that were in the target: {}",
+        worktree.display(),
+    );
+    assert_eq!(
+        placed.gauge.expect("a worker records a gauge source").cwd,
+        worktree,
+        "and the worker runs there, not in the target",
+    );
+    let said = placed
+        .notices
+        .iter()
+        .find(|(_, text)| text.contains("git init"))
+        .map(|(level, text)| (*level, text.as_str()))
+        .expect("writing into the operator's directory is announced, never silent");
+    assert_eq!(said.0, NoticeLevel::Info, "{}", said.1);
+    assert!(said.1.contains(&scratch.target.display().to_string()), "where: {}", said.1);
+    assert!(said.1.contains("the 1 file in it"), "what was committed: {}", said.1);
+    assert!(
+        !placed.notices.iter().any(|(_, text)| text.contains("share the checkout")),
+        "no fallback once the target is a repository: {:?}",
+        placed.notices,
+    );
+
+    // The next worker finds a repository: no second commit, no second notice.
+    let second = placement::place(
+        PaneSpec::worker(3, claude_code()),
+        &scratch.layout,
+        &host,
+        &scratch.target,
+        &PaneContext::baked(),
+    )
+    .expect("the second worker places");
+    assert!(!second.notices.iter().any(|(_, text)| text.contains("git init")), "{:?}", second.notices);
+    let log = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&scratch.target)
+        .args(["log", "--format=%s"])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&log.stdout), "fleet: initial commit\n");
+}
+
+/// **A target that cannot be made a repository degrades to the shared checkout,
+/// loudly.**
+///
+/// The operator's home directory is the case D-084 refuses, so it is the case the
+/// fallback is still for. The wording has had a test; the trigger has not. A fleet
+/// that fell back silently would look identical to a working one right up until an
+/// operator trusted a reviewed `done` that nobody could have reviewed.
+#[test]
+fn a_target_that_cannot_be_made_a_repository_falls_back_and_says_what_review_loses() {
+    let scratch = Scratch::new("fallback");
+    let host = Host {
+        operator_home: Some(scratch.target.clone()),
+        ..host_for_worker(&scratch.root.join("fleet"))
+    };
+
+    let placed = placement::place(
+        PaneSpec::worker(4, claude_code()),
+        &scratch.layout,
+        &host,
+        &scratch.target,
+        &PaneContext::baked(),
+    )
+    .expect("a target that is not a repository still places a worker");
+
+    assert!(!scratch.target.join(".git").exists(), "the home directory is never initialized");
     let warning = placed
         .notices
         .iter()
@@ -723,6 +795,7 @@ fn a_target_that_is_not_a_repository_falls_back_and_says_what_review_loses() {
         .map(|(_, text)| text.as_str())
         .expect("the fallback is announced, never silent");
     assert!(warning.contains("worker-4"), "which worker: {warning}");
+    assert!(warning.contains("your home directory"), "why it was not initialized: {warning}");
     assert!(warning.contains("share the checkout"), "what happened: {warning}");
     assert!(
         warning.contains("Peer review is degraded"),
