@@ -894,12 +894,26 @@ pub fn rename(runs: &Path, id: &str, label: &str) -> Result<(), String> {
     write_index(runs, &all).map_err(|e| e.to_string())
 }
 
-/// Delete a run and everything in its directory.
-pub fn delete(runs: &Path, id: &str) -> Result<(), String> {
+/// Delete a run and cascade to its lineage's `pane-config/` when no sibling
+/// remains (R15).
+pub fn delete(runs: &Path, shell: &Path, id: &str) -> Result<(), String> {
     let dir = run_dir(runs, id)?;
+    let sessions = manifest_of(&dir)
+        .and_then(|m| m.get("run")?.get("sessions")?.as_str().map(str::to_string));
+
     std::fs::remove_dir_all(&dir).map_err(|e| format!("removing {}: {e}", dir.display()))?;
     let remaining = list(runs);
-    write_index(runs, &remaining).map_err(|e| e.to_string())
+    write_index(runs, &remaining).map_err(|e| e.to_string())?;
+
+    if let Some(ref sid) = sessions {
+        let still_used = remaining.iter().any(|r| r.sessions.as_deref() == Some(sid.as_str()));
+        if !still_used {
+            let _ = std::fs::remove_dir_all(
+                crate::placement::pane_config_run(shell, &SessionsId::new(sid)),
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Replay one archived run.
@@ -2055,10 +2069,72 @@ mod tests {
         rotate(&shell, &runs, 0);
 
         let id = list(&runs)[0].id.clone();
-        delete(&runs, &id).unwrap();
+        delete(&runs, &shell, &id).unwrap();
         assert!(list(&runs).is_empty());
         assert!(!runs.join(&id).exists());
-        assert!(delete(&runs, &id).is_err(), "a second delete has nothing to remove");
+        assert!(delete(&runs, &shell, &id).is_err(), "a second delete has nothing to remove");
+    }
+
+    /// R15: deleting a lineage's last run removes its `pane-config/` directory.
+    #[test]
+    fn deleting_the_last_run_in_a_lineage_removes_its_pane_config() {
+        let root = scratch("cascade");
+        let shell = root.join("_shell");
+        let runs = runs_dir(&root);
+
+        // Two independent runs with different sessions ids.
+        begin(&shell, 1_800_000_000_000, Path::new("/tmp/a"), &SessionsId::new("sess-a"), None);
+        write_live(&shell, &["alpha"]);
+        rotate(&shell, &runs, 0);
+
+        begin(&shell, 1_800_000_001_000, Path::new("/tmp/b"), &SessionsId::new("sess-b"), None);
+        write_live(&shell, &["beta"]);
+        rotate(&shell, &runs, 0);
+
+        // Seed pane-config dirs the way placement does.
+        let pc_a = crate::placement::pane_config_run(&shell, &SessionsId::new("sess-a"));
+        let pc_b = crate::placement::pane_config_run(&shell, &SessionsId::new("sess-b"));
+        std::fs::create_dir_all(&pc_a).unwrap();
+        std::fs::create_dir_all(&pc_b).unwrap();
+
+        let all = list(&runs);
+        assert_eq!(all.len(), 2);
+        let id_a = all.iter().find(|r| r.sessions.as_deref() == Some("sess-a")).unwrap().id.clone();
+
+        delete(&runs, &shell, &id_a).unwrap();
+        assert!(!pc_a.exists(), "the deleted lineage's pane-config must be removed");
+        assert!(pc_b.exists(), "the surviving lineage's pane-config must remain");
+    }
+
+    /// R15: deleting a reopened run does not remove pane-config while the
+    /// lineage has other members.
+    #[test]
+    fn deleting_a_reopened_run_keeps_pane_config_while_the_lineage_survives() {
+        let root = scratch("cascade-lineage");
+        let shell = root.join("_shell");
+        let runs = runs_dir(&root);
+
+        // Parent run.
+        begin(&shell, 1_800_000_000_000, Path::new("/tmp/c"), &SessionsId::new("sess-c"), None);
+        write_live(&shell, &["parent"]);
+        rotate(&shell, &runs, 0);
+        let parent_id = list(&runs)[0].id.clone();
+
+        // Child (reopened) — same sessions id, parent link.
+        begin(&shell, 1_800_000_001_000, Path::new("/tmp/c"), &SessionsId::new("sess-c"), Some(&parent_id));
+        write_live(&shell, &["child"]);
+        rotate(&shell, &runs, 0);
+
+        let pc = crate::placement::pane_config_run(&shell, &SessionsId::new("sess-c"));
+        std::fs::create_dir_all(&pc).unwrap();
+
+        // The collapsed list shows the child only (tip of lineage).
+        let visible = list(&runs);
+        assert_eq!(visible.len(), 1, "collapse_lineages shows one row");
+        let child_id = visible[0].id.clone();
+
+        delete(&runs, &shell, &child_id).unwrap();
+        assert!(pc.exists(), "pane-config must survive — the parent still references it");
     }
 
     #[test]

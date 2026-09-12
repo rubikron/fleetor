@@ -2481,11 +2481,10 @@ pub fn run_rename(id: String, label: String) -> Result<(), String> {
     runs::rename(&runs::runs_dir(layout().root()), &id, &label)
 }
 
-/// Delete a run and its directory. Nothing else in the app refers to a run by
-/// id, so this needs no cascade — the index is rebuilt from what is left.
 #[tauri::command]
 pub fn run_delete(id: String) -> Result<(), String> {
-    runs::delete(&runs::runs_dir(layout().root()), &id)
+    let l = layout();
+    runs::delete(&runs::runs_dir(l.root()), &l.shell(), &id)
 }
 
 /// Save a run's JSON export wherever the operator points.
