@@ -37,6 +37,7 @@ import { useDevMode } from "./ui/useDevMode";
 import { useCriticInterview } from "./ui/useCriticInterview";
 import { TerminalPane } from "./components/TerminalPane";
 import { killPane, onEvaluatorWake } from "./fleet/api";
+import { stopListening } from "./fleet/listeners";
 import { CRITIC, EVALUATOR, ORCH, paneSlot, type PaneId, type PaneStatus } from "./fleet/types";
 
 // Deeper than a worker's 2,000 and deeper than orch's 10,000: this pane reads a
@@ -174,12 +175,12 @@ export function App() {
     let unlisten: (() => void) | undefined;
     let cancelled = false;
     void onEvaluatorWake(() => setEvaluatorAwake(true)).then((fn) => {
-      if (cancelled) fn();
+      if (cancelled) stopListening(fn, "evaluator wake");
       else unlisten = fn;
     });
     return () => {
       cancelled = true;
-      unlisten?.();
+      stopListening(unlisten, "evaluator wake");
     };
   }, []);
 
