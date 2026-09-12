@@ -199,7 +199,7 @@ impl Pass {
         // The worker really is in its own checkout rather than the announced
         // fallback — otherwise every containment claim below would be about the
         // target repository instead of about the fleet's own tree.
-        let worker_cwd = layout.worktree(&target, WORKER_SLOT);
+        let worker_cwd = layout.worktree(&target, &context.sessions, WORKER_SLOT);
         assert!(
             worker_cwd.join(".git").exists(),
             "the pass needs a worker in its own worktree, not the shared checkout",

@@ -508,7 +508,7 @@ fn placing_against_a_scratch_layout_writes_inside_it_and_nowhere_else() {
         "the Fence's seeded git identity",
     );
     assert!(
-        scratch.layout.worktree(&scratch.target, 1).join(".git").exists(),
+        scratch.layout.worktree(&scratch.target, &fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), 1).join(".git").exists(),
         "the worker's own checkout",
     );
 
@@ -718,7 +718,7 @@ fn a_target_that_is_not_a_repository_is_initialized_and_the_worker_gets_a_worktr
     )
     .expect("a target that is not a repository still places a worker");
 
-    let worktree = scratch.layout.worktree(&scratch.target, 4);
+    let worktree = scratch.layout.worktree(&scratch.target, &fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), 4);
     assert!(
         worktree.join("notes.txt").exists(),
         "the worktree carries the files that were in the target: {}",
@@ -818,7 +818,7 @@ fn a_target_that_cannot_be_made_a_repository_falls_back_and_says_what_review_los
         "the fallback cwd is the target itself",
     );
     assert!(
-        !scratch.layout.worktree(&scratch.target, 4).exists(),
+        !scratch.layout.worktree(&scratch.target, &fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), 4).exists(),
         "no worktree is created when git could not oblige",
     );
     assert_eq!(
@@ -848,7 +848,7 @@ fn a_worker_gets_its_own_worktree_and_branch_in_a_real_repository() {
     )
     .expect("placing worker-1 in a real repository");
 
-    let worktree = scratch.layout.worktree(&scratch.target, 1);
+    let worktree = scratch.layout.worktree(&scratch.target, &fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), 1);
     assert!(worktree.join(".git").exists(), "a real checkout at {}", worktree.display());
     assert!(
         placed.notices.iter().all(|(level, _)| *level != NoticeLevel::Warn),

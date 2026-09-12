@@ -264,10 +264,14 @@ impl Layout {
         }
     }
 
-    /// A worker's own checkout of the target, namespaced by target repo so
-    /// switching targets neither clobbers existing worktrees nor reuses stale ones.
-    pub fn worktree(&self, target: &Path, slot: u8) -> PathBuf {
-        self.shell().join("worktrees").join(target_slug(target)).join(format!("worker-{slot}"))
+    /// A worker's own checkout of the target, namespaced by target then session
+    /// (R23) so each session's workers land in their own trees.
+    pub fn worktree(&self, target: &Path, sessions: &SessionsId, slot: u8) -> PathBuf {
+        self.shell()
+            .join("worktrees")
+            .join(target_slug(target))
+            .join(sessions.as_str())
+            .join(format!("worker-{slot}"))
     }
 }
 
@@ -329,7 +333,7 @@ pub const UNASSIGNED_SESSIONS: &str = "unassigned";
 
 /// The branch prefix a [`PaneContext`](crate::prompts::PaneContext) carries
 /// before a run has named a target, for [`UNASSIGNED_SESSIONS`]' reason (R26).
-pub const UNASSIGNED_BRANCH_PREFIX: &str = "fleet/unassigned";
+pub const UNASSIGNED_BRANCH_PREFIX: &str = "fleet/unassigned/unassigned";
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SessionsId(String);
@@ -371,13 +375,13 @@ pub(crate) fn target_slug(target: &Path) -> String {
 /// must agree, and they did not. D-067 put the slug in the branch name and the
 /// briefs went on naming `fleet/worker-N` for a month, because nothing compared
 /// them (R25).
-pub(crate) fn worker_branch_prefix(target: &Path) -> String {
-    format!("fleet/{}", target_slug(target))
+pub(crate) fn worker_branch_prefix(target: &Path, sessions: &SessionsId) -> String {
+    format!("fleet/{}/{}", target_slug(target), sessions.as_str())
 }
 
 /// The branch one worker's worktree is checked out on.
-pub(crate) fn worker_branch(target: &Path, slot: u8) -> String {
-    format!("{}/worker-{slot}", worker_branch_prefix(target))
+pub(crate) fn worker_branch(target: &Path, sessions: &SessionsId, slot: u8) -> String {
+    format!("{}/worker-{slot}", worker_branch_prefix(target, sessions))
 }
 
 // --- the host -----------------------------------------------------------------
@@ -976,7 +980,7 @@ fn place_orch(
         &context.orch_template,
         &fleetor_core::pane::PaneId::roster(&fleetor_core::pane::WORKER_SLOTS),
         &target.display().to_string(),
-        &worker_branch_prefix(target),
+        &worker_branch_prefix(target, &context.sessions),
     );
 
     let config_dir = layout.pane_config(&context.sessions, pane);
@@ -1117,7 +1121,7 @@ fn place_worker(
         if let Some(text) = made {
             notices.push((NoticeLevel::Info, text));
         }
-        ensure_worktree(layout, target, slot)
+        ensure_worktree(layout, target, slot, &context.sessions)
     });
     let cwd = match worktree {
         Ok(dir) => dir,
@@ -1134,7 +1138,7 @@ fn place_worker(
         pane,
         &fleetor_core::pane::PaneId::roster(&fleetor_core::pane::WORKER_SLOTS),
         &cwd.display().to_string(),
-        &worker_branch_prefix(target),
+        &worker_branch_prefix(target, &context.sessions),
     );
 
     let config_dir = layout.pane_config(&context.sessions, pane);
@@ -1173,7 +1177,7 @@ fn place_worker(
         pane,
         &fleetor_core::pane::PaneId::roster(&fleetor_core::pane::WORKER_SLOTS),
         &cwd.display().to_string(),
-        &worker_branch_prefix(target),
+        &worker_branch_prefix(target, &context.sessions),
     );
     notices.push((
         NoticeLevel::Info,
@@ -1508,8 +1512,8 @@ fn ensure_repository(target: &Path, operator_home: Option<&Path>) -> Result<Opti
 /// including the short-circuit on an existing `.git`, which is what makes a relaunch
 /// cheap, and the prune, which clears registrations left by a worktree directory
 /// someone deleted by hand.
-fn ensure_worktree(layout: &Layout, target: &Path, slot: u8) -> Result<PathBuf, String> {
-    let dir = layout.worktree(target, slot);
+fn ensure_worktree(layout: &Layout, target: &Path, slot: u8, sessions: &SessionsId) -> Result<PathBuf, String> {
+    let dir = layout.worktree(target, sessions, slot);
     if dir.join(".git").exists() {
         return Ok(dir);
     }
@@ -1517,7 +1521,7 @@ fn ensure_worktree(layout: &Layout, target: &Path, slot: u8) -> Result<PathBuf, 
     std::fs::create_dir_all(parent).map_err(|e| format!("create worktree root: {e}"))?;
     let _ = git(target, &["worktree", "prune"]);
 
-    let branch = worker_branch(target, slot);
+    let branch = worker_branch(target, sessions, slot);
     let dir_str = dir.to_string_lossy().into_owned();
     let output = std::process::Command::new("git")
         .arg("-C")
@@ -1780,7 +1784,7 @@ mod tests {
             layout.worker_home(2),
             layout.fleet_toolchain().cargo_home,
             layout.fleet_toolchain().rustup_home,
-            layout.worktree(Path::new("/some/repo"), 1),
+            layout.worktree(Path::new("/some/repo"), &SessionsId::new("run-1"), 1),
         ] {
             assert!(
                 path.starts_with("/scratch/fleet"),
@@ -1936,7 +1940,8 @@ mod tests {
         let target = loose_dir("branch-agreement");
         ensure_repository(&target, None).expect("a repository for the worktree to branch from");
         let layout = Layout::under(target.join("_fleet"));
-        let dir = ensure_worktree(&layout, &target, 3).expect("a worktree for worker-3");
+        let sess = SessionsId::new("test-session");
+        let dir = ensure_worktree(&layout, &target, 3, &sess).expect("a worktree for worker-3");
 
         let out = std::process::Command::new("git")
             .arg("-C")
@@ -1952,11 +1957,46 @@ mod tests {
             PaneId::Worker(3),
             &PaneId::roster(&fleetor_core::pane::WORKER_SLOTS),
             &dir.display().to_string(),
-            &worker_branch_prefix(&target),
+            &worker_branch_prefix(&target, &sess),
         );
         assert!(brief.contains(&on), "the brief does not name `{on}`: {brief}");
 
         let _ = std::fs::remove_dir_all(&target);
+    }
+
+    /// R23: two sessions on the same target get different worktrees and
+    /// branches, and reopening the first returns to the first's path — driven
+    /// through `ensure_worktree`, not asserted as literals (R25).
+    #[test]
+    fn two_sessions_on_the_same_target_get_different_worktrees_and_reopening_returns() {
+        let target = loose_dir("session-worktrees");
+        ensure_repository(&target, None).expect("a repository");
+        let layout = Layout::under(target.join("_fleet"));
+
+        let sess_a = SessionsId::new("session-a");
+        let sess_b = SessionsId::new("session-b");
+
+        let dir_a = ensure_worktree(&layout, &target, 0, &sess_a).expect("worktree for session-a");
+        let dir_b = ensure_worktree(&layout, &target, 0, &sess_b).expect("worktree for session-b");
+        assert_ne!(dir_a, dir_b, "different sessions must get different worktrees");
+
+        let branch_a = git_branch(&dir_a);
+        let branch_b = git_branch(&dir_b);
+        assert_ne!(branch_a, branch_b, "different sessions must get different branches");
+
+        let dir_a2 = ensure_worktree(&layout, &target, 0, &sess_a).expect("reopen session-a");
+        assert_eq!(dir_a, dir_a2, "reopening a session must return to its worktree");
+
+        let _ = std::fs::remove_dir_all(&target);
+    }
+
+    fn git_branch(dir: &Path) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C").arg(dir)
+            .args(["branch", "--show-current"])
+            .output()
+            .expect("git reports the branch");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
     #[test]

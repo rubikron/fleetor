@@ -1452,7 +1452,7 @@ pub fn fleet_bootstrap(
     // **And which branch prefix its workers are on** (R26). A pure function of
     // the target, set here for the same reason the line above is: the spawn path
     // renders briefs from a worktree and cannot recover the target from one.
-    context.branch_prefix = placement::worker_branch_prefix(&target.get());
+    context.branch_prefix = placement::worker_branch_prefix(&target.get(), &sessions);
     // **And which session each seat reopens** (R6). Empty on an ordinary boot, so
     // the spawn path's choice stays a lookup rather than a flag. Resolved through
     // the lineage, not the parent alone, for the reason the reopen gate is:

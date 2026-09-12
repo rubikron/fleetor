@@ -920,7 +920,7 @@ fn checkpoint_14_the_key_is_the_panes_own_directory_and_the_first_run_gate_is_se
         // write one for the *new* cwd. Checkpoint 4 asserts the old one survives;
         // this asserts the new one arrives.
         let (other, placed) = pass.place_worker_against("cp14-second-repo");
-        let moved_to = pass.layout.worktree(&other, WORKER_SLOT);
+        let moved_to = pass.layout.worktree(&other, &pass.context.sessions, WORKER_SLOT);
         let moved_to = if moved_to.join(".git").exists() { moved_to } else { other };
         let after = document(&pass.config_text(&placed, identity.trust_file))
             .expect("the trust file is still readable after a target switch");
