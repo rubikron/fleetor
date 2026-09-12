@@ -44,6 +44,7 @@ The Blackboard vision, split into nine session-sized work packages. The vision i
 | 28 | `28-archive-on-quit.md` | The session is archived when you quit | 11, 27 | S | **landed** — D-086; quit verified live 2026-09-11, crash path and `tauri dev` restart unchecked |
 | 29 | `29-codex-history-parity.md` | codex reaches History parity | 27, 28 | M + live spend | **gap 1 landed, five to go** — the second half of D-087. WP-27's S4 plus WP-28's codex half; no new abstraction, the seam already holds both vendors. D-089 fixed the one outright defect (`resume_args` dropped the seat, so a reopened codex worker lost its model and its guardrail); what remains is four measurements and a test that drives codex through the reopen path |
 | 30 | `30-harness-interface.md` | `harness.rs` becomes the interface: one file per harness | 25 | M | **not-started** — blocks WP-24. The seam holds two harnesses but the file layout does not match the trait: `harness.rs` is both the interface and Claude Code's answers, and both vendors' bodies live in shared modules under generic names. Moves each harness's implementation into its own file, puts the machine probe on the trait so the gate stops naming vendors, and points the literals tripwire at the registry so it guards more than one. Spec in [issue #52](https://github.com/rubikron/fleetor/issues/52), decision D-090 |
+| 31 | `31-per-session-worktrees.md` | Worker worktrees belong to a session, not to a repo | 27 | M | **not-started** — R23 was decided 2026-09-11 and never built; R25 records that it was lost because it had no package, which is what this row exists to prevent repeating. Worktrees are still one set per target repo, so a reopened run lands in whatever a later session left there. Carries R15's lineage-scoped delete with it, because `run_delete` already leaks `pane-config/<lineage>/` today and would leak worktrees and branches too. Decisions R23, R25, R27 |
 
 **WP-26 is deliberately absent.** The parked branch `wp-26-view-resume-past-runs` carries
 its own `26-resume-past-runs.md` for an earlier design of the same feature. That work is
@@ -78,6 +79,9 @@ WP-20 (arc) ─→ WP-21 ─┬─→ stage B (dynamics)
 WP-20 (placement) ─→ WP-25 (the Harness seam lands in placement) ─┬─→ WP-30 (interface-only harness.rs) ─→ WP-24 (cursor)
                                                                  └─→ WP-27 (reopening a run)
 WP-11 (run history) ──────────────────────────────────────────────┘
+
+WP-27 (reopening a run) ─┬─→ WP-29 (codex parity)
+                         └─→ WP-31 (per-session worktrees — R23, with R15's delete cascade)
 
 rewind harness (separate repo, no WP — fully parallel, no dependencies)
 ```
