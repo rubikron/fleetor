@@ -671,6 +671,9 @@ pub const CODEX_SPEC: HarnessSpec = HarnessSpec {
         // the real `CODEX_HOME` stayed logged in.
         operator_store_follows_home: false,
         private_home: true,
+        // Nothing: codex was not measured writing an installation into `HOME`
+        // (D-082 measured Claude Code only).
+        fenced_env: &[],
         seeds_from_operator: true,
     },
 
@@ -847,9 +850,122 @@ pub const CODEX_SPEC: HarnessSpec = HarnessSpec {
         trust_file: CONFIG_FILE,
         trust_keys: &["trust_level"],
     },
+
+    // 15 — reopening a recorded session (WP-27, R6). `codex resume <uuid>` takes
+    // the thread id directly and appends to that same thread. Measured in
+    // `docs/notes/reopen-spike-notes.md` §1 and §4.
+    resume: super::harness::Resume::Supported,
 };
 
+impl CodexCli {
+    /// Codex's thread store inside a seat directory: the generation-numbered
+    /// `thread_history_<n>.sqlite` (C12), told apart from the five other `.sqlite`
+    /// files codex keeps beside it (`state_`, `logs_`, `memories_`, `queue_`,
+    /// `goals_`) **by name rather than extension** — picking "any `.sqlite`" would
+    /// read `goals_1.sqlite`, find no `thread_items`, and report a session that is
+    /// really there as absent.
+    fn thread_store(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+        std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).find(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("thread_history_") && n.ends_with(".sqlite"))
+        })
+    }
+}
+
 impl Harness for CodexCli {
+    /// **Codex reopens with `codex resume <uuid>`**, a subcommand that must lead
+    /// the argv; the vendor takes the thread id directly.
+    ///
+    /// **`-c tui.resume_cwd=current` is a defence, not an unconditional need**
+    /// (WP-27 R16b, correcting a fact the design carried). Measured at 0.153.4:
+    /// stock `codex resume` opens the "Choose working directory to resume this
+    /// session" picker **only when the launch cwd differs from the one recorded in
+    /// the session**; matching cwds resume straight through. R7 puts a reopened
+    /// worker back in its own worktree, so cwds normally match — but a worktree
+    /// recreated elsewhere would raise a gate that R13 guarantees nobody answers,
+    /// and the pane would hang. `current` rather than `session` because the fleet
+    /// decides where a pane works; the recorded directory may have moved.
+    ///
+    /// No brief rides along, for [`ClaudeCode::resume_args`]'s reason (R13) — and
+    /// here the brief would land on `codex resume`'s own `[PROMPT]` positional,
+    /// which is a second reason for the same rule.
+    ///
+    /// **The seat's posture rides along, because a reopened pane is the pane it
+    /// was** (WP-29 gap 1). This method ignored its `Seat` until then, so a
+    /// reopened codex worker came back on the operator's default model and,
+    /// worse, without [`BYPASS_HOOK_TRUST`] — the argument that makes the fleet's
+    /// own `PreToolUse` hook run at all (C46, C48). A pane silently missing its
+    /// write guardrail is exactly the shape of failure R13 guarantees nobody in
+    /// the pane will report.
+    ///
+    /// **Both flags are accepted after the subcommand, and that was checked
+    /// rather than assumed** — `codex resume --help` at 0.153.4 lists `-m,
+    /// --model <MODEL>` and `--dangerously-bypass-hook-trust` among its own
+    /// options, not only the top-level ones. A top-level flag appended after a
+    /// subcommand clap did not mark global would have failed every reopened codex
+    /// pane at spawn.
+    fn resume_args(&self, seat: &Seat<'_>, session_id: &str) -> Option<Vec<String>> {
+        let spec = self.spec();
+        let mut args = vec![
+            "resume".to_string(),
+            session_id.to_string(),
+            "-c".to_string(),
+            "tui.resume_cwd=current".to_string(),
+        ];
+        if let (Some(flag), Some(model)) = (spec.posture.model_flag, seat.model) {
+            args.push(flag.to_string());
+            args.push(model.to_string());
+        }
+        if !seat.operators_own_seat {
+            args.push(BYPASS_HOOK_TRUST.to_string());
+        }
+        Some(args)
+    }
+
+    /// Codex's resumable id lives **inside** its thread store rather than in a
+    /// filename: it is the `thread_id` on a recorded item (C12), the UUID `codex
+    /// resume` addresses.
+    ///
+    /// The **most recently written** thread, because R3 leaves sessions in place
+    /// and a lineage's store accumulates one thread per reopen — the id worth
+    /// recording for this run is the one it last wrote. Read-only; `None` on any
+    /// read failure or an empty store.
+    fn session_id(&self, seat_dir: &std::path::Path) -> Option<String> {
+        let db = Self::thread_store(seat_dir)?;
+        let conn = rusqlite::Connection::open_with_flags(
+            &db,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .ok()?;
+        conn.query_row(
+            "SELECT thread_id FROM thread_items ORDER BY created_at_ms DESC LIMIT 1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+    }
+
+    /// Present when any item in the thread store carries `session_id` as its
+    /// thread — the column [`Self::session_id`] reads, asked about one id.
+    /// Read-only; `false` on any read failure, since a store the gate cannot read
+    /// is one `codex resume` cannot either.
+    fn has_session(&self, seat_dir: &std::path::Path, session_id: &str) -> bool {
+        let Some(db) = Self::thread_store(seat_dir) else { return false };
+        let Ok(conn) = rusqlite::Connection::open_with_flags(
+            &db,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        ) else {
+            return false;
+        };
+        conn.query_row(
+            "SELECT 1 FROM thread_items WHERE thread_id = ?1 LIMIT 1",
+            [session_id],
+            |_| Ok(()),
+        )
+        .is_ok()
+    }
+
     /// **Codex's login is a file inside the directory this module replaces**
     /// (C6, C73) — `auth.json` under the operator's own `CODEX_HOME`.
     ///
@@ -3028,6 +3144,36 @@ args = ["--root", "~/notes"]
         );
     }
 
+    /// Checkpoint 15's reader and its presence check agree on one thread, and a
+    /// thread the store never held is absent (R19). The store is fabricated with
+    /// the two columns both read, not produced by a vendor binary.
+    #[test]
+    fn codexs_presence_check_finds_the_thread_its_reader_names_and_no_other() {
+        let seat = std::env::temp_dir().join(format!(
+            "fleetor-codex-has-session-{}",
+            fleetor_core::time::now_ms()
+        ));
+        std::fs::create_dir_all(&seat).expect("scratch seat");
+        let conn = rusqlite::Connection::open(seat.join("thread_history_1.sqlite")).unwrap();
+        conn.execute(
+            "CREATE TABLE thread_items (thread_id TEXT, created_at_ms INTEGER, item_json TEXT)",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO thread_items VALUES ('thread-old', 1, '{}')", []).unwrap();
+        conn.execute("INSERT INTO thread_items VALUES ('thread-new', 2, '{}')", []).unwrap();
+        drop(conn);
+
+        let codex = crate::placement::harness::by_name(CODEX_SPEC.name).expect("codex is registered");
+        let id = codex.session_id(&seat).expect("the reader names the newest thread");
+        assert_eq!(id, "thread-new");
+        assert!(codex.has_session(&seat, &id));
+        assert!(codex.has_session(&seat, "thread-old"), "an older thread is still present");
+        assert!(!codex.has_session(&seat, "thread-gone"));
+        assert!(!codex.has_session(&seat.join("nowhere"), &id), "a missing seat holds nothing");
+        let _ = std::fs::remove_dir_all(&seat);
+    }
+
     #[test]
     fn the_operators_installation_is_never_written_to() {
         // Checkpoint 6's promise, asserted by mechanism and by observation. The
@@ -4069,7 +4215,12 @@ args = ["--root", "~/notes"]
         // What `place_worker` renders and hands to `Seed::with_brief` — and, for a
         // Claude Code pane, what it hands to `--system-prompt` instead.
         let rendered =
-            fleetor_core::brief::worker_brief(me, &PaneId::roster(&WORKER_SLOTS), &cwd.to_string_lossy());
+            fleetor_core::brief::worker_brief(
+                me,
+                &PaneId::roster(&WORKER_SLOTS),
+                &cwd.to_string_lossy(),
+                "fleet/codex-test-0000",
+            );
         machine.seed_briefed("worker-2", &cwd, &rendered).expect("seed");
 
         assert_eq!(machine.brief("worker-2"), rendered, "byte-identical, not a codex dialect");
@@ -4106,6 +4257,7 @@ args = ["--root", "~/notes"]
             PaneId::Worker(1),
             &PaneId::roster(&WORKER_SLOTS),
             &cwd.to_string_lossy(),
+            "fleet/codex-test-0000",
         );
         machine.seed_briefed("worker-1", &cwd, &rendered).expect("seed");
         let installed = machine.brief("worker-1");
@@ -4531,6 +4683,54 @@ args = ["--root", "~/notes"]
                 .command_args(&Seat::new("").with_permission_mode("acceptEdits"))
                 .iter()
                 .any(|a| a == BYPASS_HOOK_TRUST),
+        );
+        // **The same asymmetry on a reopen** (WP-29 gap 1). Before the fix this
+        // held for the wrong reason: `resume_args` handed nobody the bypass,
+        // including the four seats whose guardrail depends on it.
+        assert!(
+            codex()
+                .resume_args(&Seat::new("").for_the_operator(), "SESSION-XYZ")
+                .expect("codex resumes")
+                .iter()
+                .all(|a| a != BYPASS_HOOK_TRUST),
+            "the operator's own pane answers hook trust itself on a reopen too",
+        );
+    }
+
+    /// **A reopened codex pane comes back as the pane it was** (WP-29 gap 1).
+    ///
+    /// `resume_args` ignored its [`Seat`] entirely until then, so a reopened
+    /// worker lost two things a fresh one has: the model the fleet chose for it,
+    /// and [`BYPASS_HOOK_TRUST`] — without which the fleet's own `PreToolUse`
+    /// hook is silently skipped (C46, C48) and the pane's write guardrail is
+    /// gone. R13 guarantees nothing in the pane reports either.
+    ///
+    /// The flags are asserted here rather than only in conformance because the
+    /// *spelling* is this vendor's: both are accepted after the `resume`
+    /// subcommand at 0.153.4, checked against `codex resume --help`.
+    #[test]
+    fn a_reopened_seat_keeps_its_model_and_its_bypass() {
+        let argv = codex()
+            .resume_args(&Seat::new("BRIEF").with_model("gpt-5-codex"), "SESSION-XYZ")
+            .expect("codex resumes");
+
+        // The subcommand still leads, and the id still reaches the vendor.
+        assert_eq!(argv.first().map(String::as_str), Some("resume"));
+        assert_eq!(argv.get(1).map(String::as_str), Some("SESSION-XYZ"));
+
+        assert!(
+            argv.windows(2).any(|w| w[0] == "--model" && w[1] == "gpt-5-codex"),
+            "the seat's model rides along: {argv:?}",
+        );
+        assert!(
+            argv.iter().any(|a| a == BYPASS_HOOK_TRUST),
+            "a fenced seat's guardrail survives the reopen: {argv:?}",
+        );
+        // R13, and codex's own second reason: a brief here would land on
+        // `codex resume`'s `[PROMPT]` positional.
+        assert!(
+            !argv.iter().any(|a| a.contains("BRIEF")),
+            "no brief on a reopen: {argv:?}",
         );
     }
 

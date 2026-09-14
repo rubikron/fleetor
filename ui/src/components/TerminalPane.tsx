@@ -21,6 +21,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import { warmTheme, warmThemeLight } from "../theme";
 import { onPaneExit, onPaneOutput, resizePane, spawnPane, writePane } from "../fleet/api";
+import { stopListening } from "../fleet/listeners";
 import { PaneHead } from "./PaneHead";
 import type { GaugeReading, PaneId, PaneIdentity, PaneStatus } from "../fleet/types";
 import type { Theme } from "../ui/useTheme";
@@ -178,7 +179,7 @@ export function TerminalPane({
 
     const disposers: Array<() => void> = [];
     let disposed = false;
-    const keep = (un: () => void) => (disposed ? un() : disposers.push(un));
+    const keep = (un: () => void) => (disposed ? stopListening(un, label) : disposers.push(un));
 
     void onPaneOutput(pane, (payload) => {
       term.write(decodeBase64(payload));
@@ -244,7 +245,7 @@ export function TerminalPane({
       onData.dispose();
       onResize.dispose();
       onScroll.dispose();
-      disposers.forEach((un) => un());
+      disposers.forEach((un) => stopListening(un, label));
       // Before term.dispose(), so the GPU context is released rather than
       // leaked — a browser only allows so many live WebGL contexts, and this
       // app opens five.

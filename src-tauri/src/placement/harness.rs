@@ -171,6 +171,44 @@ pub struct HarnessSpec {
     /// **Checkpoint 14 — project identity and trust seeding** (C17, generalized
     /// from "project-key canonicalization").
     pub project_identity: ProjectIdentityAndTrust,
+    /// **Checkpoint 15 — reopening a session this harness recorded** (WP-27, R6,
+    /// R10).
+    pub resume: Resume,
+}
+
+/// **Checkpoint 15 — can this harness reopen a session from its own local logs?**
+/// (WP-27, R6, R10.)
+///
+/// **A refusal is a legal answer, and that is deliberate.** This is
+/// [`GaugeSource::reads_transcript`]'s idiom rather than [`Transport`]'s: a
+/// harness that cannot resume still registers and still runs, History marks any
+/// run containing such a seat as not reopenable and names the harness
+/// responsible, and the operator loses that one capability instead of the vendor.
+/// Refusing registration outright would buy "every row reopens" at the price of
+/// excluding an otherwise excellent TUI for one missing feature, decided once for
+/// all time (R10's rejected alternative).
+///
+/// **What it is not is optional.** The field is required and
+/// [`Harness::resume_args`] must agree with it — `harness_literals.rs` fails a
+/// harness whose spec says [`Supported`](Resume::Supported) while its argv builder
+/// returns `None`, or the reverse. A defaulted trait method was the third
+/// rejected option: the omission would be silent, the suite would have nothing to
+/// fail on, and the author would learn about it when an operator clicked a row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Resume {
+    /// This harness reopens a recorded session. [`Harness::resume_args`] builds
+    /// the argv and [`Harness::session_id`] reads the id back out of a seat
+    /// directory.
+    Supported,
+    /// It cannot, and says so in a sentence History can show the operator. The
+    /// text names what is missing, not what FLEETOR wanted.
+    NotSupported { why: &'static str },
+}
+
+impl Resume {
+    pub fn is_supported(&self) -> bool {
+        matches!(self, Resume::Supported)
+    }
 }
 
 /// **What the operator types to log one harness in** (#51).
@@ -497,6 +535,18 @@ pub struct ConfigAndCredentialIsolation {
     /// operator's tool rungs, and a worker's first `git commit` needs the
     /// `.gitconfig` seeded into it.
     pub private_home: bool,
+    /// Variables a pane given that private `HOME` is also handed, because the
+    /// vendor would otherwise treat the private `HOME` as an installation of its
+    /// own (D-082). Empty for a harness nothing was measured writing there.
+    ///
+    /// **The cost this closes was disk, not containment.** Claude Code's
+    /// background updater installs the latest release into
+    /// `$HOME/.local/share/claude/versions` and links `$HOME/.local/bin/claude`,
+    /// so four private `HOME`s were four independent installs keeping every
+    /// version — about 190 MB per version per seat, none of it ever run, because a
+    /// worker's PATH has no private-`HOME` rung and keeps resolving the operator's
+    /// own `claude`.
+    pub fenced_env: &'static [(&'static str, &'static str)],
     /// Whether the isolated directory is seeded as a **snapshot of the
     /// operator's own**, rather than created empty. `false` here: a Claude Code
     /// pane gets a fresh directory and reaches the operator's login through the
@@ -1300,6 +1350,45 @@ pub trait Harness: std::fmt::Debug + Send + Sync + 'static {
     /// [`Posture::model_env`] beside the command rather than inside it.
     fn command_args(&self, seat: &Seat<'_>) -> Vec<String>;
 
+    /// **Checkpoint 15's argv — reopen the session `session_id` names** (WP-27,
+    /// R6).
+    ///
+    /// Parallel to [`command_args`](Harness::command_args), and `None` exactly
+    /// when [`HarnessSpec::resume`] is [`Resume::NotSupported`]. The conformance
+    /// suite drives both and fails a harness whose two answers disagree, so a
+    /// spec cannot claim a capability its argv builder does not have.
+    ///
+    /// **Measured, not assumed** (`docs/notes/reopen-spike-notes.md`): a plain
+    /// reopen does *not* fork on either registered harness — the resumed turns
+    /// append to the same file and the same id — so nothing here needs a
+    /// fork flag, and R3's continue-in-place holds.
+    fn resume_args(&self, seat: &Seat<'_>, session_id: &str) -> Option<Vec<String>>;
+
+    /// **Checkpoint 15's reader — the resumable id in one seat directory**
+    /// (WP-27, R6).
+    ///
+    /// Called at *rotation*, after the run is over, which is the first moment
+    /// anything needs the id — so nothing polls a live pane and `crate::runs`
+    /// keeps the module doc's promise that it never reaches the message path.
+    /// `None` when the seat opened no resumable session: a pane that never
+    /// started, or one that stopped before its harness wrote anything.
+    fn session_id(&self, seat_dir: &Path) -> Option<String>;
+
+    /// **Checkpoint 15's presence check — is session `session_id` still in this
+    /// seat directory?** (WP-27, R19).
+    ///
+    /// Asked by the reopen gate, before anything is torn down. A manifest that
+    /// recorded an id says the session existed at rotation, not that it still
+    /// does: a deleted seat directory leaves the id behind, and the vendor's resume
+    /// then fails in a pane the live fleet was already killed for — Claude Code
+    /// prints "No conversation found with session ID" and exits 1.
+    ///
+    /// **Its own method rather than a comparison against
+    /// [`session_id`](Harness::session_id)**, because that reader answers the
+    /// *newest* session and a lineage's directory can hold several; the gate asks
+    /// about one id in particular, possibly recorded by an ancestor (R20).
+    fn has_session(&self, seat_dir: &Path, session_id: &str) -> bool;
+
     /// **Checkpoint 11's behavioural half:** this harness's own accounting of its
     /// own turn, read back off the pane's configuration directory (#41, C61, C65).
     ///
@@ -1464,6 +1553,11 @@ pub const CLAUDE_CODE_SPEC: HarnessSpec = HarnessSpec {
         // buys nothing once `HOME` has been replaced.
         operator_store_follows_home: true,
         private_home: true,
+        // **Measured** (D-082): the operator's 2.1.266 binary under a private
+        // `HOME` wrote 2.1.267 (200 MB) into it within 90 seconds and printed
+        // "Update installed · Restart to update"; with this set, nothing. The
+        // vendor's own sandbox runner sets the same variable for the same reason.
+        fenced_env: &[("DISABLE_AUTOUPDATER", "1")],
         seeds_from_operator: false,
     },
 
@@ -1535,6 +1629,11 @@ pub const CLAUDE_CODE_SPEC: HarnessSpec = HarnessSpec {
         trust_file: ".claude.json",
         trust_keys: &["hasTrustDialogAccepted", "hasCompletedProjectOnboarding"],
     },
+
+    // 15 — reopening a recorded session (WP-27, R6). `--resume <id>` takes an id
+    // directly, appends to the same transcript under the same `sessionId`, and
+    // does not fork. Driven under a pty in `docs/notes/reopen-spike-notes.md`.
+    resume: Resume::Supported,
 };
 
 /// The macOS login-keychain item Claude Code's own `/login` writes.
@@ -1697,6 +1796,64 @@ impl Harness for ClaudeCode {
             args.push(seat.brief.to_string());
         }
         args
+    }
+
+    /// **Claude Code reopens with `--resume <id>`**, which the vendor accepts as a
+    /// session id directly with no picker (verified from `--help` and driven under
+    /// a pty, `docs/notes/reopen-spike-notes.md` §1).
+    ///
+    /// **No brief is passed, and that is R13 rather than an oversight.** The
+    /// session already holds the brief it was started with; handing it another
+    /// through `--system-prompt` would give the pane two versions of its own
+    /// instructions with no ordering signal. The seat's *posture* still rides
+    /// along, so a reopened pane is the pane it was.
+    ///
+    /// **No `--fork-session`.** Measured: a plain resume appends to the same
+    /// `.jsonl` under the same `sessionId` rather than forking, which is exactly
+    /// what R3's continue-in-place wants.
+    fn resume_args(&self, seat: &Seat<'_>, session_id: &str) -> Option<Vec<String>> {
+        let spec = self.spec();
+        let mut args = vec!["--resume".to_string(), session_id.to_string()];
+        if let (Some(flag), Some(model)) = (spec.posture.model_flag, seat.model) {
+            args.push(flag.to_string());
+            args.push(model.to_string());
+        }
+        if let (Some(flag), Some(mode)) = (spec.posture.permission_flag, seat.permission_mode) {
+            args.push(flag.to_string());
+            args.push(mode.to_string());
+        }
+        Some(args)
+    }
+
+    /// **Claude Code's resumable id is its transcript's own filename** — it keeps
+    /// `projects/<cwd-slug>/<session-id>.jsonl`, and every row inside carries the
+    /// same `sessionId` as the stem (measured; spike notes §2).
+    ///
+    /// Reads the newest transcript under the seat, because R3 leaves a seat's
+    /// sessions in place and a lineage's directory accumulates one per reopen —
+    /// the id worth recording for *this* run is the one it last wrote. Same rule
+    /// the context gauge already uses (`context_gauge::latest_transcript`).
+    fn session_id(&self, seat_dir: &Path) -> Option<String> {
+        let spec = self.spec();
+        let root = seat_dir.join(spec.transcript.subdir);
+        let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+        for file in crate::runs::transcript_files_for(&root, spec.transcript.file_ext) {
+            let Ok(at) = std::fs::metadata(&file).and_then(|m| m.modified()) else { continue };
+            if newest.as_ref().is_none_or(|(best, _)| at > *best) {
+                newest = Some((at, file));
+            }
+        }
+        newest?.1.file_stem().and_then(|s| s.to_str()).map(str::to_string)
+    }
+
+    /// Present when a transcript named `<session_id>.jsonl` is under the seat —
+    /// the filename rule [`Self::session_id`] reads the id from, asked the other
+    /// way round.
+    fn has_session(&self, seat_dir: &Path, session_id: &str) -> bool {
+        let spec = self.spec();
+        crate::runs::transcript_files_for(&seat_dir.join(spec.transcript.subdir), spec.transcript.file_ext)
+            .iter()
+            .any(|file| file.file_stem().and_then(|s| s.to_str()) == Some(session_id))
     }
 }
 
@@ -2945,6 +3102,27 @@ mod tests {
         let dir = std::env::temp_dir();
         assert_eq!(claude_code().project_key(&dir), super::super::spawn::project_key(&dir));
         assert!(claude_code().spec().project_identity.canonicalize);
+    }
+
+    /// Checkpoint 15's reader and its presence check agree on one session, and the
+    /// check is exact: a prefix of the id is not the session (R19).
+    #[test]
+    fn claude_codes_presence_check_finds_the_session_its_reader_names_and_no_other() {
+        let seat = std::env::temp_dir().join(format!(
+            "fleetor-cc-has-session-{}",
+            fleetor_core::time::now_ms()
+        ));
+        let project = seat.join("projects").join("-tmp-slug");
+        std::fs::create_dir_all(&project).expect("scratch seat");
+        std::fs::write(project.join("abc-123.jsonl"), r#"{"type":"user"}"#).expect("a transcript");
+
+        let cc = claude_code();
+        let id = cc.session_id(&seat).expect("the reader names the session");
+        assert!(cc.has_session(&seat, &id), "the check must find what the reader named");
+        assert!(!cc.has_session(&seat, "abc"), "a prefix of the id is not the session");
+        assert!(!cc.has_session(&seat, "zzz-999"), "an id with no transcript is absent");
+        assert!(!cc.has_session(&seat.join("nowhere"), &id), "a missing seat holds nothing");
+        let _ = std::fs::remove_dir_all(&seat);
     }
 
     #[test]

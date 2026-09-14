@@ -211,18 +211,26 @@ impl Layout {
         self.shell().join("fleet.sock")
     }
 
-    /// One pane's `CLAUDE_CONFIG_DIR`, by pane name.
+    /// One pane's `CLAUDE_CONFIG_DIR`, by run and pane name.
     ///
     /// Deliberately *not* the Phase-2 `cc-config/worker-*` dirs: those were built
     /// by headless `-p` runs and carry no onboarding keys at all, which is
     /// precisely L1 (`docs/notes/tui-spawn-notes.md` §1).
     ///
     /// Every pane with a config dir lives under this one root, `orch` included
-    /// since WP-14 — which is what makes `runs::harvest_transcripts` archive
-    /// `orch`'s transcript with no code of its own: it already walks
-    /// `pane-config/*`.
-    pub fn pane_config(&self, pane: PaneId) -> PathBuf {
-        pane_config_root(&self.shell()).join(pane.to_string())
+    /// since WP-14 — which is what makes rotation archive `orch`'s transcript with
+    /// no code of its own: it already walks the run's directory.
+    ///
+    /// **The [`SessionsId`] is an argument rather than a field on [`Layout`]**
+    /// (WP-27, R4). A run's sessions are a directory the way its events are a
+    /// database, so the id is part of the path — but it is *this run's* id, not a
+    /// fact about where the fleet lives, and a `Layout` that carried it would be
+    /// a path value that silently means a different path per run. Passing it
+    /// makes every call site name the run it is placing, and makes forgetting one
+    /// a compile error rather than a pane quietly seeded into the wrong run's
+    /// directory.
+    pub fn pane_config(&self, sessions: &SessionsId, pane: PaneId) -> PathBuf {
+        pane_config_run(&self.shell(), sessions).join(pane.to_string())
     }
 
     /// A worker's private `HOME` (WP-08, the Fence): `~/.ssh`, the operator's real
@@ -256,10 +264,14 @@ impl Layout {
         }
     }
 
-    /// A worker's own checkout of the target, namespaced by target repo so
-    /// switching targets neither clobbers existing worktrees nor reuses stale ones.
-    pub fn worktree(&self, target: &Path, slot: u8) -> PathBuf {
-        self.shell().join("worktrees").join(target_slug(target)).join(format!("worker-{slot}"))
+    /// A worker's own checkout of the target, namespaced by target then session
+    /// (R23) so each session's workers land in their own trees.
+    pub fn worktree(&self, target: &Path, sessions: &SessionsId, slot: u8) -> PathBuf {
+        self.shell()
+            .join("worktrees")
+            .join(target_slug(target))
+            .join(sessions.as_str())
+            .join(format!("worker-{slot}"))
     }
 }
 
@@ -282,6 +294,66 @@ pub(crate) fn pane_config_root(shell: &Path) -> PathBuf {
     shell.join("pane-config")
 }
 
+/// **Which run's seat directories** — the level WP-27 added under the root above
+/// (R4).
+///
+/// A run's sessions are a directory the way its events are a database: the same
+/// physical separation D-058 rests on, with no query and no vendor schema
+/// involved, which is what keeps "archive only this run's sessions" from needing
+/// a mtime window on one harness and a SQL extraction on another.
+///
+/// **The root above deliberately did not move.** The guardrail denies writes to
+/// `pane_config_root` and must go on denying *every* run's directory, so it stays
+/// pointed at the parent; only the two things that mean "this run" — placement's
+/// seeding and rotation's harvest — take an id. That is the same argument the
+/// root's own header makes about its four callers, applied one level down.
+pub(crate) fn pane_config_run(shell: &Path, sessions: &SessionsId) -> PathBuf {
+    pane_config_root(shell).join(sessions.as_str())
+}
+
+/// Which run's seat directories a placement or a harvest is talking about
+/// (WP-27, R4).
+///
+/// **A newtype rather than a `&str`, and it earns the ceremony.** The two things
+/// that take one — seeding a pane's config dir and archiving a run's sessions —
+/// sit beside calls carrying a run *archive* id, a pane name and a target slug,
+/// all of them strings. Passing the wrong one would put a reopened pane in a
+/// directory that exists and is not its own: a pane that comes up, renders
+/// somebody else's session, and reports nothing wrong.
+///
+/// **For a reopened run this is the parent's id, not the child's** (R4, R15). A
+/// lineage shares one directory, so the value here is the lineage root's — which
+/// is why `manifest.json` records it per run rather than deriving it from the run
+/// id, and why R15 can delete a lineage's sessions by asking which runs name it.
+/// The id a [`PaneContext`](crate::prompts::PaneContext) carries before a run has
+/// assigned one. Production overwrites it at the one place a fleet boots; a test
+/// that places panes without booting one lands here, which is why the tests spell
+/// it through this constant rather than repeating the literal.
+pub const UNASSIGNED_SESSIONS: &str = "unassigned";
+
+/// The branch prefix a [`PaneContext`](crate::prompts::PaneContext) carries
+/// before a run has named a target, for [`UNASSIGNED_SESSIONS`]' reason (R26).
+pub const UNASSIGNED_BRANCH_PREFIX: &str = "fleet/unassigned/unassigned";
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SessionsId(String);
+
+impl SessionsId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for SessionsId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// The directory name a target's worktrees live under: its own name plus a short
 /// hash of its absolute path, so two repos called `api` do not collide.
 pub(crate) fn target_slug(target: &Path) -> String {
@@ -292,6 +364,24 @@ pub(crate) fn target_slug(target: &Path) -> String {
         hash = hash.wrapping_mul(31).wrapping_add(byte as u32);
     }
     format!("{name}-{:04x}", hash & 0xFFFF)
+}
+
+/// **The one spelling of a worker's branch name** (R26), and the prefix every
+/// worker on a target shares.
+///
+/// It lives beside [`target_slug`] because it is the same fact — a branch is
+/// named for the target it came from — and it is a function rather than a
+/// `format!` at each site for D-075's reason: the brief and `git worktree add`
+/// must agree, and they did not. D-067 put the slug in the branch name and the
+/// briefs went on naming `fleet/worker-N` for a month, because nothing compared
+/// them (R25).
+pub(crate) fn worker_branch_prefix(target: &Path, sessions: &SessionsId) -> String {
+    format!("fleet/{}/{}", target_slug(target), sessions.as_str())
+}
+
+/// The branch one worker's worktree is checked out on.
+pub(crate) fn worker_branch(target: &Path, sessions: &SessionsId, slot: u8) -> String {
+    format!("{}/worker-{slot}", worker_branch_prefix(target, sessions))
 }
 
 // --- the host -----------------------------------------------------------------
@@ -890,9 +980,10 @@ fn place_orch(
         &context.orch_template,
         &fleetor_core::pane::PaneId::roster(&fleetor_core::pane::WORKER_SLOTS),
         &target.display().to_string(),
+        &worker_branch_prefix(target, &context.sessions),
     );
 
-    let config_dir = layout.pane_config(pane);
+    let config_dir = layout.pane_config(&context.sessions, pane);
     notices.extend(harness.seed_config_dir(
         &Seed::new(&config_dir, target, host.operator_home.as_deref())
             .with_brief(&rendered)
@@ -945,8 +1036,9 @@ fn place_orch(
 /// the gauge source; then the command.
 ///
 /// Two of those steps are conditional and both conditions live on the [`Host`],
-/// never on the process: a target that is not a git repository degrades to the
-/// shared checkout with a notice, and a machine with no rustup gets the toolchain
+/// never on the process: a target that is not a git repository is made one (D-084),
+/// and only a target that cannot be degrades to the shared checkout with a notice;
+/// a machine with no rustup gets the toolchain
 /// settings **absent** rather than pointing at a directory that does not exist.
 // **Eight arguments, and the eighth is C75's** — the seat's credential source, an
 // answer only the caller has. The alternative clippy is asking for is a struct, and
@@ -1022,10 +1114,16 @@ fn place_worker(
         CredentialSource::OperatorsPlan(_) => "",
     };
 
-    // Its own git worktree, or the announced fallback to the shared checkout. The
-    // notice is returned rather than logged, which is what makes the degraded case
-    // assertable for the first time.
-    let cwd = match ensure_worktree(layout, target, slot) {
+    // Its own git worktree — in a target made a repository first if it was not one
+    // (D-084) — or the announced fallback to the shared checkout. The notices are
+    // returned rather than logged, which is what makes both cases assertable.
+    let worktree = ensure_repository(target, host.operator_home.as_deref()).and_then(|made| {
+        if let Some(text) = made {
+            notices.push((NoticeLevel::Info, text));
+        }
+        ensure_worktree(layout, target, slot, &context.sessions)
+    });
+    let cwd = match worktree {
         Ok(dir) => dir,
         Err(why) => {
             notices.push((NoticeLevel::Warn, shared_checkout_warning(slot, &why, target)));
@@ -1040,9 +1138,10 @@ fn place_worker(
         pane,
         &fleetor_core::pane::PaneId::roster(&fleetor_core::pane::WORKER_SLOTS),
         &cwd.display().to_string(),
+        &worker_branch_prefix(target, &context.sessions),
     );
 
-    let config_dir = layout.pane_config(pane);
+    let config_dir = layout.pane_config(&context.sessions, pane);
     let seed = Seed::new(&config_dir, &cwd, host.operator_home.as_deref()).with_brief(&rendered);
     let seed = match credential_source {
         CredentialSource::OperatorsPlan(login) => seed.on_the_operators_plan(login),
@@ -1078,6 +1177,7 @@ fn place_worker(
         pane,
         &fleetor_core::pane::PaneId::roster(&fleetor_core::pane::WORKER_SLOTS),
         &cwd.display().to_string(),
+        &worker_branch_prefix(target, &context.sessions),
     );
     notices.push((
         NoticeLevel::Info,
@@ -1330,6 +1430,80 @@ fn shared_checkout_warning(slot: u8, why: &str, target: &Path) -> String {
     )
 }
 
+/// Make the target a git repository if it is not inside one yet (D-084).
+///
+/// **Before this, a target without `.git` sent every worker into one shared
+/// checkout** — no worktrees, no per-worker branches, peer review meaning nothing —
+/// and the operator's only way out was to notice four warnings and run `git init`
+/// themselves. Starting a fleet is the moment they have already said "work here".
+///
+/// Everything in the directory is committed, not an empty commit: a worktree is a
+/// checkout of a commit, so an empty one would hand each worker none of the
+/// project's files. Authored FLEETOR, with signing and hooks off, because this is
+/// FLEETOR's act and the operator's global git config is not asked to approve it.
+///
+/// `Ok(None)` when the target is already inside a repository — including one with
+/// no commits, which is the operator's and is left alone. Refused for the
+/// operator's home directory and `/`, where `git add -A` would commit a machine.
+fn ensure_repository(target: &Path, operator_home: Option<&Path>) -> Result<Option<String>, String> {
+    if git(target, &["rev-parse", "--git-dir"]) {
+        return Ok(None);
+    }
+    let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let refuse = if operator_home.is_some_and(|home| canonical(home) == canonical(target)) {
+        Some("your home directory")
+    } else if canonical(target).parent().is_none() {
+        Some("the filesystem root")
+    } else {
+        None
+    };
+    if let Some(what) = refuse {
+        return Err(format!("{} is not a git repository, and it is {what}, so FLEETOR will not `git init` it", target.display()));
+    }
+
+    if !git(target, &["init", "-q"]) {
+        return Err(format!("{} is not a git repository and `git init` failed there", target.display()));
+    }
+    let committed = git(target, &["add", "-A"])
+        && git(
+            target,
+            &[
+                "-c",
+                "user.name=FLEETOR",
+                "-c",
+                "user.email=fleetor@localhost",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "--no-verify",
+                "--allow-empty",
+                "-m",
+                "fleet: initial commit",
+            ],
+        );
+    if !committed {
+        return Err(format!("FLEETOR ran `git init` in {} but could not make its initial commit", target.display()));
+    }
+
+    let files = std::process::Command::new("git")
+        .arg("-C")
+        .arg(target)
+        .args(["ls-files", "-z"])
+        .output()
+        .map(|o| o.stdout.split(|b| *b == 0).filter(|name| !name.is_empty()).count())
+        .unwrap_or(0);
+    let what = match files {
+        0 => "an empty initial commit".to_string(),
+        1 => "an initial commit of the 1 file in it".to_string(),
+        n => format!("an initial commit of the {n} files in it"),
+    };
+    Ok(Some(format!(
+        "{} was not a git repository, so FLEETOR ran `git init` there and made {what} \u{2014} each worker branches from that.",
+        target.display()
+    )))
+}
+
 /// A worker's own checkout, created if it is not already there.
 ///
 /// Takes the [`Layout`] rather than reading one, which is the whole reason the
@@ -1338,8 +1512,8 @@ fn shared_checkout_warning(slot: u8, why: &str, target: &Path) -> String {
 /// including the short-circuit on an existing `.git`, which is what makes a relaunch
 /// cheap, and the prune, which clears registrations left by a worktree directory
 /// someone deleted by hand.
-fn ensure_worktree(layout: &Layout, target: &Path, slot: u8) -> Result<PathBuf, String> {
-    let dir = layout.worktree(target, slot);
+fn ensure_worktree(layout: &Layout, target: &Path, slot: u8, sessions: &SessionsId) -> Result<PathBuf, String> {
+    let dir = layout.worktree(target, sessions, slot);
     if dir.join(".git").exists() {
         return Ok(dir);
     }
@@ -1347,8 +1521,7 @@ fn ensure_worktree(layout: &Layout, target: &Path, slot: u8) -> Result<PathBuf, 
     std::fs::create_dir_all(parent).map_err(|e| format!("create worktree root: {e}"))?;
     let _ = git(target, &["worktree", "prune"]);
 
-    let slug = target_slug(target);
-    let branch = format!("fleet/{slug}/worker-{slot}");
+    let branch = worker_branch(target, sessions, slot);
     let dir_str = dir.to_string_lossy().into_owned();
     let output = std::process::Command::new("git")
         .arg("-C")
@@ -1607,11 +1780,11 @@ mod tests {
             layout.testbed(),
             layout.config_file(),
             layout.socket(),
-            layout.pane_config(PaneId::Orch),
+            layout.pane_config(&SessionsId::new("run-1"), PaneId::Orch),
             layout.worker_home(2),
             layout.fleet_toolchain().cargo_home,
             layout.fleet_toolchain().rustup_home,
-            layout.worktree(Path::new("/some/repo"), 1),
+            layout.worktree(Path::new("/some/repo"), &SessionsId::new("run-1"), 1),
         ] {
             assert!(
                 path.starts_with("/scratch/fleet"),
@@ -1736,6 +1909,104 @@ mod tests {
             text.contains("treat a reviewed `done` as unreviewed"),
             "the operator needs what to do about it, not only what happened: {text}",
         );
+    }
+
+    /// A scratch directory for [`ensure_repository`], outside any repository so
+    /// the test does not pass by finding this one.
+    fn loose_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("fleetor-ensure-repo-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn an_empty_target_still_gets_a_commit_a_worktree_can_branch_from() {
+        let dir = loose_dir("empty");
+        let said = ensure_repository(&dir, None).expect("an empty directory can be made a repository");
+        assert!(git(&dir, &["rev-parse", "--verify", "-q", "HEAD"]), "`git worktree add` needs a commit");
+        assert!(said.expect("making one is announced").contains("an empty initial commit"));
+        assert_eq!(ensure_repository(&dir, None), Ok(None), "and the second worker finds a repository");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **R26: the brief a worker is handed names the branch its worktree is
+    /// actually on.** Both halves are computed here rather than asserted as
+    /// literals, so this cannot pass by agreeing with a stale spelling — it reads
+    /// the branch out of the worktree `ensure_worktree` just made. The absence of
+    /// this test is why `fleet/worker-N` outlived D-067 by a month (R25).
+    #[test]
+    fn the_brief_names_the_branch_the_worktree_is_actually_on() {
+        let target = loose_dir("branch-agreement");
+        ensure_repository(&target, None).expect("a repository for the worktree to branch from");
+        let layout = Layout::under(target.join("_fleet"));
+        let sess = SessionsId::new("test-session");
+        let dir = ensure_worktree(&layout, &target, 3, &sess).expect("a worktree for worker-3");
+
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&dir)
+            .args(["branch", "--show-current"])
+            .output()
+            .expect("git reports the branch it checked out");
+        let on = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        assert!(!on.is_empty(), "the worktree is not on a branch at all");
+
+        let brief = fleetor_core::brief::render_worker(
+            fleetor_core::brief::DEFAULT_WORKER,
+            PaneId::Worker(3),
+            &PaneId::roster(&fleetor_core::pane::WORKER_SLOTS),
+            &dir.display().to_string(),
+            &worker_branch_prefix(&target, &sess),
+        );
+        assert!(brief.contains(&on), "the brief does not name `{on}`: {brief}");
+
+        let _ = std::fs::remove_dir_all(&target);
+    }
+
+    /// R23: two sessions on the same target get different worktrees and
+    /// branches, and reopening the first returns to the first's path — driven
+    /// through `ensure_worktree`, not asserted as literals (R25).
+    #[test]
+    fn two_sessions_on_the_same_target_get_different_worktrees_and_reopening_returns() {
+        let target = loose_dir("session-worktrees");
+        ensure_repository(&target, None).expect("a repository");
+        let layout = Layout::under(target.join("_fleet"));
+
+        let sess_a = SessionsId::new("session-a");
+        let sess_b = SessionsId::new("session-b");
+
+        let dir_a = ensure_worktree(&layout, &target, 0, &sess_a).expect("worktree for session-a");
+        let dir_b = ensure_worktree(&layout, &target, 0, &sess_b).expect("worktree for session-b");
+        assert_ne!(dir_a, dir_b, "different sessions must get different worktrees");
+
+        let branch_a = git_branch(&dir_a);
+        let branch_b = git_branch(&dir_b);
+        assert_ne!(branch_a, branch_b, "different sessions must get different branches");
+
+        let dir_a2 = ensure_worktree(&layout, &target, 0, &sess_a).expect("reopen session-a");
+        assert_eq!(dir_a, dir_a2, "reopening a session must return to its worktree");
+
+        let _ = std::fs::remove_dir_all(&target);
+    }
+
+    fn git_branch(dir: &Path) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C").arg(dir)
+            .args(["branch", "--show-current"])
+            .output()
+            .expect("git reports the branch");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn the_operators_home_is_never_made_a_repository() {
+        let dir = loose_dir("home");
+        std::fs::write(dir.join("secrets.txt"), "not for a commit").unwrap();
+        let why = ensure_repository(&dir, Some(&dir)).expect_err("`git add -A` in a home commits a machine");
+        assert!(why.contains("your home directory"), "{why}");
+        assert!(!dir.join(".git").exists(), "refused before anything was written");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

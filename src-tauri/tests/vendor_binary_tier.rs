@@ -743,6 +743,7 @@ fn the_seeded_brief_replaces_the_vendor_prompt_on_the_wire() {
         PaneId::Worker(1),
         &PaneId::roster(&WORKER_SLOTS),
         &cwd.to_string_lossy(),
+        "fleet/tier-0000",
     );
     let seeded = root.join("seeded");
     codex()

@@ -70,6 +70,11 @@ pub fn run() {
             // session" instead of "forever" (`orphans.rs`).
             orphans::sweep();
 
+            // Then freeze what those panes were writing, so the session that just
+            // ended is a History row on the start gate rather than only after the
+            // next fleet starts (D-085).
+            fleet::archive_previous_run(&app.state::<Arc<GateHold>>());
+
             // The registry emits through a callback rather than holding an
             // `AppHandle`, which is what lets the tests drive five real ptys with
             // no window. This is the one place the two are joined.
@@ -122,6 +127,7 @@ pub fn run() {
             fleet::run_rename,
             fleet::run_delete,
             fleet::run_export,
+            fleet::run_reopen,
             dev::dev_mode_get,
             dev::dev_mode_set,
         ])
@@ -152,16 +158,20 @@ pub fn run() {
             // before the process actually exits regardless of *how* it was
             // asked to quit, so it is the real teardown; the window-close
             // handler above is just the fast path for the common case. Calling
-            // both is safe — `kill_all` and `fleet::shutdown` are idempotent on
-            // an already-torn-down fleet.
+            // both is safe — `fleet::quit` is idempotent: the second call finds
+            // no panes, no fleet and no live log to archive.
             if let tauri::RunEvent::Exit = event {
                 teardown_fleet(app_handle);
             }
         });
 }
 
-/// Panes first: they are the processes that cost money.
+/// Panes, then the fleet, then the archive — `fleet::quit` holds the order
+/// (WP-28, D-086).
 fn teardown_fleet(handle: &impl Manager<tauri::Wry>) {
-    pty::kill_all(&handle.state::<Arc<PaneRegistry>>());
-    fleet::shutdown(&handle.state::<FleetState>());
+    fleet::quit(
+        &handle.state::<FleetState>(),
+        &handle.state::<Arc<PaneRegistry>>(),
+        &handle.state::<Arc<GateHold>>(),
+    );
 }

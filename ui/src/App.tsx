@@ -37,6 +37,7 @@ import { useDevMode } from "./ui/useDevMode";
 import { useCriticInterview } from "./ui/useCriticInterview";
 import { TerminalPane } from "./components/TerminalPane";
 import { killPane, onEvaluatorWake } from "./fleet/api";
+import { stopListening } from "./fleet/listeners";
 import { CRITIC, EVALUATOR, ORCH, paneSlot, type PaneId, type PaneStatus } from "./fleet/types";
 
 // Deeper than a worker's 2,000 and deeper than orch's 10,000: this pane reads a
@@ -68,6 +69,13 @@ export function App() {
   // works on the start gate, before a fleet exists, which is exactly when the
   // operator is deciding what to do next.
   const runs = useRuns();
+  // Read again whenever History is shown (D-085). The list was fetched once at
+  // mount, so a session archived after that — by a fleet start, or anything else —
+  // stayed invisible until a rename, delete or relaunch.
+  const refreshRuns = runs.refresh;
+  useEffect(() => {
+    if (view === "history") refreshRuns();
+  }, [view, refreshRuns]);
   // The WP-04 live gauge: polls only once the fleet is actually running —
   // before `started`, no pane exists to sample and every tick would just be
   // an empty roster.
@@ -167,12 +175,12 @@ export function App() {
     let unlisten: (() => void) | undefined;
     let cancelled = false;
     void onEvaluatorWake(() => setEvaluatorAwake(true)).then((fn) => {
-      if (cancelled) fn();
+      if (cancelled) stopListening(fn, "evaluator wake");
       else unlisten = fn;
     });
     return () => {
       cancelled = true;
-      unlisten?.();
+      stopListening(unlisten, "evaluator wake");
     };
   }, []);
 
@@ -229,7 +237,14 @@ export function App() {
             {/* Terminals. Kept mounted; see L7. Hidden before start so empty
                 frames don't bleed through the gate's backdrop. */}
             <div className={`stage-view ${view === "fleet" && started ? "" : "is-hidden"}`}>
+              {/* Keyed on the reopen generation (WP-27, R2): a reopen kills every
+                  pane and re-enters bootstrap, and `TerminalPane` spawns from a
+                  mount effect — so without a remount the operator lands on five
+                  dead terminals. This is the one place a stage-view is allowed to
+                  unmount (building.md §7.5's exception), because the buffers being
+                  discarded belong to the run that just ended. */}
               <TerminalGrid
+                key={`fleet-${runs.generation}`}
                 started={started}
                 selected={selectedWorker}
                 onSelect={selectWorker}
@@ -264,7 +279,7 @@ export function App() {
                 from archived logs — so no live list can ever be handed a past
                 run's events, and no past run can be sent to. */}
             <div className={`stage-view ${view === "history" ? "" : "is-hidden"}`}>
-              <RunHistory runs={runs} />
+              <RunHistory runs={runs} onOpened={() => setView("fleet")} />
             </div>
 
             {/* The Critic (WP-20, D-076). A view like every other: always
@@ -426,7 +441,10 @@ export function App() {
                 onStart={() => {
                   setStatuses({ [ORCH]: "idle" });
                   setView("fleet");
-                  void fleet.start().then(() => setStarted(true));
+                  void fleet.start().then(() => {
+                    setStarted(true);
+                    runs.refresh();
+                  });
                 }}
                 onTargetChanged={fleet.refreshConfig}
               />

@@ -2079,3 +2079,29 @@ body,
 }
 .run-open__stage { flex: 1 1 auto; min-height: 0; position: relative; display: flex; }
 .run-note--ok { color: var(--green); font-family: var(--mono); font-size: var(--t-label); }
+
+/* WP-27 — a session you cannot go back into.
+   Dimmed and un-clickable rather than hidden: the run still exists, still
+   exports, and the operator is owed the reason. No red — nothing is wrong, this
+   run simply predates the recording or ran a harness that cannot reopen. */
+.run--closed { opacity: 0.72; }
+.run--closed:hover { background: transparent; border-left-color: transparent; }
+.run__label--closed {
+  display: block;
+  font-size: var(--t-body);
+  color: var(--fg-mute);
+}
+/* The reason a row cannot be opened, and the progress line while one is opening.
+   Indented under the label by a hairline rather than a colour, because it is a
+   note about the row above it, not a state of its own. */
+.run__why {
+  margin-top: 0.3125rem;
+  font-size: var(--t-small);
+  color: var(--fg-dim);
+  border-left: 2px solid var(--border);
+  padding-left: 0.5rem;
+}
+/* `reopened N×` — gold is awareness, and this is the chip that explains why the
+   counts beside it are larger than one sitting (R1). */
+.run__chip--gold { color: var(--gold); }
+.run__label:disabled { opacity: 0.55; cursor: default; }

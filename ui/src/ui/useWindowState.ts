@@ -22,6 +22,7 @@ import { useEffect, useRef } from "react";
 import { availableMonitors, getCurrentWindow, type Monitor } from "@tauri-apps/api/window";
 import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { stopListening } from "../fleet/listeners";
 
 const STORAGE_KEY = "fleetor:window-state";
 
@@ -234,8 +235,8 @@ export function useWindowState(): void {
         const stopResize = await win.onResized(schedulePersist);
         const stopMove = await win.onMoved(schedulePersist);
         if (cancelled) {
-          stopResize();
-          stopMove();
+          stopListening(stopResize, "window resize");
+          stopListening(stopMove, "window move");
           return;
         }
         unlisteners.push(stopResize, stopMove);
@@ -249,7 +250,7 @@ export function useWindowState(): void {
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
-      unlisteners.forEach((stop) => stop());
+      unlisteners.forEach((stop) => stopListening(stop, "window geometry"));
     };
   }, []);
 }

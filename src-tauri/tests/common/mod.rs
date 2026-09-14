@@ -26,10 +26,12 @@
 //!     places one is gated on it.
 //!
 //! The target is a real git repository for the reason `tests/placement.rs` gives at
-//! its own `init_repo`: a worker's successful path *is* a `git worktree add`, and a
-//! target that is not a repository sends every worker into the shared checkout —
-//! where its cwd is the target, and "a worker may not write in the target repo"
-//! stops being a claim that can be tested at all.
+//! its own `init_repo`: a worker's successful path *is* a `git worktree add`. A
+//! target that is not a repository would be made one by the first placement
+//! (D-084), which is a write into the target this fixture should not depend on —
+//! and where that fails, every worker lands in the shared checkout, whose cwd is
+//! the target, and "a worker may not write in the target repo" stops being a claim
+//! that can be tested at all.
 
 #![allow(dead_code)]
 
@@ -164,7 +166,7 @@ impl Bench {
         } else if pane.is_critic() {
             critic::config_dir(self.layout.root())
         } else {
-            self.layout.pane_config(pane)
+            self.layout.pane_config(&fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), pane)
         }
     }
 

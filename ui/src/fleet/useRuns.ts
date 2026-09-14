@@ -1,53 +1,46 @@
-// Past runs, read (WP-11, D-058).
+// Your past sessions, and reopening one (WP-11, D-058; WP-27, R5).
 //
-// The deliberate mirror of `useFleet`: that hook subscribes to a live stream and
-// splits it into four lists, this one fetches a finished log and splits it the
-// same way. Producing the identical shape is the whole trick — it means
-// `MessageFeed`, `TaskBoard` and `EventFeed` render a past run with no
-// past-run-aware code in any of them.
+// **This hook used to have two states and now has one.** It kept a catalogue
+// *and* one archived run's contents, split into the same four lists `useFleet`
+// splits the live stream into, so the History view could render a past run with
+// the live components. That whole second face is gone: reopening a run copies its
+// log into the live slot (R1), so Messages, Tasks and Activity are already
+// showing that run's content through `useFleet` — the ordinary live path, reading
+// what is now the live log. There is no archived-run rendering left to do, which
+// is why `OpenRun` and its `split` have no replacement rather than a smaller one.
 //
-// **Two states that must not be confused.** `runs` is the catalogue and is
-// always safe to show. `open` is one run's contents, and it is `null` both
-// before a run is chosen and while one is loading — `loading` is what tells
-// those apart, because a spinner and an empty archive look identical otherwise.
-//
-// Nothing here writes to a run except `rename`. There is no append, no resume,
-// and no path by which a past run's events reach the live views: the History
-// view owns its own copies of the three components, so live data and archived
-// data never share a list.
+// What remains is a list and four verbs. `reopen` is the only one that is not a
+// small edit: it tears the current fleet down, archives it, and brings a past
+// run's five panes back — so it resolves to a `BootSnapshot` exactly as starting
+// a fleet does, because that is what it is.
 
 import { useCallback, useEffect, useState } from "react";
-import { deleteRun, exportRun, listRuns, renameRun, runEvents } from "./api";
-import {
-  isCommand,
-  isMessage,
-  isTask,
-  type CommandEvent,
-  type FleetEvent,
-  type MessageEvent,
-  type RunRecord,
-  type TaskEvent,
-} from "./types";
-
-/// One archived run's log, split the way `useFleet` splits the live one.
-export interface OpenRun {
-  record: RunRecord;
-  feed: FleetEvent[];
-  messages: MessageEvent[];
-  commands: CommandEvent[];
-  tasks: TaskEvent[];
-}
+import { deleteRun, exportRun, listRuns, renameRun, reopenRun } from "./api";
+import type { RunRecord } from "./types";
 
 export interface RunsView {
   runs: RunRecord[];
   error: string | null;
-  open: OpenRun | null;
-  loading: boolean;
+  /// The run currently being reopened, so the row can say so and the list can
+  /// refuse a second click while five panes are being torn down and respawned.
+  opening: string | null;
+  /// Bumped once per successful reopen (WP-27, R2).
+  ///
+  /// **The terminal grid keys off this, and it is load-bearing rather than
+  /// cosmetic.** A reopen kills all five panes and re-enters bootstrap, but
+  /// `TerminalPane` spawns from a *mount* effect — so panes that stay mounted
+  /// across the reopen are never respawned, and the operator is left looking at
+  /// five dead terminals with RESTART buttons. Changing this remounts them, which
+  /// is also correct on its own terms: the buffers belong to the run that just
+  /// ended, not to the one being opened.
+  generation: number;
   refresh: () => void;
-  openRun: (record: RunRecord) => void;
-  close: () => void;
   rename: (id: string, label: string) => Promise<void>;
   remove: (id: string) => Promise<void>;
+  /// Reopen a past run. Rejects (and leaves the live fleet alone) when the run
+  /// cannot be fully restored — the backend checks the manifest before it tears
+  /// anything down (R8).
+  reopen: (id: string) => Promise<void>;
   /// Resolves to where it was saved, or `null` if the dialog was dismissed.
   save: (id: string) => Promise<string | null>;
   /// The last successful save, so the view can say where the file went rather
@@ -55,25 +48,11 @@ export interface RunsView {
   saved: string | null;
 }
 
-/// Newest-first, matching `useFleet`'s lists so the components below receive
-/// what they already expect. They each sort by `seq` internally anyway; this is
-/// about the two paths staying the same shape, not about the sort.
-function split(record: RunRecord, events: FleetEvent[]): OpenRun {
-  const newestFirst = [...events].reverse();
-  return {
-    record,
-    feed: newestFirst,
-    messages: newestFirst.filter(isMessage),
-    commands: newestFirst.filter(isCommand),
-    tasks: newestFirst.filter(isTask),
-  };
-}
-
 export function useRuns(): RunsView {
   const [runs, setRuns] = useState<RunRecord[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [open, setOpen] = useState<OpenRun | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [opening, setOpening] = useState<string | null>(null);
+  const [generation, setGeneration] = useState(0);
   const [saved, setSaved] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
 
@@ -93,22 +72,9 @@ export function useRuns(): RunsView {
 
   const refresh = useCallback(() => setNonce((n) => n + 1), []);
 
-  const openRun = useCallback((record: RunRecord) => {
-    setLoading(true);
-    setOpen(null);
-    runEvents(record.id)
-      .then((events) => setOpen(split(record, events)))
-      .catch((e) => setError(String(e)))
-      .finally(() => setLoading(false));
-  }, []);
-
-  const close = useCallback(() => setOpen(null), []);
-
   const rename = useCallback(
     async (id: string, label: string) => {
       await renameRun(id, label);
-      // Keep an open run's banner honest rather than waiting for the refetch.
-      setOpen((o) => (o && o.record.id === id ? { ...o, record: { ...o.record, label } } : o));
       refresh();
     },
     [refresh],
@@ -117,8 +83,28 @@ export function useRuns(): RunsView {
   const remove = useCallback(
     async (id: string) => {
       await deleteRun(id);
-      setOpen((o) => (o && o.record.id === id ? null : o));
       refresh();
+    },
+    [refresh],
+  );
+
+  // The failure path is the interesting one. A refusal arrives before any pane is
+  // killed, so the operator is still in the fleet they were in — the error goes on
+  // screen and nothing else changes.
+  const reopen = useCallback(
+    async (id: string) => {
+      setOpening(id);
+      setError(null);
+      try {
+        await reopenRun(id);
+        setGeneration((g) => g + 1);
+        refresh();
+      } catch (e) {
+        setError(String(e));
+        throw e;
+      } finally {
+        setOpening(null);
+      }
     },
     [refresh],
   );
@@ -129,5 +115,5 @@ export function useRuns(): RunsView {
     return where;
   }, []);
 
-  return { runs, error, open, loading, refresh, openRun, close, rename, remove, save, saved };
+  return { runs, error, opening, generation, refresh, rename, remove, reopen, save, saved };
 }

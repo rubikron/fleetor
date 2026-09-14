@@ -84,7 +84,7 @@ Once reviewed and you are satisfied, merge that branch into `fleet/integration` 
 ```
 I=~/.fleetor/_shell/worktrees/integration
 git branch fleet/integration; git worktree add $I fleet/integration   # once
-git -C $I merge --no-ff fleet/worker-2 -m "<what landed, who reviewed it>"
+git -C $I merge --no-ff {branch_prefix}/worker-2 -m "<what landed, who reviewed it>"
 ```
 
 Then record it: `fleet task update <task-id> --note "merged to integration, reviewed by worker-3"`. Nothing in the code checks any of this — a merge with no review behind it is a decision you made, and the board is the only place it shows.

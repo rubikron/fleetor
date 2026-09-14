@@ -14,6 +14,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { bootstrap, fetchConfig, onFleetEvent } from "./api";
+import { stopListening } from "./listeners";
 import {
   isCommand,
   isMessage,
@@ -82,7 +83,7 @@ export function useFleet(): FleetView {
           }
         });
         if (cancelled) {
-          unlisten();
+          stopListening(unlisten, "fleet events");
           return;
         }
         listenerReady.current = true;
@@ -93,7 +94,7 @@ export function useFleet(): FleetView {
 
     return () => {
       cancelled = true;
-      unlisten?.();
+      stopListening(unlisten, "fleet events");
     };
   }, []);
 

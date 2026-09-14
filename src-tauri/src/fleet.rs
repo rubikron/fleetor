@@ -1246,6 +1246,27 @@ impl Target {
     }
 }
 
+/// **Archive the session that ended, as the app opens** (D-085).
+///
+/// Rotation used to run only inside [`fleet_bootstrap`], so the session the operator
+/// had just closed was still the live slot on the start gate — not a History row —
+/// and "reopen the app, go back to what I was doing" found nothing to click. Called
+/// from `setup` straight after `orphans::sweep`, so the panes that wrote the slot
+/// are gone before it is frozen, and before anything could open it: bootstrap is
+/// the slot's only opener, and it still rotates too (a reopen archives the fleet
+/// being left there).
+///
+/// The notices wait on the gate, drained onto the feed by bootstrap — there is no
+/// feed yet, and "previous run archived" is worth saying rather than dropping.
+pub fn archive_previous_run(gate: &GateHold) {
+    let layout = Layout::for_operator();
+    archive_previous_run_under(&layout.shell(), &runs::runs_dir(layout.root()), gate);
+}
+
+fn archive_previous_run_under(shell: &Path, runs_dir: &Path, gate: &GateHold) {
+    gate.remember(runs::rotate(shell, runs_dir, fleetor_core::time::now_ms()));
+}
+
 // --- locations ----------------------------------------------------------------
 
 /// The operator's own layout: `~/.fleetor` and everything under it.
@@ -1340,7 +1361,7 @@ pub fn fleet_bootstrap(
     // unpicked fleet is. Its notices wait for a feed to exist (below) — an override
     // that silently did nothing is the one failure the whole override path is built
     // to avoid, and it is the *emit* that has to wait, not the read.
-    let context = PaneContext::resolve(&prompts::override_dir(layout.root()));
+    let mut context = PaneContext::resolve(&prompts::override_dir(layout.root()));
 
     // **What each harness makes of this machine** (WP-25 #34; C8, C14) — held on the
     // gate, which has almost always probed already: the start gate renders at app
@@ -1373,7 +1394,15 @@ pub fn fleet_bootstrap(
     // `runs/` and this one opens an empty database. Held rather than emitted —
     // there is no store to append a notice to yet.
     let started_ms = fleetor_core::time::now_ms();
-    let rotation = runs::rotate(&dir, &runs::runs_dir(layout.root()), started_ms);
+    let runs_dir = runs::runs_dir(layout.root());
+    let rotation = runs::rotate(&dir, &runs_dir, started_ms);
+
+    // **Reopening a past run is this same path with a seeded slot** (WP-27, R2).
+    // Rotation has just archived whatever was live, so the slot is empty; if the
+    // operator asked for a past run, its frozen log is copied in here — after the
+    // archive, before the store opens, which is the only window where the slot is
+    // both empty and unopened. Every ordinary boot gets `None` and starts empty.
+    let reopened = runs::apply_reopen(&dir, &runs_dir)?;
 
     // The observability core: real store, wrapped once so every append publishes.
     let bcast = Arc::new(BroadcastStore::new(Arc::new(
@@ -1408,7 +1437,41 @@ pub fn fleet_bootstrap(
     // Stamp what this run is, for the History row it becomes at the next start.
     // The target is only ever prose inside a notice in the log, so a run that
     // ended without this marker lists with an unknown target rather than a guess.
-    runs::begin(&dir, started_ms, &target.get());
+    // **Which seat directory this run's panes live in** (WP-27, R4). A fresh run
+    // gets its own; a reopened one inherits its parent's, because a lineage shares
+    // one directory and that is what lets its panes resume in place with no copy.
+    let sessions = match &reopened {
+        Some(r) => r.sessions.clone(),
+        None => placement::SessionsId::new(runs::timestamp_id_for(started_ms)),
+    };
+    runs::begin(&dir, started_ms, &target.get(), &sessions, reopened.as_ref().map(|r| r.parent.as_str()));
+    // The one line that tells every placement in this run which seat directories
+    // are its own (R4). `placement.rs`'s
+    // `a_placed_pane_is_seeded_under_its_own_runs_sessions_id` fails without it.
+    context.sessions = sessions.clone();
+    // **And which branch prefix its workers are on** (R26). A pure function of
+    // the target, set here for the same reason the line above is: the spawn path
+    // renders briefs from a worktree and cannot recover the target from one.
+    context.branch_prefix = placement::worker_branch_prefix(&target.get(), &sessions);
+    // **And which session each seat reopens** (R6). Empty on an ordinary boot, so
+    // the spawn path's choice stays a lookup rather than a flag. Resolved through
+    // the lineage, not the parent alone, for the reason the reopen gate is:
+    // a reopen quit before its panes registered still knows its seats.
+    context.resume = match &reopened {
+        Some(r) => runs::lineage_session_ids(&runs_dir, &r.parent),
+        None => Default::default(),
+    };
+    if let Some(r) = &reopened {
+        note(
+            &store,
+            NoticeLevel::Info,
+            &format!(
+                "reopened from run {} — {} of 5 seats resume their own session",
+                r.parent,
+                context.resume.len()
+            ),
+        );
+    }
 
     // Every notice the prompt resolver produced, from the read at the top of this
     // function — an override that silently did nothing is the one failure the whole
@@ -2097,8 +2160,8 @@ fn apply_target(state: &FleetState, target: &Path) {
                     &fleet.store,
                     NoticeLevel::Warn,
                     &format!(
-                        "{} is not a git repository — workers will share a single \
-                         checkout with no worktrees and no per-worker branches.",
+                        "{} is not a git repository — starting the fleet will `git init` \
+                         it and commit what is there, so each worker gets its own worktree.",
                         target.display()
                     ),
                 );
@@ -2418,11 +2481,10 @@ pub fn run_rename(id: String, label: String) -> Result<(), String> {
     runs::rename(&runs::runs_dir(layout().root()), &id, &label)
 }
 
-/// Delete a run and its directory. Nothing else in the app refers to a run by
-/// id, so this needs no cascade — the index is rebuilt from what is left.
 #[tauri::command]
 pub fn run_delete(id: String) -> Result<(), String> {
-    runs::delete(&runs::runs_dir(layout().root()), &id)
+    let l = layout();
+    runs::delete(&runs::runs_dir(l.root()), &l.shell(), &id)
 }
 
 /// Save a run's JSON export wherever the operator points.
@@ -2431,6 +2493,48 @@ pub fn run_delete(id: String) -> Result<(), String> {
 /// added for it — `fleet_pick_target` set the pattern. `Ok(None)` means the
 /// operator dismissed the dialog, which is not an error and must not be shown
 /// as one.
+/// **Reopen a past run** (WP-27, R2, R5, R8) — the whole of what clicking a
+/// History row does.
+///
+/// One sequenced operation, in the order that makes each step safe:
+///
+///  1. **Refuse first, from the manifest.** A run that cannot be fully restored
+///     does not reopen (R8), and finding that out *after* five panes are gone
+///     would be the worst version of this feature — so the check runs while the
+///     live fleet is still up and returns it untouched.
+///  2. **Tear the panes down.** Rotation's transcript walk and the archive move
+///     are only safe with no pane alive; `rotate` has assumed that since D-058 and
+///     still does.
+///  3. **Drop the fleet**, which closes the store and releases `state.db`. Without
+///     this the slot cannot be rotated *or* seeded, and `fleet_bootstrap` would
+///     short-circuit on the fleet already in the guard.
+///  4. **Leave the request** and re-enter bootstrap, which rotates the run being
+///     left into History, copies the requested log into the empty slot, and brings
+///     the five panes back on their own recorded sessions.
+///
+/// **It is deliberately not a second archive path.** R2 makes reopening *be* a
+/// rotation; everything here is sequencing plus one marker file.
+#[tauri::command]
+pub fn run_reopen(
+    app: AppHandle,
+    state: State<'_, FleetState>,
+    registry: State<'_, Arc<PaneRegistry>>,
+    gate: State<'_, Arc<GateHold>>,
+    id: String,
+) -> Result<BootSnapshot, String> {
+    let layout = layout();
+    let runs_dir = runs::runs_dir(layout.root());
+    // Gate, teardown, request — the order lives in `begin_reopen`, where a test
+    // holds it (R8): nothing below the gate runs for a run that cannot open.
+    runs::begin_reopen(&layout.shell(), &runs_dir, &id, || {
+        crate::pty::kill_all(&registry);
+        let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+        *guard = None;
+        Ok(())
+    })?;
+    fleet_bootstrap(app, state, registry, gate)
+}
+
 #[tauri::command]
 pub fn run_export(app: AppHandle, id: String) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
@@ -2507,13 +2611,49 @@ pub(crate) fn merge_config_key(
     serde_json::to_string_pretty(&root).map_err(|e| format!("encode config: {e}"))
 }
 
-/// Stop the hub and unlink its socket. Best-effort, called on window close
-/// alongside the pty teardown.
+/// **Quitting archives the session** (WP-28, D-086) — the whole of what closing
+/// the app does to the fleet, in the one order that works.
+///
+/// Panes first, because they are the processes that cost money. Then the fleet,
+/// which closes its store. Then the archive — the same `runs::rotate` launch and
+/// bootstrap call, so there is still one archive path. Launch keeps archiving
+/// (D-085) for the quit this never sees: a crash, a Force Quit, a `kill -9`.
+///
+/// Safe to call twice, and a normal window close does (`CloseRequested`, then
+/// `RunEvent::Exit`): the second call finds no panes, no fleet and no live log.
+pub fn quit(state: &FleetState, registry: &Arc<PaneRegistry>, gate: &GateHold) {
+    let layout = layout();
+    archive_after_teardown(&layout.shell(), &runs::runs_dir(layout.root()), gate, || {
+        crate::pty::kill_all(registry);
+        shutdown(state);
+    });
+}
+
+/// Tear down, **then** archive. A function of its own so the order is something a
+/// test holds rather than two lines that happen to be in sequence: `archive::freeze`
+/// cannot take a database out of WAL mode while another connection has it open, and
+/// rotation would then fall back to moving three files.
+fn archive_after_teardown(shell: &Path, runs_dir: &Path, gate: &GateHold, teardown: impl FnOnce()) {
+    teardown();
+    archive_previous_run_under(shell, runs_dir, gate);
+}
+
+/// Stop the hub and drop the fleet. Best-effort, called on quit after the panes.
+///
+/// **Dropping it is what closes the live log** (D-086). Every task holding the
+/// store — the follower, the hub, delivery, the guardrail feed, the evaluator wake
+/// — runs on the fleet's own runtime, so taking the fleet out of state ends them
+/// and releases the last connection to `state.db`. `run_reopen`'s teardown already
+/// did exactly this before its rotation; quit used to leave the fleet in place.
+///
+/// The runtime goes before the hub can unlink its socket, so the socket is
+/// removed here instead — a quit should leave no stale `fleet.sock` behind.
 pub fn shutdown(state: &FleetState) {
-    if let Ok(guard) = state.0.lock() {
-        if let Some(fleet) = guard.as_ref() {
-            fleet.shutdown.notify_one();
-        }
+    let Ok(mut guard) = state.0.lock() else { return };
+    if let Some(fleet) = guard.take() {
+        fleet.shutdown.notify_one();
+        drop(fleet);
+        let _ = std::fs::remove_file(layout().socket());
     }
 }
 
@@ -2639,6 +2779,84 @@ mod tests {
         merge_config_key(existing, "target", target.to_string_lossy().into_owned().into())
     }
 
+    /// **Quitting closes the live log before archiving it** (WP-28, D-086), which is
+    /// what makes the archive one self-contained file rather than the three-file
+    /// fallback `archive::freeze` forces while anything still holds the database.
+    #[test]
+    fn quitting_closes_the_live_log_before_archiving_it_so_the_archive_is_one_file() {
+        let root = std::env::temp_dir().join(format!("fleetor-quit-archive-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let shell = root.join("_shell");
+        let runs_dir = runs::runs_dir(&root);
+        std::fs::create_dir_all(&shell).unwrap();
+        let store: Arc<dyn Store> = Arc::new(SqliteStore::open(&shell.join("state.db")).unwrap());
+        store
+            .append_event(&FleetEvent::Message {
+                id: fleetor_core::ids::new_id("msg"),
+                from: PaneId::Orch,
+                to: PaneId::Worker(1),
+                body: "take the parser".into(),
+                group: None,
+                accepted: true,
+                detail: None,
+            })
+            .unwrap();
+        assert!(shell.join("state.db-wal").exists(), "precondition: a live WAL-mode log, as a running fleet has");
+        let mut live = Some(store);
+
+        archive_after_teardown(&shell, &runs_dir, &GateHold::default(), || drop(live.take()));
+
+        let rows = runs::list(&runs_dir);
+        assert_eq!(rows.len(), 1, "the session is a run the moment the app has quit");
+        let archive = runs_dir.join(&rows[0].id);
+        assert!(archive.join("state.db").is_file());
+        assert!(
+            !archive.join("state.db-wal").exists(),
+            "frozen into one file, which only works once the fleet's connection is closed",
+        );
+        assert!(!shell.join("state.db").exists(), "and nothing is left live for the next launch to archive");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **Opening the app makes the last session a History row** (D-085), and says
+    /// so on the feed the next fleet opens rather than into the void.
+    #[test]
+    fn the_session_left_in_the_live_slot_is_archived_at_launch_and_announced_later() {
+        let root = std::env::temp_dir().join(format!("fleetor-launch-archive-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let shell = root.join("_shell");
+        let runs_dir = runs::runs_dir(&root);
+        std::fs::create_dir_all(&shell).unwrap();
+        {
+            let store = SqliteStore::open(&shell.join("state.db")).unwrap();
+            store
+                .append_event(&FleetEvent::Message {
+                    id: fleetor_core::ids::new_id("msg"),
+                    from: PaneId::Orch,
+                    to: PaneId::Worker(1),
+                    body: "take the parser".into(),
+                    group: None,
+                    accepted: true,
+                    detail: None,
+                })
+                .unwrap();
+        }
+        let gate = GateHold::default();
+
+        archive_previous_run_under(&shell, &runs_dir, &gate);
+
+        assert!(!shell.join("state.db").exists(), "the live slot is empty for the next fleet");
+        assert_eq!(runs::list(&runs_dir).len(), 1, "and the session is a History row before any fleet starts");
+        let held = gate.take_pending();
+        assert!(held.iter().any(|(_, text)| text.contains("see History")), "held for the feed: {held:?}");
+
+        // A second launch with nothing live archives nothing and says nothing.
+        archive_previous_run_under(&shell, &runs_dir, &gate);
+        assert_eq!(runs::list(&runs_dir).len(), 1);
+        assert!(gate.take_pending().is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// The wiring end to end over a **real unix socket**: bootstrap's hub and the
     /// real delivery loop over a real (empty) pane registry, dialled by a real
     /// client exactly the way the `fleet` CLI does.
@@ -2749,12 +2967,16 @@ mod tests {
     /// while that was arranged, or four panes lose their trust flags at once.
     #[test]
     fn every_panes_config_dir_is_a_sibling_under_one_root() {
-        let orch = layout().pane_config(PaneId::Orch);
-        let worker = layout().pane_config(PaneId::Worker(2));
-        assert!(orch.ends_with("pane-config/orch"), "{}", orch.display());
-        assert!(worker.ends_with("pane-config/worker-2"), "{}", worker.display());
-        assert_eq!(orch.parent(), worker.parent(), "harvest_transcripts walks the parent");
-        assert_eq!(worker.parent().unwrap(), layout().shell().join("pane-config"));
+        let orch = layout().pane_config(&placement::SessionsId::new("run-1"), PaneId::Orch);
+        let worker = layout().pane_config(&placement::SessionsId::new("run-1"), PaneId::Worker(2));
+        // WP-27 R4: one level per run, and the seats are siblings *within* it.
+        assert!(orch.ends_with("pane-config/run-1/orch"), "{}", orch.display());
+        assert!(worker.ends_with("pane-config/run-1/worker-2"), "{}", worker.display());
+        assert_eq!(orch.parent(), worker.parent(), "the transcript walk walks the parent");
+        assert_eq!(worker.parent().unwrap(), layout().shell().join("pane-config").join("run-1"));
+        // And a different run is a different directory — the whole of R4.
+        let other = layout().pane_config(&placement::SessionsId::new("run-2"), PaneId::Orch);
+        assert_ne!(orch, other, "two runs must not share a seat directory");
     }
 
     /// A picked target must land in the config without costing the operator

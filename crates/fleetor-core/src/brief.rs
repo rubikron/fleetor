@@ -68,43 +68,57 @@ const SCAFFOLDING: &str = include_str!("../../../prompts/scaffolding.md");
 const VISION_TENETS: &str = include_str!("../../../prompts/vision-tenets.md");
 
 /// The placeholders an orchestrator template must contain to be usable.
-const ORCH_PLACEHOLDERS: [&str; 5] =
-    ["cwd", "workers", "delivery_contract", "scaffolding", "vision_tenets"];
+const ORCH_PLACEHOLDERS: [&str; 6] =
+    ["cwd", "workers", "branch_prefix", "delivery_contract", "scaffolding", "vision_tenets"];
 
 /// The placeholders a worker template must contain to be usable.
-const WORKER_PLACEHOLDERS: [&str; 6] =
-    ["me", "cwd", "peers", "delivery_contract", "broadcast_rule", "scaffolding"];
+const WORKER_PLACEHOLDERS: [&str; 8] = [
+    "me",
+    "cwd",
+    "peers",
+    "branch",
+    "branch_prefix",
+    "delivery_contract",
+    "broadcast_rule",
+    "scaffolding",
+];
 
 /// What `validate_orch` / `validate_worker` render `{cwd}` as. A template is
 /// checked for verbs and placeholders, never for a real path, and inventing one
 /// here would only make the failure messages lie about where a pane runs.
 const CWD_FOR_VALIDATION: &str = "the pane's working directory";
 
+/// What validation renders `{branch_prefix}` as, for [`CWD_FOR_VALIDATION`]'s
+/// reason: a template is checked for shape, and the real prefix depends on which
+/// repository the fleet was pointed at (R26).
+const BRANCH_PREFIX_FOR_VALIDATION: &str = "fleet/the-target";
+
 // --- the briefs ---------------------------------------------------------------
 
 /// Briefing for the orchestrator pane, from the baked-in template — the operator's
 /// own `claude`, driving the fleet. It keeps the operator's model and permissions;
 /// all this adds is the existence of the other four terminals and how to reach them.
-pub fn orch_brief(roster: &[PaneId], cwd: &str) -> String {
-    render_orch(DEFAULT_ORCH, roster, cwd)
+pub fn orch_brief(roster: &[PaneId], cwd: &str, branch_prefix: &str) -> String {
+    render_orch(DEFAULT_ORCH, roster, cwd, branch_prefix)
 }
 
 /// Briefing for a worker pane, from the baked-in template. Shorter than the
 /// orchestrator's, and carrying the L5 anti-amplification clause — five peers that
 /// all reply to broadcasts is a token fire that looks like a working fleet.
-pub fn worker_brief(me: PaneId, roster: &[PaneId], cwd: &str) -> String {
-    render_worker(DEFAULT_WORKER, me, roster, cwd)
+pub fn worker_brief(me: PaneId, roster: &[PaneId], cwd: &str, branch_prefix: &str) -> String {
+    render_worker(DEFAULT_WORKER, me, roster, cwd, branch_prefix)
 }
 
 /// The orchestrator brief from an arbitrary template — the seam the operator's own
 /// `orch.md` comes in through. Validate it first; this renders whatever it is given.
-pub fn render_orch(template: &str, roster: &[PaneId], cwd: &str) -> String {
+pub fn render_orch(template: &str, roster: &[PaneId], cwd: &str, branch_prefix: &str) -> String {
     let workers = peer_list(roster, PaneId::Orch);
     render(
         template,
         &[
             ("cwd", cwd),
             ("workers", workers.as_str()),
+            ("branch_prefix", branch_prefix),
             ("delivery_contract", DELIVERY_CONTRACT.trim_end()),
             ("scaffolding", SCAFFOLDING.trim_end()),
             ("vision_tenets", VISION_TENETS.trim_end()),
@@ -114,15 +128,24 @@ pub fn render_orch(template: &str, roster: &[PaneId], cwd: &str) -> String {
 
 /// One worker's brief from an arbitrary template. `me`, `peers` and `cwd` are the
 /// only things that differ between the four slots.
-pub fn render_worker(template: &str, me: PaneId, roster: &[PaneId], cwd: &str) -> String {
+pub fn render_worker(
+    template: &str,
+    me: PaneId,
+    roster: &[PaneId],
+    cwd: &str,
+    branch_prefix: &str,
+) -> String {
     let peers = peer_list(roster, me);
     let name = me.to_string();
+    let branch = format!("{branch_prefix}/{name}");
     render(
         template,
         &[
             ("me", name.as_str()),
             ("cwd", cwd),
             ("peers", peers.as_str()),
+            ("branch", branch.as_str()),
+            ("branch_prefix", branch_prefix),
             ("delivery_contract", DELIVERY_CONTRACT.trim_end()),
             ("broadcast_rule", BROADCAST_RULE.trim_end()),
             ("scaffolding", SCAFFOLDING.trim_end()),
@@ -144,13 +167,24 @@ pub fn render(template: &str, vars: &[(&str, &str)]) -> String {
 /// operator can act on — it reaches them as a `Warn` on the Activity feed.
 pub fn validate_orch(template: &str) -> Result<(), String> {
     require_placeholders(template, &ORCH_PLACEHOLDERS)?;
-    require_verbs(&render_orch(template, &default_roster(), CWD_FOR_VALIDATION))
+    require_verbs(&render_orch(
+        template,
+        &default_roster(),
+        CWD_FOR_VALIDATION,
+        BRANCH_PREFIX_FOR_VALIDATION,
+    ))
 }
 
 /// Whether a worker template can be used.
 pub fn validate_worker(template: &str) -> Result<(), String> {
     require_placeholders(template, &WORKER_PLACEHOLDERS)?;
-    require_verbs(&render_worker(template, PaneId::Worker(1), &default_roster(), CWD_FOR_VALIDATION))
+    require_verbs(&render_worker(
+        template,
+        PaneId::Worker(1),
+        &default_roster(),
+        CWD_FOR_VALIDATION,
+        BRANCH_PREFIX_FOR_VALIDATION,
+    ))
 }
 
 fn default_roster() -> Vec<PaneId> {
@@ -206,6 +240,9 @@ mod tests {
     /// differs between two slots differs for a reason other than where it runs.
     const CWD: &str = "/tmp/fleetor-test-target";
 
+    /// What a target's branches are prefixed with, for [`CWD`]'s reason (R26).
+    const BRANCH: &str = "fleet/fleetor-test-target-0000";
+
     /// A verb rename must not be able to leave the briefs teaching the old one.
     /// Asserted against literals, not `VERBS`, so this test is the tripwire.
     #[test]
@@ -213,7 +250,7 @@ mod tests {
         let literals =
             ["send", "broadcast", "reply", "cmd", "task", "done", "handoff", "roster", "whoami"];
         assert_eq!(literals.to_vec(), VERBS.to_vec(), "VERBS drifted from the verbs the briefs teach");
-        for brief in [orch_brief(&roster(), CWD), worker_brief(PaneId::Worker(1), &roster(), CWD)] {
+        for brief in [orch_brief(&roster(), CWD, BRANCH), worker_brief(PaneId::Worker(1), &roster(), CWD, BRANCH)] {
             for verb in literals {
                 assert!(brief.contains(&format!("fleet {verb}")), "brief never mentions `fleet {verb}`");
             }
@@ -222,13 +259,13 @@ mod tests {
 
     #[test]
     fn the_worker_brief_carries_the_anti_amplification_clause() {
-        let brief = worker_brief(PaneId::Worker(2), &roster(), CWD);
+        let brief = worker_brief(PaneId::Worker(2), &roster(), CWD, BRANCH);
         assert!(brief.contains("Never reply to a broadcast unless it names you"), "L5 clause missing");
     }
 
     #[test]
     fn both_briefs_state_that_a_nonzero_exit_means_not_delivered() {
-        for brief in [orch_brief(&roster(), CWD), worker_brief(PaneId::Worker(1), &roster(), CWD)] {
+        for brief in [orch_brief(&roster(), CWD, BRANCH), worker_brief(PaneId::Worker(1), &roster(), CWD, BRANCH)] {
             assert!(brief.contains("exits non-zero"));
             assert!(brief.contains("not a promise"), "must not let the model read success as delivery (L3)");
         }
@@ -240,14 +277,14 @@ mod tests {
         // framing change cannot leave the briefs describing the old one.
         let direct = crate::message::frame_for_pane(PaneId::Worker(3), "x");
         let prefix = direct.trim_end_matches(" x");
-        assert!(worker_brief(PaneId::Worker(1), &roster(), CWD).contains(prefix), "worker brief shows {prefix}");
-        assert!(orch_brief(&roster(), CWD).contains("[fleet · worker-2]"));
-        assert!(orch_brief(&roster(), CWD).contains("→ all"), "orch must be able to spot a broadcast too");
+        assert!(worker_brief(PaneId::Worker(1), &roster(), CWD, BRANCH).contains(prefix), "worker brief shows {prefix}");
+        assert!(orch_brief(&roster(), CWD, BRANCH).contains("[fleet · worker-2]"));
+        assert!(orch_brief(&roster(), CWD, BRANCH).contains("→ all"), "orch must be able to spot a broadcast too");
     }
 
     #[test]
     fn a_pane_is_never_listed_among_its_own_peers() {
-        let brief = worker_brief(PaneId::Worker(2), &roster(), CWD);
+        let brief = worker_brief(PaneId::Worker(2), &roster(), CWD, BRANCH);
         let peers = brief.lines().find(|l| l.contains("coordinates you")).unwrap();
         assert!(!peers.contains("worker-2"), "worker-2 listed itself as a peer: {peers}");
         assert!(peers.contains("worker-1") && peers.contains("worker-4"));
@@ -271,29 +308,48 @@ mod tests {
     /// reads as a working brief right up until it matters.
     #[test]
     fn a_rendered_brief_has_no_placeholders_left_in_it() {
-        for brief in [orch_brief(&roster(), CWD), worker_brief(PaneId::Worker(3), &roster(), CWD)] {
+        for brief in [orch_brief(&roster(), CWD, BRANCH), worker_brief(PaneId::Worker(3), &roster(), CWD, BRANCH)] {
             for name in ORCH_PLACEHOLDERS.iter().chain(WORKER_PLACEHOLDERS.iter()) {
                 assert!(!brief.contains(&format!("{{{name}}}")), "unrendered {{{name}}}: {brief}");
             }
         }
     }
 
+    /// **R26: a worker is told the branch it is on, and the prefix its peers'
+    /// branches share.** The template cannot know either — it is one file shared
+    /// by every target — which is exactly how it came to name `fleet/worker-N`,
+    /// a branch that has not existed since D-067 put the target slug in the name
+    /// (R25). The second assertion is the regression: that spelling must not
+    /// survive anywhere in a rendered brief.
+    #[test]
+    fn a_worker_brief_names_the_branch_it_is_actually_on() {
+        let brief =
+            render_worker(DEFAULT_WORKER, PaneId::Worker(3), &roster(), CWD, "fleet/api-0730");
+        assert!(brief.contains("fleet/api-0730/worker-3"), "its own branch is absent: {brief}");
+        assert!(
+            !brief.contains("fleet/worker-"),
+            "the branch that has not existed since D-067 is still in the brief: {brief}",
+        );
+    }
+
     /// The four workers share one template on purpose; only their identity differs.
     #[test]
     fn every_worker_renders_the_same_template_with_its_own_name() {
-        let one = worker_brief(PaneId::Worker(1), &roster(), CWD);
-        let three = worker_brief(PaneId::Worker(3), &roster(), CWD);
+        let one = worker_brief(PaneId::Worker(1), &roster(), CWD, BRANCH);
+        let three = worker_brief(PaneId::Worker(3), &roster(), CWD, BRANCH);
         assert!(one.contains("You are `worker-1`"));
         assert!(three.contains("You are `worker-3`"));
 
-        // Exactly two lines may differ — the title and the peer list. Everything
-        // else is the one shared template, byte for byte.
+        // Exactly three lines may differ — the title, the peer list and the branch
+        // (R26, which added the third). Everything else is the one shared
+        // template, byte for byte.
         assert_eq!(one.lines().count(), three.lines().count(), "the briefs are not the same shape");
         let differing: Vec<&str> =
             one.lines().zip(three.lines()).filter(|(a, b)| a != b).map(|(a, _)| a).collect();
-        assert_eq!(differing.len(), 2, "more than identity differs: {differing:#?}");
+        assert_eq!(differing.len(), 3, "more than identity differs: {differing:#?}");
         assert!(differing[0].contains("You are `worker-1`"), "{differing:#?}");
         assert!(differing[1].contains("coordinates you and your peers"), "{differing:#?}");
+        assert!(differing[2].contains(&format!("{BRANCH}/worker-1")), "{differing:#?}");
     }
 
     /// The fragments are composed in, not written out — so an operator rewriting
@@ -327,7 +383,7 @@ mod tests {
     /// dropped one would still render, still validate, and still look right.
     #[test]
     fn both_briefs_restate_the_posture_the_default_prompt_used_to_supply() {
-        for brief in [orch_brief(&roster(), CWD), worker_brief(PaneId::Worker(1), &roster(), CWD)] {
+        for brief in [orch_brief(&roster(), CWD, BRANCH), worker_brief(PaneId::Worker(1), &roster(), CWD, BRANCH)] {
             assert!(brief.contains("Report outcomes faithfully"), "a fleet runs on honest reports");
             assert!(brief.contains("never wrap up early"), "a pane must not abandon work for context");
             assert!(brief.contains("adapt rather than retrying it verbatim"), "denied means declined");
@@ -345,7 +401,7 @@ mod tests {
     /// validate, and the fleet would go back to starting fast on the wrong thing.
     #[test]
     fn the_orch_brief_confirms_the_vision_in_writing_before_decomposing() {
-        let brief = orch_brief(&roster(), CWD);
+        let brief = orch_brief(&roster(), CWD, BRANCH);
         assert!(brief.contains("Before you decompose anything into work"));
         assert!(brief.contains("State the vision back in writing, and get a yes"));
         assert!(
@@ -359,7 +415,7 @@ mod tests {
     /// than one that never raised it.
     #[test]
     fn the_orch_brief_proposes_a_bigger_frame_at_most_once() {
-        let brief = orch_brief(&roster(), CWD);
+        let brief = orch_brief(&roster(), CWD, BRANCH);
         assert!(brief.contains("propose a bigger frame — once"));
         assert!(brief.contains("adopt their frame fully"), "declining must end it");
         assert!(brief.contains("their explicit word is final"));
@@ -371,7 +427,7 @@ mod tests {
     /// deviation the operator finds out about later is the failure being guarded.
     #[test]
     fn the_orch_brief_may_improve_the_route_but_never_swaps_the_vision() {
-        let brief = orch_brief(&roster(), CWD);
+        let brief = orch_brief(&roster(), CWD, BRANCH);
         assert!(brief.contains("never quietly substitute a vision of your own"));
         assert!(brief.contains("announced, not discovered later"));
         assert!(
@@ -384,7 +440,7 @@ mod tests {
     /// distinguishes a FLEETOR worker from a `claude` in a worktree.
     #[test]
     fn the_worker_brief_carries_the_three_attitudes() {
-        let brief = worker_brief(PaneId::Worker(2), &roster(), CWD);
+        let brief = worker_brief(PaneId::Worker(2), &roster(), CWD, BRANCH);
         assert!(brief.contains("How can I be better?"));
         assert!(brief.contains("How can I push for more positive, meaningful impact?"));
         assert!(brief.contains("What do I do when I am confused?"));
@@ -399,7 +455,7 @@ mod tests {
     /// question ends up asked twice or not at all.
     #[test]
     fn a_confused_worker_is_told_exactly_who_to_ask() {
-        let brief = worker_brief(PaneId::Worker(3), &roster(), CWD);
+        let brief = worker_brief(PaneId::Worker(3), &roster(), CWD, BRANCH);
         assert!(brief.contains("Ask a peer by name"));
         assert!(brief.contains(r#"`fleet send operator "<question>"`"#), "the direct address");
         assert!(
@@ -421,7 +477,7 @@ mod tests {
     /// against its block's criteria instead of above them.
     #[test]
     fn the_worker_brief_gives_the_operators_word_final_authority() {
-        let brief = worker_brief(PaneId::Worker(2), &roster(), CWD);
+        let brief = worker_brief(PaneId::Worker(2), &roster(), CWD, BRANCH);
         assert!(brief.contains("[fleet · operator]"), "the framing they will actually see");
         assert!(brief.contains("**their word is final**"));
         assert!(
@@ -435,7 +491,7 @@ mod tests {
     /// failed `accepted` and resend a question the human already has.
     #[test]
     fn both_briefs_distinguish_recorded_from_accepted() {
-        for brief in [orch_brief(&roster(), CWD), worker_brief(PaneId::Worker(1), &roster(), CWD)] {
+        for brief in [orch_brief(&roster(), CWD, BRANCH), worker_brief(PaneId::Worker(1), &roster(), CWD, BRANCH)] {
             assert!(brief.contains("**recorded**"), "the third word is taught");
             assert!(
                 brief.contains("the human has no terminal"),
@@ -451,7 +507,7 @@ mod tests {
     /// as a worker going around it — and to say so to the worker.
     #[test]
     fn the_orch_brief_says_the_operator_speaks_in_band_and_workers_may_ask_them() {
-        let brief = orch_brief(&roster(), CWD);
+        let brief = orch_brief(&roster(), CWD, BRANCH);
         assert!(brief.contains("[fleet · operator]"));
         assert!(brief.contains("They reach any pane directly"));
         assert!(
@@ -467,7 +523,7 @@ mod tests {
     /// podcast or video it cannot reach.
     #[test]
     fn the_orch_brief_carries_the_tenets_essay_as_the_operator_wrote_it() {
-        let brief = orch_brief(&roster(), CWD);
+        let brief = orch_brief(&roster(), CWD, BRANCH);
         for kept in [
             "nobody drifts to a desired destination",
             "prune toward vision",
@@ -487,7 +543,7 @@ mod tests {
     /// the Orchestrator and Worker", and until D-056 orch never got them.
     #[test]
     fn the_orch_brief_carries_the_three_attitudes() {
-        let brief = orch_brief(&roster(), CWD);
+        let brief = orch_brief(&roster(), CWD, BRANCH);
         for attitude in
             ["How can I be better?", "meaningful impact", "If I'm confused, I ask for help"]
         {
@@ -500,20 +556,21 @@ mod tests {
     /// names it. A pane that does not know where it is cannot be trusted to edit.
     #[test]
     fn every_brief_says_where_the_pane_is_working() {
-        assert!(orch_brief(&roster(), "/tmp/target").contains("/tmp/target"));
-        assert!(worker_brief(PaneId::Worker(2), &roster(), "/tmp/wt-2").contains("/tmp/wt-2"));
+        assert!(orch_brief(&roster(), "/tmp/target", BRANCH).contains("/tmp/target"));
+        assert!(worker_brief(PaneId::Worker(2), &roster(), "/tmp/wt-2", BRANCH).contains("/tmp/wt-2"));
     }
 
     /// The whole point of the fragment split: prose can be rewritten freely and
     /// the load-bearing clauses still arrive.
     #[test]
     fn a_rewritten_template_keeps_the_clauses_it_cannot_afford_to_lose() {
-        let rewritten = "# hi {me} in {cwd}\n\nyour peers: {peers}. use fleet send / fleet broadcast / \
+        let rewritten = "# hi {me} in {cwd} on {branch}\n\nyour peers: {peers}, under \
+             {branch_prefix}. use fleet send / fleet broadcast / \
              fleet reply / fleet cmd / fleet task / fleet done / fleet handoff / fleet roster / \
              fleet whoami.\n\n{delivery_contract}\n\n{broadcast_rule}\n\n{scaffolding}\n";
         validate_worker(rewritten).expect("a template with every placeholder is usable");
 
-        let brief = render_worker(rewritten, PaneId::Worker(2), &roster(), CWD);
+        let brief = render_worker(rewritten, PaneId::Worker(2), &roster(), CWD, BRANCH);
         assert!(brief.contains("exits non-zero"), "the delivery contract still arrives");
         assert!(brief.contains("Never reply to a broadcast unless it names you"), "L5 still arrives");
         assert!(brief.contains("You are `worker-2`") || brief.contains("hi worker-2"));
@@ -523,31 +580,50 @@ mod tests {
     /// one to put back — the operator reads this on the Activity feed.
     #[test]
     fn a_template_that_drops_a_load_bearing_placeholder_is_refused() {
-        let no_contract = "# {me} in {cwd}\n\npeers: {peers}\n\n{broadcast_rule}\n\n{scaffolding}\n";
-        let why = validate_worker(no_contract).expect_err("must not be usable");
+        let branches = "{branch} {branch_prefix}";
+
+        let no_contract =
+            format!("# {{me}} in {{cwd}} {branches}\n\npeers: {{peers}}\n\n{{broadcast_rule}}\n\n{{scaffolding}}\n");
+        let why = validate_worker(&no_contract).expect_err("must not be usable");
         assert!(why.contains("{delivery_contract}"), "the refusal names the placeholder: {why}");
 
-        let no_rule = "# {me} in {cwd}\n\npeers: {peers}\n\n{delivery_contract}\n\n{scaffolding}\n";
-        assert!(validate_worker(no_rule).is_err(), "a worker brief without the L5 rule is not usable");
+        let no_rule = format!(
+            "# {{me}} in {{cwd}} {branches}\n\npeers: {{peers}}\n\n{{delivery_contract}}\n\n{{scaffolding}}\n"
+        );
+        assert!(validate_worker(&no_rule).is_err(), "a worker brief without the L5 rule is not usable");
 
-        let no_workers = "# orch in {cwd}\n\n{delivery_contract}\n\n{scaffolding}\n\n{vision_tenets}\n";
+        let no_workers =
+            "# orch in {cwd} {branch_prefix}\n\n{delivery_contract}\n\n{scaffolding}\n\n{vision_tenets}\n";
         assert!(validate_orch(no_workers).is_err(), "an orch brief that never names its peers");
 
         // D-043's additions are load-bearing the same way, and refused the same way.
-        let no_scaffolding = "# {me} in {cwd}\n\npeers: {peers}\n\n{delivery_contract}\n\n{broadcast_rule}\n";
-        let why = validate_worker(no_scaffolding).expect_err("must not be usable");
+        let no_scaffolding = format!(
+            "# {{me}} in {{cwd}} {branches}\n\npeers: {{peers}}\n\n{{delivery_contract}}\n\n{{broadcast_rule}}\n"
+        );
+        let why = validate_worker(&no_scaffolding).expect_err("must not be usable");
         assert!(why.contains("{scaffolding}"), "the refusal names the placeholder: {why}");
 
-        let no_cwd = "# {me}\n\npeers: {peers}\n\n{delivery_contract}\n\n{broadcast_rule}\n\n{scaffolding}\n";
-        let why = validate_worker(no_cwd).expect_err("must not be usable");
+        let no_cwd = format!(
+            "# {{me}} {branches}\n\npeers: {{peers}}\n\n{{delivery_contract}}\n\n{{broadcast_rule}}\n\n{{scaffolding}}\n"
+        );
+        let why = validate_worker(&no_cwd).expect_err("must not be usable");
         assert!(why.contains("{cwd}"), "the refusal names the placeholder: {why}");
+
+        // R26's own placeholder is load-bearing for the same reason: a worker that
+        // is not told its branch is one that guesses, and `fleet/worker-N` is what
+        // guessing looked like for a month (R25).
+        let no_branch =
+            "# {me} in {cwd} {branch_prefix}\n\npeers: {peers}\n\n{delivery_contract}\n\n{broadcast_rule}\n\n{scaffolding}\n";
+        let why = validate_worker(no_branch).expect_err("must not be usable");
+        assert!(why.contains("{branch}"), "the refusal names the placeholder: {why}");
     }
 
     /// A template can keep every placeholder and still teach a verb list that has
     /// drifted from the CLI. That is a pane running commands which exit 2.
     #[test]
     fn a_template_that_forgets_a_verb_is_refused() {
-        let missing_whoami = "# {me} in {cwd}\n\npeers: {peers}. fleet send / fleet broadcast / \
+        let missing_whoami = "# {me} in {cwd} on {branch} under {branch_prefix}\n\npeers: {peers}. \
+             fleet send / fleet broadcast / \
              fleet reply / fleet cmd / fleet task / fleet done / fleet handoff / fleet roster.\n\n\
              {delivery_contract}\n\n{broadcast_rule}\n\n{scaffolding}\n";
         let why = validate_worker(missing_whoami).expect_err("must not be usable");
@@ -563,7 +639,7 @@ mod tests {
     /// and the log would fill with effects whose reasons were never written down.
     #[test]
     fn both_briefs_teach_the_command_verb_with_its_mandatory_why() {
-        for brief in [orch_brief(&roster(), CWD), worker_brief(PaneId::Worker(1), &roster(), CWD)] {
+        for brief in [orch_brief(&roster(), CWD, BRANCH), worker_brief(PaneId::Worker(1), &roster(), CWD, BRANCH)] {
             assert!(brief.contains("fleet cmd"), "the verb itself");
             assert!(brief.contains("`--why` is required"), "the why must read as a requirement");
             assert!(
@@ -585,7 +661,7 @@ mod tests {
     /// compacting away the thing it is in the middle of.
     #[test]
     fn the_worker_brief_teaches_the_post_task_self_maintenance_move() {
-        let brief = worker_brief(PaneId::Worker(2), &roster(), CWD);
+        let brief = worker_brief(PaneId::Worker(2), &roster(), CWD, BRANCH);
         assert!(brief.contains("When you finish a block of work, look at your own context"));
         assert!(brief.contains("fleet cmd self"), "the worker points the verb at itself");
         assert!(brief.contains("never mid-task"), "the timing bound is not optional");
@@ -596,7 +672,7 @@ mod tests {
     /// the only place a re-brief can be required is here.
     #[test]
     fn the_orch_brief_re_briefs_a_worker_it_clears() {
-        let brief = orch_brief(&roster(), CWD);
+        let brief = orch_brief(&roster(), CWD, BRANCH);
         assert!(brief.contains("If you clear a worker, immediately `fleet send` it its task context back"));
         assert!(
             brief.contains("report confident nonsense"),
@@ -614,7 +690,7 @@ mod tests {
     /// instead of code.
     #[test]
     fn the_orch_brief_says_the_send_is_the_assignment_and_the_board_is_the_record() {
-        let brief = orch_brief(&roster(), CWD);
+        let brief = orch_brief(&roster(), CWD, BRANCH);
         assert!(brief.contains("Posting a block assigns nobody"));
         assert!(brief.contains("nothing reads it, nothing runs from it"));
         assert!(brief.contains("The send is the assignment"));
@@ -628,7 +704,7 @@ mod tests {
     /// and the criteria have to be falsifiable or the block cannot be argued with.
     #[test]
     fn the_orch_brief_decomposes_only_after_the_vision_and_demands_real_criteria() {
-        let brief = orch_brief(&roster(), CWD);
+        let brief = orch_brief(&roster(), CWD, BRANCH);
         assert!(brief.contains("Once the vision is confirmed, cut the work into blocks"));
         assert!(brief.contains("Write criteria that could fail"));
         assert!(brief.contains("\"Works well\" cannot"), "the counter-example is the teaching");
@@ -639,7 +715,7 @@ mod tests {
     /// the board fills up with unchecked `done`s.
     #[test]
     fn the_worker_brief_treats_the_criteria_as_the_definition_of_done() {
-        let brief = worker_brief(PaneId::Worker(2), &roster(), CWD);
+        let brief = worker_brief(PaneId::Worker(2), &roster(), CWD, BRANCH);
         assert!(brief.contains("the definition of done, not a summary of it"));
         assert!(brief.contains("Before you claim done, actually run the technical checks"));
         assert!(
@@ -653,7 +729,7 @@ mod tests {
     /// `in-progress` gets a refusal instead of an update.
     #[test]
     fn both_briefs_name_every_status_the_board_accepts() {
-        for brief in [orch_brief(&roster(), CWD), worker_brief(PaneId::Worker(1), &roster(), CWD)] {
+        for brief in [orch_brief(&roster(), CWD, BRANCH), worker_brief(PaneId::Worker(1), &roster(), CWD, BRANCH)] {
             for status in crate::task::TASK_STATUSES {
                 assert!(brief.contains(status), "the brief never names `{status}`");
             }
@@ -670,7 +746,7 @@ mod tests {
     /// rewrite that dropped the sentence would still render and still validate.
     #[test]
     fn the_worker_brief_separates_the_receipt_from_the_checks_own_result() {
-        let brief = worker_brief(PaneId::Worker(2), &roster(), CWD);
+        let brief = worker_brief(PaneId::Worker(2), &roster(), CWD, BRANCH);
         assert!(brief.contains("fleet done"), "the verb itself");
         assert!(brief.contains("means only that the *receipt* did not arrive"));
         assert!(brief.contains("never in the exit code"), "the consequence, not just the rule");
@@ -685,7 +761,7 @@ mod tests {
     /// contain the work — an honest review of the wrong thing.
     #[test]
     fn the_worker_brief_says_to_commit_before_reporting() {
-        let brief = worker_brief(PaneId::Worker(2), &roster(), CWD);
+        let brief = worker_brief(PaneId::Worker(2), &roster(), CWD, BRANCH);
         assert!(brief.contains("Commit your work first"));
         assert!(brief.contains("not the files still sitting in your worktree"));
     }
@@ -698,11 +774,14 @@ mod tests {
     /// escalation this arrangement exists to make unnecessary.
     #[test]
     fn the_worker_brief_reviews_from_its_own_worktree_with_the_right_diff() {
-        let brief = worker_brief(PaneId::Worker(2), &roster(), CWD);
+        let brief = worker_brief(PaneId::Worker(2), &roster(), CWD, BRANCH);
         assert!(brief.contains("Stay in your own worktree"));
         assert!(brief.contains("shares one git object database"), "why it works with no fetch");
-        assert!(brief.contains("git diff HEAD...fleet/worker-3"), "the three-dot form");
-        assert!(brief.contains("git log --oneline HEAD..fleet/worker-3"));
+        // Built from `BRANCH` rather than spelled out, so this cannot drift from
+        // the branch a worktree is actually on the way `fleet/worker-N` did (R25).
+        let peer = format!("{BRANCH}/worker-3");
+        assert!(brief.contains(&format!("git diff HEAD...{peer}")), "the three-dot form");
+        assert!(brief.contains(&format!("git log --oneline HEAD..{peer}")));
         assert!(
             brief.contains("two would show it backwards"),
             "the trap has to be named, or a reviewer reads a peer's work as a deletion",
@@ -715,7 +794,7 @@ mod tests {
     /// replace.
     #[test]
     fn the_worker_brief_reviews_against_the_criteria_rather_than_taste() {
-        let brief = worker_brief(PaneId::Worker(3), &roster(), CWD);
+        let brief = worker_brief(PaneId::Worker(3), &roster(), CWD, BRANCH);
         assert!(brief.contains("not your taste"));
         assert!(brief.contains("name the criterion each finding is about"));
     }
@@ -725,7 +804,7 @@ mod tests {
     /// reviewed branch" softened by one word becomes a fleet that merges to main.
     #[test]
     fn the_orch_brief_merges_to_integration_and_never_to_trunk() {
-        let brief = orch_brief(&roster(), CWD);
+        let brief = orch_brief(&roster(), CWD, BRANCH);
         assert!(brief.contains("fleet/integration"));
         assert!(brief.contains("**never into trunk.**"));
         assert!(
@@ -741,7 +820,7 @@ mod tests {
     /// that says it exists at all.
     #[test]
     fn the_orch_brief_names_a_reviewer_who_is_neither_the_author_nor_itself() {
-        let brief = orch_brief(&roster(), CWD);
+        let brief = orch_brief(&roster(), CWD, BRANCH);
         assert!(brief.contains("Name a reviewer in the same message that hands out the block"));
         assert!(brief.contains("never the block's author, and never you"));
         assert!(
@@ -755,7 +834,7 @@ mod tests {
     /// exactly what "no hub-side verification" rules out.
     #[test]
     fn the_orch_brief_treats_a_receipt_as_evidence_rather_than_a_verdict() {
-        let brief = orch_brief(&roster(), CWD);
+        let brief = orch_brief(&roster(), CWD, BRANCH);
         assert!(brief.contains("evidence, not a verdict"));
         assert!(brief.contains("not that the block is done"));
         assert!(
@@ -774,7 +853,7 @@ mod tests {
     /// a full board as a met goal.
     #[test]
     fn the_orch_brief_hands_the_work_back_only_against_the_confirmed_vision() {
-        let brief = orch_brief(&roster(), CWD);
+        let brief = orch_brief(&roster(), CWD, BRANCH);
         assert!(brief.contains("fleet handoff"), "the verb itself");
         assert!(brief.contains("The finish line is the vision the operator confirmed"));
         assert!(
@@ -796,11 +875,11 @@ mod tests {
     /// and both spend a turn finding out.
     #[test]
     fn both_briefs_separate_closing_a_block_from_handing_the_work_back() {
-        let orch = orch_brief(&roster(), CWD);
+        let orch = orch_brief(&roster(), CWD, BRANCH);
         assert!(orch.contains("**This is not `fleet done`**"));
         assert!(orch.contains("the mission is over"), "what the verb actually claims");
 
-        let worker = worker_brief(PaneId::Worker(2), &roster(), CWD);
+        let worker = worker_brief(PaneId::Worker(2), &roster(), CWD, BRANCH);
         assert!(worker.contains("`fleet handoff` is `orch`'s verb"));
         assert!(
             worker.contains("Yours is `fleet done`"),

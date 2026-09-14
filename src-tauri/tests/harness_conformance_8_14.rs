@@ -33,7 +33,7 @@ use conformance::{
 use fleetor_core::pane::PaneId;
 use fleetor_core::{Command, ALLOWED_COMMANDS};
 use fleetor_shell::context_gauge::GaugeSources;
-use fleetor_shell::placement::harness::Transport;
+use fleetor_shell::placement::harness::{Seat, Transport};
 use fleetor_shell::placement::MISSING_FLEET_BIN;
 
 /// A body nothing would type by accident, so finding it on the far end of a pty
@@ -556,7 +556,7 @@ fn checkpoint_12_the_sweep_can_confirm_the_program_every_seat_is_actually_launch
 /// first writes. So the test plants one, and deliberately does not re-derive the
 /// per-project directory's name — see checkpoint 11's note on the same gap.
 #[test]
-fn checkpoint_13_transcripts_live_under_the_panes_config_dir_and_the_harvest_moves_them() {
+fn checkpoint_13_transcripts_live_under_the_panes_config_dir_and_the_archive_copies_them() {
     for_each_registered("cp13", |pass| {
         let transcript = &pass.spec.transcript;
         // **`subdir` is no longer required to be non-empty, and that is a
@@ -659,7 +659,42 @@ fn checkpoint_13_transcripts_live_under_the_panes_config_dir_and_the_harvest_mov
             }
         }
 
+        // **D-059's accumulation bug, planted before the harvest and asserted
+        // against its new answer** (WP-27 R4). A session belonging to a *different*
+        // run sits under a different seat directory, so it is not in this run's
+        // walk at all — the property that replaces "move it out so it cannot be
+        // archived twice". Planted for every seat, so a walk that reached one level
+        // too high would be caught for any of them.
+        for (seat, _) in pass.seats() {
+            let elsewhere = pass
+                .layout
+                .shell()
+                .join("pane-config")
+                .join("some-other-run")
+                .join(pane_of(seat).to_string())
+                .join(transcript.subdir);
+            std::fs::create_dir_all(&elsewhere).expect("another run's seat directory");
+            std::fs::write(
+                elsewhere.join(format!("stray.{}", transcript.file_ext)),
+                TRANSCRIPT_MARK,
+            )
+            .expect("another run's session");
+        }
+
         let run = pass.harvest_into_a_run();
+        for (seat, _) in pass.seats() {
+            let stray = run
+                .join("transcripts")
+                .join(pane_of(seat).to_string())
+                .join(format!("stray.{}", transcript.file_ext));
+            assert!(
+                !stray.exists(),
+                "{}/{seat}: the archive reached into another run's seat directory — the \
+                 accumulation D-059 moved transcripts to prevent, now prevented by the \
+                 directory instead (R4)",
+                pass.spec.name,
+            );
+        }
         let taken = files_containing(&run, TRANSCRIPT_MARK);
         assert_eq!(
             taken.len(),
@@ -679,10 +714,18 @@ fn checkpoint_13_transcripts_live_under_the_panes_config_dir_and_the_harvest_mov
                 pass.spec.name,
                 filed.display(),
             );
+            // **The original survives, and that is WP-27 R3 rather than a
+            // regression.** D-059 moved transcripts out so an archive would not
+            // accumulate its predecessors; R4's per-run seat directory now carries
+            // that property, and leaving the session where its vendor keeps it is
+            // what makes reopening a plain `--resume <id>` against a file that
+            // never moved — with no restore step that could half-fail. The
+            // accumulation half is asserted immediately below, against the
+            // mechanism that actually prevents it now.
             assert!(
-                !kept.exists(),
-                "{}/{seat}: the harvest copied instead of moving, so the next run's archive \
-                 will hold this one's transcripts too",
+                kept.exists(),
+                "{}/{seat}: the archive consumed the vendor's own session, so there is nothing \
+                 left for this harness to reopen (R3)",
                 pass.spec.name,
             );
             assert!(
@@ -691,6 +734,7 @@ fn checkpoint_13_transcripts_live_under_the_panes_config_dir_and_the_harvest_mov
                 pass.spec.name,
                 transcript.file_ext,
             );
+
 
             // **The database half, and it is three claims rather than one.** That
             // the archived file contains the mark is already asserted above, by
@@ -728,16 +772,12 @@ fn checkpoint_13_transcripts_live_under_the_panes_config_dir_and_the_harvest_mov
                          it is a file copy of a live database rather than a backup of one",
                         pass.spec.name,
                     );
-                    let left = kept.with_file_name(format!(
-                        "{}{suffix}",
-                        kept.file_name().unwrap_or_default().to_string_lossy(),
-                    ));
-                    assert!(
-                        !left.exists(),
-                        "{}/{seat}: the harvest took the database and left its `{suffix}` \
-                         behind, so the next run's archive will hold a fragment of this one",
-                        pass.spec.name,
-                    );
+                    // **The source keeps its own journal, and that is R3.** The
+                    // archive is a `VACUUM INTO` snapshot; the live store belongs
+                    // to its vendor, which is still what `codex resume <id>`
+                    // reopens, so deleting its `-wal` would be deleting part of a
+                    // database the fleet does not own. The fragment D-059 feared is
+                    // prevented by the per-run directory instead, asserted above.
                 }
             }
         }
@@ -880,7 +920,7 @@ fn checkpoint_14_the_key_is_the_panes_own_directory_and_the_first_run_gate_is_se
         // write one for the *new* cwd. Checkpoint 4 asserts the old one survives;
         // this asserts the new one arrives.
         let (other, placed) = pass.place_worker_against("cp14-second-repo");
-        let moved_to = pass.layout.worktree(&other, WORKER_SLOT);
+        let moved_to = pass.layout.worktree(&other, &pass.context.sessions, WORKER_SLOT);
         let moved_to = if moved_to.join(".git").exists() { moved_to } else { other };
         let after = document(&pass.config_text(&placed, identity.trust_file))
             .expect("the trust file is still readable after a target switch");
@@ -1031,4 +1071,138 @@ fn is_affirmative(answer: &serde_json::Value) -> bool {
         serde_json::Value::Array(items) => !items.is_empty(),
         serde_json::Value::Object(map) => !map.is_empty(),
     }
+}
+
+// --- checkpoint 15 (WP-27) ------------------------------------------------------
+
+/// **Checkpoint 15 — the spec's claim and the argv builder must agree** (WP-27,
+/// R6, R10).
+///
+/// A harness may legally answer [`Resume::NotSupported`]; what it may not do is
+/// *say* it resumes and then fail to build the argv, or the reverse. That is the
+/// half-registration this seam exists to prevent, and it is why checkpoint 15 is
+/// two things that have to be checked against each other rather than one trait
+/// method with a default.
+///
+/// **The id must reach the argv**, because a resume that drops it reopens the
+/// wrong session or none — and both of those look like a working pane.
+#[test]
+fn checkpoint_15_a_harness_that_claims_it_resumes_can_build_the_argv_that_does_it() {
+    let seen = for_each_registered("cp15", |pass| {
+        let claimed = pass.spec.resume.is_supported();
+        let built = pass.harness.resume_args(&Seat::new("BRIEF"), "SESSION-XYZ");
+
+        // The presence check's one universal answer: an empty seat holds no
+        // session. A harness that says yes here lets the reopen gate pass a seat
+        // whose session is gone, and the vendor's resume fails in a pane the live
+        // fleet was already killed for (R19). What a *present* session looks like
+        // is each vendor's own, and is asserted beside each harness.
+        if claimed {
+            let empty = std::env::temp_dir()
+                .join(format!("fleetor-cp15-{}-{}", pass.spec.name, std::process::id()));
+            std::fs::create_dir_all(&empty).expect("an empty seat directory");
+            assert!(
+                !pass.harness.has_session(&empty, "SESSION-XYZ"),
+                "{}: checkpoint 15's presence check found a session in an empty seat directory \
+                 — the reopen gate would pass a seat with nothing to resume",
+                pass.spec.name,
+            );
+        }
+
+        assert_eq!(
+            claimed,
+            built.is_some(),
+            "{}: checkpoint 15's two halves disagree — the spec says resume is {}, the argv \
+             builder says {}. A harness cannot be half-registered for reopening any more than \
+             it can for archiving (Transport's rule, applied to WP-27).",
+            pass.spec.name,
+            if claimed { "supported" } else { "unsupported" },
+            if built.is_some() { "supported" } else { "unsupported" },
+        );
+
+        if let Some(argv) = built {
+            assert!(
+                argv.iter().any(|arg| arg == "SESSION-XYZ"),
+                "{}: the session id never reached the argv ({argv:?}) — a reopen that drops it \
+                 resumes the wrong session or none, and both look like a working pane",
+                pass.spec.name,
+            );
+            assert!(
+                !argv.iter().any(|arg| arg.contains("BRIEF")),
+                "{}: a reopened pane must not be handed a brief ({argv:?}) — the session already \
+                 holds the one it was started with, and a second copy leaves the pane \
+                 reconciling two versions of its own instructions (R13)",
+                pass.spec.name,
+            );
+        }
+
+        if let fleetor_shell::placement::harness::Resume::NotSupported { why } = pass.spec.resume {
+            assert!(
+                !why.trim().is_empty(),
+                "{}: a declared refusal must say what is missing — History shows this sentence \
+                 to the operator (R10)",
+                pass.spec.name,
+            );
+        }
+    });
+    assert!(seen > 0);
+}
+
+/// **Checkpoint 15's other half — a reopened pane is the pane it was** (WP-29,
+/// gap 1; R13).
+///
+/// The test above proves a harness can build *an* argv. It does not prove the
+/// argv is as strong as the one a fresh launch gets, and that gap hid a real
+/// defect for the whole of WP-27: `CodexCli::resume_args` took a [`Seat`] named
+/// `_seat` and threw it away, so a reopened codex worker came back on the
+/// operator's default model and without `--dangerously-bypass-hook-trust` — the
+/// argument that makes the fleet's own `PreToolUse` hook run at all. A pane
+/// whose write guardrail is silently absent is exactly what R13 guarantees
+/// nobody in the pane will tell you about.
+///
+/// **The brief is the one thing a resume must drop**, so it and its flag are
+/// excluded; everything else a fresh launch carries must survive. Asserted as
+/// containment rather than equality, because a resume argv legitimately holds
+/// things a fresh one does not — a subcommand, a session id, a vendor's own
+/// defence against its picker.
+#[test]
+fn checkpoint_15_a_reopened_pane_keeps_every_posture_argument_a_fresh_one_gets() {
+    let seen = for_each_registered("cp15-posture", |pass| {
+        if !pass.spec.resume.is_supported() {
+            return;
+        }
+
+        // A fully loaded unattended seat: both posture channels filled, so a
+        // harness that answers either one has something to lose.
+        let seat = Seat::new("CONFORMANCE-BRIEF")
+            .with_model("MODEL-CONFORMANCE")
+            .with_permission_mode("MODE-CONFORMANCE");
+
+        let fresh = pass.harness.command_args(&seat);
+        let resumed = pass
+            .harness
+            .resume_args(&seat, "SESSION-XYZ")
+            .expect("a harness claiming resume support builds an argv");
+
+        let brief_flag = pass.spec.brief.argv_flag;
+        let mut carrying_the_brief = false;
+        for arg in &fresh {
+            if carrying_the_brief {
+                carrying_the_brief = false;
+                continue;
+            }
+            if Some(arg.as_str()) == brief_flag {
+                carrying_the_brief = true;
+                continue;
+            }
+            assert!(
+                resumed.contains(arg),
+                "{}: a fresh launch carries {arg:?} and a reopen does not ({resumed:?}) — a \
+                 reopened pane must come back as the pane it was, and a posture argument \
+                 dropped here fails silently inside a pane R13 forbids telling",
+                pass.spec.name,
+            );
+        }
+    });
+    assert!(seen > 0);
 }

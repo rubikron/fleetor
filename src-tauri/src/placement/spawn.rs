@@ -175,6 +175,31 @@ fn apply_attended_config(cmd: &mut CommandBuilder, spec: &'static HarnessSpec, c
 // forbidden to read for itself, which is the trade D-075 made deliberately — the
 // three siblings above carry the same attribute for the same reason.
 #[allow(clippy::too_many_arguments)]
+/// **How this seat is brought up: fresh, or reopening the session it left**
+/// (WP-27, R6).
+///
+/// The one place the choice is made, so a seat cannot come up resumed on one path
+/// and fresh on another. A seat with a recorded id in
+/// [`PaneContext::resume`](crate::prompts::PaneContext::resume) is placed through
+/// checkpoint 15's argv; every other seat, and every seat of an ordinary boot,
+/// goes through `command_args` exactly as before.
+///
+/// **A harness that declares no resume support falls back rather than failing.**
+/// It cannot reach here in practice — R8 refuses the whole run before any pane is
+/// placed — but a fallback that comes up fresh is the safe end of that branch: the
+/// alternative is a pane with no argv at all.
+fn args_for(
+    harness: &'static dyn Harness,
+    seat: &Seat<'_>,
+    pane: PaneId,
+    ctx: &PaneContext,
+) -> Vec<String> {
+    ctx.resume
+        .get(&pane.to_string())
+        .and_then(|session| harness.resume_args(seat, session))
+        .unwrap_or_else(|| harness.command_args(seat))
+}
+
 pub(super) fn orch_command_with(
     harness: &'static dyn Harness,
     model: Option<&str>,
@@ -199,13 +224,14 @@ pub(super) fn orch_command_with(
     // moment this seat could be a different vendor; `None` is the gate's
     // `default (your login)` sentinel, and it is what every caller but the picker
     // passes.
-    let brief = render_orch(&ctx.orch_template, &roster(), &cwd.display().to_string());
+    let brief =
+        render_orch(&ctx.orch_template, &roster(), &cwd.display().to_string(), &ctx.branch_prefix);
     let seat = Seat::new(&brief).for_the_operator();
     let seat = match model {
         Some(model) => seat.with_model(model),
         None => seat,
     };
-    let mut cmd = base_command_with(harness, program, &harness.command_args(&seat));
+    let mut cmd = base_command_with(harness, program, &args_for(harness, &seat, PaneId::Orch, ctx));
     cmd.cwd(cwd);
     apply_pane_env(&mut cmd, PaneId::Orch, socket, path.to_string());
     // Checkpoint 3's other model channel, for the one attended seat that may now
@@ -405,7 +431,13 @@ pub(super) fn worker_command_with(
         // one value, two possible carriers — never both at once, which is what
         // the conformance suite's checkpoint 3 refuses.
         &{
-            let brief = render_worker(&ctx.worker_template, pane, &roster(), &cwd.display().to_string());
+            let brief = render_worker(
+                &ctx.worker_template,
+                pane,
+                &roster(),
+                &cwd.display().to_string(),
+                &ctx.branch_prefix,
+            );
             let seat = Seat::new(&brief).with_permission_mode(&ctx.launch.worker_permission_mode);
             // **The argv half of the same rule** (C80). A harness that takes its
             // model in argv (codex's `--model`) must not be handed the fleet's on
@@ -414,7 +446,7 @@ pub(super) fn worker_command_with(
                 Some(model) => seat.with_model(model),
                 None => seat,
             };
-            harness.command_args(&seat)
+            args_for(harness, &seat, pane, ctx)
         },
     );
     cmd.cwd(cwd);
@@ -447,6 +479,11 @@ pub(super) fn worker_command_with(
     // had been conflated.
     if spec.isolation.private_home {
         cmd.env("HOME", home);
+        // The vendor would otherwise install itself into the private HOME it was
+        // just handed — once per seat, every release, never run (D-082).
+        for (var, value) in spec.isolation.fenced_env {
+            cmd.env(var, value);
+        }
     }
     // Checkpoint 4, off the spec: where this pane's own configuration lives. The
     // credential half of checkpoint 6 is deliberately absent here rather than set
@@ -1359,6 +1396,35 @@ mod tests {
             &ctx,
         );
         assert_eq!(worker.get_env("HOME").unwrap(), "/tmp/private-home");
+    }
+
+    /// A private HOME must not become a private Claude Code installation (D-082):
+    /// the vendor's updater would otherwise put ~190 MB per release into each
+    /// seat's HOME, and nothing ever runs it. Orch's updater is the operator's own
+    /// and is left exactly as inherited.
+    #[test]
+    fn a_fenced_worker_does_not_update_claude_code_into_its_private_home() {
+        let socket = PathBuf::from("/tmp/s.sock");
+        let ctx = PaneContext::baked();
+
+        let orch = orch_command(Path::new("/tmp"), &socket, Path::new("/tmp/orch-cfg"), &ctx);
+        assert_eq!(
+            orch.get_env("DISABLE_AUTOUPDATER").map(|s| s.to_os_string()),
+            std::env::var_os("DISABLE_AUTOUPDATER"),
+            "orch's updater is the operator's own"
+        );
+
+        let worker = worker_command(
+            1,
+            Path::new("/tmp"),
+            Path::new("/tmp/private-home"),
+            Path::new("/tmp/cfg"),
+            &socket,
+            "k",
+            None,
+            &ctx,
+        );
+        assert_eq!(worker.get_env("DISABLE_AUTOUPDATER").unwrap(), "1");
     }
 
     /// The other half of the fix, in the same commit as the private HOME: a

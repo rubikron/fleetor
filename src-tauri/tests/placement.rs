@@ -59,7 +59,7 @@ impl Scratch {
     /// The shell command Claude Code will run for every matched tool call, read
     /// out of the `settings.json` placement just wrote for this pane.
     fn hook_command(&self, pane: PaneId) -> String {
-        let settings = self.layout.pane_config(pane).join("settings.json");
+        let settings = self.layout.pane_config(&fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), pane).join("settings.json");
         let value: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
         value["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
@@ -395,7 +395,7 @@ fn placing_the_orchestrator_returns_the_notices_the_operator_should_read() {
     // Then the one notice standing between the operator and a pane that looks
     // perfectly healthy while being logged out (WP-14, D-062).
     assert_eq!(placed.notices[1].0, NoticeLevel::Info);
-    let config_dir = scratch.layout.pane_config(PaneId::Orch);
+    let config_dir = scratch.layout.pane_config(&fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), PaneId::Orch);
     assert!(placed.notices[1].1.contains(&config_dir.display().to_string()));
     assert!(placed.notices[1].1.contains("Not logged in"));
     assert!(placed.notices[1].1.contains("/login"));
@@ -493,14 +493,14 @@ fn placing_against_a_scratch_layout_writes_inside_it_and_nowhere_else() {
 
     // The seed and the policy really did land, so the check above is not passing
     // by virtue of placement having done nothing.
-    let config_dir = scratch.layout.pane_config(PaneId::Orch);
+    let config_dir = scratch.layout.pane_config(&fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), PaneId::Orch);
     assert!(config_dir.join(".claude.json").is_file(), "the L1 config seed");
     assert!(config_dir.join("settings.json").is_file(), "the guardrail policy");
     assert!(config_dir.join("write-guardrail.py").is_file(), "the guardrail hook itself");
 
     // The worker's own three, so its half of the walk above is not passing by
     // virtue of the worker having done nothing either.
-    let worker_config = scratch.layout.pane_config(PaneId::Worker(1));
+    let worker_config = scratch.layout.pane_config(&fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), PaneId::Worker(1));
     assert!(worker_config.join(".claude.json").is_file(), "the worker's L1 config seed");
     assert!(worker_config.join("settings.json").is_file(), "the worker's guardrail policy");
     assert!(
@@ -508,7 +508,7 @@ fn placing_against_a_scratch_layout_writes_inside_it_and_nowhere_else() {
         "the Fence's seeded git identity",
     );
     assert!(
-        scratch.layout.worktree(&scratch.target, 1).join(".git").exists(),
+        scratch.layout.worktree(&scratch.target, &fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), 1).join(".git").exists(),
         "the worker's own checkout",
     );
 
@@ -571,7 +571,7 @@ fn switching_targets_re_seeds_the_worker_and_keeps_the_first_targets_trust() {
     let second_cwd = two.gauge.expect("a worker records a gauge source").cwd;
     assert_ne!(first_cwd, second_cwd, "a target switch must move the worker's checkout");
 
-    let seed = scratch.layout.pane_config(PaneId::Worker(1)).join(".claude.json");
+    let seed = scratch.layout.pane_config(&fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), PaneId::Worker(1)).join(".claude.json");
     let value: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&seed).unwrap()).unwrap();
 
@@ -696,26 +696,98 @@ fn a_machine_with_no_toolchain_gets_no_toolchain_settings_at_all() {
     );
 }
 
-/// **A target that is not a repository degrades to the shared checkout, loudly.**
+/// **A target that is not a repository is made one, and the worker gets its own
+/// worktree of it** (D-084).
 ///
-/// The wording has had a test; the trigger has not. A fleet that fell back silently
-/// would look identical to a working one right up until an operator trusted a
-/// reviewed `done` that nobody could have reviewed.
+/// Before D-084 this directory sent all four workers into one checkout. The file
+/// written first is the point: a worktree of an empty commit would be a worktree
+/// with none of the project in it, which is the old failure wearing a branch.
 #[test]
-fn a_target_that_is_not_a_repository_falls_back_and_says_what_review_loses() {
-    let scratch = Scratch::new("fallback");
-    // Deliberately *not* `init_repo` — an ordinary directory, which is exactly the
-    // case the fallback exists for.
+fn a_target_that_is_not_a_repository_is_initialized_and_the_worker_gets_a_worktree_of_it() {
+    let scratch = Scratch::new("init");
+    // Deliberately *not* `init_repo` — an ordinary directory with work in it.
+    std::fs::write(scratch.target.join("notes.txt"), "the operator's own file\n").unwrap();
+    let host = host_for_worker(&scratch.root.join("fleet"));
 
     let placed = placement::place(
         PaneSpec::worker(4, claude_code()),
         &scratch.layout,
-        &host_for_worker(&scratch.root.join("fleet")),
+        &host,
         &scratch.target,
         &PaneContext::baked(),
     )
     .expect("a target that is not a repository still places a worker");
 
+    let worktree = scratch.layout.worktree(&scratch.target, &fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), 4);
+    assert!(
+        worktree.join("notes.txt").exists(),
+        "the worktree carries the files that were in the target: {}",
+        worktree.display(),
+    );
+    assert_eq!(
+        placed.gauge.expect("a worker records a gauge source").cwd,
+        worktree,
+        "and the worker runs there, not in the target",
+    );
+    let said = placed
+        .notices
+        .iter()
+        .find(|(_, text)| text.contains("git init"))
+        .map(|(level, text)| (*level, text.as_str()))
+        .expect("writing into the operator's directory is announced, never silent");
+    assert_eq!(said.0, NoticeLevel::Info, "{}", said.1);
+    assert!(said.1.contains(&scratch.target.display().to_string()), "where: {}", said.1);
+    assert!(said.1.contains("the 1 file in it"), "what was committed: {}", said.1);
+    assert!(
+        !placed.notices.iter().any(|(_, text)| text.contains("share the checkout")),
+        "no fallback once the target is a repository: {:?}",
+        placed.notices,
+    );
+
+    // The next worker finds a repository: no second commit, no second notice.
+    let second = placement::place(
+        PaneSpec::worker(3, claude_code()),
+        &scratch.layout,
+        &host,
+        &scratch.target,
+        &PaneContext::baked(),
+    )
+    .expect("the second worker places");
+    assert!(!second.notices.iter().any(|(_, text)| text.contains("git init")), "{:?}", second.notices);
+    let log = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&scratch.target)
+        .args(["log", "--format=%s"])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&log.stdout), "fleet: initial commit\n");
+}
+
+/// **A target that cannot be made a repository degrades to the shared checkout,
+/// loudly.**
+///
+/// The operator's home directory is the case D-084 refuses, so it is the case the
+/// fallback is still for. The wording has had a test; the trigger has not. A fleet
+/// that fell back silently would look identical to a working one right up until an
+/// operator trusted a reviewed `done` that nobody could have reviewed.
+#[test]
+fn a_target_that_cannot_be_made_a_repository_falls_back_and_says_what_review_loses() {
+    let scratch = Scratch::new("fallback");
+    let host = Host {
+        operator_home: Some(scratch.target.clone()),
+        ..host_for_worker(&scratch.root.join("fleet"))
+    };
+
+    let placed = placement::place(
+        PaneSpec::worker(4, claude_code()),
+        &scratch.layout,
+        &host,
+        &scratch.target,
+        &PaneContext::baked(),
+    )
+    .expect("a target that is not a repository still places a worker");
+
+    assert!(!scratch.target.join(".git").exists(), "the home directory is never initialized");
     let warning = placed
         .notices
         .iter()
@@ -723,6 +795,7 @@ fn a_target_that_is_not_a_repository_falls_back_and_says_what_review_loses() {
         .map(|(_, text)| text.as_str())
         .expect("the fallback is announced, never silent");
     assert!(warning.contains("worker-4"), "which worker: {warning}");
+    assert!(warning.contains("your home directory"), "why it was not initialized: {warning}");
     assert!(warning.contains("share the checkout"), "what happened: {warning}");
     assert!(
         warning.contains("Peer review is degraded"),
@@ -745,7 +818,7 @@ fn a_target_that_is_not_a_repository_falls_back_and_says_what_review_loses() {
         "the fallback cwd is the target itself",
     );
     assert!(
-        !scratch.layout.worktree(&scratch.target, 4).exists(),
+        !scratch.layout.worktree(&scratch.target, &fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), 4).exists(),
         "no worktree is created when git could not oblige",
     );
     assert_eq!(
@@ -775,7 +848,7 @@ fn a_worker_gets_its_own_worktree_and_branch_in_a_real_repository() {
     )
     .expect("placing worker-1 in a real repository");
 
-    let worktree = scratch.layout.worktree(&scratch.target, 1);
+    let worktree = scratch.layout.worktree(&scratch.target, &fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), 1);
     assert!(worktree.join(".git").exists(), "a real checkout at {}", worktree.display());
     assert!(
         placed.notices.iter().all(|(level, _)| *level != NoticeLevel::Warn),
@@ -797,7 +870,7 @@ fn a_worker_gets_its_own_worktree_and_branch_in_a_real_repository() {
     // placement, which is strictly earlier than the pty the caller has yet to spawn.
     let gauge = placed.gauge.expect("a worker records a gauge source");
     assert_eq!(gauge.cwd, worktree, "the gauge samples the worker's own checkout");
-    assert_eq!(gauge.config_dir, scratch.layout.pane_config(PaneId::Worker(1)));
+    assert_eq!(gauge.config_dir, scratch.layout.pane_config(&fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), PaneId::Worker(1)));
 
     // Everything downstream followed the worktree rather than the target.
     assert_eq!(
@@ -807,7 +880,7 @@ fn a_worker_gets_its_own_worktree_and_branch_in_a_real_repository() {
     );
     assert_eq!(
         env_on(&placed.command, "CLAUDE_CONFIG_DIR").as_deref(),
-        Some(scratch.layout.pane_config(PaneId::Worker(1)).display().to_string().as_str()),
+        Some(scratch.layout.pane_config(&fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), PaneId::Worker(1)).display().to_string().as_str()),
     );
 }
 
@@ -828,7 +901,7 @@ fn the_config_seed_is_keyed_to_the_target_the_pane_will_run_in() {
     )
     .expect("placing orch against a scratch layout");
 
-    let seed = scratch.layout.pane_config(PaneId::Orch).join(".claude.json");
+    let seed = scratch.layout.pane_config(&fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), PaneId::Orch).join(".claude.json");
     let value: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&seed).unwrap()).unwrap();
     assert_eq!(value["hasCompletedOnboarding"], serde_json::json!(true));
@@ -1326,4 +1399,67 @@ fn critic_brief(command: &portable_pty::CommandBuilder) -> String {
         .map(|a| a.to_string_lossy().into_owned())
         .find(|a| a.contains("You are the Critic"))
         .expect("the rendered brief is on the command")
+}
+
+/// **A reopened seat is placed with the vendor's own resume verb** (WP-27, R6) —
+/// the wiring, not the trait method.
+///
+/// This is the test the first attempt at S1 did not have, and its absence cost a
+/// live run: `resume_args` was implemented, conformance-tested against every
+/// registered harness, and called by *nothing*. The panes came up fresh, which
+/// looks exactly like a working fleet until you read what is in them. Checkpoint
+/// 15 answering correctly proves the harness knows how; only this proves the
+/// spawn path asks.
+///
+/// Driven on `orch` alone deliberately: a worker seat needs a credential this
+/// scratch host has no business holding, and the branch under test is the same
+/// one for every seat.
+#[test]
+fn a_reopened_seat_is_placed_with_its_own_recorded_session() {
+    let scratch = Scratch::new("reopen-argv");
+    let host = host_with_fleet_bin(&scratch.root.join("fleet"));
+
+    let mut reopening = PaneContext::baked();
+    reopening.resume.insert("orch".to_string(), "SESSION-ORCH".to_string());
+    let placed = placement::place(
+        PaneSpec::orch(claude_code()),
+        &scratch.layout,
+        &host,
+        &scratch.target,
+        &reopening,
+    )
+    .expect("the orchestrator is placed");
+    let argv: Vec<String> =
+        placed.command.get_argv().iter().map(|a| a.to_string_lossy().into_owned()).collect();
+    assert!(
+        argv.iter().any(|a| a == "--resume"),
+        "orch was placed with no resume verb, so it comes up on a fresh session: {argv:?}",
+    );
+    assert!(
+        argv.iter().any(|a| a == "SESSION-ORCH"),
+        "the recorded session id never reached the argv: {argv:?}",
+    );
+    // R13: the session already holds the brief it was started with, and a second
+    // copy would leave the pane reconciling two versions of its instructions.
+    assert!(
+        !argv.iter().any(|a| a.contains("orchestrator")),
+        "a reopened pane must not be handed a second brief: {argv:?}",
+    );
+
+    // The other branch, so a partially recorded lineage cannot silently hand a
+    // seat somebody else's session: no entry means a fresh pane, as before.
+    let fresh = placement::place(
+        PaneSpec::orch(claude_code()),
+        &scratch.layout,
+        &host,
+        &scratch.target,
+        &PaneContext::baked(),
+    )
+    .expect("the orchestrator is placed");
+    let argv: Vec<String> =
+        fresh.command.get_argv().iter().map(|a| a.to_string_lossy().into_owned()).collect();
+    assert!(
+        !argv.iter().any(|a| a == "--resume"),
+        "a seat with no recorded session must come up fresh: {argv:?}",
+    );
 }
