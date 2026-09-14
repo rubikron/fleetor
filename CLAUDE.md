@@ -42,7 +42,9 @@ Optimize for shared understanding before completion speed.
 
 # Output style
 
-Write for a teammate who stepped away and is catching up — not a log of your process.
+Write for a teammate who stepped away and is catching up — not a log of your process. Do not be verbose with your comments - when writing code, commit message, or anything.
+
+You have to be clear and concise
 
 ## Lead with the outcome
 
@@ -85,9 +87,21 @@ enumerable facts.
 
 # Conversation state
 
-Maintain a file `decisions.md` in the project root. Every time we settle
-something — a design choice, a constraint, a rejected approach, a term of art —
-append one line to it immediately. Before answering any question that touches
-prior decisions, re-read decisions.md and treat it as authoritative over your
-memory of the conversation. If my request contradicts a recorded decision,
-flag the conflict instead of silently following either.
+Decisions live in `decisions/`, one file per decision (`D-XXX.md`) with YAML
+frontmatter (`id`, `title`, `phase`, `status`). `decisions/INDEX.md` is the
+compact lookup table — read it to find which decisions are relevant, then open
+only those files.
+
+- **Recording a new decision:** create `decisions/D-{next}.md` with frontmatter
+  and the What/Why/Reverses-if body, then add one row to `INDEX.md`.
+- **Before answering any question that touches prior decisions:** re-read
+  `decisions/INDEX.md`, open the relevant decision files, and treat them as
+  authoritative over your memory. If a request contradicts a recorded decision,
+  flag the conflict instead of silently following either.
+- **When a decision is reversed or superseded:** update its `status` field in
+  the frontmatter and in the INDEX row. Don't delete the file.
+
+## Coding Style
+
+- be direct and concise
+- do not write overly detailed comments - too many comments are a problem. Logging decisions in MD files are the reason we dont rely on documenting in code files
