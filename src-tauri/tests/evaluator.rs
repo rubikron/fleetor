@@ -216,13 +216,11 @@ fn find_brief(dir: &Path) -> Option<PathBuf> {
 /// stateless chrome and has no buffer to lose.
 #[test]
 fn the_evaluators_terminal_is_never_conditionally_rendered() {
-    let app = read("ui/src/App.tsx");
-    // The evaluator's own stage-view, up to where the next one begins.
-    let block = app
-        .split("stage-view ${view === \"evaluator\"")
+    let review = read("ui/src/components/ReviewView.tsx");
+    let block = review
+        .split("<div className=\"evaluator-view\">")
         .nth(1)
-        .and_then(|rest| rest.split("stage-view ${view === \"settings\"").next())
-        .expect("App.tsx has an evaluator stage-view, followed by the settings one");
+        .expect("ReviewView.tsx has an evaluator-view section");
 
     assert!(block.contains("<TerminalPane"), "the evaluator view holds a terminal");
     assert!(
@@ -235,11 +233,10 @@ fn the_evaluators_terminal_is_never_conditionally_rendered() {
     // the tree, which is §7 rule 5 stated as a count rather than as a hope.
     assert_eq!(
         block.matches("is-hidden").count(),
-        3,
-        "the evaluator view hides three things with `.is-hidden` and unmounts none: itself \
-         when another view is selected, its pre-handoff prose once the evaluator wakes, and \
-         its terminal until then. A different count means one of them started being \
-         conditionally rendered instead:\n{block}",
+        2,
+        "the evaluator view hides two things with `.is-hidden` and unmounts none: \
+         its pre-handoff prose once the evaluator wakes, and its terminal until then. \
+         The parent tab toggle is one level up in ReviewView:\n{block}",
     );
     for tell in ["&&", "? <", "?.("] {
         assert!(
