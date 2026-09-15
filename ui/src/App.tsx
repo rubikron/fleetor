@@ -50,12 +50,6 @@ const EVALUATOR_SCROLLBACK = 20000;
 // and the operator scrolls back through them to check the ones they care about.
 const CRITIC_SCROLLBACK = 20000;
 
-function statusText(ready: boolean, error: string | null, count: number): string {
-  if (error) return error;
-  if (!ready) return "connecting…";
-  return `fleet live · ${count} events`;
-}
-
 export function App() {
   const { view, setView, selectedWorker, setSelectedWorker } = usePersistedNav();
   const [started, setStarted] = useState(false);
@@ -218,8 +212,8 @@ export function App() {
   return (
     <div className="app">
       <TopBar
-        status={statusText(fleet.ready, fleet.error, fleet.feed.length)}
         config={fleet.config}
+        error={fleet.error}
         zoom={zoom.zoom}
       />
       {devMode.enabled === true && <DevModeBanner />}

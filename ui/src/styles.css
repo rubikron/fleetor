@@ -192,6 +192,65 @@
   --border-soft: #e3d6b9;
 }
 
+/* THEME MORPH — the light/dark switch moves every colour together instead of
+   snapping: background and text travel at once, the way Mintaka's page turns
+   dark (a scroll-scrubbed tween of background-color and color together),
+   driven here by the switch rather than by scroll.
+
+   Registering the tokens is what makes this one rule. An unregistered custom
+   property is a string and cannot interpolate, so it would flip at the end of
+   the duration; registered as <color>, each token tweens on :root and every
+   var() that reads it — surfaces, text, borders, color-mix() — follows frame
+   by frame with nothing per-component. The list is exactly the tokens the
+   light block above redeclares; one added there belongs here too, or it
+   snaps while the rest morph. Initial values are the dark ones, never used
+   while :root declares them.
+
+   Scoped to [data-theme-morph], which useTheme.ts sets only for a switch the
+   operator makes. xterm paints its canvas outside CSS, so TerminalPane tweens
+   it itself: THEME_MORPH_MS and easeThemeMorph in theme.ts must move with the
+   duration and curve below. */
+@property --bg-0 { syntax: "<color>"; inherits: true; initial-value: #1b1813; }
+@property --bg-1 { syntax: "<color>"; inherits: true; initial-value: #201d18; }
+@property --bg-2 { syntax: "<color>"; inherits: true; initial-value: #29251e; }
+@property --bg-3 { syntax: "<color>"; inherits: true; initial-value: #312c25; }
+@property --term-bg { syntax: "<color>"; inherits: true; initial-value: #201d18; }
+@property --fg { syntax: "<color>"; inherits: true; initial-value: #e9e7e2; }
+@property --fg-dim { syntax: "<color>"; inherits: true; initial-value: #c2baae; }
+@property --fg-mute { syntax: "<color>"; inherits: true; initial-value: #b6aa96; }
+@property --accent { syntax: "<color>"; inherits: true; initial-value: #d97757; }
+@property --gold { syntax: "<color>"; inherits: true; initial-value: #c69a4e; }
+@property --green { syntax: "<color>"; inherits: true; initial-value: #7fa36a; }
+@property --red { syntax: "<color>"; inherits: true; initial-value: #d66f66; }
+@property --border { syntax: "<color>"; inherits: true; initial-value: #383229; }
+@property --border-soft { syntax: "<color>"; inherits: true; initial-value: #2c2720; }
+
+:root[data-theme-morph] {
+  transition-property:
+    --bg-0,
+    --bg-1,
+    --bg-2,
+    --bg-3,
+    --term-bg,
+    --fg,
+    --fg-dim,
+    --fg-mute,
+    --accent,
+    --gold,
+    --green,
+    --red,
+    --border,
+    --border-soft;
+  transition-duration: 600ms;
+  transition-timing-function: cubic-bezier(0.65, 0, 0.35, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-theme-morph] {
+    transition: none;
+  }
+}
+
 * {
   box-sizing: border-box;
 }
@@ -273,16 +332,9 @@ body,
         can happen under width pressure is an ellipsis truncation of a
         value — never a second line. That guarantee holds regardless of
         window width or the zoom pivot's root font-size.
-   `container-type: inline-size` turns this row into a query container so
-   the lowest-priority values can drop out (see `.status-line__item--gate`
-   / `--workers` below) before truncation ever has to bite into `target` or
-   `branch`, which the operator actually needs to read. The breakpoints use
-   `em`, not `px`: an `em` in a container query resolves against the
-   container's own font-size, which is itself in rem — so the trigger point
-   scales in lockstep with the zoom pivot instead of staying pinned to a
-   physical pixel width that would drop content "too early" at 100% zoom
-   and "too late" at 200%, where the same content needs twice the physical
-   room. */
+   The topbar shows only the brand mark and the repo name. Connection
+   status is invisible when healthy; errors surface as a dismissible
+   banner below the topbar. */
 .topbar {
   display: flex;
   align-items: center;
@@ -306,74 +358,15 @@ body,
   flex-shrink: 0;
 }
 
-/* a plain terminal-style status line, not chips: dense key/value pairs
-   separated by hairlines, the way a tmux or i3 status bar reads.
-
-   `target`/`branch` are the "primary" tier — what the operator needs to
-   confirm they're pointed at the right repo. `workers`/`gate` are the
-   "quiet" tier — configuration set once at launch, sized down (--t-label)
-   and left in the muted foreground so they don't compete with primary at
-   the same volume. `gate` in particular is no longer green: green reads as
-   a live "passing" signal app-wide, and a configured policy isn't one. */
-.status-line {
-  display: flex;
-  align-items: baseline;
-  gap: 1.25rem;
-  font-family: var(--mono);
+.topbar__repo {
   font-size: var(--t-small);
-  min-width: 0;
-  overflow: hidden;
-}
-.status-line__item {
-  display: flex;
-  align-items: baseline;
-  gap: 0.4375rem;
-  padding-left: 1.25rem;
-  border-left: 1px solid var(--border-soft);
-  min-width: 0;
-  flex-shrink: 1;
-}
-.status-line__item:first-child {
-  padding-left: 0;
-  border-left: none;
-}
-.status-line__item--quiet {
-  font-size: var(--t-label);
-  flex-shrink: 2; /* the quiet tier gives up room before primary does */
-}
-.status-line__label {
-  color: var(--fg-mute);
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-.status-line__value {
-  color: var(--fg-dim);
+  color: var(--fg);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
 }
-.status-line__item--primary .status-line__value { color: var(--fg); }
-.status-line__value--gold { color: var(--gold); }
-
-/* progressive disclosure: quietest, longest, least urgent goes first. Pure
-   enhancement — if a webview doesn't support container queries these items
-   just fall back to the universal nowrap+ellipsis truncation above instead
-   of dropping, so nothing here can wrap or grow the row either way. */
-@container topbar (max-width: 46em) {
-  .status-line__item--gate { display: none; }
-}
-@container topbar (max-width: 34em) {
-  .status-line__item--workers { display: none; }
-}
-
 .topbar__spacer { flex: 1 1 auto; min-width: 0.75rem; }
-.topbar__status {
-  font-size: var(--t-small);
-  color: var(--fg-mute);
-  white-space: nowrap;
-  flex-shrink: 0;
-}
 /* shown only when zoom departs from 100% — quiet mono aside, no border, no
    background, no transition (motion here is reserved for the blocked signal). */
 .topbar__zoom {
@@ -382,6 +375,30 @@ body,
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   flex-shrink: 0;
+}
+
+/* ---- error banner ---- */
+.topbar-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.375rem 1rem;
+  font-size: var(--t-small);
+  flex: 0 0 auto;
+}
+.topbar-banner--error {
+  background: var(--coral);
+  color: var(--bg-0);
+}
+.topbar-banner__dismiss {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: inherit;
+  font-size: 1rem;
+  cursor: pointer;
+  padding: 0 0.25rem;
+  line-height: 1;
 }
 
 /* ---- dev mode band (WP-16) ---- */
