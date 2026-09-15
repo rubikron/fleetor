@@ -76,6 +76,11 @@ export function MissionControl({
               className={`mc-card ${selected === pane ? "mc-card--selected" : ""}`}
               data-pane={pane}
               onClick={() => handleSelect(pane)}
+              onMouseMove={(e) => {
+                const rect = e.currentTarget.getBoundingClientRect();
+                e.currentTarget.style.setProperty("--mx", `${e.clientX - rect.left}px`);
+                e.currentTarget.style.setProperty("--my", `${e.clientY - rect.top}px`);
+              }}
             >
               <div className="mc-card__header">
                 <span className={`dot dot--${statusTone(status)}`} />
