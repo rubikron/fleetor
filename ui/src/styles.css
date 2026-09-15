@@ -627,16 +627,26 @@ body,
 .dot--red { background: var(--red); }
 .dot--muted { background: var(--border); border: 1px solid var(--fg-mute); }
 
-/* split: orchestrator + worker column via react-resizable-panels */
-.split {
+/* fleet layout: single terminal with unified tab strip */
+.fleet-layout {
   flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+.fleet-layout__terminal {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
   min-height: 0;
 }
 .pane-slot {
   min-width: 0;
   min-height: 0;
   display: flex;
+  flex: 1;
 }
+.pane-slot.is-hidden { display: none; }
 /* The evaluator's view (D-073, replacing WP-15's second window). One terminal
    filling the stage and no chrome of its own: the pane's own head already names
    it. Both children are always in the DOM — `.is-hidden` swaps which one is

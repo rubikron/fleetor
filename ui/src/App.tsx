@@ -37,16 +37,14 @@ import { useDevMode } from "./ui/useDevMode";
 import { useCriticInterview } from "./ui/useCriticInterview";
 import { killPane, onEvaluatorWake } from "./fleet/api";
 import { stopListening } from "./fleet/listeners";
-import { ORCH, paneSlot, type PaneId, type PaneStatus } from "./fleet/types";
+import { ORCH, type PaneId, type PaneStatus } from "./fleet/types";
 
 export function App() {
-  const { view, setView, selectedWorker, setSelectedWorker } = usePersistedNav();
+  const { view, setView } = usePersistedNav();
   const [started, setStarted] = useState(false);
   const [statuses, setStatuses] = useState<Record<PaneId, PaneStatus>>({});
-  // Worker slots that have produced output since the operator last selected
-  // that tab — presence only, no count, gold not coral (coral is reserved
-  // for the focused-pane frame in TerminalPane.tsx — see item 1 there).
-  const [unreadWorkers, setUnreadWorkers] = useState<Set<number>>(() => new Set());
+  const [selectedPane, setSelectedPane] = useState<PaneId>(ORCH);
+  const [unreadPanes, setUnreadPanes] = useState<Set<PaneId>>(() => new Set());
   const fleet = useFleet();
   // Past runs. Independent of `fleet` on purpose: History reads files, so it
   // works on the start gate, before a fleet exists, which is exactly when the
@@ -83,20 +81,17 @@ export function App() {
     paneFocusRegistry.current[pane] = focus;
   }, []);
 
-  // Selecting a worker tab is what "viewing" it means for the unread dot —
-  // clear it here rather than in TerminalGrid, since App.tsx already owns
-  // both selectedWorker and unreadWorkers.
-  const selectWorker = useCallback(
-    (slot: number) => {
-      setSelectedWorker(slot);
-      setUnreadWorkers((prev) => {
-        if (!prev.has(slot)) return prev;
+  const selectPane = useCallback(
+    (pane: PaneId) => {
+      setSelectedPane(pane);
+      setUnreadPanes((prev) => {
+        if (!prev.has(pane)) return prev;
         const next = new Set(prev);
-        next.delete(slot);
+        next.delete(pane);
         return next;
       });
     },
-    [setSelectedWorker],
+    [],
   );
 
   // TerminalPane calls onStatus(pane, "live") on *every* output chunk, not
@@ -109,11 +104,10 @@ export function App() {
   const onStatus = useCallback(
     (pane: PaneId, status: PaneStatus) => {
       setStatuses((prev) => (prev[pane] === status ? prev : { ...prev, [pane]: status }));
-      const slot = paneSlot(pane);
-      if (slot === null || slot === selectedWorker) return;
-      setUnreadWorkers((prev) => (prev.has(slot) ? prev : new Set(prev).add(slot)));
+      if (pane === selectedPane) return;
+      setUnreadPanes((prev) => (prev.has(pane) ? prev : new Set(prev).add(pane)));
     },
-    [selectedWorker],
+    [selectedPane],
   );
 
   // Cmd+1..5 pane jumps (ORCH, worker-1..4 — see usePaneJump.ts). Switches to
@@ -123,11 +117,10 @@ export function App() {
   const jumpToPane = useCallback(
     (pane: PaneId) => {
       setView("fleet");
-      const slot = paneSlot(pane);
-      if (slot !== null) selectWorker(slot);
+      selectPane(pane);
       paneFocusRegistry.current[pane]?.();
     },
-    [setView, selectWorker],
+    [setView, selectPane],
   );
   usePaneJump(jumpToPane);
 
@@ -144,7 +137,7 @@ export function App() {
     if (view !== "fleet") return;
     const id = window.setTimeout(() => window.dispatchEvent(new Event("resize")), 0);
     return () => window.clearTimeout(id);
-  }, [view, selectedWorker, sidebar.collapsed]);
+  }, [view, selectedPane, sidebar.collapsed]);
 
   // **The evaluator's wake** (D-073). Latched, and it only ever goes true: the
   // terminal below is mounted for the life of the app either way, and this flag
@@ -218,10 +211,10 @@ export function App() {
               <TerminalGrid
                 key={`fleet-${runs.generation}`}
                 started={started}
-                selected={selectedWorker}
-                onSelect={selectWorker}
+                selected={selectedPane}
+                onSelect={selectPane}
                 statuses={statuses}
-                unreadWorkers={unreadWorkers}
+                unreadPanes={unreadPanes}
                 onRegisterFocus={registerPaneFocus}
                 panes={fleet.panes}
                 fontSize={zoom.terminalFontSize}
