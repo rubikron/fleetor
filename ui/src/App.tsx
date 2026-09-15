@@ -19,7 +19,7 @@ import { Sidebar } from "./components/Sidebar";
 import { TaskBoard } from "./components/TaskBoard";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { TerminalGrid } from "./components/TerminalGrid";
-import { StartGate } from "./components/StartGate";
+import { Homepage } from "./components/Homepage";
 import { RunHistory } from "./components/RunHistory";
 import { FeedView } from "./components/FeedView";
 import { ReviewView } from "./components/ReviewView";
@@ -208,9 +208,7 @@ export function App() {
         />
         <main className="workspace">
           <div className="workspace__stage">
-            {/* Terminals. Kept mounted; see L7. Hidden before start so empty
-                frames don't bleed through the gate's backdrop. */}
-            <div className={`stage-view ${view === "fleet" && started ? "" : "is-hidden"}`}>
+            <div className={`stage-view ${view === "fleet" ? "" : "is-hidden"}`}>
               {/* Keyed on the reopen generation (WP-27, R2): a reopen kills every
                   pane and re-enters bootstrap, and `TerminalPane` spawns from a
                   mount effect — so without a remount the operator lands on five
@@ -235,10 +233,19 @@ export function App() {
             </div>
 
             <div className={`stage-view ${view === "home" ? "" : "is-hidden"}`}>
-              <div className="home-placeholder">
-                <span className="brand" style={{ fontSize: "1.5rem" }}>FLEETOR</span>
-                <p className="home-placeholder__note">Homepage coming in the next ticket.</p>
-              </div>
+              <Homepage
+                config={fleet.config}
+                runs={runs.runs}
+                onStart={() => {
+                  setStatuses({ [ORCH]: "idle" });
+                  setView("fleet");
+                  void fleet.start().then(() => {
+                    setStarted(true);
+                    runs.refresh();
+                  });
+                }}
+                onTargetChanged={fleet.refreshConfig}
+              />
             </div>
 
             <div className={`stage-view ${view === "feed" ? "" : "is-hidden"}`}>
@@ -280,20 +287,6 @@ export function App() {
             </div>
 
 
-            {!started && (
-              <StartGate
-                config={fleet.config}
-                onStart={() => {
-                  setStatuses({ [ORCH]: "idle" });
-                  setView("fleet");
-                  void fleet.start().then(() => {
-                    setStarted(true);
-                    runs.refresh();
-                  });
-                }}
-                onTargetChanged={fleet.refreshConfig}
-              />
-            )}
           </div>
         </main>
       </div>

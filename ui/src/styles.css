@@ -675,18 +675,142 @@ body,
   color: var(--fg-dim);
 }
 
-/* ---- Home placeholder ---- */
-.home-placeholder {
+/* ---- Homepage ---- */
+.homepage {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  gap: 2rem;
+  padding: 1.5rem;
+  overflow-y: auto;
+}
+.homepage__sessions {
+  flex: 1;
+  min-width: 0;
+}
+.homepage__launch {
+  flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
   gap: 1rem;
-  flex: 1;
+  padding: 2rem 1rem;
+}
+.homepage__heading {
+  font-size: var(--t-body);
+  font-weight: 600;
+  margin-bottom: 0.75rem;
+  color: var(--fg);
+}
+.homepage__empty {
+  color: var(--fg-mute);
+  font-size: var(--t-small);
+}
+.homepage__run-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.homepage__run {
+  display: flex;
+  flex-direction: column;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.375rem;
+  background: var(--bg-1);
+}
+.homepage__run-label {
+  font-size: var(--t-small);
+  color: var(--fg);
+}
+.homepage__run-meta {
+  font-size: var(--t-label);
   color: var(--fg-mute);
 }
-.home-placeholder__note {
+.homepage__branch {
   font-size: var(--t-small);
+  color: var(--fg-dim);
+  background: var(--bg-1);
+  padding: 0.125rem 0.5rem;
+  border-radius: 0.25rem;
+}
+.homepage__target {
+  display: flex;
+  gap: 0.5rem;
+  width: 100%;
+  max-width: 28rem;
+}
+.homepage__target-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--t-small);
+  padding: 0.375rem 0.5rem;
+}
+.homepage__target-pick {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: var(--t-small);
+  padding: 0.375rem 0.75rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.homepage__error {
+  color: var(--coral);
+  font-size: var(--t-small);
+}
+.homepage__config-toggle {
+  background: none;
+  border: none;
+  color: var(--fg-mute);
+  font: inherit;
+  font-size: var(--t-small);
+  cursor: pointer;
+  padding: 0.25rem 0;
+}
+.homepage__config-toggle:hover { color: var(--fg-dim); }
+.homepage__config {
+  width: 100%;
+  max-width: 28rem;
+}
+.homepage__actions {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+.homepage__start {
+  background: var(--accent);
+  color: var(--bg-0);
+  border: none;
+  border-radius: 0.375rem;
+  font: inherit;
+  font-size: var(--t-body);
+  font-weight: 600;
+  padding: 0.625rem 1.5rem;
+  cursor: pointer;
+}
+.homepage__start:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.homepage__recheck {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: var(--t-small);
+  padding: 0.5rem 1rem;
+  cursor: pointer;
 }
 
 /* The Critic (WP-20). Same shape as the evaluator's view below — a waiting
