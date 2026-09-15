@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   ORCH,
   WORKER_SLOTS,
@@ -39,6 +40,20 @@ export function MissionControl({
   messages,
   tasks,
 }: MissionControlProps) {
+  const [detailPane, setDetailPane] = useState<PaneId | null>(null);
+
+  const handleSelect = (pane: PaneId) => {
+    onSelect(pane);
+    setDetailPane(pane === detailPane ? null : pane);
+  };
+
+  const detailMessages = detailPane
+    ? messages.filter((m: MessageEvent) => m.from === detailPane || m.to === detailPane).slice(-5)
+    : [];
+  const detailTasks = detailPane
+    ? tasks.filter((t) => t.from === detailPane).slice(-5)
+    : [];
+
   return (
     <div className="mission-control">
       <div className="mission-control__grid">
@@ -60,7 +75,7 @@ export function MissionControl({
               key={pane}
               className={`mc-card ${selected === pane ? "mc-card--selected" : ""}`}
               data-pane={pane}
-              onClick={() => onSelect(pane)}
+              onClick={() => handleSelect(pane)}
             >
               <div className="mc-card__header">
                 <span className={`dot dot--${statusTone(status)}`} />
@@ -94,6 +109,42 @@ export function MissionControl({
           );
         })}
       </div>
+      {detailPane && (detailMessages.length > 0 || detailTasks.length > 0) && (
+        <div className="mc-detail">
+          <div className="mc-detail__header">
+            <span className="mc-detail__title mono">{detailPane}</span>
+            <button
+              type="button"
+              className="mc-detail__close"
+              onClick={() => setDetailPane(null)}
+              aria-label="Close detail"
+            >
+              ×
+            </button>
+          </div>
+          {detailMessages.length > 0 && (
+            <div className="mc-detail__section">
+              <span className="mc-detail__label">Messages</span>
+              {detailMessages.map((m) => (
+                <p key={m.id} className="mc-detail__line">
+                  <span className="mono">{m.from}</span> → <span className="mono">{m.to}</span>:{" "}
+                  {m.body.slice(0, 120)}{m.body.length > 120 ? "…" : ""}
+                </p>
+              ))}
+            </div>
+          )}
+          {detailTasks.length > 0 && (
+            <div className="mc-detail__section">
+              <span className="mc-detail__label">Tasks</span>
+              {detailTasks.map((t) => (
+                <p key={t.task} className="mc-detail__line">
+                  {t.change.change === "posted" ? t.change.block.outcome : t.change.change}
+                </p>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

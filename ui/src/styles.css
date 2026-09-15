@@ -726,6 +726,45 @@ body,
   white-space: nowrap;
   margin: 0;
 }
+
+/* ---- Mission control detail panel ---- */
+.mc-detail {
+  border-top: 1px solid var(--border);
+  padding: 0.5rem 0.25rem;
+  margin-top: 0.5rem;
+}
+.mc-detail__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.375rem;
+}
+.mc-detail__title { font-size: var(--t-small); font-weight: 600; }
+.mc-detail__close {
+  background: none;
+  border: none;
+  color: var(--fg-mute);
+  font-size: 1rem;
+  cursor: pointer;
+  padding: 0 0.25rem;
+  line-height: 1;
+}
+.mc-detail__section { margin-bottom: 0.375rem; }
+.mc-detail__label {
+  display: block;
+  font-size: var(--t-label);
+  color: var(--fg-mute);
+  margin-bottom: 0.125rem;
+}
+.mc-detail__line {
+  font-size: var(--t-label);
+  color: var(--fg-dim);
+  margin: 0;
+  padding: 0.125rem 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 /* The evaluator's view (D-073, replacing WP-15's second window). One terminal
    filling the stage and no chrome of its own: the pane's own head already names
    it. Both children are always in the DOM — `.is-hidden` swaps which one is
