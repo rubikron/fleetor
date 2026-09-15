@@ -1179,12 +1179,13 @@ fn place_worker(
         &cwd.display().to_string(),
         &worker_branch_prefix(target, &context.sessions),
     );
+    let seat_window = context_gauge::model_window_tokens(model);
     notices.push((
         NoticeLevel::Info,
         context_gauge::spawn_estimate_notice_text(
             pane,
             &rendered,
-            Some(context_gauge::WORKER_WINDOW_TOKENS),
+            Some(seat_window),
         ),
     ));
 
@@ -1211,7 +1212,7 @@ fn place_worker(
     Ok(Placed {
         command: worker.command,
         notices,
-        gauge: Some(TranscriptSource { harness, config_dir, cwd }),
+        gauge: Some(TranscriptSource { harness, config_dir, cwd, window_tokens: Some(seat_window) }),
         harness: harness.spec(),
         // **The model this worker was actually placed on** — the gate's pick where
         // there was one, the launch configuration's where there was not, resolved

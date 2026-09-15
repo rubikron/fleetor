@@ -57,6 +57,19 @@ use fleetor_core::pane::{ContextGauge, PaneId};
 /// own window answers `None` and is not measured against this number at all.
 pub const WORKER_WINDOW_TOKENS: u32 = 500_000;
 
+/// The context window size for a given model slug. Known Claude models report
+/// their actual window; unknown models fall back to `WORKER_WINDOW_TOKENS`.
+pub fn model_window_tokens(model: Option<&str>) -> u32 {
+    let Some(slug) = model else { return WORKER_WINDOW_TOKENS };
+    if slug.contains("[1m]") || slug.contains("1m-") {
+        return 1_000_000;
+    }
+    if slug.starts_with("claude-") {
+        return 200_000;
+    }
+    WORKER_WINDOW_TOKENS
+}
+
 /// Where a pane's percent first earns an informational Notice (WP-04
 /// performance criteria: "at most one Notice on first crossing of ~80%").
 /// Never acted on: nothing here refuses, warns-and-blocks, or auto-compacts —
@@ -89,6 +102,8 @@ pub struct TranscriptSource {
     pub harness: &'static dyn crate::placement::harness::Harness,
     pub config_dir: PathBuf,
     pub cwd: PathBuf,
+    /// Per-seat window override, from `model_window_tokens` at spawn.
+    pub window_tokens: Option<u32>,
 }
 
 /// The pane → transcript-source map: `record`ed once per worker at spawn,
@@ -142,7 +157,7 @@ impl GaugeSources {
             return None;
         }
         let reading = source.harness.read_usage(&source)?;
-        let window = reading.window_tokens.or(gauge.window_tokens)?;
+        let window = reading.window_tokens.or(source.window_tokens).or(gauge.window_tokens)?;
         Some(ContextGauge::new(reading.used_tokens, window))
     }
 }
@@ -535,7 +550,7 @@ mod tests {
     }
 
     fn seed_transcript(config_dir: &Path, cwd: &Path, lines: &[String]) {
-        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir: config_dir.to_path_buf(), cwd: cwd.to_path_buf() };
+        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir: config_dir.to_path_buf(), cwd: cwd.to_path_buf(), window_tokens: None };
         let dir = project_dir(&source);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("session-a.jsonl"), lines.join("\n")).unwrap();
@@ -550,7 +565,7 @@ mod tests {
     fn project_dir_matches_claude_codes_own_encoding() {
         let cwd = temp_dir("slug-cwd");
         let config_dir = temp_dir("slug-config");
-        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir: config_dir.clone(), cwd: cwd.clone() };
+        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir: config_dir.clone(), cwd: cwd.clone(), window_tokens: None };
 
         let resolved = crate::placement::spawn::project_key(&cwd);
         let expected_slug: String =
@@ -615,7 +630,7 @@ mod tests {
     #[test]
     fn no_transcript_directory_at_all_samples_as_absent() {
         let source =
-            TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir: temp_dir("no-dir-cfg"), cwd: temp_dir("no-dir-cwd") };
+            TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir: temp_dir("no-dir-cfg"), cwd: temp_dir("no-dir-cwd"), window_tokens: None };
         assert_eq!(sample_transcript(&source, WORKER_WINDOW_TOKENS), None);
     }
 
@@ -625,7 +640,7 @@ mod tests {
         let config_dir = temp_dir("empty-turn-cfg");
         seed_transcript(&config_dir, &cwd, &[user_line("are you there")]);
 
-        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir, cwd };
+        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir, cwd, window_tokens: None };
         assert_eq!(sample_transcript(&source, WORKER_WINDOW_TOKENS), None, "no assistant reply yet");
     }
 
@@ -638,7 +653,7 @@ mod tests {
         let tenth = WORKER_WINDOW_TOKENS / 10;
         seed_transcript(&config_dir, &cwd, &[user_line("hi"), assistant_line(u64::from(tenth), 0, 0)]);
 
-        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir, cwd };
+        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir, cwd, window_tokens: None };
         let gauge = sample_transcript(&source, WORKER_WINDOW_TOKENS).expect("a completed turn exists");
         assert_eq!(gauge.used_tokens, tenth);
         assert_eq!(gauge.window_tokens, WORKER_WINDOW_TOKENS);
@@ -652,7 +667,7 @@ mod tests {
     fn the_most_recently_modified_transcript_file_wins() {
         let cwd = temp_dir("multi-cwd");
         let config_dir = temp_dir("multi-cfg");
-        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir: config_dir.clone(), cwd: cwd.clone() };
+        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir: config_dir.clone(), cwd: cwd.clone(), window_tokens: None };
         let dir = project_dir(&source);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -668,7 +683,7 @@ mod tests {
     fn a_non_jsonl_file_in_the_project_dir_is_ignored() {
         let cwd = temp_dir("stray-cwd");
         let config_dir = temp_dir("stray-cfg");
-        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir: config_dir.clone(), cwd: cwd.clone() };
+        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir: config_dir.clone(), cwd: cwd.clone(), window_tokens: None };
         let dir = project_dir(&source);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("notes.txt"), "not a transcript").unwrap();
@@ -798,6 +813,7 @@ mod tests {
                 harness: &stand_ins::PUBLISHES_ITS_OWN_WINDOW,
                 config_dir: config_dir.clone(),
                 cwd: cwd.clone(),
+                window_tokens: None,
             },
         );
         sources.record(
@@ -806,6 +822,7 @@ mod tests {
                 harness: crate::placement::harness::claude_code(),
                 config_dir,
                 cwd,
+                window_tokens: None,
             },
         );
 
@@ -840,6 +857,7 @@ mod tests {
                 harness: &stand_ins::KEEPS_USAGE_ELSEWHERE,
                 config_dir,
                 cwd,
+                window_tokens: None,
             },
         );
 
@@ -865,7 +883,7 @@ mod tests {
         seed_transcript(&config_dir, &cwd, &[assistant_line(u64::from(WORKER_WINDOW_TOKENS / 20), 0, 0)]);
 
         let sources = GaugeSources::default();
-        sources.record(PaneId::Worker(2), TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir, cwd });
+        sources.record(PaneId::Worker(2), TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir, cwd, window_tokens: None });
 
         assert_eq!(sources.sample(PaneId::Worker(2)).map(|g| g.pct), Some(5));
         assert_eq!(sources.sample(PaneId::Worker(3)), None, "an unrecorded peer stays absent");
@@ -982,6 +1000,7 @@ mod tests {
                 harness: crate::placement::codex::codex(),
                 config_dir: home.to_path_buf(),
                 cwd: home.join("worktree"),
+                window_tokens: None,
             },
         );
         sources
@@ -1230,5 +1249,46 @@ mod tests {
         assert!(text.contains("80%") || text.contains(&gauge.pct.to_string()));
         assert!(text.contains("consider"), "it proposes, it does not command: {text}");
         assert!(text.contains("may lag"), "the honesty label the requirements doc requires: {text}");
+    }
+
+    // --- model_window_tokens ---------------------------------------------------------
+
+    #[test]
+    fn known_claude_models_get_200k() {
+        assert_eq!(model_window_tokens(Some("claude-sonnet-4-20250514")), 200_000);
+        assert_eq!(model_window_tokens(Some("claude-opus-4-20250514")), 200_000);
+        assert_eq!(model_window_tokens(Some("claude-haiku-4-5-20251001")), 200_000);
+    }
+
+    #[test]
+    fn extended_context_models_get_1m() {
+        assert_eq!(model_window_tokens(Some("claude-opus-4-20250514[1m]")), 1_000_000);
+    }
+
+    #[test]
+    fn unknown_models_fall_back_to_the_default_constant() {
+        assert_eq!(model_window_tokens(Some("deepseek-v4-flash-preview")), WORKER_WINDOW_TOKENS);
+        assert_eq!(model_window_tokens(None), WORKER_WINDOW_TOKENS);
+    }
+
+    #[test]
+    fn per_seat_window_overrides_the_spec_constant_in_the_gauge() {
+        let cwd = temp_dir("override-cwd");
+        let config_dir = temp_dir("override-cfg");
+        let tokens = 200_000u32;
+        let used = tokens / 5; // 20%
+        seed_transcript(&config_dir, &cwd, &[assistant_line(u64::from(used), 0, 0)]);
+
+        let sources = GaugeSources::default();
+        sources.record(PaneId::Worker(1), TranscriptSource {
+            harness: crate::placement::harness::claude_code(),
+            config_dir,
+            cwd,
+            window_tokens: Some(tokens),
+        });
+
+        let gauge = sources.sample(PaneId::Worker(1)).expect("a completed turn");
+        assert_eq!(gauge.window_tokens, tokens);
+        assert_eq!(gauge.pct, 20);
     }
 }

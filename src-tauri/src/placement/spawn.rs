@@ -544,7 +544,8 @@ pub(super) fn worker_command_with(
     // number belonging to a different provider — the WP-02 failure this export
     // exists to prevent, caused by the export itself.
     if !credential_source.is_the_operators_plan() {
-        if let (Some(var), Some(window)) = (spec.gauge.window_env, spec.gauge.window_tokens) {
+        let effective_window = Some(crate::context_gauge::model_window_tokens(model)).or(spec.gauge.window_tokens);
+        if let (Some(var), Some(window)) = (spec.gauge.window_env, effective_window) {
             cmd.env(var, window.to_string());
         }
     }

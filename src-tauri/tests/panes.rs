@@ -603,6 +603,7 @@ fn a_roster_ask_surfaces_a_workers_sampled_context_gauge() {
             harness: fleetor_shell::placement::harness::claude_code(),
             config_dir: config_dir.clone(),
             cwd,
+            window_tokens: None,
         },
     );
 
