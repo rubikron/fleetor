@@ -642,6 +642,53 @@ body,
    it. Both children are always in the DOM — `.is-hidden` swaps which one is
    shown, because unmounting the terminal would destroy its xterm buffer with no
    screen replay behind it (§7 rule 5). */
+/* ---- Feed / Review tabs ---- */
+.feed-view,
+.review-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.feed-view__tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+  padding: 0 1rem;
+}
+.feed-view__tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--fg-mute);
+  font: inherit;
+  font-size: var(--t-small);
+  padding: 0.5rem 0.75rem;
+  cursor: pointer;
+}
+.feed-view__tab--active {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+}
+.feed-view__tab:hover:not(.feed-view__tab--active) {
+  color: var(--fg-dim);
+}
+
+/* ---- Home placeholder ---- */
+.home-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  flex: 1;
+  color: var(--fg-mute);
+}
+.home-placeholder__note {
+  font-size: var(--t-small);
+}
+
 /* The Critic (WP-20). Same shape as the evaluator's view below — a waiting
    state that swaps for a terminal, both hidden with `.is-hidden` rather than
    unmounted — with one addition: a control, because the operator decides when

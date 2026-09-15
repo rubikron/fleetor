@@ -28,16 +28,22 @@ const WORKER_STORAGE_KEY = "fleetor:selected-worker";
 // absent from *this* list could not be corrected, because it would never be
 // restored in the first place.
 const VIEWS: readonly View[] = [
+  "home",
   "fleet",
-  "messages",
+  "feed",
   "tasks",
-  "activity",
   "history",
-  "critic",
-  "evaluator",
+  "review",
   "settings",
 ];
-const DEFAULT_VIEW: View = "fleet";
+const DEFAULT_VIEW: View = "home";
+
+const LEGACY_VIEW_MAP: Record<string, View> = {
+  messages: "feed",
+  activity: "feed",
+  critic: "review",
+  evaluator: "review",
+};
 const DEFAULT_WORKER: number = WORKER_SLOTS[0];
 
 function isValidView(value: unknown): value is View {
@@ -53,7 +59,9 @@ function readStoredView(): View {
     const raw = window.localStorage.getItem(VIEW_STORAGE_KEY);
     if (raw === null) return DEFAULT_VIEW;
     const parsed: unknown = JSON.parse(raw);
-    return isValidView(parsed) ? parsed : DEFAULT_VIEW;
+    if (isValidView(parsed)) return parsed;
+    if (typeof parsed === "string" && parsed in LEGACY_VIEW_MAP) return LEGACY_VIEW_MAP[parsed];
+    return DEFAULT_VIEW;
   } catch {
     return DEFAULT_VIEW;
   }

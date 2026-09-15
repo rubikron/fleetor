@@ -16,13 +16,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { TopBar } from "./components/TopBar";
 import { Sidebar } from "./components/Sidebar";
-import { MessageFeed } from "./components/MessageFeed";
 import { TaskBoard } from "./components/TaskBoard";
-import { EventFeed } from "./components/EventFeed";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { TerminalGrid } from "./components/TerminalGrid";
 import { StartGate } from "./components/StartGate";
 import { RunHistory } from "./components/RunHistory";
+import { FeedView } from "./components/FeedView";
+import { ReviewView } from "./components/ReviewView";
 import { DevModeBanner } from "./components/DevModeBanner";
 import { useFleet } from "./fleet/useFleet";
 import { useRuns } from "./fleet/useRuns";
@@ -35,20 +35,9 @@ import { useWindowState } from "./ui/useWindowState";
 import { useTheme } from "./ui/useTheme";
 import { useDevMode } from "./ui/useDevMode";
 import { useCriticInterview } from "./ui/useCriticInterview";
-import { TerminalPane } from "./components/TerminalPane";
 import { killPane, onEvaluatorWake } from "./fleet/api";
 import { stopListening } from "./fleet/listeners";
-import { CRITIC, EVALUATOR, ORCH, paneSlot, type PaneId, type PaneStatus } from "./fleet/types";
-
-// Deeper than a worker's 2,000 and deeper than orch's 10,000: this pane reads a
-// whole run's archive and prints a retro at the end of it, and the operator
-// scrolls back through the reasoning rather than through the last few turns.
-const EVALUATOR_SCROLLBACK = 20000;
-
-// The Critic's, for the identical reason (WP-20): it reads a whole run's
-// archive, prints findings grouped under six headings with a citation on each,
-// and the operator scrolls back through them to check the ones they care about.
-const CRITIC_SCROLLBACK = 20000;
+import { ORCH, paneSlot, type PaneId, type PaneStatus } from "./fleet/types";
 
 export function App() {
   const { view, setView, selectedWorker, setSelectedWorker } = usePersistedNav();
@@ -194,14 +183,6 @@ export function App() {
   // that is also when the control is disabled below.
   const interview = useCriticInterview(started);
 
-  // Dev mode can be turned off while `evaluator` is the persisted view, which
-  // would leave the operator on a view with no row in the rail to leave by.
-  // `=== false` and not `!== true`: while the backend has not answered, the
-  // right move is to do nothing rather than to bounce off the view.
-  useEffect(() => {
-    if (devMode.enabled === false && view === "evaluator") setView("fleet");
-  }, [devMode.enabled, view, setView]);
-
   const restart = useCallback((pane: PaneId) => {
     // Kill only. The pane's own spawn effect is keyed on `started`, so the tab
     // brings itself back with a fitted size rather than one guessed here.
@@ -224,7 +205,6 @@ export function App() {
           messageCount={fleet.messages.length}
           collapsed={sidebar.collapsed}
           onToggleCollapse={sidebar.toggle}
-          devMode={devMode.enabled}
         />
         <main className="workspace">
           <div className="workspace__stage">
@@ -254,170 +234,41 @@ export function App() {
               />
             </div>
 
-            <div className={`stage-view ${view === "messages" ? "" : "is-hidden"}`}>
-              <MessageFeed messages={fleet.messages} commands={fleet.commands} />
+            <div className={`stage-view ${view === "home" ? "" : "is-hidden"}`}>
+              <div className="home-placeholder">
+                <span className="brand" style={{ fontSize: "1.5rem" }}>FLEETOR</span>
+                <p className="home-placeholder__note">Homepage coming in the next ticket.</p>
+              </div>
             </div>
 
-            {/* The board (WP-05). Mounted like every other view — `.is-hidden`,
-                never conditional rendering (§7.5). Nothing here writes to it:
-                the fleet maintains it through `fleet task`. */}
+            <div className={`stage-view ${view === "feed" ? "" : "is-hidden"}`}>
+              <FeedView
+                messages={fleet.messages}
+                commands={fleet.commands}
+                feed={fleet.feed}
+              />
+            </div>
+
             <div className={`stage-view ${view === "tasks" ? "" : "is-hidden"}`}>
               <TaskBoard tasks={fleet.tasks} />
             </div>
 
-            <div className={`stage-view ${view === "activity" ? "" : "is-hidden"}`}>
-              <EventFeed feed={fleet.feed} />
-            </div>
-
-            {/* Past runs (WP-11). Its own copies of the three components, fed
-                from archived logs — so no live list can ever be handed a past
-                run's events, and no past run can be sent to. */}
             <div className={`stage-view ${view === "history" ? "" : "is-hidden"}`}>
               <RunHistory runs={runs} onOpened={() => setView("fleet")} />
             </div>
 
-            {/* The Critic (WP-20, D-076). A view like every other: always
-                mounted, toggled with `.is-hidden`, never unmounted (§7 rule 5).
-
-                Present with dev mode off, because it is a product feature rather
-                than an instrument of an experiment — and it has a Start button,
-                which the view below deliberately does not. The two sit next to
-                each other and answer different questions: this one reports what
-                the fleet *did*, cited from the run's own archive, and has no
-                view at all on whether the code is right.
-
-                Nothing here can send: the pane is spawned with no fleet socket,
-                so a `fleet send` typed into it reaches nothing. Anything worth
-                acting on the operator forwards from the composer they already
-                have (the arc's D6), which keeps the human as the only writer. */}
-            <div className={`stage-view ${view === "critic" ? "" : "is-hidden"}`}>
-              <div className="critic-view">
-                {/* **The interview gate** (WP-21 stage A). Always in the tree,
-                    never conditionally rendered: the view is hidden with CSS and
-                    nothing inside it may leave the tree, or the terminal below
-                    goes with it (§7 rule 5).
-
-                    The cost is *printed*, not hovered. WP-21 makes "the operator
-                    can tell, before pressing the control, that it will spend the
-                    fleet's turns" an acceptance criterion, and the arc already
-                    records what a tooltip buys: ticket 08's Critic/Evaluator
-                    distinction is "a hover tooltip plus each view's own lede",
-                    and it is named there as the weak part. A hover cannot be
-                    seen on the way to the button and does not exist for a
-                    keyboard press at all. So the sentence sits beside the
-                    control, in the token the palette reserves for cost.
-
-                    The state is said in words as well as in the verb, because
-                    "Open interview" alone reads as either the state or the
-                    action depending on who is looking. */}
-                <div className="critic-view__interview">
-                  <span
-                    className={`critic-view__gate critic-view__gate--${
-                      started ? (interview.open === null ? "unknown" : interview.open ? "open" : "closed") : "norun"
-                    }`}
-                  >
-                    Interview:{" "}
-                    {started
-                      ? interview.open === null
-                        ? "checking…"
-                        : interview.open
-                          ? "open"
-                          : "closed"
-                      : "no run"}
-                  </span>
-                  <button
-                    type="button"
-                    className="critic-view__interview-toggle"
-                    onClick={interview.toggle}
-                    disabled={interview.open === null}
-                    title={
-                      started
-                        ? "Open puts the Critic on the fleet's address book; closed, a send from it fails to resolve"
-                        : "Start the fleet first — there is no run to interview"
-                    }
-                  >
-                    {interview.open === true ? "Close interview" : "Open interview"}
-                  </button>
-                  <p className="critic-view__cost">
-                    Opening this spends the fleet&rsquo;s turns: every question the Critic asks costs{" "}
-                    <code>orch</code> or a worker a turn it would have spent on the run, and asking
-                    mid-run can perturb it. Closed, the Critic is not an address and can spend
-                    nothing.
-                  </p>
-                  <p className="critic-view__interview-error">{interview.error}</p>
-                </div>
-                <div className={`critic-view__waiting ${criticStarted ? "is-hidden" : ""}`}>
-                  <p className="critic-view__lede">The Critic reads the run in progress.</p>
-                  <p className="critic-view__note">
-                    It reports what the fleet did — idle panes, a block marked done before its
-                    check ran, a message that got no reply — with a timestamp, a file and a line
-                    from the archive behind every finding. A claim it cannot point at is not a
-                    finding, and it never says whether the work was any good: it has no way to
-                    know. It is a real terminal, so argue with a finding or ask it to look again.
-                  </p>
-                  <button
-                    type="button"
-                    className="critic-view__start"
-                    onClick={() => setCriticStarted(true)}
-                    disabled={!started}
-                    title={started ? undefined : "Start the fleet first — there is no run yet"}
-                  >
-                    Start
-                  </button>
-                </div>
-                <div className={`critic-view__terminal ${criticStarted ? "" : "is-hidden"}`}>
-                  <TerminalPane
-                    pane={CRITIC}
-                    label="critic"
-                    scrollback={CRITIC_SCROLLBACK}
-                    started={criticStarted}
-                    status={statuses[CRITIC] ?? "idle"}
-                    fontSize={zoom.terminalFontSize}
-                    theme={themeControls.theme}
-                    onStatus={onStatus}
-                  />
-                </div>
-              </div>
-            </div>
-
-            {/* The evaluator (D-073), which used to be a second OS window. It is
-                a view like every other: always mounted, toggled with
-                `.is-hidden`, never unmounted (§7 rule 5). What the window bought
-                — a root that does not race the main one for the fleet — was
-                never a reason for a *window*, only for that root not being a
-                second `App`, and one view inside one root has no race at all.
-
-                The terminal is mounted from launch and hidden until the wake,
-                rather than mounted at the wake. Both survive a view switch, but
-                only this one is impossible to get wrong later: there is no
-                mount-once latch to reason about, and `started` — TerminalPane's
-                own spawn gate — is what keeps a pty from existing before the
-                handoff. Note the absence of a button. The evaluator wakes when
-                `orch` hands off; the sentence below is the whole control
-                surface, on purpose. */}
-            <div className={`stage-view ${view === "evaluator" ? "" : "is-hidden"}`}>
-              <div className="evaluator-view">
-                <div className={`evaluator-view__waiting ${evaluatorAwake ? "is-hidden" : ""}`}>
-                  <p className="evaluator-view__lede">The evaluator wakes on a handoff.</p>
-                  <p className="evaluator-view__note">
-                    When <code>orch</code> reports the mission met, this becomes a terminal and
-                    the retro starts here. There is no button — the sequencing is the design,
-                    and a run it could be started ahead of would not be evidence of anything.
-                  </p>
-                </div>
-                <div className={`evaluator-view__terminal ${evaluatorAwake ? "" : "is-hidden"}`}>
-                  <TerminalPane
-                    pane={EVALUATOR}
-                    label="evaluator"
-                    scrollback={EVALUATOR_SCROLLBACK}
-                    started={evaluatorAwake}
-                    status={statuses[EVALUATOR] ?? "idle"}
-                    fontSize={zoom.terminalFontSize}
-                    theme={themeControls.theme}
-                    onStatus={onStatus}
-                  />
-                </div>
-              </div>
+            <div className={`stage-view ${view === "review" ? "" : "is-hidden"}`}>
+              <ReviewView
+                started={started}
+                criticStarted={criticStarted}
+                onCriticStart={() => setCriticStarted(true)}
+                evaluatorAwake={evaluatorAwake}
+                statuses={statuses}
+                fontSize={zoom.terminalFontSize}
+                theme={themeControls.theme}
+                onStatus={onStatus}
+                interview={interview}
+              />
             </div>
 
             <div className={`stage-view ${view === "settings" ? "" : "is-hidden"}`}>

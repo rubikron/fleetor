@@ -73,15 +73,14 @@ fn between(text: &str, after: &str, until: char, what: &str) -> String {
         .to_string()
 }
 
-/// The Critic's own stage-view in `App.tsx`, up to where the next block's
-/// comment begins — the *comment*, not the next `stage-view`, because the prose
-/// between them discusses `.is-hidden` and would be counted by the tests below.
+const REVIEW: &str = "ui/src/components/ReviewView.tsx";
+
 fn critic_stage_block() -> String {
-    let app = read(STAGE);
-    app.split("stage-view ${view === \"critic\"")
+    let review = read(REVIEW);
+    review.split("<div className=\"critic-view\">")
         .nth(1)
-        .and_then(|rest| rest.split("{/* The evaluator").next())
-        .expect("App.tsx has a critic stage-view, followed by the evaluator's")
+        .and_then(|rest| rest.split("<div className=\"evaluator-view\">").next())
+        .expect("ReviewView.tsx has a critic-view section followed by evaluator-view")
         .to_string()
 }
 
@@ -103,7 +102,7 @@ fn the_rail_and_the_restore_list_name_the_same_views() {
     let rail = rail_views();
     let restorable = restorable_views();
 
-    assert!(rail.len() >= 6, "the rail's View union parsed as {rail:?} — that cannot be right");
+    assert!(rail.len() >= 5, "the rail's View union parsed as {rail:?} — that cannot be right");
 
     let unrestorable: Vec<&String> = rail.iter().filter(|v| !restorable.contains(v)).collect();
     assert!(
@@ -126,78 +125,33 @@ fn the_rail_and_the_restore_list_name_the_same_views() {
     );
 }
 
-/// The omission that motivated the tripwire, named. The test above would catch
-/// it again, but only as one entry in a diff; this one says which view it was
-/// and why it mattered, so the next reader does not have to reconstruct it from
-/// a decisions entry.
+/// History must be in both lists.
 #[test]
-fn history_is_restorable_which_it_was_not_before_d073() {
+fn history_is_restorable() {
     assert!(
         restorable_views().iter().any(|v| v == "history"),
-        "`history` is the view the restore list omitted from the day it shipped: selecting \
-         History and relaunching landed on Terminals, silently. It is also the reason this \
-         file exists",
+        "`history` must be in the restore list",
     );
 }
 
-/// The evaluator is a view like any other, and this is the half of that claim a
-/// source read can make (D-073). The rest — that its terminal survives a view
-/// switch — is `tests/evaluator.rs`, and the part no test here can reach is in
-/// the operator's by-hand list.
+/// The consolidated views (home, feed, review) are in both lists.
 #[test]
-fn the_evaluator_is_one_of_the_rails_views() {
+fn consolidated_views_are_restorable() {
     let rail = rail_views();
-    assert!(
-        rail.iter().any(|v| v == "evaluator"),
-        "the evaluator is a view in the rail, not a second window (D-073): {rail:?}",
-    );
-    assert!(
-        restorable_views().iter().any(|v| v == "evaluator"),
-        "and it restores like the others — `App.tsx` corrects it when dev mode is off, which \
-         it can only do for a view that was restored in the first place",
-    );
-}
-
-/// **The Critic is a view like every other, and unlike the evaluator's row it is
-/// not dev-only** (WP-20, D-076). It is a product feature: the operator has it
-/// whatever mode the app is in, so nothing in the rail filters it out.
-///
-/// The last clause is what a source read can reach. `devOnly` is a field on the
-/// row, and the rail's `rows` filter is the one thing that consults it, so a
-/// Critic row that grew the flag would be a Critic that vanished with the mode —
-/// exactly the failure this whole file exists for, one level up.
-#[test]
-fn the_critic_is_a_rail_view_that_is_not_dev_only() {
-    let rail = rail_views();
-    assert!(rail.iter().any(|v| v == "critic"), "the Critic is a view in the rail: {rail:?}");
-    assert!(
-        restorable_views().iter().any(|v| v == "critic"),
-        "and it restores like the others — nothing corrects it away afterwards, because \
-         nothing gates it",
-    );
-
-    // The row itself, read out of the rail's own declaration.
-    let source = read(RAIL);
-    let row = between(&source, "view: \"critic\"", '}', "the Critic's rail row");
-    assert!(
-        !row.contains("devOnly"),
-        "the Critic must be in the rail whatever the mode is — it is a product feature, not \
-         an instrument of an experiment:{row}",
-    );
-
-    // **And the rail says which question each of the two run-reading views
-    // answers.** In dev mode they sit next to each other, and two rows labelled
-    // only "Critic" and "Evaluator" would leave the operator to guess which one
-    // holds the answer key. Both carry a `hint`, and it reaches the row's `title`.
-    let evaluator_row = between(&source, "view: \"evaluator\"", '}', "the evaluator's rail row");
-    for (which, row) in [("critic", &row), ("evaluator", &evaluator_row)] {
-        assert!(row.contains("hint:"), "the {which} row says what it answers:{row}");
+    let restorable = restorable_views();
+    for view in ["home", "feed", "review"] {
+        assert!(rail.iter().any(|v| v == view), "{view} must be in the rail: {rail:?}");
+        assert!(restorable.iter().any(|v| v == view), "{view} must be restorable: {restorable:?}");
     }
-    assert!(
-        source.contains("item.hint"),
-        "…and the hint is rendered, not merely declared — `title={{collapsed ? item.label : \
-         item.hint}}` is what puts it in front of the operator",
-    );
+}
+
+/// The old views (messages, activity, critic, evaluator) are gone from the rail.
+#[test]
+fn legacy_views_are_not_in_the_rail() {
+    let rail = rail_views();
+    for view in ["messages", "activity", "critic", "evaluator"] {
+        assert!(!rail.iter().any(|v| v == view), "{view} should not be in the rail: {rail:?}");
+    }
 }
 
 /// **The Critic's terminal stays mounted, and it has the Start control the
@@ -360,7 +314,6 @@ fn the_interview_hook_has_three_states_and_never_flips_optimistically() {
          that may not have opened ({INTERVIEW})",
     );
 
-    // The stage reads it, keyed on there being a run to interview.
     assert!(
         critic_stage_block().contains("interview.toggle"),
         "and the Critic's view is what calls it",
@@ -368,7 +321,6 @@ fn the_interview_hook_has_three_states_and_never_flips_optimistically() {
     assert!(
         read(STAGE).contains("useCriticInterview(started)"),
         "the gate is asked about when the fleet is up — with no run there is nothing to \
-         interview, and claiming \"closed\" would be asserting a fact about a run that does \
-         not exist ({STAGE})",
+         interview ({STAGE})",
     );
 }
