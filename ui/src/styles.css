@@ -1230,6 +1230,37 @@ body,
 }
 .xterm .xterm-viewport { overflow-y: auto; }
 
+/* ---- Boot sequence ---- */
+.boot-sequence {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 1.5rem 1rem;
+  font-family: var(--mono);
+  font-size: var(--t-small);
+  color: var(--fg-mute);
+}
+.boot-step {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  opacity: 0.4;
+}
+.boot-step--done { opacity: 0.7; }
+.boot-step--done .boot-step__mark { color: var(--green); }
+.boot-step--active { opacity: 1; color: var(--fg); }
+.boot-step__mark { width: 1rem; text-align: center; flex-shrink: 0; }
+.boot-step__cursor {
+  display: inline-block;
+  width: 0.5rem;
+  height: 1em;
+  background: var(--fg);
+  animation: blink-cursor 1s step-end infinite;
+}
+@keyframes blink-cursor {
+  50% { opacity: 0; }
+}
+
 /* quiet "jump to bottom" affordance — shown only while the operator has
    scrolled up in this pane (TerminalPane.tsx's onScroll listener). Neutral
    surface, not gold or coral: this is plain navigation, not an awareness or

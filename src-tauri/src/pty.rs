@@ -773,6 +773,11 @@ pub fn exit_channel(pane: PaneId) -> String {
     format!("pty://exit/{}", channel_key(pane))
 }
 
+/// `pty://boot/orch`, `pty://boot/2`.
+pub fn boot_channel(pane: PaneId) -> String {
+    format!("pty://boot/{}", channel_key(pane))
+}
+
 /// **Exhaustive on the identity, never on `slot()`.** This used to be
 /// `match pane.slot() { Some(n) => n, None => "orch" }`, which quietly gave
 /// *every* slotless name orch's channel: a second slotless pane would have had
