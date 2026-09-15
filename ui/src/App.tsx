@@ -222,6 +222,8 @@ export function App() {
                 onStatus={onStatus}
                 onRestart={restart}
                 gauges={gauges}
+                messages={fleet.messages}
+                tasks={fleet.tasks}
               />
             </div>
 

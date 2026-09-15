@@ -647,6 +647,85 @@ body,
   flex: 1;
 }
 .pane-slot.is-hidden { display: none; }
+.fleet-layout__control {
+  flex: 0 0 20rem;
+  min-width: 14rem;
+  max-width: 24rem;
+  overflow-y: auto;
+  border-left: 1px solid var(--border);
+  padding: 0.5rem;
+}
+
+/* ---- Mission control cards ---- */
+.mission-control__grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+.mc-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.5rem 0.625rem;
+  border-radius: 0.375rem;
+  background: var(--bg-1);
+  border: 1px solid transparent;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: var(--fg);
+}
+.mc-card:hover { border-color: var(--border); }
+.mc-card--selected { border-color: var(--accent); }
+.mc-card__header {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+.mc-card__name { font-size: var(--t-small); font-weight: 600; }
+.mc-card__status {
+  margin-left: auto;
+  font-size: var(--t-label);
+  color: var(--fg-mute);
+}
+.mc-card__model {
+  font-size: var(--t-label);
+  color: var(--fg-dim);
+}
+.mc-card__context {
+  position: relative;
+  height: 0.375rem;
+  border-radius: 0.1875rem;
+  background: var(--bg-0);
+  overflow: hidden;
+}
+.mc-card__bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  border-radius: 0.1875rem;
+  transition: width 0.3s ease;
+}
+.mc-card__bar--green { background: var(--green); }
+.mc-card__bar--gold { background: var(--gold); }
+.mc-card__bar--coral { background: var(--coral); }
+.mc-card__pct {
+  font-size: var(--t-label);
+  color: var(--fg-mute);
+}
+.mc-card__task {
+  font-size: var(--t-label);
+  color: var(--fg-dim);
+}
+.mc-card__msg {
+  font-size: var(--t-label);
+  color: var(--fg-mute);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin: 0;
+}
 /* The evaluator's view (D-073, replacing WP-15's second window). One terminal
    filling the stage and no chrome of its own: the pane's own head already names
    it. Both children are always in the DOM — `.is-hidden` swaps which one is

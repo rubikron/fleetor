@@ -1,4 +1,5 @@
 import { TerminalPane } from "./TerminalPane";
+import { MissionControl } from "./MissionControl";
 import { statusTone, STATUS_LABEL } from "../lib/statusTone";
 import { PaneGauge } from "./PaneGauge";
 import { HarnessMark } from "./PaneHead";
@@ -9,6 +10,8 @@ import {
   type PaneId,
   type PaneIdentityMap,
   type PaneStatus,
+  type MessageEvent,
+  type TaskEvent,
 } from "../fleet/types";
 import { OUT_OF_SCOPE, type ContextGaugeMap } from "../fleet/useContextGauge";
 import type { Theme } from "../ui/useTheme";
@@ -38,6 +41,8 @@ interface TerminalGridProps {
   unreadPanes: Set<PaneId>;
   onRegisterFocus: (pane: PaneId, focus: () => void) => void;
   gauges: ContextGaugeMap;
+  messages: MessageEvent[];
+  tasks: TaskEvent[];
 }
 
 export function TerminalGrid({
@@ -53,6 +58,8 @@ export function TerminalGrid({
   unreadPanes,
   onRegisterFocus,
   gauges,
+  messages,
+  tasks,
 }: TerminalGridProps) {
   return (
     <div className="fleet-layout">
@@ -104,6 +111,17 @@ export function TerminalGrid({
             />
           </div>
         ))}
+      </div>
+      <div className="fleet-layout__control">
+        <MissionControl
+          selected={selected}
+          onSelect={onSelect}
+          statuses={statuses}
+          panes={panes}
+          gauges={gauges}
+          messages={messages}
+          tasks={tasks}
+        />
       </div>
     </div>
   );
