@@ -1,5 +1,13 @@
 # WP-15 — The evaluator window
 
+> ## ⚠ ARCHIVED — feature removed (2026-09-29)
+>
+> **Superseded by D-092:** the evaluator was removed from the product, with its `PaneId`, its
+> handoff wake, the `devmode` cargo feature and its tests. Nothing below describes the code any
+> more. `fleet handoff` and dev mode survive; their current account is
+> [`fleet-comms-map.md`](../fleet-comms-map.md) §3e and
+> [`16-dev-mode.md`](../roadmap/16-dev-mode.md).
+
 status: landed size: L
 depends-on: 13, 16 · soft 14 blocks: the proposal ledger
 brief-cost: **0** — and that is a requirement rather than an accident. Nothing under

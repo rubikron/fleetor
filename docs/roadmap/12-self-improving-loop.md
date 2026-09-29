@@ -4,6 +4,8 @@ status: design size: XL — an arc, not a package
 depends-on: 11 blocks: 13, 14, 15, 16, 17, 18, 19
 brief-cost: 0 for this doc — the packages it files carry their own
 
+> **D-092 removed the evaluator** (WP-15) and everything below that depends on it; dev mode (WP-16), `fleet handoff` (WP-13), `orch`'s transcript (WP-14) and the write guardrail (WP-17) stand.
+
 **This is an arc doc, not an executable package.** Like `00-index.md` is the hub for the
 Blackboard arc, this is the hub for the self-improvement arc: the design, the diagrams,
 the invariant arguments already had, and the split into packages. The packages themselves
@@ -353,7 +355,7 @@ step.
 |----|--------|------|-----------|-------|
 | 13 | 1 — the retro loop | The done verb | — | yes — verb + both briefs, one commit |
 | 14 | 1 | `orch`'s own transcript + config dir | — | yes — `spawn.rs`, `runs.rs` |
-| 15 | 1 | The evaluator window (`15-evaluator-window.md`, **landed**, D-066) | 13, 16 · soft 14 | yes — 2nd window, `PaneId` |
+| 15 | 1 | The evaluator window ([`../archive/15-evaluator-window.md`](../archive/15-evaluator-window.md), **removed**, D-092) | 13, 16 · soft 14 | yes — 2nd window, `PaneId` |
 | 16 | 2 — dev mode & the fence | Dev mode | — | no |
 | 17 | 2 | The write guardrail (`17-write-guardrail.md`, landed) | 14, 16 · **blocks any improve run** | yes |
 | 18 | 4 — multi-fleet | More than one fleet at once | — | yes |

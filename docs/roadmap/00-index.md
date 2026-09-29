@@ -26,18 +26,18 @@ The Blackboard vision, split into nine session-sized work packages. The vision i
 | 09 | `09-brief-budget-shakedown.md` | Prompt budget + live shakedown | all | S/M + live spend | **budget half landed** — shakedown half pending operator |
 | 10 | `10-ui-architecture-map.md` | The `ui/` architecture map (docs only) | — | S/M | not-started |
 | 11 | `11-run-history.md` | Run history — past runs as long-term memory | — | L | **landed** |
-| 12 | `12-self-improving-loop.md` | The self-improving loop — **arc doc**, not a package | 11 | XL | **design** |
+| 12 | `12-self-improving-loop.md` | The self-improving loop — **arc doc**, not a package | 11 | XL | **design** — its evaluator parts were removed by D-092 |
 | 13 | `13-done-verb.md` | The done verb — `fleet handoff` | — | M | **landed** |
 | 14 | `14-orch-transcript.md` | `orch`'s own transcript + config dir | — | M | **landed** |
-| 15 | `15-evaluator-window.md` | The evaluator window | 13, 16 | L | **landed** |
+| 15 | [`../archive/15-evaluator-window.md`](../archive/15-evaluator-window.md) | The evaluator window | 13, 16 | L | **removed** (D-092) |
 | 16 | `16-dev-mode.md` | Dev mode | — | S/M | **landed** |
 | 17 | `17-write-guardrail.md` | The write guardrail | 14, 16 | M | **landed** |
 | 18 | (from TEMPLATE) | More than one fleet at once | — | L | not-started |
 | 19 | (from TEMPLATE) | Orch-to-orch, and its cutoff | 18 | M | not-started |
-| 20 | `20-placement-and-the-critic.md` | Placement, and the Critic — **arc doc**, not a package | — | L | **design** |
-| 21 | `21-the-critic-interviews.md` | The Critic interviews, on the operator's word | 20 | L | **stage A landed** — B (dynamics) and C (proposals) not started |
-| 22 | (from TEMPLATE) | The evaluator becomes a view | 20 | S/M | **landed** (D-073, ahead of its own package) |
-| 23 | (from TEMPLATE) | The Critic | 20, 22 | M | **landed** (D-076, ahead of its own package) |
+| 20 | `20-placement-and-the-critic.md` | Placement, and the Critic — **arc doc**, not a package | — | L | **design** — its critic and evaluator parts were removed by D-092; placement stands |
+| 21 | [`../archive/21-the-critic-interviews.md`](../archive/21-the-critic-interviews.md) | The Critic interviews, on the operator's word | 20 | L | **removed** (D-092) |
+| 22 | (from TEMPLATE) | The evaluator becomes a view | 20 | S/M | **removed** (D-092) |
+| 23 | (from TEMPLATE) | The Critic | 20, 22 | M | **removed** (D-092) |
 | 24 | `24-multi-tui.md` | Multi-TUI — register cursor through the seam | 20, 25, 30 | M | **re-scoped by D-C19, and now unblocked** — was the seam + cursor (L); the seam moved to WP-25 and landed, so this is registering cursor through a suite already green with two. Read C57's cost line first: registering codex forced six checkpoint reshapes, so budget for cursor forcing more. Spec in [issue #12](https://github.com/rubikron/fleetor/issues/12) (needs re-scoping), decisions M1–M28 |
 | 25 | `25-codex-tui.md` | The `Harness` seam, and codex as the first harness through it | 20 | L | **landed** — the seam holds two harnesses, conformance green over all fourteen checkpoints for both. 43 commits, 37 tickets (#14–#48), spec in [issue #13](https://github.com/rubikron/fleetor/issues/13), decisions C1–C68 |
 | 27 | `27-reopening-a-run.md` | Reopening a run — History becomes a session switcher | 11, 25 | L | **S1–S3 landed, Claude Code only** — decisions R0–R24, [visual guide](https://claude.ai/code/artifact/5b6ff072-faeb-49cf-9372-73bd41f0776c). Both vendor spikes done (`reopen-spike-notes.md`). S4 split out as WP-29 per D-087; R12's backend enforcement still open |
@@ -68,13 +68,10 @@ WP-01 ─┬─→ WP-02 ─→ WP-05 ─→ WP-06 ─┐
        └─→ WP-08 ───────────────────┘
 
 WP-10 (docs only, no dependencies — runnable any time)
-WP-11 ─→ WP-12 (arc) ─┬─→ WP-13 ─┐
-                      ├─→ WP-14 ─┼─→ WP-15 ─→ ledger
-                      ├─→ WP-16 ─┴─→ WP-17 (blocks any improve run; also needs 14)
+WP-11 ─→ WP-12 (arc) ─┬─→ WP-13
+                      ├─→ WP-14 ─┐
+                      ├─→ WP-16 ─┴─→ WP-17 (blocks any improve run)
                       └─→ WP-18 ─→ WP-19
-
-WP-20 (arc) ─→ WP-21 ─┬─→ stage B (dynamics)
-                      └─→ stage C (proposals, into WP-12's ledger)
 
 WP-20 (placement) ─→ WP-25 (the Harness seam lands in placement) ─┬─→ WP-30 (interface-only harness.rs) ─→ WP-24 (cursor)
                                                                  └─→ WP-27 (reopening a run)
@@ -95,7 +92,6 @@ rewind harness (separate repo, no WP — fully parallel, no dependencies)
 - WP-03, WP-05, WP-06, WP-07 all edit `prompts/orch.md` + `prompts/worker.md`, `VERBS`, and the clap enum. The validation WP-01 lands **refuses** a prompt that fails to teach every verb, so a verb and its prompt text must move in one commit. Run **at most one verb-adding package (03, 05, 06, 13) at a time**. *WP-07 landed and added no verb — `VERBS` and the clap enum are untouched; it edited both prompt files and `prompts/delivery-contract.md`.*
 - **WP-13 landed and added the ninth verb, `handoff` (D-064).** It found the rule's sharpest edge: `require_verbs` validates the rendered **worker** brief against the same `VERBS` list, so an orchestrator-only verb still has to be named in `worker.md` or the shipped template fails its own validation. The verb list is written down in nine places — `VERBS`, the clap enum, `Op`, both prompt files, the pinned literals in `brief.rs` (three of them, including two rewritten-template fixtures) and `src-tauri/src/prompts.rs`'s override fixture. All nine move together or the build is broken between commits.
 - **WP-17 is "the write guardrail", not "the fence" (D-065).** `12-self-improving-loop.md`'s stream table calls it the fence; that name belongs to WP-08's private `HOME` (D-052) and one name per concept is a rule this repo keeps. The two are separate mechanisms with separate reversal conditions: the Fence is about *name resolution* for workers only, the write guardrail is a `PreToolUse` hook about *writes* for every pane. It also gained a dependency the arc doc did not have — **WP-14**, because `orch`'s deny rules need the config dir D-062 gave it; that is the second job WP-12 filed WP-14 for. Its spike found a real Fence breakage on the way past (a worker cannot `cargo build`, because rustup resolves `$HOME/.rustup`), which is D-052's to fix and is WP-17's open question 1 — **closed by D-069**, which found the breakage was larger than recorded (under any PATH but an inherited login one, a worker cannot find `cargo` at all) and gave workers fleet-owned `CARGO_HOME` and `RUSTUP_HOME` under `_shell/`. No guardrail root moved.
-- **WP-15 rewrote one existing tripwire, and that is the one thing to know before touching `src-tauri/tests/dev_mode.rs` (D-066).** `no_pane_is_briefed_about_the_evaluator` grepped seven files for `evaluat`; one was `crates/fleetor-core/src/pane.rs`, and the `PaneId::Evaluator` the retro needs fails it on day one. The variant is forced — every name in the record is a `PaneId`, and the alternatives were a spelling picked to dodge the grep (banned by `building.md` §6) or reusing `operator`, which would lie in the log about who spoke. So `pane.rs` came off **that one test's** list and `nothing_a_pane_can_read_ever_names_the_evaluator` replaced it, asserting the *rendered* briefs, `PaneId::roster()` and the parse error — the property the grep was a proxy for, and strictly more of it. `pane.rs` stays on `no_pane_is_briefed_about_dev_mode`, which is untouched, and the prose list gained `prompts/scaffolding.md`. **Do not restore the old row without reading `15-evaluator-window.md`'s section on it.**
 - **WP-06 landed first, so WP-08 discharged the debt (D-052).** A private HOME drops the global `user.name`/`user.email`, and WP-06 made worker commits load-bearing rather than incidental: the receipt names a commit and the reviewer reads it, so a worker that cannot commit produces a receipt pointing at nothing. WP-08 seeds a gitconfig for exactly this, and re-validated both a real worker commit and a peer's `git diff HEAD...fleet/worker-N` live, under the fenced env — `docs/notes/fence-notes.md` is the transcript; the worktree mechanism `peer-review-notes.md` measured turned out not to route through `HOME` at all, so peer review is unaffected.
 
 ## Reconciliation with the autonomy-designs build order

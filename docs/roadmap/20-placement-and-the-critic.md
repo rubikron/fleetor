@@ -6,6 +6,8 @@ brief-cost: 0 for this doc · 0 for WP-21 and WP-22 · WP-23 adds a **new** brie
 touches neither `orch.md` nor `worker.md`, so the shared budget (D-053, orch 3,668 / cap
 3,800) is untouched by the whole arc.
 
+> **D-092 removed the Critic and the evaluator** — WP-21, WP-22 and WP-23 with them. Placement stands.
+
 **This is an arc doc, not an executable package**, in the mould of
 [`12-self-improving-loop.md`](./12-self-improving-loop.md). It carries the problem, the
 decisions and the seam; the three packages it files — WP-21, WP-22, WP-23 — are written

@@ -1,5 +1,11 @@
 # WP-21 — the Critic interviews, on the operator's word
 
+> ## ⚠ ARCHIVED — feature removed (2026-09-29)
+>
+> **Superseded by D-092:** the Critic was removed from the product, with its interview switch in
+> the hub, its brief and its tests. Stage A landed and is gone; stages B and C will not be built.
+> Nothing below describes the code any more.
+
 status: stage A landed (D-079, D-080) · B and C not started size: L
 depends-on: WP-20 (the Critic exists) · a `fleet reply` fix, in flight — see Blocking defect
 blocks: — brief-cost: **0**, by design — see Invariant guardrails §4
