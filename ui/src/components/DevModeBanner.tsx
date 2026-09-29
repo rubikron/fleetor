@@ -1,11 +1,9 @@
 // The dev-mode band (WP-16): a full-width strip under the topbar, present only
 // while the mode is on.
 //
-// **Why it is this loud.** Dev mode is the posture the evaluator (WP-15) and the
-// fence (WP-17) live inside. An operator who is in it without knowing runs a
-// real fleet under evaluation rules; an operator who is *not* in it and thinks
-// they are waits for a retro that will never happen. Both failures are silent,
-// so the mode says itself on every screen rather than on one settings row.
+// **Why it is this loud.** An operator who is in dev mode without knowing, or
+// out of it while thinking otherwise, gets no other signal, so the mode says
+// itself on every screen rather than on one settings row.
 //
 // Theme rules it holds to (building.md §7): coral, never blue — coral is the
 // "needs or has attention" token and this is the app's one standing attention
@@ -25,8 +23,7 @@ export function DevModeBanner() {
       <span className="dot dot--accent" aria-hidden="true" />
       <span className="devbar__label">DEV MODE</span>
       <span className="devbar__note">
-        evaluation posture — this fleet is being run for assessment. Settings → Development turns
-        it off.
+        this fleet is running in dev mode. Settings → Development turns it off.
       </span>
     </div>
   );

@@ -22,18 +22,12 @@ const WORKER_STORAGE_KEY = "fleetor:selected-worker";
 // So this list is now pinned to `Sidebar.tsx`'s `View` union by
 // `src-tauri/tests/views.rs`, which reads both files and fails if they stop
 // naming the same views. Add a view there, add it here, or that test says so.
-//
-// `evaluator` is on the list even though its rail row is dev-only: restoring it
-// is what `App.tsx` corrects, once the backend has answered on the mode. A view
-// absent from *this* list could not be corrected, because it would never be
-// restored in the first place.
 const VIEWS: readonly View[] = [
   "home",
   "fleet",
   "feed",
   "tasks",
   "history",
-  "review",
   "settings",
 ];
 const DEFAULT_VIEW: View = "home";
@@ -41,8 +35,9 @@ const DEFAULT_VIEW: View = "home";
 const LEGACY_VIEW_MAP: Record<string, View> = {
   messages: "feed",
   activity: "feed",
-  critic: "review",
-  evaluator: "review",
+  review: "home",
+  critic: "home",
+  evaluator: "home",
 };
 const DEFAULT_WORKER: number = WORKER_SLOTS[0];
 

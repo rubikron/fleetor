@@ -406,7 +406,7 @@ body,
    every view at once rather than in the one the operator happens to open.
 
    Coral, and nothing else in the app is allowed to look like this: --accent is
-   the "needs or has attention" token (§7) and a standing evaluation posture is
+   the "needs or has attention" token (§7) and a standing dev posture is
    the app's one permanent attention state. Text and dot both take --accent on
    --bg-2 rather than the reverse (a coral *fill* with --on-accent text) — the
    light theme deepens --accent precisely so it passes AA as text, and a filled
@@ -780,14 +780,8 @@ body,
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* The evaluator's view (D-073, replacing WP-15's second window). One terminal
-   filling the stage and no chrome of its own: the pane's own head already names
-   it. Both children are always in the DOM — `.is-hidden` swaps which one is
-   shown, because unmounting the terminal would destroy its xterm buffer with no
-   screen replay behind it (§7 rule 5). */
-/* ---- Feed / Review tabs ---- */
-.feed-view,
-.review-view {
+/* ---- Feed tabs ---- */
+.feed-view {
   display: flex;
   flex-direction: column;
   flex: 1;
@@ -975,167 +969,6 @@ body,
   cursor: pointer;
 }
 
-/* The Critic (WP-20). Same shape as the evaluator's view below — a waiting
-   state that swaps for a terminal, both hidden with `.is-hidden` rather than
-   unmounted — with one addition: a control, because the operator decides when
-   this one runs. */
-.critic-view,
-.evaluator-view {
-  display: flex;
-  min-height: 0;
-  min-width: 0;
-  flex: 1;
-}
-/* The Critic stacks: the interview gate sits above whichever of the two states
-   is showing. Scoped to `.critic-view` alone — the evaluator's view has no bar
-   and keeps the row it has always had. */
-.critic-view {
-  flex-direction: column;
-}
-/* **The interview gate** (WP-21 stage A). Always rendered, on purpose: the cost
-   sentence below is an acceptance criterion of the package — the operator must
-   be able to tell *before pressing* that this spends the fleet's turns — and a
-   `title` cannot be seen on the way to the button or reached from a keyboard.
-   It is printed, in the token the palette reserves for cost. */
-.critic-view__interview {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 12px;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--border-soft);
-  background: var(--bg-1);
-}
-/* The state, said in words. "Open interview" on a button is a verb or an
-   adjective depending on who reads it; this is neither. */
-.critic-view__gate {
-  font-family: var(--mono);
-  font-size: var(--t-label);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  padding: 2px 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--fg-mute);
-}
-/* Open is the state that is costing something, so it is the one the eye finds
-   first — the same coral the rest of the app spends on "active". */
-.critic-view__gate--open {
-  color: var(--accent);
-  border-color: var(--accent);
-}
-.critic-view__gate--closed {
-  color: var(--fg-dim);
-}
-.critic-view__gate--unknown,
-.critic-view__gate--norun {
-  color: var(--fg-mute);
-}
-.critic-view__interview-toggle {
-  padding: 5px 14px;
-  font-size: var(--t-small);
-  font-family: inherit;
-  color: var(--fg);
-  background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition: var(--transition-fast);
-}
-.critic-view__interview-toggle:hover:not(:disabled) {
-  background: var(--bg-3);
-  border-color: var(--fg-mute);
-}
-.critic-view__interview-toggle:disabled {
-  color: var(--fg-mute);
-  cursor: not-allowed;
-}
-/* `--gold` is the palette's declared token for "awareness — review / pending /
-   unread / cost", and this is a cost. Both themes redeclare it, so this reads
-   in either one. */
-.critic-view__cost {
-  flex: 1 1 34ch;
-  margin: 0;
-  font-size: var(--t-small);
-  line-height: 1.5;
-  color: var(--gold);
-}
-.critic-view__cost code {
-  font-family: var(--mono);
-  color: inherit;
-}
-/* Empty until a write fails, and then it says so where the switch that did not
-   move is — the switch itself stays where it was (no optimistic flip). */
-.critic-view__interview-error:empty {
-  display: none;
-}
-.critic-view__interview-error {
-  flex: 1 1 100%;
-  margin: 0;
-  font-size: var(--t-small);
-  color: var(--red);
-}
-.critic-view__terminal,
-.evaluator-view__terminal {
-  display: flex;
-  flex: 1;
-  min-height: 0;
-  min-width: 0;
-}
-/* The pre-handoff state. Prose, centred, and deliberately without a control:
-   the evaluator wakes on a handoff and there is nothing here to press. */
-.critic-view__waiting,
-.evaluator-view__waiting {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  padding: 32px;
-  text-align: center;
-}
-.critic-view__lede,
-.evaluator-view__lede {
-  font-size: var(--t-body);
-  color: var(--text-primary);
-  margin: 0;
-}
-.critic-view__note,
-.evaluator-view__note {
-  font-size: var(--t-small);
-  color: var(--text-muted);
-  line-height: 1.6;
-  max-width: 46ch;
-  margin: 0;
-}
-.critic-view__note code,
-.evaluator-view__note code {
-  font-family: var(--font-mono);
-  color: var(--text-secondary);
-}
-/* The one control either of these views has. The evaluator has none on purpose;
-   the Critic answers an ordinary question whenever the operator asks it. */
-.critic-view__start {
-  margin-top: 6px;
-  padding: 6px 18px;
-  font-size: var(--t-small);
-  font-family: inherit;
-  color: var(--fg);
-  background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition: var(--transition-fast);
-}
-.critic-view__start:hover:not(:disabled) {
-  background: var(--bg-3);
-  border-color: var(--fg-mute);
-}
-.critic-view__start:disabled {
-  color: var(--fg-mute);
-  cursor: not-allowed;
-}
 .terminal-pane {
   background: var(--term-bg);
   border: 1px solid var(--border);

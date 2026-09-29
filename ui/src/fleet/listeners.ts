@@ -7,8 +7,8 @@
 // function became a floating rejected promise, and `installDevErrorReporting`
 // reported one per listener: "unhandled promise rejection", with a stack ending
 // in `unregisterListener@user-script` and no message at all. A reopen produced
-// twelve at once, which is what five panes with two listeners each plus the feed
-// and the evaluator's wake come to.
+// twelve at once: five panes with two listeners each, plus two app-level
+// listeners.
 //
 // **The command behind it cannot fail** — tauri 2.11.5's `unlisten`
 // (`src/event/plugin.rs`) returns `Ok(())` unconditionally — so what throws is

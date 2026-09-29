@@ -2,8 +2,8 @@
 //
 // Deliberately *not* the useTheme.ts / usePersistedNav.ts shape. Those read and
 // write localStorage, because a theme is a webview preference and nothing on the
-// Rust side ever asks what it is. Dev mode is asked about by code that has no
-// webview — WP-15's evaluator window, WP-17's fence — so the flag lives in
+// Rust side ever asks what it is. Dev mode is read by code that has no
+// webview, so the flag lives in
 // ~/.fleetor/config.json and this hook is a *view* of it, never a second copy.
 //
 // Three states, and the third is why `enabled` is not a bare boolean at mount:

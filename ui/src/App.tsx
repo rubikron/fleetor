@@ -22,7 +22,6 @@ import { TerminalGrid } from "./components/TerminalGrid";
 import { Homepage } from "./components/Homepage";
 import { RunHistory } from "./components/RunHistory";
 import { FeedView } from "./components/FeedView";
-import { ReviewView } from "./components/ReviewView";
 import { DevModeBanner } from "./components/DevModeBanner";
 import { useFleet } from "./fleet/useFleet";
 import { useRuns } from "./fleet/useRuns";
@@ -34,9 +33,7 @@ import { usePaneJump } from "./ui/usePaneJump";
 import { useWindowState } from "./ui/useWindowState";
 import { useTheme } from "./ui/useTheme";
 import { useDevMode } from "./ui/useDevMode";
-import { useCriticInterview } from "./ui/useCriticInterview";
-import { killPane, onEvaluatorWake } from "./fleet/api";
-import { stopListening } from "./fleet/listeners";
+import { killPane } from "./fleet/api";
 import { ORCH, type PaneId, type PaneStatus } from "./fleet/types";
 
 export function App() {
@@ -139,43 +136,6 @@ export function App() {
     return () => window.clearTimeout(id);
   }, [view, selectedPane, sidebar.collapsed]);
 
-  // **The evaluator's wake** (D-073). Latched, and it only ever goes true: the
-  // terminal below is mounted for the life of the app either way, and this flag
-  // decides whether it may spawn a pty (TerminalPane's `started`, the same gate
-  // the start gate uses) and whether the operator sees the terminal or the
-  // sentence explaining what it is waiting for. Nothing here can start the
-  // evaluator — only Rust decides a handoff cleared readiness, and it says so
-  // with this event.
-  const [evaluatorAwake, setEvaluatorAwake] = useState(false);
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    let cancelled = false;
-    void onEvaluatorWake(() => setEvaluatorAwake(true)).then((fn) => {
-      if (cancelled) stopListening(fn, "evaluator wake");
-      else unlisten = fn;
-    });
-    return () => {
-      cancelled = true;
-      stopListening(unlisten, "evaluator wake");
-    };
-  }, []);
-
-  // **The Critic starts when the operator says so** (WP-20, D-076), which is the
-  // one place it differs from the evaluator's view above and the difference is
-  // the whole point: the evaluator's sequencing is evidence and must not be
-  // anticipated, while the Critic answers an ordinary question the operator asks
-  // whenever they want it answered. Latched like the wake, and for the same
-  // reason — the terminal below is mounted for the life of the app either way,
-  // and this flag only decides whether it may spawn a pty.
-  const [criticStarted, setCriticStarted] = useState(false);
-
-  // **The interview gate** (WP-21 stage A). Rust holds it, because it decides
-  // whether a `fleet send` from inside the Critic resolves at all; this is a
-  // view of that state, on the `useDevMode` shape, with no optimistic flip.
-  // Keyed on the fleet being up: with no run there is nothing to interview, and
-  // that is also when the control is disabled below.
-  const interview = useCriticInterview(started);
-
   const restart = useCallback((pane: PaneId) => {
     // Kill only. The pane's own spawn effect is keyed on `started`, so the tab
     // brings itself back with a fitted size rather than one guessed here.
@@ -257,20 +217,6 @@ export function App() {
 
             <div className={`stage-view ${view === "history" ? "" : "is-hidden"}`}>
               <RunHistory runs={runs} onOpened={() => setView("fleet")} />
-            </div>
-
-            <div className={`stage-view ${view === "review" ? "" : "is-hidden"}`}>
-              <ReviewView
-                started={started}
-                criticStarted={criticStarted}
-                onCriticStart={() => setCriticStarted(true)}
-                evaluatorAwake={evaluatorAwake}
-                statuses={statuses}
-                fontSize={zoom.terminalFontSize}
-                theme={themeControls.theme}
-                onStatus={onStatus}
-                interview={interview}
-              />
             </div>
 
             <div className={`stage-view ${view === "settings" ? "" : "is-hidden"}`}>

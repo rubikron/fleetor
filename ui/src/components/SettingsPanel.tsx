@@ -47,16 +47,14 @@ export function SettingsPanel({ theme, onToggleTheme, devMode }: SettingsPanelPr
       </div>
 
       {/* WP-16. Its own group rather than a row under Appearance: dev mode is a
-          posture the app runs in, not a preference about how it looks, and the
-          packages that live inside it (the evaluator, the fence) will file their
-          own rows here. */}
+          posture the app runs in, not a preference about how it looks. */}
       <div className="settings-group">
         <h4 className="settings-group__title">Development</h4>
         <div className="setting-row">
           <div className="setting-row__text">
             <span className="setting-row__label">Dev mode</span>
             <span className="setting-row__desc">
-              The posture for evaluating the fleet rather than working with it. A coral band across
+              A posture for developing the fleet rather than working with it. A coral band across
               the top says so for as long as it is on, and the setting survives a restart.
             </span>
           </div>

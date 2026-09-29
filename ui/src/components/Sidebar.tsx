@@ -48,7 +48,6 @@ export type View =
   | "feed"
   | "tasks"
   | "history"
-  | "review"
   | "settings";
 
 interface SidebarProps {
@@ -112,14 +111,6 @@ const ICONS: Record<View, ReactNode> = {
       <polyline points="8,4.9 8,8 10.3,9.4" />
     </svg>
   ),
-  // a magnifier over a speech bubble: merged critic + evaluator
-  review: (
-    <svg {...ICON_PROPS}>
-      <path d="M2.4 3.4h11.2v7.4H8.6L5.4 13.6v-2.8H2.4z" />
-      <circle cx="10" cy="6.5" r="2.4" />
-      <line x1="11.7" y1="8.2" x2="13.8" y2="10.3" />
-    </svg>
-  ),
   // a gear: preferences
   settings: (
     <svg {...ICON_PROPS}>
@@ -143,11 +134,6 @@ const WORKSPACE: { view: View; label: string; hint?: string }[] = [
   { view: "feed", label: "Feed", hint: "Feed — messages and activity in one view" },
   { view: "tasks", label: "Tasks" },
   { view: "history", label: "History" },
-  {
-    view: "review",
-    label: "Review",
-    hint: "Review — what the fleet did (Critic) and whether the mission was met (Evaluator)",
-  },
 ];
 
 export function Sidebar({
