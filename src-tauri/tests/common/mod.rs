@@ -7,24 +7,6 @@
 //! `tests/placement.rs` reads the policy file that was written; `write_guardrail.rs`
 //! runs the installed hook through a real shell against real tool-call payloads.
 //!
-//! The evaluator is why this is not two lines. It is the one placement with four
-//! preconditions, and each of them is a value inside the scratch root rather than
-//! anything read from the process — which is the property the placement seam bought:
-//!
-//!  1. **Dev mode on**, written into this layout's own `config.json`, never the
-//!     operator's. That file is what [`Layout::dev_enabled`] reads, so flipping it
-//!     here is what a test flips.
-//!  2. **A prepared mission workspace**, `<workspaces>/<name>/repo`, with its
-//!     `missions/<name>.md` beside it in a scratch harness. The three roots reach
-//!     placement on the [`Host`] (D12), so no environment variable is set.
-//!  3. **A live run to lay out.** The evaluator's working directory *is* a snapshot
-//!     of one (D2), so a real store has to exist for placement to snapshot — which
-//!     is why this opens a genuine SQLite database rather than touching a file into
-//!     place.
-//!  4. **The `devmode` feature**, the caller's to arrange: without it there is no
-//!     brief compiled in and no evaluator placement can succeed, so every test that
-//!     places one is gated on it.
-//!
 //! The target is a real git repository for the reason `tests/placement.rs` gives at
 //! its own `init_repo`: a worker's successful path *is* a `git worktree add`. A
 //! target that is not a repository would be made one by the first placement
@@ -38,15 +20,9 @@
 use std::path::{Path, PathBuf};
 
 use fleetor_core::pane::PaneId;
-use fleetor_shell::critic;
-use fleetor_shell::evaluator::{self, MissionRoots};
 use fleetor_shell::guardrail;
 use fleetor_shell::placement::{self, Host, Layout, PaneSpec, Placed};
 use fleetor_shell::prompts::PaneContext;
-
-/// The mission name every bench uses. Distinctive enough that finding it in a
-/// rendered brief proves it travelled rather than coincided.
-pub const MISSION: &str = "hyperfine-conclude";
 
 /// The worker credential the bench hands the host, for the same reason.
 pub const WORKER_KEY: &str = "sk-fleetor-bench-worker-key";
@@ -56,12 +32,11 @@ pub const WORKER_KEY: &str = "sk-fleetor-bench-worker-key";
 pub struct Bench {
     /// The scratch root everything lives under. Removed on drop.
     pub root: PathBuf,
-    /// The fleet's tree — `config.json`, `_shell/`, and the `dev/` sibling the
-    /// evaluator works in.
+    /// The fleet's tree — `config.json` and `_shell/`.
     pub layout: Layout,
-    /// What this machine has: the mission roots, a `fleet` binary, a worker key.
+    /// What this machine has: a `fleet` binary and a worker key.
     pub host: Host,
-    /// The prepared workspace the fleet is pointed at, and a real repository.
+    /// The repository the fleet is pointed at.
     pub target: PathBuf,
     /// The briefs and launch settings every placement here spawns with.
     pub context: PaneContext,
@@ -87,26 +62,13 @@ impl Bench {
         let layout = Layout::under(root.join("state"));
         std::fs::create_dir_all(layout.root()).unwrap();
 
-        // A prepared workspace, the shape `prepare-mission.sh` builds, and a real
-        // repository so a worker gets a worktree of its own.
-        let workspaces = root.join("workspaces");
-        let target = workspaces.join(MISSION).join("repo");
+        // A real repository so a worker gets a worktree of its own.
+        let target = root.join("repo");
         init_repo(&target);
-        let harness = root.join("harness");
-        std::fs::create_dir_all(harness.join("missions")).unwrap();
-        std::fs::write(harness.join("missions").join(format!("{MISSION}.md")), "# mission")
-            .unwrap();
-
-        // A live run for placement to lay out. A real store, because
-        // `runs::snapshot_live_run` reads it as one.
-        std::fs::create_dir_all(layout.shell()).unwrap();
-        fleetor_db::SqliteStore::open(&layout.shell().join("state.db"))
-            .expect("a live run to snapshot");
 
         let host = Host {
             fleet_bin: Some(root.join("fleet")),
             api_key: Some(WORKER_KEY.to_string()),
-            missions: MissionRoots { harness, workspaces, answers: root.join("answers") },
             ..Host::bare()
         };
 
@@ -120,13 +82,6 @@ impl Bench {
         let dir = self.root.join(name);
         self.context.launch.fence_allow.push(dir.display().to_string());
         dir
-    }
-
-    /// Turn the mode on or off **in this layout's own config file** — the read
-    /// [`Layout::dev_enabled`] performs, pointed somewhere a test owns.
-    pub fn dev_mode(&self, on: bool) {
-        std::fs::write(self.layout.config_file(), serde_json::json!({ "dev_mode": on }).to_string())
-            .unwrap();
     }
 
     /// **Give this machine an operator login for one harness** (C75), the way
@@ -156,18 +111,8 @@ impl Bench {
 
     /// Where placement seeds this pane's Claude Code configuration — and therefore
     /// where it installed its write guardrail.
-    ///
-    /// The evaluator's is deliberately outside `_shell/pane-config/` (D-062), which
-    /// is the one asymmetry in this function and the reason it exists rather than
-    /// every caller reaching for `Layout::pane_config`.
     pub fn config_dir(&self, pane: PaneId) -> PathBuf {
-        if pane.is_evaluator() {
-            evaluator::config_dir(self.layout.root())
-        } else if pane.is_critic() {
-            critic::config_dir(self.layout.root())
-        } else {
-            self.layout.pane_config(&fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), pane)
-        }
+        self.layout.pane_config(&fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), pane)
     }
 
     /// Every `--root` the hook placement installed for `pane` was given, in order.
@@ -180,31 +125,6 @@ impl Bench {
     pub fn journal(&self) -> PathBuf {
         guardrail::journal_path(&self.layout.shell())
     }
-
-    /// The directory the evaluator was placed in: the one retro under `dev/retro/`.
-    ///
-    /// Found by looking rather than by recomputing the run id, so what it pins is
-    /// "placement laid the run out somewhere and pointed the pane at it" and not a
-    /// timestamp format.
-    pub fn retro_dir(&self) -> PathBuf {
-        the_one_run_under(&self.layout.root().join("dev").join("retro"))
-    }
-
-    /// The directory the Critic was placed in: the one run under
-    /// `critic/runs/`. Found by looking, for [`Self::retro_dir`]'s reason.
-    pub fn critic_run_dir(&self) -> PathBuf {
-        the_one_run_under(&critic::critic_dir(self.layout.root()).join("runs"))
-    }
-}
-
-fn the_one_run_under(dir: &Path) -> PathBuf {
-    let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
-        .unwrap_or_else(|e| panic!("{} must exist: {e}", dir.display()))
-        .flatten()
-        .map(|e| e.path())
-        .collect();
-    assert_eq!(found.len(), 1, "exactly one run was laid out: {found:?}");
-    found.pop().unwrap()
 }
 
 impl Drop for Bench {

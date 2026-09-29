@@ -53,24 +53,3 @@ fn a_message_that_begins_with_a_peers_name_is_not_refused_here() {
     // without a hub — which is exactly as far as this test can push it.
     assert!(stderr.contains("FLEET_SOCKET is not set"), "{stderr}");
 }
-
-/// The two names `PaneId` accepts that are not in the fleet, checked here rather
-/// than beside the other spellings because WP-15's Tier 1.4 grep forbids one of
-/// these strings in `src/main.rs` and in every other file a message passes
-/// through. This file is a test, not a stop on that path.
-///
-/// **Both are worth catching, and one of them for a real reason.** The out-of-
-/// fleet grader messages panes and is answered by them, so a pane typing the
-/// name it was just shown into `fleet reply` is exactly the misdelivery this
-/// whole check exists to stop. The refusal echoes back only the word the pane
-/// itself typed, so it teaches no name to anyone who did not already have it.
-#[test]
-fn the_names_outside_the_fleet_are_refused_as_recipients_too() {
-    for name in ["evaluator", "critic"] {
-        let out = fleet(&["reply", name, "Agreed"]);
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(!out.status.success(), "{name}: {stderr}");
-        assert!(stderr.contains("does not take a recipient"), "{name}: {stderr}");
-        assert!(stderr.contains(&format!("fleet send {name}")), "{name}: {stderr}");
-    }
-}

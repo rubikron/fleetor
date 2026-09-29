@@ -72,22 +72,12 @@ impl Default for LaunchConfig {
     }
 }
 
-/// Everything resolved: the three brief templates and the launch settings, plus
+/// Everything resolved: the two brief templates and the launch settings, plus
 /// what to say about how they were arrived at.
 #[derive(Debug, Clone)]
 pub struct PaneContext {
     pub orch_template: String,
     pub worker_template: String,
-    /// The Critic's brief (WP-20, D-076) — `prompts/critic.md`, overridable from
-    /// `~/.fleetor/prompts/critic.md` like the two above.
-    ///
-    /// **It resolves here, through the ordinary mechanism, and that is the
-    /// point.** The Critic is a product feature, so its brief is the operator's
-    /// to rewrite; it is a third template rather than a special case because it
-    /// is not one. What it does *not* share with the two above is validation:
-    /// see [`crate::critic::validate`] for the one structural thing an override
-    /// has to keep, and why none of the prose is checked.
-    pub critic_template: String,
     pub launch: LaunchConfig,
     /// **Which run's seat directories this fleet's panes are placed into**
     /// (WP-27, R4).
@@ -137,7 +127,6 @@ impl PaneContext {
         Self {
             orch_template: DEFAULT_ORCH.to_string(),
             worker_template: DEFAULT_WORKER.to_string(),
-            critic_template: crate::critic::DEFAULT_BRIEF.to_string(),
             launch,
             sessions: crate::placement::SessionsId::new(crate::placement::UNASSIGNED_SESSIONS),
             branch_prefix: crate::placement::UNASSIGNED_BRANCH_PREFIX.to_string(),
@@ -160,14 +149,11 @@ impl PaneContext {
             load_template(dir, "orch.md", baked.orch_template, validate_orch);
         let (worker_template, worker_notes) =
             load_template(dir, "worker.md", baked.worker_template, validate_worker);
-        let (critic_template, critic_notes) =
-            load_template(dir, "critic.md", baked.critic_template, crate::critic::validate);
         let (launch, launch_notes) = load_launch(dir, &baked.launch);
 
         Self {
             orch_template,
             worker_template,
-            critic_template,
             launch,
             // Resolving templates says nothing about which run is booting; the
             // caller sets this (see the field's own note).
@@ -179,7 +165,6 @@ impl PaneContext {
                 .into_iter()
                 .chain(orch_notes)
                 .chain(worker_notes)
-                .chain(critic_notes)
                 .chain(launch_notes)
                 .collect(),
         }
@@ -191,7 +176,7 @@ impl PaneContext {
 type Note = (NoticeLevel, String);
 
 /// Read one override template, or keep `fallback`. Validation is the caller's
-/// (`validate_orch`, `validate_worker`, `critic::validate`) so this function has
+/// (`validate_orch`, `validate_worker`) so this function has
 /// no opinion about what a usable brief is — it only decides *whether* to use
 /// what it read.
 fn load_template(
@@ -358,45 +343,8 @@ mod tests {
         let ctx = PaneContext::resolve(&PathBuf::from("/nonexistent/fleetor/prompts"));
         assert_eq!(ctx.orch_template, DEFAULT_ORCH);
         assert_eq!(ctx.worker_template, DEFAULT_WORKER);
-        assert_eq!(ctx.critic_template, crate::critic::DEFAULT_BRIEF);
         assert_eq!(ctx.launch, LaunchConfig::default());
         assert!(ctx.notices.is_empty(), "a first run must not warn about anything: {:?}", ctx.notices);
-    }
-
-    /// **The Critic's brief is the operator's to rewrite** (WP-20, D-076), which
-    /// is the asymmetry that makes it a different pane from the one whose brief
-    /// is compiled in from another repository — it is a product feature, not an
-    /// instrument of an experiment. It comes in through the ordinary mechanism,
-    /// so it is announced when it loads and refused when it is unusable.
-    #[test]
-    fn the_critics_brief_can_be_overridden_and_a_broken_one_falls_back() {
-        let dir = temp_dir("critic");
-        let mine = "You are the Critic. Read {archive} and report what the fleet did.\n";
-        std::fs::write(dir.join("critic.md"), mine).unwrap();
-
-        let ctx = PaneContext::resolve(&dir);
-        assert_eq!(ctx.critic_template, mine, "the operator's template is what gets rendered");
-        assert!(
-            ctx.notices.iter().any(|(l, t)| *l == NoticeLevel::Info && t.contains("critic.md")),
-            "the operator is told their override took effect: {:?}",
-            ctx.notices
-        );
-
-        // The one thing an override may not drop: the directory to read.
-        std::fs::write(dir.join("critic.md"), "You are the Critic. Report what the fleet did.\n")
-            .unwrap();
-        let ctx = PaneContext::resolve(&dir);
-        assert_eq!(
-            ctx.critic_template,
-            crate::critic::DEFAULT_BRIEF,
-            "a pane must never run a brief that does not say what to read",
-        );
-        let (level, text) =
-            ctx.notices.iter().find(|(_, t)| t.contains("critic.md")).expect("told");
-        assert_eq!(*level, NoticeLevel::Warn);
-        assert!(text.contains("{archive}"), "the complaint names what to fix: {text}");
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A valid override is used *and announced* — a prompt change that quietly did

@@ -1,10 +1,9 @@
 //! **Dev mode** (WP-16) — an operator-triggered application posture, loud in the
 //! UI, and the container the rest of the self-improvement arc lives inside.
 //!
-//! On its own this does almost nothing, and that is the design. WP-15's
-//! evaluator exists *only* in dev mode and WP-17's fence is scoped *by* it, so
-//! what this package owes them is one flag with one spelling, one home, and one
-//! way to read it. Everything else about the arc is deliberately not here.
+//! On its own this does almost nothing, and that is the design. What this
+//! package owes the arc is one flag with one spelling, one home, and one way to
+//! read it. Everything else about the arc is deliberately not here.
 //!
 //! **One source of truth: `dev_mode` in `~/.fleetor/config.json`.** Not
 //! `localStorage` (where the theme and the nav selection live) — those are
@@ -43,8 +42,7 @@ pub const CONFIG_KEY: &str = "dev_mode";
 /// Is the app in dev mode? **The one read.** Anything that needs to branch on
 /// the mode calls this rather than reaching for the config file itself.
 ///
-/// A missing, unreadable or malformed config reads as *off*. Off is the state
-/// with no evaluator, no second window and no fence — failing closed costs an
+/// A missing, unreadable or malformed config reads as *off* — failing closed costs an
 /// operator one click and failing open would silently put a fleet in a posture
 /// nobody chose.
 pub fn is_enabled() -> bool {
@@ -60,11 +58,10 @@ pub fn set_enabled(enabled: bool) -> Result<bool, String> {
 
 /// [`is_enabled`] against a named config file.
 ///
-/// The seam [`crate::placement::Layout::dev_enabled`] reaches through (D11): the
-/// evaluator's spawn site re-checks the mode itself, and it has to be able to do
-/// that against the layout it was handed rather than against the operator's real
-/// home. `is_enabled` stays the process-global entry point for everything that
-/// has no layout in hand.
+/// The seam [`crate::placement::Layout::dev_enabled`] reaches through (D11), so the
+/// mode can be read against a layout rather than the operator's real home.
+/// `is_enabled` stays the process-global entry point for everything that has no
+/// layout in hand.
 pub(crate) fn read_at(file: &Path) -> bool {
     parse_dev_mode(&std::fs::read_to_string(file).unwrap_or_default())
 }
@@ -159,7 +156,7 @@ mod tests {
     }
 
     /// A config nobody can parse must not read as *on*. The failure this guards
-    /// is an operator in an evaluation posture they never chose — the exact
+    /// is an operator in a dev posture they never chose — the exact
     /// thing the banner exists to make impossible.
     #[test]
     fn a_malformed_or_lookalike_flag_is_off_not_on() {

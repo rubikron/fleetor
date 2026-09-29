@@ -48,7 +48,7 @@ const MANIFEST_JSON: &str = "manifest.json";
 ///
 /// It used to say "that pane's Claude Code session `.jsonl` files", which was true
 /// of every run a one-harness fleet could produce and becomes a false statement to
-/// any Critic reading a mixed run cold — the wrong kind of false, too: a reader
+/// any reader of a mixed run cold — the wrong kind of false, too: a reader
 /// who believes it will look for a format that is not there and conclude the
 /// evidence is missing rather than that the sentence is. It now says what is
 /// invariant (one directory per pane, raw, this run only) and points at `panes`
@@ -169,7 +169,7 @@ struct LiveMeta {
 /// vendor's binary was pointed at it; by the time rotation archives a run its
 /// panes are gone and the fleet that placed them is gone with them (C33). So the
 /// harvest still finds transcripts by looking under every registered harness's
-/// answer, and this is what tells a Critic reading the result cold *which* vendor
+/// answer, and this is what tells a reader of the result cold *which* vendor
 /// wrote the files it is now holding, and in what format.
 ///
 /// C33 named this exact reversal: "a run manifest that already records each pane's
@@ -729,7 +729,7 @@ pub fn snapshot_live_run(shell: &Path, dest: &Path, run_id: &str) -> Result<u32,
     // **The run's own seat directory, which is not its archive id on a reopened
     // run** (WP-27, R4): a lineage shares one directory, so a snapshot that
     // derived it from the run id would photograph an empty directory for exactly
-    // the runs an evaluator most wants to read. Falls back to the id for a
+    // the runs a reader most wants to read. Falls back to the id for a
     // snapshot taken before `begin` has written one.
     let sessions = meta.sessions.clone().map(SessionsId::new).unwrap_or_else(|| SessionsId::new(run_id));
     let transcripts = walk_transcripts(shell, &sessions, dest);
@@ -1285,8 +1285,8 @@ mod tests {
         }
     }
 
-    /// **The snapshot's whole reason for existing** (WP-15): the run the
-    /// evaluator has to read is the *live* one, because rotation archives the
+    /// **The snapshot's whole reason for existing**: the run a reader has to
+    /// read is the *live* one, because rotation archives the
     /// previous run at bootstrap. The writer here is deliberately still open
     /// across the snapshot — that is the situation, and a version of this test
     /// that dropped the store first would pass while proving nothing.
@@ -1354,8 +1354,8 @@ mod tests {
     }
 
     /// A second `fleet handoff` is a real sequence (D-064 refuses to argue with
-    /// it), so the snapshot is rebuilt rather than merged — otherwise the
-    /// evaluator reads a directory that is two runs' worth of one run.
+    /// it), so the snapshot is rebuilt rather than merged — otherwise a reader
+    /// sees a directory that is two runs' worth of one run.
     #[test]
     fn a_second_snapshot_replaces_the_first_rather_than_merging_into_it() {
         let root = scratch("resnapshot");
@@ -1529,7 +1529,7 @@ mod tests {
     /// WP-14, D-062: the pane that makes the decisions is archived like every
     /// other one. `orch`'s config dir is a sibling of the workers' under the same
     /// `pane-config/` root, so rotation files it under `transcripts/orch/` with
-    /// no arm of its own — and an evaluator reading the run gets the reasoning
+    /// no arm of its own — and anyone reading the run gets the reasoning
     /// behind the messages, not only the messages.
     #[test]
     fn a_run_takes_orchs_transcript_with_it_the_same_way_it_takes_a_workers() {
@@ -1948,7 +1948,7 @@ mod tests {
         assert_eq!(found, ["at-the-root.sqlite", "one-below.sqlite"]);
     }
 
-    /// **What a Critic reading a mixed run cold is told** (M24, #39).
+    /// **What a reader of a mixed run cold is told** (M24, #39).
     ///
     /// Two things at once, because they are one failure: the manifest names each
     /// pane's harness, model and transcript format, and the sentence describing

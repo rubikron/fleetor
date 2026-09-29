@@ -561,7 +561,7 @@ fn checkpoint_13_transcripts_live_under_the_panes_config_dir_and_the_archive_cop
         let transcript = &pass.spec.transcript;
         // **`subdir` is no longer required to be non-empty, and that is a
         // reshape rather than a loosening** (#33). What this trio is for is a
-        // Critic reading a run cold: it has to be able to *find* a transcript and
+        // reader of a run cold: it has to be able to *find* a transcript and
         // to *name* what it is holding, and those are `file_ext` and `format`.
         // `subdir` is neither — it is a path fragment under the pane's own
         // configuration directory, and the empty string is a real answer meaning
@@ -576,7 +576,7 @@ fn checkpoint_13_transcripts_live_under_the_panes_config_dir_and_the_archive_cop
             assert!(
                 !value.trim().is_empty(),
                 "{}: checkpoint 13's {what} is empty, and a run whose transcripts cannot be \
-                 found or named is a run a Critic reads cold and cannot place",
+                 found or named is a run a reader cannot place cold",
                 pass.spec.name,
             );
         }

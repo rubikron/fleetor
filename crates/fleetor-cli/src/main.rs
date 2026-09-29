@@ -697,7 +697,6 @@ mod tests {
             "lead",
             "o",
             "operator",
-            "critic",
             "0",
             "3",
             "255",
@@ -756,15 +755,10 @@ mod tests {
     /// Note `self`: `fleet send self` is not a thing (only `fleet cmd` resolves
     /// it), so a reply may start with the word. A first token starting with `-`
     /// never reaches here at all — clap rejects it ahead of us, `-1` included.
-    ///
-    /// One name `PaneId` accepts is missing from both lists in this file, and
-    /// not because it is uncovered: WP-15's Tier 1.4 grep forbids the string in
-    /// every file on the delivery path, and this is one of them. It is exercised
-    /// in `tests/reply_recipient.rs`, which is not.
     #[test]
     fn the_refusal_is_exactly_as_wide_as_the_recipient_fleet_send_accepts() {
         for candidate in [
-            "orch", "lead", "o", "operator", "critic", "2", "w2", "worker2", "worker-2", "self",
+            "orch", "lead", "o", "operator", "2", "w2", "worker2", "worker-2", "self",
             "w", "worker", "worker-", "worker_3", "256", "3pm", "Agreed", "annex", "orch,",
             "worker-3 said the annex is out",
         ] {
@@ -791,7 +785,7 @@ mod tests {
     #[test]
     fn a_broadcast_that_names_a_recipient_is_refused_for_every_spelling_send_accepts() {
         for name in
-            ["orch", "orchestrator", "lead", "o", "operator", "critic", "0", "3", "255", "w3",
+            ["orch", "orchestrator", "lead", "o", "operator", "0", "3", "255", "w3",
              "worker3", "worker-3", "OrCh", "Worker-3", " orch "]
         {
             assert!(
@@ -842,7 +836,7 @@ mod tests {
     #[test]
     fn broadcast_and_reply_refuse_exactly_the_same_set_of_names() {
         for candidate in [
-            "orch", "lead", "o", "operator", "critic", "2", "w2", "worker2", "worker-2", "self",
+            "orch", "lead", "o", "operator", "2", "w2", "worker2", "worker-2", "self",
             "w", "worker", "worker-", "worker_3", "256", "3pm", "Agreed", "annex", "orch,",
             "worker-3 is blocked on the schema",
         ] {

@@ -80,7 +80,7 @@ use fleetor_shell::placement::harness::{claude_code, HarnessSpec};
 /// is not the list of files that mention Claude Code: `prompts.rs` carries the
 /// fleet's default worker endpoint (a provider choice, C9) and `fleet.rs` carries
 /// the `.env` walk that fills it, and neither is a harness answer.
-const MIGRATED: [&str; 12] = [
+const MIGRATED: [&str; 11] = [
     "src-tauri/src/placement/spawn.rs",
     "src-tauri/src/placement/mod.rs",
     "src-tauri/src/guardrail.rs",
@@ -90,7 +90,6 @@ const MIGRATED: [&str; 12] = [
     "src-tauri/src/orphans.rs",
     "src-tauri/src/runs.rs",
     "src-tauri/src/fleet.rs",
-    "src-tauri/src/evaluator.rs",
     "src-tauri/src/prompts.rs",
     "src-tauri/src/lib.rs",
 ];
@@ -238,10 +237,8 @@ fn no_migrated_call_site_spells_a_harness_answer() {
 /// **The needles are still the spec's own answers**, so this file cannot rot into
 /// a list of strings that match nothing.
 ///
-/// The sibling of `dev_mode.rs`'s
-/// `the_evaluators_needles_still_mean_the_evaluator_and_never_the_critic`, and the
-/// same worry: a grep whose needles have quietly stopped describing their subject
-/// passes forever. If a harness's answer changes, this fails naming the
+/// A grep whose needles have quietly stopped describing their subject passes
+/// forever. If a harness's answer changes, this fails naming the
 /// checkpoint, and the fix is to update the needle — never to drop the row.
 #[test]
 fn the_needles_are_still_the_specs_own_answers() {

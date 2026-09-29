@@ -35,7 +35,7 @@ use fleetor_core::wire::{Op, OpResult};
 use fleetor_core::Store;
 use fleetor_db::SqliteStore;
 use fleetor_ipc::UnixTransport;
-use fleetor_server::{AppCommand, BroadcastStore, Hub, Interview};
+use fleetor_server::{AppCommand, BroadcastStore, Hub};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use tokio::runtime::Runtime;
@@ -43,21 +43,13 @@ use tokio::sync::{mpsc, oneshot, Notify};
 
 use crate::context_gauge::GaugeSources;
 use crate::credential_source::{CredentialChoice, Gap, PlanOffer};
-use crate::placement::{self, harness, Host, Layout, PaneSpec, RunSource};
+use crate::placement::{self, harness, Host, Layout, PaneSpec};
 use crate::prompts::PaneContext;
 use crate::pty::PaneRegistry;
-use crate::{deliver, dev, evaluator, guardrail, prompts, runs, testbed};
+use crate::{deliver, guardrail, prompts, runs, testbed};
 
 /// Emitted for every appended event, in `seq` order, the moment it persists.
 const EVENT_FLEET: &str = "fleet://event";
-
-/// Emitted once per handoff that clears [`evaluator::readiness`] — the signal
-/// that replaced creating a second window (D-073).
-///
-/// It carries the Rust-side readiness decision and nothing else, which is why the
-/// webview cannot derive it from the `FleetEvent::Handoff` it already receives: a
-/// handoff with no mission, or with the mode off, must wake nothing at all.
-const EVENT_EVALUATOR_WAKE: &str = "evaluator://wake";
 
 /// One event as the webview sees it: the `seq` cursor plus the flattened
 /// [`FleetEvent`] (its `#[serde(tag = "type")]` discriminator carries through, so
@@ -135,10 +127,7 @@ pub struct SeatChoice {
 
 /// **What the operator picked, for every seat that may carry a choice** (C23).
 ///
-/// Five seats: the orchestrator and the four workers. **The two judges are absent
-/// and there is no field for them**, which is C15 made structural one layer up from
-/// [`PaneSpec`] — offering a judge a harness later is a type change here as well as
-/// there, rather than a value somebody sets.
+/// Five seats: the orchestrator and the four workers.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct FleetSeats {
     /// The operator's own seat.
@@ -216,14 +205,13 @@ impl FleetSeats {
 
     /// The spec one seat places as, resolved against the registry.
     ///
-    /// `None` for a pane that carries no choice — the two judges and the operator —
-    /// so the caller keeps the arms it already had rather than growing a branch
-    /// here.
+    /// `None` for the operator, who carries no choice, so the caller keeps the arm
+    /// it already had rather than growing a branch here.
     fn spec_for(&self, pane: PaneId) -> Option<PaneSpec> {
         let seat = match pane {
             PaneId::Orch => &self.orch,
             PaneId::Worker(slot) => self.workers.get(usize::from(slot).checked_sub(1)?)?,
-            PaneId::Evaluator | PaneId::Critic | PaneId::Operator => return None,
+            PaneId::Operator => return None,
         };
         let harness = harness::by_name(&seat.harness)?;
         let placed = match pane {
@@ -886,7 +874,7 @@ impl HarnessGate {
 ///
 /// They live here instead, managed for the app's lifetime, and [`Fleet`] holds **the
 /// same `Arc`** rather than a second copy of the values. That is the idiom
-/// [`Target`] and `Interview` already use in this file, for the identical reason:
+/// [`Target`] already uses in this file, for the identical reason:
 /// two copies of one fact means the copy that is wrong is the one somebody reads.
 #[derive(Default)]
 pub struct GateHold {
@@ -1189,17 +1177,6 @@ struct Fleet {
     /// identical function `Hub::serve_conn` calls after reading a `Hello`, with
     /// the socket the only thing missing.
     hub: Arc<Hub>,
-    /// Whether the operator has opened the Critic's interview (WP-21, D-079).
-    /// Closed on a fresh fleet, and a property of the *run* rather than of a
-    /// pane's session — a `/clear` or a respawn inside the Critic does not
-    /// close it, because nothing about a restarted terminal changes what the
-    /// operator decided to allow.
-    ///
-    /// **A handle on the hub's own cell, taken from [`Hub::interview`], not a
-    /// second copy of the value** — the mistake [`Target`] exists to have
-    /// fixed. The hub is what enforces the switch; these commands only move it,
-    /// and two `bool`s would let the UI report open while the hub still refused.
-    interview: Interview,
 }
 
 /// Managed Tauri state: at most one embedded fleet.
@@ -1209,19 +1186,8 @@ pub struct FleetState(Mutex<Option<Fleet>>);
 /// The repo the fleet works on — **one value, shared by everything that reads it**
 /// (WP-21, D14).
 ///
-/// Before this type there were two: the field on [`Fleet`], which
-/// [`apply_target`] rewrites, and a `PathBuf` the handoff watch was handed at
-/// bootstrap and kept forever. [`wake_evaluator`]'s doc comment claimed the two
-/// were "the same one", and they were not — a target set at the start gate moved
-/// the spawn path and left the watch on whatever bootstrap had resolved. The
-/// comment was right about what should be true; this makes it true, by giving the
-/// two readers one cell instead of two copies.
-///
-/// **No behaviour change, and there is a reason to expect none rather than a hope:**
-/// D-071 fixed the target the moment a pane exists, and a handoff cannot happen
-/// before `orch` exists to send one. So the value the watch used to snapshot and
-/// the value it now reads can only differ in a fleet that never reaches a handoff.
-/// The behaviour-change half of D14 was that freeze, and it is already in.
+/// [`apply_target`] rewrites it and [`spawn_pane`] reads it, through one cell
+/// rather than two copies.
 ///
 /// A `Mutex` rather than an `RwLock` because there is one writer, at most a
 /// handful of times, before any pane exists; a poisoned lock hands back the value
@@ -1495,11 +1461,6 @@ pub fn fleet_bootstrap(
     // one's — those went to `runs/` with the rest of that log (D-058).
     spawn_guardrail_feed(&rt, store.clone(), &dir);
 
-    // The wake (WP-15), a second subscriber on the bus D-020 built for exactly
-    // this: downstream of `append_event`, outside the hub, sending no
-    // `AppCommand` and holding nothing up. See `spawn_evaluator_wake`.
-    spawn_evaluator_wake(&rt, bcast.clone(), store.clone(), app, target.clone());
-
     let snap = snapshot(&store)?;
     *guard = Some(Fleet {
         rt,
@@ -1515,7 +1476,6 @@ pub fn fleet_bootstrap(
         gauges,
         app: app_tx,
         layout,
-        interview: hub.interview(),
         hub,
     });
     Ok(snap)
@@ -1546,24 +1506,17 @@ pub fn fleet_bootstrap(
 /// a line, not by forgetting a code path.
 /// The spec for a pane the gate offers no choice for.
 ///
-/// **Three of the four arms are the arms `spawn_pane` always had**, lifted out
-/// whole when the picked seats moved above them, and matched exhaustively rather
-/// than with a wildcard so a new pane kind still has to say what places it.
+/// **The operator arm is the one `spawn_pane` always had**, lifted out whole when
+/// the picked seats moved above it, and matched exhaustively rather than with a
+/// wildcard so a new pane kind still has to say what places it.
 ///
-/// The fourth is the one this ticket added: a seat the gate *does* carry a choice
+/// The other is the one this ticket added: a seat the gate *does* carry a choice
 /// for, whose choice would not resolve. `FleetSeats::spec_for` refuses rather than
 /// substituting — a fleet that quietly placed a different harness than the gate
 /// promised is the failure M15 exists to prevent — and `fleet_set_seats` is what
 /// stops such a value being stored. This arm is the belt to that pair of braces.
 fn spec_without_a_choice(pane: PaneId, seats: &FleetSeats) -> Result<PaneSpec, String> {
     match pane {
-        PaneId::Evaluator => Ok(PaneSpec::Evaluator),
-        // **The live run, because that is the only run this name can mean here**
-        // (D-076). `pty_spawn` carries a pane and nothing else, so a Critic opened
-        // from the rail is a Critic on the run in progress; pointing one at a
-        // History row is a different gesture with a different argument, and it does
-        // not exist yet (`placement::ARCHIVED_NOT_BUILT`).
-        PaneId::Critic => Ok(PaneSpec::Critic { run: RunSource::Live }),
         // Never spawnable, and refused here rather than left to fail somewhere
         // deeper: there is no command to run for a human, no cwd that is theirs, and
         // no config dir to seed. WP-07's "the operator is never spawnable or
@@ -1623,10 +1576,9 @@ pub(crate) fn spawn_pane(
     // **Which harness and which model each seat runs is the operator's answer, read
     // here** (WP-25 #35; M1, M15, C23). #33 carried the choice on `PaneSpec` with
     // one call site that said Claude Code twice; this is that call site asking the
-    // gate instead. `FleetSeats::spec_for` answers `None` for every pane that
-    // carries no choice — the two judges, whose specs have no field to hold one
-    // (C15), and the operator, who is refused below — so the arms after it are the
-    // arms they always were.
+    // gate instead. `FleetSeats::spec_for` answers `None` for the operator, who
+    // carries no choice and is refused below, so the arm after it is the arm it
+    // always was.
     //
     // **The whole of M15 is this line.** The gate renders its summary from the same
     // `seats` value, so a fleet the gate described and a fleet that spawns cannot be
@@ -1666,8 +1618,8 @@ pub(crate) fn spawn_pane(
     // *previous* run, whose panes and whose fleet are both gone, and a
     // configuration directory is named for its seat and says nothing about which
     // vendor was pointed at it (C33). The feed's copy is the spawn event, so an
-    // operator watching a mixed fleet come up is not poorer than a Critic reading
-    // the same run afterwards.
+    // operator watching a mixed fleet come up is not poorer than a reader of the
+    // same run afterwards.
     //
     // Both are the values placement *returned*, never re-derived from `spec`: a
     // fact the caller recomputes is a fact that can disagree with the one the pane
@@ -1717,127 +1669,6 @@ fn spawn_guardrail_feed(rt: &Runtime, store: Arc<dyn Store>, shell: &Path) {
             }
         }
     });
-}
-
-// --- the wake (WP-15) ----------------------------------------------------------
-
-/// Watch the run's own event stream for a handoff, and wake the evaluator on one.
-///
-/// ## Why this is not on the message path, and why that is structural
-///
-/// Tier 1.4 forbids anything between `fleet send` and a pty that can delay,
-/// refuse, reorder, drop or alter a message.
-/// `crates/fleetor-server/tests/handoff.rs` counts the `AppCommand`s a handoff
-/// causes and expects **zero**. This task sends none: `Hub::handoff` is still not
-/// `async`, still never touches `self.app`, and still answers `Recorded` from its
-/// own append alone. The wake reaches the registry the way `pty_spawn` does —
-/// through [`spawn_pane`] — which is not a road any message travels.
-///
-/// It rides D-020's bus, which is **persist-then-publish**: by the time an event
-/// is on the channel it is already durable, and `broadcast::Sender::send` never
-/// blocks its publisher. So the handoff op is answered whether or not this task
-/// ever runs, a crash between the two loses the wake and never the record, and
-/// a lagging follower recovers from the database rather than from the ring.
-/// Nothing waits on any of it.
-///
-/// ## What it does mean, said plainly
-///
-/// **WP-15 is the first thing that reads a handoff back**, and `Hub::handoff`'s
-/// own doc had to be corrected to say so (it claimed *nothing anywhere* did).
-/// What `task.rs`'s tripwire list actually bars is a read that goes on to
-/// **permit, order or refuse** something — a board that became a dispatcher.
-/// This permits nothing, orders nothing and refuses nothing: it changes what
-/// *exists* (a window, an address), which is the allowed shape WP-16 named and
-/// WP-19 is held to. A `fleet send` is byte-identical before and after, and the
-/// test that says so is untouched.
-///
-/// Idempotent for a second handoff: `PaneRegistry::spawn` is a no-op for a pane
-/// that is still running, so `orch` finding more work and handing back again
-/// does not get a second evaluator — it gets the one that is already there.
-fn spawn_evaluator_wake(
-    rt: &Runtime,
-    bcast: Arc<BroadcastStore>,
-    store: Arc<dyn Store>,
-    app: AppHandle,
-    target: Target,
-) {
-    rt.spawn(async move {
-        // A follower of its own rather than an arm inside `spawn_follower`, so a
-        // slow wake can never hold up the feed the operator is watching — and so
-        // the file that pushes events to the webview stays a file about that.
-        let mut follower = match bcast.follow(0) {
-            Ok(f) => f,
-            Err(e) => {
-                eprintln!("fleet: the handoff watch failed to start: {e}");
-                return;
-            }
-        };
-        while let Ok(Some((_, event))) = follower.next().await {
-            if !matches!(event, FleetEvent::Handoff { .. }) {
-                continue;
-            }
-            for (level, text) in wake_evaluator(&app, &target.get()) {
-                note(&store, level, &text);
-            }
-        }
-    });
-}
-
-/// One wake. Returns what the operator should be told — never nothing, unless
-/// the mode is simply off, because a wake that silently did nothing is
-/// indistinguishable from a wake that is broken.
-/// `target` is read out of the fleet's own [`Target`] cell — **literally the same
-/// value [`spawn_pane`] places the evaluator against** (D14), rather than a copy
-/// taken at bootstrap that a target set at the start gate would leave behind.
-/// Re-reading `config.json` here instead would let a mid-run target change send
-/// the two at different repos.
-fn wake_evaluator(app: &AppHandle, target: &Path) -> Vec<(NoticeLevel, String)> {
-    let mut notices = Vec::new();
-    match evaluator::readiness(dev::is_enabled(), target, &evaluator::MissionRoots::discover()) {
-        // A build with no grader in it, and the ordinary non-dev case. Both are
-        // silent: the first is what every release build is, and the second is
-        // what the operator asked for by leaving the mode off.
-        evaluator::Readiness::NotBuilt | evaluator::Readiness::ModeOff => return notices,
-        evaluator::Readiness::NoMission { target, workspaces } => {
-            notices.push((
-                NoticeLevel::Warn,
-                format!(
-                    "dev mode is on, but {} is not a prepared mission workspace under {} — \
-                     so this handoff has no ground truth to be judged against and nothing \
-                     was started. Point the fleet at a prepared workspace first.",
-                    target.display(),
-                    workspaces.display(),
-                ),
-            ));
-            return notices;
-        }
-        evaluator::Readiness::Ready(mission) => {
-            // The answer key lands **before** the pane exists: the brief has the
-            // evaluator seal a verdict against it before it speaks to `orch`, so
-            // a key that arrived mid-conversation would be read after its
-            // position had already formed from the fleet's own account.
-            match evaluator::reveal_answer_key(&mission) {
-                Ok(Some(text)) => notices.push((NoticeLevel::Info, text)),
-                Ok(None) => {}
-                Err(why) => notices.push((NoticeLevel::Warn, why)),
-            }
-        }
-    }
-    // **The wake is an event, not a window** (D-073). Creating a second OS window
-    // was never what made the evaluator exist — the pane is spawned by the React
-    // root's own `pty_spawn`, exactly like every other terminal, and the window
-    // was only how that root got mounted. So the wake says *the evaluator is
-    // awake* and the one webview turns its always-mounted view on. Idempotent for
-    // a second handoff for the same reason `PaneRegistry::spawn` is: the view is
-    // already showing a pane that is already running.
-    match app.emit(EVENT_EVALUATOR_WAKE, ()) {
-        Ok(()) => notices.push((
-            NoticeLevel::Info,
-            "the mission was handed back — the review view is live".to_string(),
-        )),
-        Err(why) => notices.push((NoticeLevel::Warn, format!("the review view: {why}"))),
-    }
-    notices
 }
 
 /// Decide where the fleet works, announcing the choice on the feed so it is never
@@ -2292,9 +2123,8 @@ pub fn fleet_gate(
 
 /// Record what the operator picked, and answer with **the whole gate** read back.
 ///
-/// **The return is the stored value read back rather than the argument echoed**,
-/// which is `critic_interview_open`'s property and is here for a sharper reason: the
-/// gate's summary renders from what this returns, and a summary rendered from what
+/// **The return is the stored value read back rather than the argument echoed**:
+/// the gate's summary renders from what this returns, and a summary rendered from what
 /// the interface *asked for* rather than from what took effect is precisely the
 /// fleet-that-is-not-what-spawns M15 refuses.
 ///
@@ -2398,54 +2228,6 @@ fn plan_offer() -> PlanOffer {
         host.operator_logins.iter().map(|(name, _)| (*name).to_string()).collect(),
         load_api_key().is_ok(),
     )
-}
-
-// --- the Critic's interview (WP-21, D-079) ------------------------------------
-//
-// Two commands over one `bool`, and the asymmetry between them is the point: the
-// setter writes a `Notice` and the reader writes nothing. Opening and closing
-// each change *what is possible* in the run — one of them makes a pane that was
-// unable to reach the fleet able to interrupt it — and the log records outcomes
-// (Tier 1.6). Reading the switch is not an outcome.
-//
-// Neither command is on the message path and neither can be: they move a cell
-// the hub reads *before* it resolves anything. See `Hub::handle`'s doc comment
-// for why that is the only legal shape here, and `decisions.md` D-079 for the
-// argument in full.
-
-/// Open or close the Critic's interview, and answer with what is now stored.
-///
-/// The return is deliberately the **stored** state read back rather than the
-/// argument echoed: the operator's control renders from this, and a control that
-/// reported what it asked for rather than what took effect is the class of lie
-/// this codebase spends most of its doc comments avoiding.
-///
-/// Both edges write a `Notice` naming which it was, so an operator reading the
-/// Activity feed later can see the decision beside the turns it spent.
-#[tauri::command]
-pub fn critic_interview_open(open: bool, state: State<'_, FleetState>) -> Result<bool, String> {
-    let guard = state.0.lock().map_err(|e| e.to_string())?;
-    let fleet = guard.as_ref().ok_or("no fleet is running")?;
-    let stored = fleet.interview.set(open);
-    note(
-        &fleet.store,
-        NoticeLevel::Info,
-        if stored {
-            "the Critic's interview is open — it can now message the fleet, and doing so \
-             spends the fleet's turns"
-        } else {
-            "the Critic's interview is closed — it can read the run and reach no pane"
-        },
-    );
-    Ok(stored)
-}
-
-/// Whether the interview is open. Read-only, and writes nothing to the log.
-#[tauri::command]
-pub fn critic_interview_is_open(state: State<'_, FleetState>) -> Result<bool, String> {
-    let guard = state.0.lock().map_err(|e| e.to_string())?;
-    let fleet = guard.as_ref().ok_or("no fleet is running")?;
-    Ok(fleet.interview.is_open())
 }
 
 // --- past runs (WP-11) --------------------------------------------------------
@@ -2641,8 +2423,8 @@ fn archive_after_teardown(shell: &Path, runs_dir: &Path, gate: &GateHold, teardo
 /// Stop the hub and drop the fleet. Best-effort, called on quit after the panes.
 ///
 /// **Dropping it is what closes the live log** (D-086). Every task holding the
-/// store — the follower, the hub, delivery, the guardrail feed, the evaluator wake
-/// — runs on the fleet's own runtime, so taking the fleet out of state ends them
+/// store — the follower, the hub, delivery, the guardrail feed — runs on the
+/// fleet's own runtime, so taking the fleet out of state ends them
 /// and releases the last connection to `state.db`. `run_reopen`'s teardown already
 /// did exactly this before its rotation; quit used to leave the fleet in place.
 ///

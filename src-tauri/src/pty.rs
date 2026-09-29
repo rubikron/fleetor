@@ -644,14 +644,12 @@ impl PaneRegistry {
 
     /// Whether this session has brought any pane up at all.
     ///
-    /// **Existence, not membership and not liveness.** [`Self::roster`] filters
-    /// to fleet members, and `writable` asks whether a pane accepts input; both
-    /// are the wrong question here. A pane that has exited still had its
+    /// **Existence, not liveness.** `writable` asks whether a pane accepts input,
+    /// which is the wrong question here. A pane that has exited still had its
     /// `CLAUDE_CONFIG_DIR`, its worktree and its brief seeded against whatever
     /// the target was when it spawned, and [`Self::spawn`] respawns it in place
     /// — so an exited pane is every bit as committed to the old target as a live
-    /// one, and the evaluator being no member of the fleet does not make it
-    /// indifferent to which repository it is reading. The map is emptied only by
+    /// one. The map is emptied only by
     /// [`Self::kill`] and [`Self::kill_all`], which is exactly the point at
     /// which nothing is holding the old target any more.
     ///
@@ -686,25 +684,13 @@ impl PaneRegistry {
     /// Every **fleet** pane the shell is running, orch first. The hub's single
     /// source of truth for fleet membership — a pane that was never spawned must
     /// not appear here, or `fleet broadcast` fans out to somewhere that cannot
-    /// receive.
-    ///
-    /// **Membership, not liveness, and the two are different questions.** A
-    /// terminal this registry is running is not automatically a member of the
-    /// fleet: `PaneId::is_fleet_member` is what decides, and it is filtered here
-    /// because this one answer feeds both places the fleet gets enumerated — the
+    /// receive. This one answer feeds both places the fleet gets enumerated — the
     /// `fleet roster` listing and a `fleet broadcast`'s target list (`Hub::roster`
-    /// and `Hub::broadcast`, both through `app_roster`). Filtering once, at the
-    /// source, is what stops those two from ever disagreeing.
-    ///
-    /// Nothing about *delivery* consults this. `writable` looks a name up in the
-    /// map directly, so a non-member with a live terminal is still addressable
-    /// by name in both directions — which is the whole shape: not enumerated,
-    /// and not unreachable.
+    /// and `Hub::broadcast`, both through `app_roster`).
     pub fn roster(&self) -> Vec<PaneEntry> {
         let Ok(panes) = self.panes.lock() else { return Vec::new() };
         let mut entries: Vec<PaneEntry> = panes
             .iter()
-            .filter(|(pane, _)| pane.is_fleet_member())
             .map(|(pane, p)| PaneEntry::new(*pane, decode_state(p.state.load(Ordering::Relaxed))))
             .collect();
         entries.sort_by_key(|e| e.pane);
@@ -790,8 +776,6 @@ fn channel_key(pane: PaneId) -> String {
     match pane {
         PaneId::Orch => "orch".to_string(),
         PaneId::Worker(n) => n.to_string(),
-        PaneId::Evaluator => "evaluator".to_string(),
-        PaneId::Critic => "critic".to_string(),
         // No pty, so no channel — this name is refused before a spawn is
         // attempted (`fleet::spawn_pane`) and nothing ever listens here.
         PaneId::Operator => "operator".to_string(),
@@ -1134,60 +1118,13 @@ mod tests {
         assert_eq!(exit_channel(PaneId::Orch), "pty://exit/orch");
         assert_eq!(exit_channel(PaneId::Worker(4)), "pty://exit/4");
 
-        // **Every name, not just the roster** (WP-15). The roster is the fleet,
-        // and a terminal that is not in the fleet still has a pty and still
-        // needs a channel nobody else is listening on. The old version of
-        // `channel_key` gave `orch`'s name to every slotless identity, so this
-        // list is what would have caught it.
         let all: Vec<String> = PaneId::roster(&fleetor_core::pane::WORKER_SLOTS)
             .into_iter()
-            .chain([PaneId::Evaluator, PaneId::Critic, PaneId::Operator])
+            .chain([PaneId::Operator])
             .flat_map(|p| [out_channel(p), exit_channel(p)])
             .collect();
         let unique: std::collections::HashSet<&String> = all.iter().collect();
         assert_eq!(all.len(), unique.len(), "two panes share a channel: {all:?}");
-        assert_eq!(out_channel(PaneId::Evaluator), "pty://output/evaluator");
-        assert_eq!(out_channel(PaneId::Critic), "pty://output/critic");
-    }
-
-    /// **The veil at the registry** (WP-15). A terminal this registry runs is
-    /// not automatically a member of the fleet, and this one answer feeds both
-    /// places the fleet gets enumerated — `fleet roster`'s listing and a
-    /// `fleet broadcast`'s target list, which both go through
-    /// `AppCommand::Roster`. Filtering once here is what stops them disagreeing.
-    ///
-    /// Driven through a real spawn rather than asserted on the predicate, so it
-    /// fails if the filter is ever dropped from `roster()` itself.
-    /// **The Critic joined this test rather than getting one of its own**
-    /// (WP-20, D-076), because the claim is identical and the filter is one
-    /// line: a running terminal is on the roster only if it is a fleet member.
-    /// `fleet roster` and `fleet broadcast` both read this, so a Critic that
-    /// appeared here would be a Critic every broadcast wrote into.
-    #[test]
-    fn a_running_evaluator_is_not_on_the_fleets_roster() {
-        let dir = std::env::temp_dir().join(format!("fleetor-roster-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let registry = PaneRegistry::new(Arc::new(|_: &str, _: String| {}), dir.join("panes.pids"));
-
-        for pane in [PaneId::Orch, PaneId::Worker(1), PaneId::Evaluator, PaneId::Critic] {
-            let mut cmd = CommandBuilder::new("/bin/cat");
-            cmd.env("TERM", "dumb");
-            registry.spawn(pane, cmd, crate::placement::harness::claude_code().spec(), 24, 80)
-                .expect("spawn");
-        }
-
-        let roster: Vec<PaneId> = registry.roster().into_iter().map(|e| e.pane).collect();
-        assert_eq!(
-            roster,
-            vec![PaneId::Orch, PaneId::Worker(1)],
-            "neither the evaluator nor the Critic is the fleet",
-        );
-        // …and both are still addressable, which is the whole shape: a name that
-        // is in no enumeration and is not unreachable.
-        for outsider in [PaneId::Evaluator, PaneId::Critic] {
-            assert!(registry.writable(outsider).is_ok(), "still a live pty to write to");
-        }
-        registry.kill_all();
     }
 
     /// **Checkpoint 10's translation, against a table that is not Claude Code's**
