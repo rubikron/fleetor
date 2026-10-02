@@ -11,8 +11,8 @@
 //! **Why a Rust test for a TypeScript property.** The frontend has no test
 //! runner, and this arc deliberately does not add one — introducing one as a
 //! side effect of moving a terminal into a tab is how a small package becomes
-//! the polluted one. So this is a source-reading tripwire, the move
-//! `tests/dev_mode.rs` already makes and for the same stated reason: what is worth pinning is that a future session cannot add a
+//! the polluted one. So this is a source-reading tripwire: what is worth
+//! pinning is that a future session cannot add a
 //! view to one list and forget the other without a test noticing.
 //!
 //! It reads the *lists*, not the behaviour. It cannot tell you that restoring a

@@ -6,9 +6,8 @@
 //! 1. **Tier 1.4** — nothing between `fleet send` and a pty may delay, refuse,
 //!    reorder, drop or alter a message. A hook that could refuse a *delivery* is
 //!    the thing `building.md` §9.3 records as argued and lost twice. This one
-//!    governs a pane's own tool calls and nothing else, and that is checked the
-//!    way `tests/dev_mode.rs` checks the same invariant for dev mode: by reading
-//!    the source, so a future session cannot add the branch without the test
+//!    governs a pane's own tool calls and nothing else, and that is checked by
+//!    reading the source, so a future session cannot add the branch without the test
 //!    noticing.
 //! 2. **The decision itself**, driven through the *installed* artifact — the
 //!    `settings.json` command a real [`placement::place`] wrote, executed by a real
@@ -49,7 +48,7 @@ mod common;
 /// Every spelling of *this* guardrail a search would plausibly find, lowercased:
 /// the module path, the file, the hook event, and the name in prose.
 ///
-/// Note what is deliberately **not** here, for `tests/dev_mode.rs`'s reason.
+/// Note what is deliberately **not** here.
 /// Bare `guardrail` is a word the message path already uses about itself
 /// (`deliver.rs`'s once-per-session Notice calls itself "the invariant guardrail
 /// with teeth"), and `allowlist` is the `fleet cmd` allowlist D-045 checks at
@@ -67,8 +66,7 @@ fn repo_root() -> PathBuf {
 /// The list is every file a message actually passes through: the hub that routes
 /// it, the bus and store it is recorded in, the wire and message contracts it is
 /// spelled in, the delivery loop that types it, the registry that owns the pty,
-/// and the CLI that sends it. It is the same list `tests/dev_mode.rs` pins, for
-/// the same reason.
+/// and the CLI that sends it.
 #[test]
 fn the_delivery_path_cannot_read_the_write_guardrail() {
     let root = repo_root();

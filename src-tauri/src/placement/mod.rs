@@ -38,13 +38,6 @@
 //! exactly the kind `building.md` §6 names, since the obvious next move on
 //! finding one is to point it at something live.
 //!
-//! ## The one read that is not from the process, and is not an argument either
-//!
-//! [`Layout::dev_enabled`] opens a file. That is not a hole in the rule above, it
-//! is the rule applied: the file is `config.json` **inside the layout placement
-//! was handed**, so a test pointing the layout at a scratch directory points the
-//! mode at a scratch directory too.
-//!
 //! ## The one thing this module decides and does not do
 //!
 //! [`machine_notices`] says what a machine is missing — a `fleet` binary, a rustup
@@ -62,7 +55,7 @@ use portable_pty::CommandBuilder;
 
 use crate::context_gauge::{self, TranscriptSource};
 use crate::prompts::PaneContext;
-use crate::{dev, guardrail};
+use crate::guardrail;
 
 /// How a pane's `claude` process is shaped — **an internal of this module** since
 /// D-075.
@@ -166,23 +159,11 @@ impl Layout {
         self.root.join("testbed")
     }
 
-    /// Where the operator names the repo the fleet should work on — and, since
-    /// WP-16, whether the app is in dev mode. One file, so there is one place an
-    /// operator looks and one place `rm -rf ~/.fleetor` removes (Tier 1.1).
+    /// Where the operator names the repo the fleet should work on. One file, so
+    /// there is one place an operator looks and one place `rm -rf ~/.fleetor`
+    /// removes (Tier 1.1).
     pub fn config_file(&self) -> PathBuf {
         self.root.join("config.json")
-    }
-
-    /// Whether *this* installation is in dev mode (D11, D-061).
-    ///
-    /// The stored flag, read through the layout rather than through the
-    /// process-global reader, so a test can point it at a scratch `config.json`.
-    ///
-    /// A missing, unreadable or malformed config reads as off, exactly as
-    /// [`crate::dev::is_enabled`] does — this is that function with the file named
-    /// instead of derived.
-    pub fn dev_enabled(&self) -> bool {
-        dev::read_at(&self.config_file())
     }
 
     /// The fleet unix socket the `fleet` CLI dials.

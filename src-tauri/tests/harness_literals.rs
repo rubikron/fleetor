@@ -4,9 +4,7 @@
 //! down once as [`CLAUDE_CODE_SPEC`]; five migrate batches pointed the call sites
 //! at it; this file is what stops a later session pointing one back.
 //!
-//! It reads source text rather than running anything, the same move
-//! `tests/dev_mode.rs` makes for Tier 1.4 and the veil, and for the identical
-//! reason: the property worth pinning is *which files spell a thing*, and a test
+//! It reads source text rather than running anything: the property worth pinning is *which files spell a thing*, and a test
 //! that runs the code can only observe that the right string arrived, never where
 //! it came from. A call site that re-hardcodes `CLAUDE_CONFIG_DIR` produces byte
 //! for byte the same command as one that reads `config_dir.env_var` — the whole

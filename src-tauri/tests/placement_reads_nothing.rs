@@ -19,8 +19,7 @@
 //!
 //! ## Why it reads source rather than running anything
 //!
-//! The same move `tests/harness_literals.rs` and `tests/dev_mode.rs` make, and for
-//! the same reason: the property worth pinning is *which code may spell a thing*,
+//! The same move `tests/harness_literals.rs` makes, and for the same reason: the property worth pinning is *which code may spell a thing*,
 //! and a test that runs the code can only observe that the right value arrived,
 //! never where it came from. A `place_worker` that read `$HOME` itself would
 //! produce a byte-identical command on the machine it was written on — the whole
@@ -312,8 +311,7 @@ fn the_vendor_diagnostic_runs_at_the_gate_and_never_on_the_spawn_path() {
 /// list of strings that match nothing.
 ///
 /// The sibling of `harness_literals.rs`'s
-/// `the_needles_are_still_the_specs_own_answers` and `dev_mode.rs`'s equivalent,
-/// with the same worry: a grep whose needles have quietly stopped describing their
+/// `the_needles_are_still_the_specs_own_answers`, with the same worry: a grep whose needles have quietly stopped describing their
 /// subject passes forever. Each needle must be found *somewhere* in the crate,
 /// which is a weaker claim than "in the excused constructors" and a true one — some
 /// spellings live in `fleet.rs` and in the test halves this file does not read.

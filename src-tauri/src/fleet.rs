@@ -1243,8 +1243,8 @@ fn archive_previous_run_under(shell: &Path, runs_dir: &Path, gate: &GateHold) {
 /// `Layout::for_operator()` wearing a different name, kept while the improvised
 /// bring-up sequence still called them. The sequence is gone, so they are: a
 /// running fleet reads [`Fleet::layout`], and the handful of commands that run
-/// before bootstrap (the start gate's configuration, the History list, the dev-mode
-/// flag, the orphan sweep) call this and then one accessor, which is one spelling
+/// before bootstrap (the start gate's configuration, the History list, the orphan
+/// sweep) call this and then one accessor, which is one spelling
 /// of where a thing lives rather than six.
 pub(crate) fn layout() -> Layout {
     Layout::for_operator()
@@ -2355,8 +2355,8 @@ fn write_target(target: &Path) -> Result<(), String> {
 
 /// Set one key in `~/.fleetor/config.json`, leaving every other key alone.
 ///
-/// The one writer of that file, so a second setting (WP-16's `dev_mode`) cannot
-/// grow a second spelling of "merge, don't clobber" that drops the first one.
+/// The one writer of that file, so a second setting cannot grow a second spelling
+/// of "merge, don't clobber" that drops the first one.
 pub(crate) fn write_config_key(key: &str, value: serde_json::Value) -> Result<(), String> {
     write_config_key_at(&layout().config_file(), key, value)
 }
@@ -2555,8 +2555,7 @@ mod tests {
     use std::time::Duration;
 
     /// The target-shaped view of [`merge_config_key`], so these tests read as
-    /// what they are about. `write_target` calls the generic writer directly —
-    /// there is one merge, and WP-16's `dev_mode` goes through the same one.
+    /// what they are about. `write_target` calls the generic writer directly.
     fn merge_target(existing: Option<&str>, target: &Path) -> Result<String, String> {
         merge_config_key(existing, "target", target.to_string_lossy().into_owned().into())
     }
@@ -2818,6 +2817,20 @@ mod tests {
         assert_eq!(parse_target("{}").unwrap(), None);
         assert_eq!(parse_target(r#"{"target": ""}"#).unwrap(), None);
         assert_eq!(parse_target(r#"{"target": "   "}"#).unwrap(), None);
+    }
+
+    /// A key this build does not read — a `dev_mode` left by an older one (D-094)
+    /// — is ignored, and a target write leaves it in place.
+    #[test]
+    fn a_stale_key_in_the_config_is_ignored() {
+        let stale = r#"{"dev_mode": true, "target": "/Users/me/code/thing"}"#;
+        assert_eq!(parse_target(stale).unwrap(), Some(PathBuf::from("/Users/me/code/thing")));
+        assert_eq!(parse_target(r#"{"dev_mode": true}"#).unwrap(), None);
+
+        let merged = merge_target(Some(stale), Path::new("/picked")).unwrap();
+        assert_eq!(parse_target(&merged).unwrap(), Some(PathBuf::from("/picked")));
+        let config: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        assert_eq!(config["dev_mode"], serde_json::json!(true));
     }
 
     /// A broken config must be loud. Reading it as "nothing configured" would put

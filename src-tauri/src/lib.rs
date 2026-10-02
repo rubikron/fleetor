@@ -13,9 +13,6 @@
 pub mod context_gauge;
 pub mod credential_source;
 pub mod deliver;
-/// Dev mode (WP-16) — read by the UI and by later packages, never by the
-/// delivery path (Tier 1.4; `tests/dev_mode.rs` is the tripwire).
-pub mod dev;
 pub mod fleet;
 /// The write guardrail (WP-17) — a `PreToolUse` hook per pane, never anything
 /// the delivery path can read (Tier 1.4; `tests/write_guardrail.rs` is the
@@ -118,8 +115,6 @@ pub fn run() {
             fleet::run_delete,
             fleet::run_export,
             fleet::run_reopen,
-            dev::dev_mode_get,
-            dev::dev_mode_set,
         ])
         .on_window_event(|window, event| {
             let WindowEvent::CloseRequested { .. } = event else { return };
