@@ -40,7 +40,7 @@ Each is stamped with the Claude Code version it measured; re-measure on a CC upd
 | [`run-rotation-notes.md`](./notes/run-rotation-notes.md) | Which files an archived run has to take, measured against a crashed WAL (D-058) | 2026-08-07, SQLite/macOS 15 |
 | [`orch-config-dir-notes.md`](./notes/orch-config-dir-notes.md) | Why a fleet-owned `CLAUDE_CONFIG_DIR` silently logs `orch` out, and the variable that keeps its login (D-062) | CC 2.1.224 |
 | [`write-guardrail-notes.md`](./notes/write-guardrail-notes.md) | That a `PreToolUse` deny really stops `Bash`, and where a real build and a real commit actually write (D-065) | CC 2.1.224 |
-| [`live-run-snapshot-notes.md`](./notes/live-run-snapshot-notes.md) | That a run still being written reads whole through a read-only connection, and that copying `state.db` alone loses it (D-066) — feature removed (D-092) | 2026-08-07, sqlite3 3.43.2 |
+| [`live-run-snapshot-notes.md`](./notes/live-run-snapshot-notes.md) | That a run still being written reads whole through a read-only connection, and that copying `state.db` alone loses it (D-066) — feature removed (D-092, D-094) | 2026-08-07, sqlite3 3.43.2 |
 | [`critic-spike-notes.md`](./notes/critic-spike-notes.md) | Whether a judge with no answer key finds anything worth reading, and the prompt that became the Critic's brief (WP-20 D15) — feature removed (D-092) | 2026-09-02, archives CC 2.1.224 |
 | [`codex-spike-notes.md`](./notes/codex-spike-notes.md) | What codex honours as a brief, what its sandbox refuses, and the one key that reaches the hub (C3, C5, C7, C22) — **re-runnable**: `examples/codex-spike/probe.py` | `codex-cli 0.153.4` |
 | [`codex-clear-notes.md`](./notes/codex-clear-notes.md) | Whether the brief carried as `model_instructions_file` survives a `/clear` — yes, on both carriers; and what C22's "startup wait" actually was (C37) — **re-runnable**: `examples/codex-spike/probe_clear.py` | `codex-cli 0.153.4` |
@@ -56,11 +56,6 @@ Each is stamped with the Claude Code version it measured; re-measure on a CC upd
 package: it carries the self-improvement design (both flow diagrams, the hiding model, the
 four invariant arguments) and files WP-13..19, each written from `TEMPLATE.md` when picked
 up. The rewind harness it names lives in a separate repo by design.
-
-[`16-dev-mode.md`](./roadmap/16-dev-mode.md) is the first of those to land (D-061). It is
-also the as-built record for dev mode: where the flag lives, the one function that reads
-it, and the two tests that keep the mode out of the delivery path (Tier 1.4) and out of
-every word a pane is told (WP-12's open question 4).
 
 [`17-write-guardrail.md`](./roadmap/17-write-guardrail.md) landed the write guardrail
 (D-065) and is also its as-built record: the per-pane roots, the `PreToolUse` hook that
@@ -89,6 +84,7 @@ Kept as the record behind decisions still in force, or as handoffs that were act
 | `OVERNIGHT-QUESTIONS.md` | Q-1..Q-4 — unattended judgment calls, all closed by measurement |
 | `prompt-budget-menu.md` | Six costed prompt-cut candidates; overtaken by D-054/D-056 |
 | `15-evaluator-window.md` | WP-15, the evaluator — removed by D-092 |
+| `16-dev-mode.md` | WP-16, dev mode — removed by D-094 |
 | `21-the-critic-interviews.md` | WP-21, the Critic's interview gate — removed by D-092 |
 
 ## Adding or updating a doc

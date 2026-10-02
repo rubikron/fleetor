@@ -68,7 +68,7 @@ Note: D-005 is referenced elsewhere in this file (e.g. D-009, D-011) but has no 
 | [D-058](D-058.md) | WP-11 | alive | WP-11: a run is a database, rotated at start, and history is a directory of frozen files |
 | [D-059](D-059.md) | meta | alive | the archive is written for an agent to read, and it takes the workers' transcripts with it |
 | [D-060](D-060.md) | WP-12 | alive | the self-improving loop: an answer key the orchestrator cannot see, and a grader it cannot change |
-| [D-061](D-061.md) | WP-16 | alive | WP-16: dev mode is a key in the operator's config, not a webview preference |
+| [D-061](D-061.md) | WP-16 | reversed | WP-16: dev mode is a key in the operator's config, not a webview preference |
 | [D-062](D-062.md) | WP-14 | alive | WP-14: `orch` gets a config dir of its own, and D-059's named gap closes |
 | [D-063](D-063.md) | WP-12 | reversed | the answer key is absent, not unobtainable, and a frozen grader is not enough |
 | [D-064](D-064.md) | WP-13 | alive | WP-13: the done verb is spelled `handoff`, it answers `recorded`, and the orch cap moves to 3,800 |
@@ -100,3 +100,4 @@ Note: D-005 is referenced elsewhere in this file (e.g. D-009, D-011) but has no 
 | [D-090](D-090.md) | WP-30 | alive | harness.rs becomes interface-only, and machine-probing joins the trait |
 | [D-091](D-091.md) | meta | alive | the orchestrator seat spawns `--permission-mode auto` |
 | [D-092](D-092.md) | meta | alive | the Critic and the Evaluator are removed from the product |
+| [D-094](D-094.md) | meta | alive | dev mode and the live-run snapshot helpers are removed |

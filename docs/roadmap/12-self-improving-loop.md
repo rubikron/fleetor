@@ -4,7 +4,7 @@ status: design size: XL — an arc, not a package
 depends-on: 11 blocks: 13, 14, 15, 16, 17, 18, 19
 brief-cost: 0 for this doc — the packages it files carry their own
 
-> **D-092 removed the evaluator** (WP-15) and everything below that depends on it; dev mode (WP-16), `fleet handoff` (WP-13), `orch`'s transcript (WP-14) and the write guardrail (WP-17) stand.
+> **D-092 removed the evaluator** (WP-15) and everything below that depends on it, and **D-094 removed dev mode** (WP-16); `fleet handoff` (WP-13), `orch`'s transcript (WP-14) and the write guardrail (WP-17) stand.
 
 **This is an arc doc, not an executable package.** Like `00-index.md` is the hub for the
 Blackboard arc, this is the hub for the self-improvement arc: the design, the diagrams,

@@ -26,11 +26,11 @@ The Blackboard vision, split into nine session-sized work packages. The vision i
 | 09 | `09-brief-budget-shakedown.md` | Prompt budget + live shakedown | all | S/M + live spend | **budget half landed** — shakedown half pending operator |
 | 10 | `10-ui-architecture-map.md` | The `ui/` architecture map (docs only) | — | S/M | not-started |
 | 11 | `11-run-history.md` | Run history — past runs as long-term memory | — | L | **landed** |
-| 12 | `12-self-improving-loop.md` | The self-improving loop — **arc doc**, not a package | 11 | XL | **design** — its evaluator parts were removed by D-092 |
+| 12 | `12-self-improving-loop.md` | The self-improving loop — **arc doc**, not a package | 11 | XL | **design** — its evaluator parts were removed by D-092, dev mode by D-094 |
 | 13 | `13-done-verb.md` | The done verb — `fleet handoff` | — | M | **landed** |
 | 14 | `14-orch-transcript.md` | `orch`'s own transcript + config dir | — | M | **landed** |
 | 15 | [`../archive/15-evaluator-window.md`](../archive/15-evaluator-window.md) | The evaluator window | 13, 16 | L | **removed** (D-092) |
-| 16 | `16-dev-mode.md` | Dev mode | — | S/M | **landed** |
+| 16 | [`../archive/16-dev-mode.md`](../archive/16-dev-mode.md) | Dev mode | — | S/M | **removed** (D-094) |
 | 17 | `17-write-guardrail.md` | The write guardrail | 14, 16 | M | **landed** |
 | 18 | (from TEMPLATE) | More than one fleet at once | — | L | not-started |
 | 19 | (from TEMPLATE) | Orch-to-orch, and its cutoff | 18 | M | not-started |
@@ -69,8 +69,7 @@ WP-01 ─┬─→ WP-02 ─→ WP-05 ─→ WP-06 ─┐
 
 WP-10 (docs only, no dependencies — runnable any time)
 WP-11 ─→ WP-12 (arc) ─┬─→ WP-13
-                      ├─→ WP-14 ─┐
-                      ├─→ WP-16 ─┴─→ WP-17 (blocks any improve run)
+                      ├─→ WP-14 ─→ WP-17 (blocks any improve run)
                       └─→ WP-18 ─→ WP-19
 
 WP-20 (placement) ─→ WP-25 (the Harness seam lands in placement) ─┬─→ WP-30 (interface-only harness.rs) ─→ WP-24 (cursor)
