@@ -26,13 +26,13 @@ const SAMPLED: GaugeReading = {
 };
 
 /// Rendered exactly as the two call sites render it: a pane head passes its own
-/// `mono pane__meta` classes, the tab strip passes none.
+/// `mono pane__meta` classes, a mission control card passes none.
 const pane = (reading: GaugeReading | undefined) =>
   renderToStaticMarkup(
     <PaneGauge reading={reading} block="pane__gauge" className="mono pane__meta" />,
   );
-const tab = (reading: GaugeReading | undefined) =>
-  renderToStaticMarkup(<PaneGauge reading={reading} block="tab__gauge" />);
+const card = (reading: GaugeReading | undefined) =>
+  renderToStaticMarkup(<PaneGauge reading={reading} block="mc-card__gauge" />);
 
 process.stdout.write(
   JSON.stringify(
@@ -43,8 +43,8 @@ process.stdout.write(
       pane_out_of_scope: pane({ kind: "out-of-scope" }),
       // A call site that has been told nothing at all. Must not be silence.
       pane_undefined: pane(undefined),
-      tab_unavailable: tab({ kind: "unavailable" }),
-      tab_sampled: tab(SAMPLED),
+      card_unavailable: card({ kind: "unavailable" }),
+      card_sampled: card(SAMPLED),
     },
     null,
     2,

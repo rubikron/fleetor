@@ -78,7 +78,7 @@ const modelKey = (harness: string, credential: CredentialChoice): string =>
 
 /// A stored value read back, with anything that is not the shape above dropped.
 ///
-/// The same validated-read pattern `usePersistedNav` uses and for the same reason: a
+/// The same validated-read pattern `useSidebarCollapse` uses and for the same reason: a
 /// corrupt, missing, or stale value must fall back to the current default and never
 /// throw or wedge the app.
 function readRemembered(): Remembered {

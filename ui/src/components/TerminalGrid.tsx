@@ -1,8 +1,5 @@
 import { TerminalPane } from "./TerminalPane";
 import { MissionControl } from "./MissionControl";
-import { statusTone, STATUS_LABEL } from "../lib/statusTone";
-import { PaneGauge } from "./PaneGauge";
-import { HarnessMark } from "./PaneHead";
 import {
   ORCH,
   WORKER_SLOTS,
@@ -64,36 +61,10 @@ export function TerminalGrid({
   return (
     <div className="fleet-layout">
       <div className="fleet-layout__terminal">
-        <div className="tabstrip" role="tablist" aria-label="Fleet panes">
-          {ALL_PANES.map(({ pane }) => {
-            const status = statuses[pane] ?? "idle";
-            const isSelected = selected === pane;
-            const gauge = pane === ORCH ? OUT_OF_SCOPE : gauges[pane];
-            return (
-              <button
-                key={pane}
-                role="tab"
-                aria-selected={isSelected}
-                className={`tab ${isSelected ? "tab--active" : ""}`}
-                onClick={() => onSelect(pane)}
-              >
-                <span className={`dot dot--${statusTone(status)}`} />
-                <span className="mono">{pane === ORCH ? "orch" : pane}</span>
-                <HarnessMark identity={panes[pane]} block="tab__mark" />
-                <span className="tab__status">{STATUS_LABEL[status]}</span>
-                <PaneGauge reading={gauge} block="tab__gauge" />
-                {!isSelected && unreadPanes.has(pane) && (
-                  <span className="tab__unread" title="new output" aria-label="new output" />
-                )}
-              </button>
-            );
-          })}
-        </div>
         {ALL_PANES.map(({ pane, label, scrollback }) => (
           <div
             key={pane}
             className={`pane-slot ${selected === pane ? "" : "is-hidden"}`}
-            role="tabpanel"
           >
             <TerminalPane
               pane={pane}
@@ -121,6 +92,7 @@ export function TerminalGrid({
           gauges={gauges}
           messages={messages}
           tasks={tasks}
+          unreadPanes={unreadPanes}
         />
       </div>
     </div>

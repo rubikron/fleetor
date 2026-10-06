@@ -55,7 +55,7 @@ const COMPONENT: &str = "ui/src/components/PaneGauge.tsx";
 /// rendered without a pty. `<PaneGauge` moved with it — this is still the same call
 /// site, in the file that now holds it.
 const PANE_HEAD: &str = "ui/src/components/PaneHead.tsx";
-const TAB_STRIP: &str = "ui/src/components/TerminalGrid.tsx";
+const CARDS: &str = "ui/src/components/MissionControl.tsx";
 const STYLES: &str = "ui/src/styles.css";
 /// The probe this file drives. Its own doc comment explains why it asserts nothing.
 const PROBE: &str = "src-tauri/tests/gauge_probe/render.tsx";
@@ -258,13 +258,13 @@ fn the_unavailable_reading_renders_the_word() {
         "the rail must say the word C12 and M22 chose where the operator can read it. A `title` \
          carrying it is a tooltip for someone who already suspected: {pane}"
     );
-    // The same word in the tab strip, from the same component: a worker's usage is
-    // readable from the tab strip without switching to it, and that half must not
+    // The same word on the mission control card, from the same component: a worker's
+    // usage is readable from its card without switching to it, and that half must not
     // be able to disagree with the pane head about whether it could be read.
-    let tab = markup(&all, "tab_unavailable");
+    let card = markup(&all, "card_unavailable");
     assert!(
-        visible(&tab).contains("unavailable") && tab.contains("tab__gauge"),
-        "the tab strip renders the same reading through the same component: {tab}"
+        visible(&card).contains("unavailable") && card.contains("mc-card__gauge"),
+        "the card renders the same reading through the same component: {card}"
     );
 }
 
@@ -279,7 +279,7 @@ fn the_unavailable_reading_renders_the_word() {
 fn an_unavailable_rail_carries_no_figure_at_all() {
     let Some(all) = rendered() else { return };
 
-    for key in ["pane_unavailable", "tab_unavailable", "pane_pending"] {
+    for key in ["pane_unavailable", "card_unavailable", "pane_pending"] {
         let m = as_read(&markup(&all, key));
         assert!(
             !m.contains('%'),
@@ -366,7 +366,7 @@ fn only_the_orchestrator_renders_nothing() {
 /// how both of them came to be silent in the first place.
 #[test]
 fn both_places_the_rail_appears_render_through_the_one_component() {
-    for site in [PANE_HEAD, TAB_STRIP] {
+    for site in [PANE_HEAD, CARDS] {
         let src = read(site);
         assert!(
             src.contains("<PaneGauge"),
@@ -384,7 +384,7 @@ fn both_places_the_rail_appears_render_through_the_one_component() {
     // A tone the stylesheet never heard of renders as unstyled text — visible, so
     // not the silent failure, but not the distinct one either.
     let css = read(STYLES);
-    for rule in [".pane__gauge--absent", ".tab__gauge--absent"] {
+    for rule in [".pane__gauge--absent", ".mc-card__gauge--absent"] {
         assert!(css.contains(rule), "{STYLES} must style `{rule}`, or the two states look alike");
     }
 }

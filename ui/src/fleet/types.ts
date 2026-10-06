@@ -431,7 +431,7 @@ export type FleetEvent =
 export interface PaneIdentity {
   /// The harness's name, exactly as its `HarnessSpec` spells it.
   harness: string;
-  /// Its monogram, for the tab strip. Absent when the spawn event carried none —
+  /// Its monogram, for the mission control cards. Absent when the spawn event carried none —
   /// an older run replayed, or a harness that supplies no mark.
   mark?: string;
   /// The model it was pointed at. Absent on an attended seat, which runs the

@@ -162,6 +162,12 @@ export function spawnPane(pane: PaneId, rows: number, cols: number): Promise<voi
   return invoke("pty_spawn", { pane, rows, cols });
 }
 
+/// The terminal theme's default colours, which the backend answers a pane's
+/// colour query with (D-097).
+export function setTerminalColors(fg: string, bg: string): Promise<void> {
+  return invoke("pty_colors", { fg, bg });
+}
+
 /// Relay operator keystrokes to a pane.
 export function writePane(pane: PaneId, data: string): Promise<void> {
   return invoke("pty_write", { pane, data });

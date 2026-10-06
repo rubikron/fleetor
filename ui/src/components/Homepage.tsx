@@ -6,8 +6,8 @@ import {
   WORKER_SLOTS,
   workerPane,
   type FleetConfig,
-  type RunRecord,
 } from "../fleet/types";
+import type { RunsView } from "../fleet/useRuns";
 import { useSeatPickers } from "../ui/useSeatPickers";
 import { SeatRow, CredentialSourcePicker } from "./StartGate";
 
@@ -15,12 +15,13 @@ const DEBOUNCE_MS = 600;
 
 interface HomepageProps {
   config: FleetConfig | null;
-  runs: RunRecord[];
+  runs: RunsView;
   onStart: () => void;
+  onOpened: () => void;
   onTargetChanged: () => void;
 }
 
-export function Homepage({ config, runs, onStart, onTargetChanged }: HomepageProps) {
+export function Homepage({ config, runs, onStart, onOpened, onTargetChanged }: HomepageProps) {
   const [configExpanded, setConfigExpanded] = useState(false);
   const [picking, setPicking] = useState(false);
   const [pickError, setPickError] = useState<string | null>(null);
@@ -93,21 +94,43 @@ export function Homepage({ config, runs, onStart, onTargetChanged }: HomepagePro
     <div className="homepage">
       <div className="homepage__sessions">
         <h3 className="homepage__heading">Recent sessions</h3>
-        {runs.length === 0 ? (
+        {runs.runs.length === 0 ? (
           <p className="homepage__empty">No past sessions yet.</p>
         ) : (
           <ul className="homepage__run-list">
-            {runs.slice(0, 10).map((run) => (
-              <li key={run.id} className="homepage__run">
-                <span className="homepage__run-label">{run.label || run.id.slice(0, 8)}</span>
-                <span className="homepage__run-meta mono">
-                  {run.messages} msgs · {run.events} events
-                  {run.target ? ` · ${run.target}` : ""}
-                </span>
-              </li>
-            ))}
+            {runs.runs.slice(0, 10).map((run) => {
+              const body = (
+                <>
+                  <span className="homepage__run-label">{run.label || run.id.slice(0, 8)}</span>
+                  <span className="homepage__run-meta mono">
+                    {runs.opening === run.id
+                      ? "opening — archiving the current session first…"
+                      : run.cannot_reopen
+                        ? `can’t reopen — ${run.cannot_reopen}`
+                        : `${run.messages} msgs · ${run.events} events${run.target ? ` · ${run.target}` : ""}`}
+                  </span>
+                </>
+              );
+              return (
+                <li key={run.id}>
+                  {run.cannot_reopen ? (
+                    <div className="homepage__run homepage__run--closed">{body}</div>
+                  ) : (
+                    <button
+                      className="homepage__run"
+                      onClick={() => void runs.reopen(run.id).then(onOpened).catch(() => {})}
+                      disabled={runs.opening !== null}
+                      title="Open this session — the fleet you have now is archived first"
+                    >
+                      {body}
+                    </button>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
+        {runs.error && <p className="homepage__error">{runs.error}</p>}
       </div>
       <div className="homepage__launch">
         <span className="brand" style={{ fontSize: "1.5rem" }}>FLEETOR</span>

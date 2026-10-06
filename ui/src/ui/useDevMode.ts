@@ -1,6 +1,6 @@
 // Dev mode, as the UI sees it (WP-16).
 //
-// Deliberately *not* the useTheme.ts / usePersistedNav.ts shape. Those read and
+// Deliberately *not* the useTheme.ts / useSidebarCollapse.ts shape. Those read and
 // write localStorage, because a theme is a webview preference and nothing on the
 // Rust side ever asks what it is. Dev mode is asked about by code that has no
 // webview — WP-15's evaluator window, WP-17's fence — so the flag lives in

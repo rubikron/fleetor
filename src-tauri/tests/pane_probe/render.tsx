@@ -2,7 +2,7 @@
 //
 // It imports the **real** `PaneHead` and `HarnessMark` out of
 // `ui/src/components/PaneHead.tsx` — the head every one of the five panes renders,
-// and the mark the worker tab strip renders beside it — and renders them through
+// and the mark a mission control card renders beside it — and renders them through
 // React's own server renderer against synthetic identities. Nothing here knows what
 // the markup looks like; every string the Rust test asserts on has to come out of
 // the components, which is what makes those assertions behavioural rather than a
@@ -82,9 +82,9 @@ process.stdout.write(
       no_mark: renderToStaticMarkup(
         <PaneHead label="worker-1" status="live" identity={NO_MARK} />,
       ),
-      // The mark's other home: the worker tab strip, which renders it alone.
-      tab_mark: renderToStaticMarkup(<HarnessMark identity={THIRD} block="tab__mark" />),
-      tab_mark_unspawned: renderToStaticMarkup(<HarnessMark block="tab__mark" />),
+      // The mark's other home: the mission control card, which renders it alone.
+      card_mark: renderToStaticMarkup(<HarnessMark identity={THIRD} block="mc-card__mark" />),
+      card_mark_unspawned: renderToStaticMarkup(<HarnessMark block="mc-card__mark" />),
     },
     null,
     2,

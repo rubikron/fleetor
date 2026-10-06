@@ -10,8 +10,7 @@
 // (sidebar — useSidebarCollapse.ts's isSidebarToggleKey).
 //
 // This hook only recognizes the keystroke and reports which pane was asked
-// for; it does not own any navigation state itself (App.tsx already does,
-// via usePersistedNav) — the caller decides what "jump to this pane" means
+// for; it does not own any navigation state itself (App.tsx already does) — the caller decides what "jump to this pane" means
 // (switch view, select the worker tab, move terminal focus).
 
 import { useEffect } from "react";

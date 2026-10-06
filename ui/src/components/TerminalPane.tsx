@@ -55,7 +55,7 @@ interface TerminalPaneProps {
   started: boolean;
   /// This pane's live status, shown as a dot + word in its own head — the
   /// detail the dashboard band used to duplicate now lives only here and in
-  /// the worker tab strip.
+  /// the mission control cards.
   status: PaneStatus;
   /// **What this pane was actually placed as** — its harness, that harness's mark
   /// and the model it was pointed at, as the spawn event reported them (#50).
@@ -152,6 +152,13 @@ export function TerminalPane({
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
+
+    // A pane's default-colour query (OSC 10/11) is answered at the pty, because
+    // the asker gives up before an answer from here could arrive (D-097). Claimed
+    // here so xterm does not send a second, late one.
+    const colourQueries = [10, 11].map((code) =>
+      term.parser.registerOscHandler(code, (data) => data === "?"),
+    );
 
     // Render on the GPU. Without this addon xterm falls back to its DOM
     // renderer — a <span> per styled run, per row, per terminal — and this app
@@ -252,6 +259,7 @@ export function TerminalPane({
       window.clearTimeout(refitTimer);
       window.removeEventListener("resize", refit);
       onData.dispose();
+      colourQueries.forEach((handler) => handler.dispose());
       onResize.dispose();
       onScroll.dispose();
       disposers.forEach((un) => stopListening(un, label));

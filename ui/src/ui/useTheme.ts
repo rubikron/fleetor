@@ -1,10 +1,11 @@
 // Persists the operator's light/dark preference and applies it as
 // `data-theme` on the document root, where styles.css's `:root[data-theme=
 // "light"]` block picks it up. Same validated-read pattern as
-// useSidebarCollapse.ts and usePersistedNav.ts: a corrupt or missing stored
+// useSidebarCollapse.ts: a corrupt or missing stored
 // value must fall back to the default and never throw or wedge the app.
 
 import { useCallback, useEffect, useState } from "react";
+import { THEME_MORPH_MS } from "../theme";
 
 const STORAGE_KEY = "fleetor:theme";
 
@@ -37,6 +38,23 @@ function writeStoredTheme(theme: Theme): void {
   }
 }
 
+// Marks the root as mid-switch for the length of the morph, so styles.css's
+// `:root[data-theme-morph]` transition runs for a switch the operator makes and
+// never for the stored theme applied at launch — which would otherwise morph in
+// from dark on every start. Called before the state change, which is what puts
+// it on the root before `data-theme` flips. Reduced motion skips it, and the
+// switch snaps as it always did.
+let morphTimer: number | undefined;
+function beginMorph(): void {
+  if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+  const root = document.documentElement;
+  root.dataset.themeMorph = "";
+  window.clearTimeout(morphTimer);
+  morphTimer = window.setTimeout(() => {
+    delete root.dataset.themeMorph;
+  }, THEME_MORPH_MS + 50);
+}
+
 export interface ThemeControls {
   theme: Theme;
   setTheme: (theme: Theme) => void;
@@ -51,8 +69,14 @@ export function useTheme(): ThemeControls {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
 
-  const setTheme = useCallback((next: Theme) => setThemeState(next), []);
-  const toggle = useCallback(() => setThemeState((prev) => (prev === "dark" ? "light" : "dark")), []);
+  const setTheme = useCallback((next: Theme) => {
+    beginMorph();
+    setThemeState(next);
+  }, []);
+  const toggle = useCallback(() => {
+    beginMorph();
+    setThemeState((prev) => (prev === "dark" ? "light" : "dark"));
+  }, []);
 
   return { theme, setTheme, toggle };
 }

@@ -10,8 +10,10 @@ import {
   type TaskEvent,
 } from "../fleet/types";
 import { gaugeView } from "../lib/contextGaugeTone";
+import { PaneGauge } from "./PaneGauge";
+import { HarnessMark } from "./PaneHead";
 import { statusTone, STATUS_LABEL } from "../lib/statusTone";
-import type { ContextGaugeMap } from "../fleet/useContextGauge";
+import { OUT_OF_SCOPE, type ContextGaugeMap } from "../fleet/useContextGauge";
 
 const ALL_PANES: PaneId[] = [ORCH, ...WORKER_SLOTS.map(workerPane)];
 
@@ -29,6 +31,7 @@ interface MissionControlProps {
   gauges: ContextGaugeMap;
   messages: MessageEvent[];
   tasks: TaskEvent[];
+  unreadPanes: Set<PaneId>;
 }
 
 export function MissionControl({
@@ -39,6 +42,7 @@ export function MissionControl({
   gauges,
   messages,
   tasks,
+  unreadPanes,
 }: MissionControlProps) {
   const [detailPane, setDetailPane] = useState<PaneId | null>(null);
 
@@ -85,10 +89,17 @@ export function MissionControl({
               <div className="mc-card__header">
                 <span className={`dot dot--${statusTone(status)}`} />
                 <span className="mc-card__name mono">{pane === ORCH ? "orch" : pane}</span>
+                <HarnessMark identity={identity} block="mc-card__mark" />
+                {selected !== pane && unreadPanes.has(pane) && (
+                  <span className="mc-card__unread" title="new output" aria-label="new output" />
+                )}
                 <span className="mc-card__status">{STATUS_LABEL[status]}</span>
               </div>
               {identity?.model && (
                 <span className="mc-card__model mono">{identity.model}</span>
+              )}
+              {pct === null && (
+                <PaneGauge reading={pane === ORCH ? OUT_OF_SCOPE : reading} block="mc-card__gauge" />
               )}
               {pct !== null && (
                 <div className="mc-card__context">

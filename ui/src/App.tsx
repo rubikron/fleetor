@@ -4,9 +4,9 @@
 // never be torn down (L7).
 //
 // UI-polish pass: the dashboard band that used to sit above the terminals — one
-// cell per pane, duplicating the dot-plus-name-plus-status the worker tab strip
-// already shows — is gone. Its unique data (per-pane model) now lives in each
-// pane's own head; the tab strip already owned per-pane status.
+// cell per pane, duplicating the dot-plus-name-plus-status the mission control cards
+// already show — is gone. Its unique data (per-pane model) now lives in each
+// pane's own head; the cards already own per-pane status.
 //
 // The spend gate is an **overlay on the whole workspace**, not a card inside the
 // orchestrator pane. Starting the fleet now spawns five processes, four of which
@@ -15,7 +15,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { TopBar } from "./components/TopBar";
-import { Sidebar } from "./components/Sidebar";
+import { Sidebar, type View } from "./components/Sidebar";
 import { TaskBoard } from "./components/TaskBoard";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { TerminalGrid } from "./components/TerminalGrid";
@@ -29,18 +29,20 @@ import { useRuns } from "./fleet/useRuns";
 import { useContextGauge } from "./fleet/useContextGauge";
 import { useZoom } from "./ui/useZoom";
 import { useSidebarCollapse } from "./ui/useSidebarCollapse";
-import { usePersistedNav } from "./ui/usePersistedNav";
 import { usePaneJump } from "./ui/usePaneJump";
 import { useWindowState } from "./ui/useWindowState";
 import { useTheme } from "./ui/useTheme";
 import { useDevMode } from "./ui/useDevMode";
 import { useCriticInterview } from "./ui/useCriticInterview";
-import { killPane, onEvaluatorWake } from "./fleet/api";
+import { killPane, onEvaluatorWake, setTerminalColors } from "./fleet/api";
+import { warmTheme, warmThemeLight } from "./theme";
 import { stopListening } from "./fleet/listeners";
 import { ORCH, type PaneId, type PaneStatus } from "./fleet/types";
 
 export function App() {
-  const { view, setView } = usePersistedNav();
+  // Always Home at launch: no fleet is running yet, so any other view would
+  // open on nothing.
+  const [view, setView] = useState<View>("home");
   const [started, setStarted] = useState(false);
   const [statuses, setStatuses] = useState<Record<PaneId, PaneStatus>>({});
   const [selectedPane, setSelectedPane] = useState<PaneId>(ORCH);
@@ -72,6 +74,12 @@ export function App() {
   // side effect on the OS window — see useWindowState.ts for why a saved
   // position is re-validated against the connected monitors before use.
   useWindowState();
+
+  // What a pane is told when it asks its terminal for its colours (D-097).
+  useEffect(() => {
+    const { foreground, background } = themeControls.theme === "light" ? warmThemeLight : warmTheme;
+    if (foreground && background) void setTerminalColors(foreground, background).catch(() => {});
+  }, [themeControls.theme]);
 
   // One `focus()` callback per pane, registered by TerminalPane itself once
   // it mounts (see its onFocusReady prop). A plain ref, not state — jumping
@@ -111,9 +119,8 @@ export function App() {
   );
 
   // Cmd+1..5 pane jumps (ORCH, worker-1..4 — see usePaneJump.ts). Switches to
-  // the fleet view if it isn't already active, selects the worker tab (which
-  // also clears its unread dot), and moves keyboard focus into that pane's
-  // terminal.
+  // the fleet view if it isn't already active, selects that pane (which also
+  // clears its unread dot), and moves keyboard focus into its terminal.
   const jumpToPane = useCallback(
     (pane: PaneId) => {
       setView("fleet");
@@ -176,6 +183,14 @@ export function App() {
   // that is also when the control is disabled below.
   const interview = useCriticInterview(started);
 
+  // A reopen bootstraps the fleet itself, so from Home — before any fleet has
+  // started — `started` must flip here or the remounted panes never spawn.
+  const landInReopened = () => {
+    setStarted(true);
+    setView("fleet");
+    fleet.refreshConfig();
+  };
+
   const restart = useCallback((pane: PaneId) => {
     // Kill only. The pane's own spawn effect is keyed on `started`, so the tab
     // brings itself back with a fitted size rather than one guessed here.
@@ -230,7 +245,8 @@ export function App() {
             <div className={`stage-view ${view === "home" ? "" : "is-hidden"}`}>
               <Homepage
                 config={fleet.config}
-                runs={runs.runs}
+                runs={runs}
+                onOpened={landInReopened}
                 onStart={() => {
                   setStatuses({ [ORCH]: "idle" });
                   setView("fleet");
@@ -256,7 +272,7 @@ export function App() {
             </div>
 
             <div className={`stage-view ${view === "history" ? "" : "is-hidden"}`}>
-              <RunHistory runs={runs} onOpened={() => setView("fleet")} />
+              <RunHistory runs={runs} onOpened={landInReopened} />
             </div>
 
             <div className={`stage-view ${view === "review" ? "" : "is-hidden"}`}>

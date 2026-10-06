@@ -206,10 +206,10 @@ fn a_pane_that_has_not_spawned_names_no_harness() {
         "a pane with no identity renders a harness anyway. Absence means unknown here, and a \
          head that fills it in is the bug #50 closed with a different value in it:\n{head}"
     );
-    let bare = markup(&all, "tab_mark_unspawned");
+    let bare = markup(&all, "card_mark_unspawned");
     assert!(
         bare.is_empty(),
-        "the tab strip renders a mark for a pane that has not spawned:\n{bare}"
+        "the card renders a mark for a pane that has not spawned:\n{bare}"
     );
 }
 
@@ -285,16 +285,16 @@ fn a_harness_that_supplied_no_mark_is_still_named() {
     );
 }
 
-/// **The mark reaches the worker tab strip**, which is the reason it exists: four
+/// **The mark reaches the mission control card**, which is the reason it exists: four
 /// workers are compared there without selecting any of them.
 #[test]
-fn the_mark_renders_on_the_tab_strip_too() {
+fn the_mark_renders_on_the_card_too() {
     let Some(all) = rendered() else { return };
-    let mark = markup(&all, "tab_mark");
+    let mark = markup(&all, "card_mark");
     assert!(
-        mark.contains("tab__mark") && mark.contains(">GC<"),
-        "the tab strip's mark is gone, so a mixed fleet is only distinguishable by opening \
-         each tab and reading its head:\n{mark}"
+        mark.contains("mc-card__mark") && mark.contains(">GC<"),
+        "the card's mark is gone, so a mixed fleet is only distinguishable by opening \
+         each pane and reading its head:\n{mark}"
     );
     assert!(
         mark.contains("title=\"gamma-cli\""),

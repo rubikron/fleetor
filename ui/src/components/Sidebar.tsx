@@ -36,12 +36,7 @@
 
 import type { ReactNode } from "react";
 
-// **This union is one half of a pair.** `ui/src/ui/usePersistedNav.ts` carries
-// the other — the list of views it will restore on relaunch — and a view added
-// here and forgotten there is a view the operator can select and never return
-// to, silently, with no error. That had already happened to `history` before
-// D-073 found it. `src-tauri/tests/views.rs` reads both lists and fails if they
-// stop naming the same things.
+// The views the rail offers. `src-tauri/tests/views.rs` reads this union.
 export type View =
   | "home"
   | "fleet"
