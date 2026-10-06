@@ -45,7 +45,12 @@ export function fetchConfig(): Promise<FleetConfig> {
   return invoke<FleetConfig>("fleet_config");
 }
 
-/// Ask the operator for a repo to point the fleet at. Resolves to `null` if the
+/// What the next new fleet will run on: the gate's target, whatever is running.
+export function fetchNextConfig(): Promise<FleetConfig> {
+  return invoke<FleetConfig>("fleet_next_config");
+}
+
+/// Ask the operator for a repo to point the next fleet at. Resolves to `null` if the
 /// picker was dismissed.
 export function pickTarget(): Promise<string | null> {
   return invoke<string | null>("fleet_pick_target");

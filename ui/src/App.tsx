@@ -232,7 +232,6 @@ export function App() {
 
             <div className={`stage-view ${view === "home" ? "" : "is-hidden"}`}>
               <Homepage
-                config={fleet.config}
                 runs={runs}
                 launching={launching}
                 launchError={launchError}

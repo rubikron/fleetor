@@ -29,15 +29,13 @@
 // re-derived here: `fleet_bootstrap` refuses on the identical verdict, and a rule
 // implemented on both sides of a wire is a rule that will eventually hold on one.
 
-import { useState, useEffect, useRef } from "react";
-import { pickTarget, setTarget } from "../fleet/api";
+import { useState } from "react";
 import {
   DEFAULT_YOUR_LOGIN,
   ORCH,
   WORKER_SLOTS,
   canTakeASeat,
   workerPane,
-  type FleetConfig,
   type GateState,
   type HarnessOffer,
   type SeatChoice,
@@ -46,8 +44,6 @@ import {
   type ModelOffer,
 } from "../fleet/types";
 import { offerFor, useSeatPickers } from "../ui/useSeatPickers";
-
-const DEBOUNCE_MS = 600;
 
 /// **What FLEETOR is and is not deciding about a model** (M16).
 ///
@@ -61,9 +57,7 @@ const WHAT_A_REMEMBERED_MODEL_IS =
   "is what was last launched, not what a pane is running.";
 
 interface StartGateProps {
-  config: FleetConfig | null;
   onStart: () => void;
-  onTargetChanged: () => void;
 }
 
 /// One harness's facts, as they read beside the model.
@@ -421,62 +415,8 @@ function sourceNote(noLoginFor: string[], hasFleetKey: boolean): string {
   return "Your existing login, copied into each worker at spawn — or the key you supplied in .env.";
 }
 
-export function StartGate({ config, onStart, onTargetChanged }: StartGateProps) {
-  const [picking, setPicking] = useState(false);
-  const [pickError, setPickError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [draft, setDraft] = useState<string | null>(null);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+export function StartGate({ onStart }: StartGateProps) {
   const pickers = useSeatPickers();
-
-  const targetPath = config?.target_path ?? "";
-
-  const shown = draft ?? targetPath;
-
-  const commit = async (value: string) => {
-    const trimmed = value.trim();
-    if (!trimmed || trimmed === targetPath) return;
-    setSaving(true);
-    setPickError(null);
-    try {
-      await setTarget(trimmed);
-      setDraft(null);
-      onTargetChanged();
-    } catch (e) {
-      setPickError(String(e));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const onInput = (value: string) => {
-    setDraft(value);
-    setPickError(null);
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => void commit(value), DEBOUNCE_MS);
-  };
-
-  useEffect(() => {
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-    };
-  }, []);
-
-  const choose = async () => {
-    setPicking(true);
-    setPickError(null);
-    try {
-      const picked = await pickTarget();
-      if (picked) {
-        setDraft(null);
-        onTargetChanged();
-      }
-    } catch (e) {
-      setPickError(String(e));
-    } finally {
-      setPicking(false);
-    }
-  };
 
   const gate = pickers.gate;
   // **Every seat named here comes off `gate.seats`**, which is what the backend
@@ -643,41 +583,7 @@ export function StartGate({ config, onStart, onTargetChanged }: StartGateProps) 
               )}
             </>
           )}
-          <li className="pane-gate__fact">
-            <span className="k">target</span>
-            <input
-              className="v pane-gate__path"
-              type="text"
-              value={shown}
-              spellCheck={false}
-              autoCorrect="off"
-              autoCapitalize="off"
-              placeholder="/path/to/repo"
-              aria-label="Target folder"
-              aria-invalid={pickError !== null}
-              disabled={saving}
-              onChange={(e) => onInput(e.target.value)}
-              onWheel={(e) => {
-                const el = e.currentTarget;
-                const max = el.scrollWidth - el.clientWidth;
-                if (max <= 0) return;
-                const delta =
-                  Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
-                if (delta === 0) return;
-                el.scrollLeft = Math.min(max, Math.max(0, el.scrollLeft + delta));
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") {
-                  e.preventDefault();
-                  setDraft(null);
-                  setPickError(null);
-                  if (timerRef.current) clearTimeout(timerRef.current);
-                }
-              }}
-            />
-          </li>
         </ul>
-        {pickError && <p className="pane-gate__error">{pickError}</p>}
         {pickers.error !== null && <p className="pane-gate__error">{pickers.error}</p>}
         {/* **What a passing login check does not prove.** A green row here means a
             credential resolved and its provider answered — not that the provider
@@ -740,13 +646,6 @@ export function StartGate({ config, onStart, onTargetChanged }: StartGateProps) 
             disabled={pickers.rechecking || pickers.loading}
           >
             {pickers.rechecking ? "Re-checking…" : "Re-check logins"}
-          </button>
-          <button
-            className="pane-gate__alt"
-            onClick={() => void choose()}
-            disabled={picking || saving}
-          >
-            {picking ? "Choosing…" : "Choose folder…"}
           </button>
           {/* **Refuse to start** (#36, story 11). Disabled, never hidden, and it
               says why on hover — an operator whose button vanished would have no way
