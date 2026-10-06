@@ -76,5 +76,5 @@ fleetor-ipc = { path = "../crates/fleetor-ipc" }
 libc = "0.2"
 
 [profile.dev]
-# Faster spike iteration; the pty path isn't perf-sensitive.
-incremental = true
+# Off: stale incremental caches piled up to ~6GB in target/debug/incremental.
+incremental = false

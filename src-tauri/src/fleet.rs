@@ -214,6 +214,35 @@ impl FleetSeats {
         Ok(self)
     }
 
+    /// This selection with every seat a past run recorded put back on what it ran
+    /// (D-095). A seat the run never placed, or one on a harness this build lacks,
+    /// keeps the gate's pick; a record older than D-095 keeps the gate's credential.
+    fn as_recorded(mut self, recorded: &std::collections::BTreeMap<String, runs::PaneRecord>) -> Self {
+        let slots = fleetor_core::pane::WORKER_SLOTS.iter().map(|&slot| PaneId::Worker(slot));
+        let seats = std::iter::once(&mut self.orch).chain(&mut self.workers);
+        for (pane, seat) in std::iter::once(PaneId::Orch).chain(slots).zip(seats) {
+            let Some(rec) = recorded.get(&pane.to_string()) else { continue };
+            if harness::by_name(&rec.harness).is_none() {
+                continue;
+            }
+            seat.harness = rec.harness.clone();
+            seat.model = rec.model.clone();
+            if let Some(credential) = rec.credential {
+                seat.credential = credential;
+            }
+        }
+        self
+    }
+
+    /// The choice one seat carries, if it carries one.
+    fn choice_for(&self, pane: PaneId) -> Option<&SeatChoice> {
+        match pane {
+            PaneId::Orch => Some(&self.orch),
+            PaneId::Worker(slot) => self.workers.get(usize::from(slot).checked_sub(1)?),
+            _ => None,
+        }
+    }
+
     /// The spec one seat places as, resolved against the registry.
     ///
     /// `None` for a pane that carries no choice — the two judges and the operator —
@@ -1139,6 +1168,9 @@ struct Fleet {
     /// **The handoff watch holds a clone of this same cell, not a copy of its
     /// value** (D14) — see [`Target`] for what that fixed.
     target: Target,
+    /// The seats a reopened run recorded, which its panes place against instead
+    /// of the gate's (D-095). `None` on an ordinary run.
+    reopened_seats: Option<FleetSeats>,
     /// The briefs and launch settings every pane spawns with, from `prompts/`
     /// and the operator's `~/.fleetor/prompts/`. Resolved once for the same
     /// reason the target is: a fleet whose panes were briefed from two revisions
@@ -1374,15 +1406,25 @@ pub fn fleet_bootstrap(
     // **What a click will do, decided once and enforced here** (#36). The seats are
     // settled first, so a model the vendor no longer lists has already fallen back
     // to the seat's own default rather than reaching a `--model` flag (story 14).
+    //
+    // **A reopen places what the run recorded, not what the gate holds** (D-095),
+    // and leaves the gate's own selection untouched for the next new fleet.
     let offer = plan_offer();
-    let (settled, model_fallbacks) = settle_models(gate.seats(), &readings);
+    let runs_dir = runs::runs_dir(layout.root());
+    let recorded = runs::pending_reopen(&dir).map(|id| runs::recorded_panes(&runs_dir, &id));
+    let asked = match &recorded {
+        Some(recorded) => gate.seats().as_recorded(recorded),
+        None => gate.seats(),
+    };
+    let (settled, model_fallbacks) = settle_models(asked, &readings);
     let (settled, credential_fallbacks) = settle_credentials(settled, &offer);
-    let seats = gate.store_seats(settled);
+    let seats = if recorded.is_some() { settled } else { gate.store_seats(settled) };
     let verdict =
         StartVerdict::for_seats(&seats, &readings, model_fallbacks, credential_fallbacks, &offer);
     if let Some(why) = verdict.why_it_will_not_start() {
         return Err(why);
     }
+    let reopened_seats = recorded.is_some().then_some(seats);
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -1394,7 +1436,6 @@ pub fn fleet_bootstrap(
     // `runs/` and this one opens an empty database. Held rather than emitted —
     // there is no store to append a notice to yet.
     let started_ms = fleetor_core::time::now_ms();
-    let runs_dir = runs::runs_dir(layout.root());
     let rotation = runs::rotate(&dir, &runs_dir, started_ms);
 
     // **Reopening a past run is this same path with a seeded slot** (WP-27, R2).
@@ -1511,6 +1552,7 @@ pub fn fleet_bootstrap(
         // held a moment ago (M15). What places is what the operator picked, and
         // there is no second value that could disagree.
         gate: Arc::clone(&gate),
+        reopened_seats,
         context,
         gauges,
         app: app_tx,
@@ -1586,6 +1628,8 @@ fn spec_without_a_choice(pane: PaneId, seats: &FleetSeats) -> Result<PaneSpec, S
     }
 }
 
+static PLACING: Mutex<()> = Mutex::new(());
+
 pub(crate) fn spawn_pane(
     fleet: &FleetState,
     registry: &Arc<PaneRegistry>,
@@ -1593,6 +1637,14 @@ pub(crate) fn spawn_pane(
     rows: u16,
     cols: u16,
 ) -> Result<(), String> {
+    // Placement writes files the panes share (`run.json`, the worktrees), so it is
+    // one pane at a time. The lock is dropped before the wake, which takes seconds
+    // and runs for every pane at once (D-096).
+    let placing = PLACING.lock().map_err(|e| e.to_string())?;
+    // StrictMode's second mount, or a caller racing the first: nothing to place.
+    if registry.is_up(pane)? {
+        return Ok(());
+    }
     let (target, layout, store, context, gauges, seats) = {
         let guard = fleet.0.lock().map_err(|e| e.to_string())?;
         let f = guard.as_ref().ok_or("fleet not bootstrapped")?;
@@ -1605,7 +1657,8 @@ pub(crate) fn spawn_pane(
             // The gate's own cell, read at the moment this pane comes up — the far
             // end of M15's chain. The worker default is only reached on a fleet
             // nothing ever picked for, which is the unpicked fleet #35 preserved.
-            f.gate.seats(),
+            // A reopened run places what it recorded (D-095).
+            f.reopened_seats.clone().unwrap_or_else(|| f.gate.seats()),
         )
     };
 
@@ -1676,7 +1729,13 @@ pub(crate) fn spawn_pane(
     // Neither is on the message path and neither can become so (Tier 1.4) — this is
     // the spawn path, several filesystem writes deep already, and a `fleet send`
     // reads none of it.
-    runs::record_pane(&layout.shell(), &pane.to_string(), placed.harness, placed.model.as_deref());
+    runs::record_pane(
+        &layout.shell(),
+        &pane.to_string(),
+        placed.harness,
+        placed.model.as_deref(),
+        seats.choice_for(pane).map(|seat| seat.credential),
+    );
     if let Err(e) = store.append_event(&FleetEvent::PaneState {
         pane,
         // A pane with no pty is `Dead` to every reader in the fleet — the roster
@@ -1693,6 +1752,7 @@ pub(crate) fn spawn_pane(
         eprintln!("fleet: could not append the spawn event: {e}");
     }
 
+    drop(placing);
     registry.spawn(pane, placed.command, placed.harness, rows, cols)
 }
 
@@ -2524,6 +2584,19 @@ pub fn run_reopen(
 ) -> Result<BootSnapshot, String> {
     let layout = layout();
     let runs_dir = runs::runs_dir(layout.root());
+    // The seats the run recorded must be able to start on this machine, and that
+    // is refused here, before anything is torn down (D-095, R8).
+    if runs::reopen_blocker_for(&runs_dir, &id).is_none() {
+        let (readings, _) = gate.harnesses.read();
+        let offer = plan_offer();
+        let asked = gate.seats().as_recorded(&runs::recorded_panes(&runs_dir, &id));
+        let (settled, models) = settle_models(asked, &readings);
+        let (settled, credentials) = settle_credentials(settled, &offer);
+        let verdict = StartVerdict::for_seats(&settled, &readings, models, credentials, &offer);
+        if let Some(why) = verdict.why_it_will_not_start() {
+            return Err(format!("\u{201c}{id}\u{201d} can\u{2019}t be opened: {why}"));
+        }
+    }
     // Gate, teardown, request — the order lives in `begin_reopen`, where a test
     // holds it (R8): nothing below the gate runs for a run that cannot open.
     runs::begin_reopen(&layout.shell(), &runs_dir, &id, || {
@@ -3154,6 +3227,37 @@ mod tests {
                     credential: CredentialChoice::FleetKey,
                 })
                 .collect(),
+        }
+    }
+
+    /// **A reopen places what the run recorded** (D-095): harness, model and
+    /// credential come from the record; a seat with no record, or on a harness
+    /// this build lacks, keeps the gate's pick.
+    #[test]
+    fn recorded_seats_replace_the_gates_pick() {
+        let claude = harness::claude_code().spec().name;
+        let codex = crate::placement::codex::codex().spec().name;
+        let record = |harness: &str, model: Option<&str>, credential| runs::PaneRecord {
+            harness: harness.to_string(),
+            model: model.map(str::to_string),
+            credential,
+            transcript_format: String::new(),
+            session_id: None,
+        };
+        let recorded = std::collections::BTreeMap::from([
+            ("orch".to_string(), record(codex, Some("gpt-x"), None)),
+            ("worker-1".to_string(), record(codex, None, Some(CredentialChoice::Plan))),
+            ("worker-2".to_string(), record("gamma-cli", Some("g"), None)),
+        ]);
+
+        let seats = seats_on(claude, claude).as_recorded(&recorded);
+
+        assert_eq!((seats.orch.harness.as_str(), seats.orch.model.as_deref()), (codex, Some("gpt-x")));
+        let w1 = &seats.workers[0];
+        assert_eq!((w1.harness.as_str(), w1.model.as_deref(), w1.credential), (codex, None, CredentialChoice::Plan));
+        for kept in &seats.workers[1..] {
+            assert_eq!((kept.harness.as_str(), kept.model.as_deref()), (claude, Some("m")));
+            assert_eq!(kept.credential, CredentialChoice::FleetKey);
         }
     }
 

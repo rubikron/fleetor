@@ -33,6 +33,7 @@ use fleetor_core::event::{FleetEvent, NoticeLevel};
 use fleetor_db::archive;
 use serde::{Deserialize, Serialize};
 
+use crate::credential_source::CredentialChoice;
 use crate::placement::harness::{HarnessSpec, Transport};
 use crate::placement::SessionsId;
 
@@ -187,6 +188,10 @@ pub struct PaneRecord {
     /// account defaults to — the honest answer rather than a guessed name (M2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Whose usage the seat spent, so a reopen restores the pair the model belongs
+    /// to. Absent on runs recorded before D-095.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<CredentialChoice>,
     /// Checkpoint 13's `format`, so the transcripts filed under this pane can be
     /// named without knowing which vendor wrote them.
     pub transcript_format: String,
@@ -271,13 +276,20 @@ pub fn begin(shell: &Path, started_ms: i64, target: &Path, sessions: &SessionsId
 /// it could not describe it would be trading the run for the record of it. A pane
 /// missing here is a pane the manifest does not name; its transcripts are still
 /// harvested and still filed under its seat.
-pub fn record_pane(shell: &Path, pane: &str, harness: &'static HarnessSpec, model: Option<&str>) {
+pub fn record_pane(
+    shell: &Path,
+    pane: &str,
+    harness: &'static HarnessSpec,
+    model: Option<&str>,
+    credential: Option<CredentialChoice>,
+) {
     let mut meta = read_live_meta(shell);
     meta.panes.insert(
         pane.to_string(),
         PaneRecord {
             harness: harness.name.to_string(),
             model: model.map(str::to_string),
+            credential,
             transcript_format: harness.transcript.format.to_string(),
             // Read at rotation, not here: checkpoint 15's reader wants a finished
             // session, and this runs while the pane is still starting (R6).
@@ -350,6 +362,23 @@ pub fn lineage_session_ids(runs: &Path, id: &str) -> BTreeMap<String, String> {
         }
     }
     out
+}
+
+/// The run the next bootstrap has been asked to reopen, without consuming the
+/// request — [`apply_reopen`] does that.
+pub fn pending_reopen(shell: &Path) -> Option<String> {
+    let id = std::fs::read_to_string(reopen_request(shell)).ok()?;
+    Some(id.trim().to_string())
+}
+
+/// What each seat of a lineage was placed as (D-095): the harness, model and
+/// credential a reopen brings it back on, whatever the gate is set to now.
+pub fn recorded_panes(runs: &Path, id: &str) -> BTreeMap<String, PaneRecord> {
+    lineage_panes(runs, id)
+        .into_iter()
+        .flatten()
+        .filter_map(|(seat, rec)| Some((seat, serde_json::from_value(rec).ok()?)))
+        .collect()
 }
 
 /// What a reopen tells [`begin`] about the run it is starting (WP-27, R1, R4).
@@ -1024,8 +1053,17 @@ fn lineage_panes(runs: &Path, id: &str) -> Option<serde_json::Map<String, serde_
         // next reopen started them on fresh sessions without a word.
         if let Some(panes) = manifest.get("panes").and_then(|p| p.as_object()) {
             let into = merged.get_or_insert_with(serde_json::Map::new);
+            // A record that names a session beats a nearer one that does not
+            // (D-095): a seat that came up without resuming must not hide the
+            // session its ancestor left.
+            let has_session = |r: &serde_json::Value| r.get("session_id").is_some_and(|v| v.is_string());
             for (seat, record) in panes {
-                into.entry(seat.clone()).or_insert_with(|| record.clone());
+                match into.get(seat) {
+                    Some(held) if has_session(held) || !has_session(record) => {}
+                    _ => {
+                        into.insert(seat.clone(), record.clone());
+                    }
+                }
             }
         }
         at = manifest
@@ -1583,8 +1621,8 @@ mod tests {
             std::fs::write(project.join(format!("{session}.jsonl")), r#"{"type":"user"}"#).unwrap();
         }
         begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("run-1"), None);
-        record_pane(&shell, "orch", crate::placement::harness::claude_code().spec(), None);
-        record_pane(&shell, "worker-1", crate::placement::harness::claude_code().spec(), None);
+        record_pane(&shell, "orch", crate::placement::harness::claude_code().spec(), None, None);
+        record_pane(&shell, "worker-1", crate::placement::harness::claude_code().spec(), None, None);
         write_live(&shell, &["take the parser"]);
 
         rotate(&shell, &runs, 0);
@@ -1625,8 +1663,8 @@ mod tests {
         std::fs::create_dir_all(&project).unwrap();
         std::fs::write(project.join("abc.jsonl"), r#"{"type":"user"}"#).unwrap();
         begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("run-1"), None);
-        record_pane(&shell, "orch", crate::placement::harness::claude_code().spec(), None);
-        record_pane(&shell, "worker-1", crate::placement::harness::claude_code().spec(), None);
+        record_pane(&shell, "orch", crate::placement::harness::claude_code().spec(), None, None);
+        record_pane(&shell, "worker-1", crate::placement::harness::claude_code().spec(), None, None);
         write_live(&shell, &["take the parser"]);
 
         rotate(&shell, &runs, 0);
@@ -1681,7 +1719,7 @@ mod tests {
         std::fs::create_dir_all(&project).unwrap();
         std::fs::write(project.join("sess-a.jsonl"), r#"{"type":"user"}"#).unwrap();
         begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("root-run"), None);
-        record_pane(&shell, "orch", crate::placement::harness::claude_code().spec(), None);
+        record_pane(&shell, "orch", crate::placement::harness::claude_code().spec(), None, None);
         write_live(&shell, &["take the parser"]);
         rotate(&shell, &runs, 0);
         let parent_id = list(&runs)[0].id.clone();
@@ -1717,7 +1755,7 @@ mod tests {
         std::fs::create_dir_all(&project).unwrap();
         std::fs::write(project.join("abc.jsonl"), r#"{"type":"user"}"#).unwrap();
         begin(shell, 1_800_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("run-1"), None);
-        record_pane(shell, "orch", crate::placement::harness::claude_code().spec(), None);
+        record_pane(shell, "orch", crate::placement::harness::claude_code().spec(), None, None);
         write_live(shell, &["take the parser"]);
         rotate(shell, runs, 0);
         list(runs)[0].id.clone()
@@ -1815,8 +1853,8 @@ mod tests {
             std::fs::write(project.join(format!("{session}.jsonl")), r#"{"type":"user"}"#).unwrap();
         }
         begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("root-run"), None);
-        record_pane(&shell, "orch", cc, None);
-        record_pane(&shell, "worker-1", cc, None);
+        record_pane(&shell, "orch", cc, None, None);
+        record_pane(&shell, "worker-1", cc, None, None);
         write_live(&shell, &["take the parser"]);
         rotate(&shell, &runs, 0);
         let parent_id = list(&runs)[0].id.clone();
@@ -1829,7 +1867,7 @@ mod tests {
             &SessionsId::new("root-run"),
             Some(&parent_id),
         );
-        record_pane(&shell, "orch", cc, None);
+        record_pane(&shell, "orch", cc, None, None);
         write_live(&shell, &["still going"]);
         rotate(&shell, &runs, 0);
 
@@ -1843,6 +1881,44 @@ mod tests {
             "worker-1 was recorded by the parent alone, and a partial child must not hide it: {resumed:?}",
         );
         assert_eq!(list(&runs)[0].cannot_reopen, None);
+    }
+
+    /// **A reopen that came up on the wrong harness does not hide the session**
+    /// (D-095). The child here ran another vendor against the parent's seats and
+    /// so recorded no session; the lineage still answers with what the parent ran.
+    #[test]
+    fn a_seat_reopened_on_the_wrong_harness_still_resolves_to_what_it_ran() {
+        let root = scratch("lineage-wrong-harness");
+        let shell = root.join("_shell");
+        let runs = runs_dir(&root);
+        let cc = crate::placement::harness::claude_code().spec();
+        let project = shell.join("pane-config/root-run/worker-1/projects/-tmp-slug");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("sess-w1.jsonl"), r#"{"type":"user"}"#).unwrap();
+        begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("root-run"), None);
+        record_pane(&shell, "worker-1", cc, Some("a-model"), Some(CredentialChoice::FleetKey));
+        write_live(&shell, &["take the parser"]);
+        rotate(&shell, &runs, 0);
+        let parent_id = list(&runs)[0].id.clone();
+
+        begin(
+            &shell,
+            1_900_000_000_000,
+            Path::new("/tmp/logstat"),
+            &SessionsId::new("root-run"),
+            Some(&parent_id),
+        );
+        record_pane(&shell, "worker-1", crate::placement::codex::codex().spec(), None, None);
+        write_live(&shell, &["still going"]);
+        rotate(&shell, &runs, 0);
+        let child_id = list(&runs)[0].id.clone();
+        assert_ne!(child_id, parent_id);
+
+        let seat = recorded_panes(&runs, &child_id).remove("worker-1").expect("the seat is recorded");
+        assert_eq!(seat.harness, cc.name);
+        assert_eq!(seat.model.as_deref(), Some("a-model"));
+        assert_eq!(seat.credential, Some(CredentialChoice::FleetKey));
+        assert_eq!(seat.session_id.as_deref(), Some("sess-w1"));
     }
 
     /// One live WAL-mode thread store, shaped like the one a codex pane leaves
@@ -1968,8 +2044,8 @@ mod tests {
         // Two seats placed as two different harnesses — the run the old sentence
         // could not describe. Recorded through the production path, so what is
         // asserted is what a spawn writes.
-        record_pane(&shell, "orch", crate::placement::harness::claude_code().spec(), None);
-        record_pane(&shell, "worker-1", crate::placement::codex::codex().spec(), Some("a-model"));
+        record_pane(&shell, "orch", crate::placement::harness::claude_code().spec(), None, None);
+        record_pane(&shell, "worker-1", crate::placement::codex::codex().spec(), Some("a-model"), None);
 
         rotate(&shell, &runs, 0);
 

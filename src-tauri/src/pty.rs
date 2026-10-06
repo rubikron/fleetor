@@ -57,7 +57,7 @@ use std::time::{Duration, Instant};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use fleetor_core::pane::{PaneEntry, PaneId, PaneState};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
-use tauri::State;
+use tauri::{Manager, State};
 
 use crate::placement::harness::{BringUp, CommandChannel, TypingProfile};
 use crate::placement::HarnessSpec;
@@ -114,6 +114,11 @@ const PRESS_SETTLE: Duration = Duration::from_millis(600);
 /// pane's own silence, not a duration anyone waits out: the loop below exits on
 /// the first quiet sample.
 const QUIET_SAMPLE: Duration = Duration::from_millis(400);
+
+/// How many consecutive noisy [`QUIET_SAMPLE`]s a pane gets before the wake
+/// presses (D-098). A pane drawing its first screen is noisy for one or two; the
+/// splash that needs the press animates indefinitely.
+const PRESS_AFTER: u32 = 3;
 
 /// The first-run **trust gate**'s own words (#47; C34, C51).
 ///
@@ -206,6 +211,64 @@ struct GateScanner {
     window: std::collections::VecDeque<char>,
     escape: Escape,
     seen: Arc<AtomicBool>,
+}
+
+/// The terminal's foreground and background as the `rgb:` strings a colour query
+/// is answered with. `None` until the interface has said what its theme is.
+type TermColors = Arc<Mutex<Option<(String, String)>>>;
+
+/// Answers a pane that asks its terminal for its default colours (D-097).
+///
+/// **Answered here, at the pty, because the asker does not wait.** Measured on
+/// `codex-cli 0.155.1`: it sends `OSC 10 ; ?` and `OSC 11 ; ?` 0.22 s after it
+/// starts and gives up between 80 and 100 ms later, drawing no composer
+/// background at all if nothing came back. The terminal in the webview is a
+/// round trip through the event bus and a command away, and its answer was
+/// refused besides — the pane is still waking. So xterm is told not to answer
+/// (`TerminalPane.tsx`) and this is the one responder.
+struct ColorQueries {
+    colors: TermColors,
+    writer: PaneWriter,
+    /// The last few bytes of the previous frame, so a query split across two
+    /// reads is still one query.
+    tail: Vec<u8>,
+}
+
+impl ColorQueries {
+    const FG: &'static [u8] = b"\x1b]10;?";
+    const BG: &'static [u8] = b"\x1b]11;?";
+
+    fn answering(colors: TermColors, writer: PaneWriter) -> Self {
+        Self { colors, writer, tail: Vec::new() }
+    }
+
+    fn feed(&mut self, batch: &[u8]) {
+        let held = self.tail.len();
+        self.tail.extend_from_slice(batch);
+        let mut reply = Vec::new();
+        if let Ok(Some((fg, bg))) = self.colors.lock().map(|c| c.clone()) {
+            for (at, seen) in self.tail.windows(Self::FG.len()).enumerate() {
+                // Only a query that ends in this frame; the tail's own were answered.
+                if at + Self::FG.len() <= held {
+                    continue;
+                }
+                let (code, colour) = match seen {
+                    s if s == Self::FG => (10, &fg),
+                    s if s == Self::BG => (11, &bg),
+                    _ => continue,
+                };
+                reply.extend_from_slice(format!("\x1b]{code};{colour}\x1b\\").as_bytes());
+            }
+        }
+        let keep = self.tail.len().saturating_sub(Self::FG.len() - 1);
+        self.tail.drain(..keep);
+        if reply.is_empty() {
+            return;
+        }
+        if let Ok(mut writer) = self.writer.lock() {
+            let _ = writer.write_all(&reply).and_then(|()| writer.flush());
+        }
+    }
 }
 
 /// Where the scanner is inside a terminal escape sequence, kept across reads
@@ -362,6 +425,9 @@ pub struct PaneRegistry {
     /// can point it at a scratch file instead of the operator's real
     /// `~/.fleetor` — the same reason `orphans::write_registry` takes a path.
     registry_path: std::path::PathBuf,
+    /// The operator's terminal colours, which every pane's pump answers a colour
+    /// query from (D-097). One cell: the theme is the app's, not a pane's.
+    colors: TermColors,
 }
 
 impl PaneRegistry {
@@ -371,7 +437,23 @@ impl PaneRegistry {
             waking: Mutex::new(HashMap::new()),
             emit,
             registry_path,
+            colors: TermColors::default(),
         }
+    }
+
+    /// Record the terminal's foreground and background, as `#rrggbb`.
+    pub fn set_colors(&self, fg: &str, bg: &str) -> Result<(), String> {
+        let reply = |hex: &str| {
+            let h = hex.strip_prefix('#').filter(|h| h.len() == 6 && h.is_ascii())?;
+            u32::from_str_radix(h, 16).ok()?;
+            // 16 bits a channel, the form a terminal reports in.
+            Some(format!("rgb:{0}{0}/{1}{1}/{2}{2}", &h[0..2], &h[2..4], &h[4..6]))
+        };
+        let (Some(fg), Some(bg)) = (reply(fg), reply(bg)) else {
+            return Err(format!("not a pair of #rrggbb colours: {fg}, {bg}"));
+        };
+        *self.colors.lock().map_err(|e| e.to_string())? = Some((fg, bg));
+        Ok(())
     }
 
     /// Spawn `cmd` under a fresh pty as `pane`.
@@ -409,6 +491,16 @@ impl PaneRegistry {
         };
         wake(pane, &waking)?;
         self.announce(pane)
+    }
+
+    /// Whether `pane` already has a live process, announced or still waking.
+    pub fn is_up(&self, pane: PaneId) -> Result<bool, String> {
+        let panes = self.lock()?;
+        let waking = self.waking()?;
+        Ok(waking.contains_key(&pane)
+            || panes
+                .get(&pane)
+                .is_some_and(|p| decode_state(p.state.load(Ordering::Relaxed)).accepts_input()))
     }
 
     /// Give `pane` a pty, and either announce it or hand back what waking it
@@ -467,6 +559,7 @@ impl PaneRegistry {
 
         let state = Arc::new(AtomicU8::new(SPAWNING));
         let painted = Arc::new(AtomicU64::new(0));
+        let writer: PaneWriter = Arc::new(Mutex::new(writer));
         // Only a pane that is going to be woken is watched for the gate: the
         // question "is this pane parked on a dialog my keypress would answer" is
         // asked by the wake and by nothing else (#47).
@@ -485,12 +578,13 @@ impl PaneRegistry {
             state.clone(),
             painted.clone(),
             watch,
+            ColorQueries::answering(self.colors.clone(), writer.clone()),
         );
 
         let entry = Pane {
             master: pair.master,
             harness,
-            writer: Arc::new(Mutex::new(writer)),
+            writer,
             child,
             state,
             painted,
@@ -813,6 +907,7 @@ fn spawn_pump(
     state: Arc<AtomicU8>,
     painted: Arc<AtomicU64>,
     mut watch: Option<GateScanner>,
+    mut colors: ColorQueries,
 ) {
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
 
@@ -864,6 +959,7 @@ fn spawn_pump(
             if let Some(scanner) = watch.as_mut() {
                 scanner.feed(&batch);
             }
+            colors.feed(&batch);
             emit(&out_channel, STANDARD.encode(&batch));
             if disconnected {
                 break;
@@ -918,12 +1014,31 @@ fn spawn_pump(
 /// still painting, so the dialog the error describes is on screen underneath it,
 /// and [`PaneRegistry::kill`] reaches it.
 fn wake(pane: PaneId, waking: &Waking) -> Result<(), String> {
+    // Quiet first; a press only for a pane that will not settle on its own (D-098).
+    // codex 0.160 comes up quiet by itself, and an Enter into its ready composer
+    // types a blank line there.
+    let mut noisy = 0;
     loop {
         if waking.gate.load(Ordering::Relaxed) {
             return Err(gate_refusal(pane, &waking.context));
         }
         if !decode_state(waking.state.load(Ordering::Relaxed)).accepts_input() {
             return Ok(());
+        }
+        let before = waking.painted.load(Ordering::Relaxed);
+        if watch_for_the_gate(waking, QUIET_SAMPLE) {
+            return Err(gate_refusal(pane, &waking.context));
+        }
+        let after = waking.painted.load(Ordering::Relaxed);
+        if before > 0 && after == before {
+            return Ok(());
+        }
+        if after == 0 {
+            continue;
+        }
+        noisy += 1;
+        if noisy < PRESS_AFTER {
+            continue;
         }
         {
             let mut guard = waking.writer.lock().map_err(|e| e.to_string())?;
@@ -932,13 +1047,6 @@ fn wake(pane: PaneId, waking: &Waking) -> Result<(), String> {
         }
         if watch_for_the_gate(waking, PRESS_SETTLE) {
             return Err(gate_refusal(pane, &waking.context));
-        }
-        let before = waking.painted.load(Ordering::Relaxed);
-        if watch_for_the_gate(waking, QUIET_SAMPLE) {
-            return Err(gate_refusal(pane, &waking.context));
-        }
-        if before > 0 && waking.painted.load(Ordering::Relaxed) == before {
-            return Ok(());
         }
     }
 }
@@ -1080,15 +1188,24 @@ fn terminate(pane: &mut Pane) {
 
 // --- Tauri commands (thin wrappers) -------------------------------------------
 
+/// Off the main thread, where a synchronous command would run: a woken pane holds
+/// this call for seconds, and five of them in a row froze the window while each
+/// waited its turn (D-096).
 #[tauri::command]
-pub fn pty_spawn(
-    registry: State<'_, Arc<PaneRegistry>>,
-    fleet: State<'_, crate::fleet::FleetState>,
-    pane: PaneId,
-    rows: u16,
-    cols: u16,
-) -> Result<(), String> {
-    crate::fleet::spawn_pane(&fleet, &registry, pane, rows, cols)
+pub async fn pty_spawn(app: tauri::AppHandle, pane: PaneId, rows: u16, cols: u16) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let registry = app.state::<Arc<PaneRegistry>>();
+        let fleet = app.state::<crate::fleet::FleetState>();
+        crate::fleet::spawn_pane(&fleet, &registry, pane, rows, cols)
+    })
+    .await
+    .map_err(|e| format!("spawn {pane}: {e}"))?
+}
+
+/// Tell the registry what the terminal's theme is, so panes can be answered.
+#[tauri::command]
+pub fn pty_colors(state: State<'_, Arc<PaneRegistry>>, fg: String, bg: String) -> Result<(), String> {
+    state.set_colors(&fg, &bg)
 }
 
 #[tauri::command]

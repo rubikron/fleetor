@@ -99,3 +99,8 @@ Note: D-005 is referenced elsewhere in this file (e.g. D-009, D-011) but has no 
 | [D-089](D-089.md) | WP-29 | alive | a reopened pane keeps the posture a fresh one gets, and checkpoint 15 now asserts it |
 | [D-090](D-090.md) | WP-30 | alive | harness.rs becomes interface-only, and machine-probing joins the trait |
 | [D-091](D-091.md) | meta | alive | the orchestrator seat spawns `--permission-mode auto` |
+| [D-095](D-095.md) | WP-27 | alive | a reopened run comes back on the harness, model and credential it recorded, not on what the gate holds |
+| [D-096](D-096.md) | meta | alive | panes wake at once: `pty_spawn` leaves the main thread, and placement alone is one at a time |
+| [D-097](D-097.md) | meta | alive | a pane's colour query is answered at the pty, by the registry, and xterm is told not to answer |
+| [D-098](D-098.md) | meta | alive | the wake waits for quiet first, and presses only a pane that will not settle by itself |
+| [D-099](D-099.md) | meta | alive | a new fleet and a reopen are one launch: tear down, stage the old run, fix seats and target at launch |
