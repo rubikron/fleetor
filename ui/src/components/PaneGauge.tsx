@@ -1,7 +1,7 @@
 // One pane's context reading, wherever it is shown (#48).
 //
 // **Why a component and not two ternaries.** The gauge appears twice — in a
-// pane head and in the worker tab strip — and before this each site guarded on
+// pane head and on its mission control card — and before this each site guarded on
 // bare truthiness and spelled its own markup. That is how "unavailable" came to
 // be rendered as nothing in both places at once: there was no renderer to teach,
 // only two guards that both fell through. `contextGaugeTone.ts` already exists
@@ -22,9 +22,9 @@ interface PaneGaugeProps {
   /// told anything yet still says so.
   reading: GaugeReading | undefined;
   /// Which block name the tone class hangs off — `pane__gauge--muted` in a pane
-  /// head, `tab__gauge--muted` in the tab strip. The two sites keep their own
+  /// head, `mc-card__gauge--muted` on a card. The two sites keep their own
   /// typography and share everything else.
-  block: "pane__gauge" | "tab__gauge";
+  block: "pane__gauge" | "mc-card__gauge";
   /// Extra classes the call site already put on its span, kept so this change
   /// is a swap of the element rather than a restyle of it.
   className?: string;

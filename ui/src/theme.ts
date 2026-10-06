@@ -75,3 +75,44 @@ export const warmThemeLight: ITheme = {
   brightCyan: "#8f7638", // remapped
   brightWhite: "#2b2318",
 };
+
+// The theme switch's morph (styles.css, THEME MORPH). xterm paints its canvas
+// outside CSS, so that transition cannot reach it: TerminalPane steps the
+// terminal's own theme instead, and these are what keep it in lockstep with the
+// chrome around it. Both must match `:root[data-theme-morph]`'s duration and
+// its cubic-bezier(0.65, 0, 0.35, 1) — this is that curve's usual closed form,
+// close to it rather than identical.
+export const THEME_MORPH_MS = 600;
+
+export function easeThemeMorph(t: number): number {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+
+const HEX = /^#[0-9a-f]{6}$/i;
+
+// Mixed channel by channel in sRGB, which is where a CSS transition between two
+// hex colours interpolates too — so a pane's canvas and the ring around it pass
+// through the same colours on the way.
+function mixHex(from: string, to: string, t: number): string {
+  const a = parseInt(from.slice(1), 16);
+  const b = parseInt(to.slice(1), 16);
+  const channel = (shift: number) => {
+    const x = (a >> shift) & 0xff;
+    const y = (b >> shift) & 0xff;
+    return Math.round(x + (y - x) * t);
+  };
+  const rgb = (channel(16) << 16) | (channel(8) << 8) | channel(0);
+  return `#${rgb.toString(16).padStart(6, "0")}`;
+}
+
+// One frame of a switch: every colour `to` names, `t` of the way there from
+// `from`. Anything that is not a plain hex pair lands on `to`'s value as-is.
+export function mixTheme(from: ITheme, to: ITheme, t: number): ITheme {
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(to) as (keyof ITheme)[]) {
+    const a = from[key];
+    const b = to[key];
+    out[key] = typeof a === "string" && typeof b === "string" && HEX.test(a) && HEX.test(b) ? mixHex(a, b, t) : b;
+  }
+  return out as ITheme;
+}

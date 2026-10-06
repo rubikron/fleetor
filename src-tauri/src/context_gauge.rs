@@ -57,6 +57,38 @@ use fleetor_core::pane::{ContextGauge, PaneId};
 /// own window answers `None` and is not measured against this number at all.
 pub const WORKER_WINDOW_TOKENS: u32 = 500_000;
 
+/// The context window Claude Code runs a model slug at, on the Anthropic API
+/// (measured against its docs and the 2.1.291 binary, 2026-10-06). Keyed by
+/// window class, not by a version list: aliases move with Claude Code releases.
+///
+/// A slug Claude Code does not recognise, and a seat with no model, keep
+/// [`WORKER_WINDOW_TOKENS`] — the one case it honours the exported window (D-054).
+pub fn model_window_tokens(model: Option<&str>) -> u32 {
+    const LARGE: u32 = 1_000_000;
+    const STANDARD: u32 = 200_000;
+    let Some(slug) = model else { return WORKER_WINDOW_TOKENS };
+    if slug.contains("[1m]") || slug.contains("1m-") {
+        return LARGE;
+    }
+    match slug {
+        "sonnet" | "opus" | "default" | "fable" | "best" | "opusplan" => return LARGE,
+        "haiku" => return STANDARD,
+        _ => {}
+    }
+    let Some(rest) = slug.strip_prefix("claude-") else { return WORKER_WINDOW_TOKENS };
+    let mut parts = rest.split('-');
+    let family = parts.next().unwrap_or_default();
+    let mut version = parts.map_while(|part| part.parse::<u32>().ok().filter(|n| *n < 100));
+    let major = version.next().unwrap_or(0);
+    let minor = version.next().unwrap_or(0);
+    match family {
+        "fable" => LARGE,
+        "opus" if major >= 5 || (major == 4 && minor >= 7) => LARGE,
+        "sonnet" if major >= 5 => LARGE,
+        _ => STANDARD,
+    }
+}
+
 /// Where a pane's percent first earns an informational Notice (WP-04
 /// performance criteria: "at most one Notice on first crossing of ~80%").
 /// Never acted on: nothing here refuses, warns-and-blocks, or auto-compacts —
@@ -89,6 +121,8 @@ pub struct TranscriptSource {
     pub harness: &'static dyn crate::placement::harness::Harness,
     pub config_dir: PathBuf,
     pub cwd: PathBuf,
+    /// Per-seat window override, from `model_window_tokens` at spawn.
+    pub window_tokens: Option<u32>,
 }
 
 /// The pane → transcript-source map: `record`ed once per worker at spawn,
@@ -142,7 +176,7 @@ impl GaugeSources {
             return None;
         }
         let reading = source.harness.read_usage(&source)?;
-        let window = reading.window_tokens.or(gauge.window_tokens)?;
+        let window = reading.window_tokens.or(source.window_tokens).or(gauge.window_tokens)?;
         Some(ContextGauge::new(reading.used_tokens, window))
     }
 }
@@ -169,8 +203,7 @@ pub struct UsageReading {
 // --- the transcript sampler ------------------------------------------------------
 
 /// `<config_dir>/projects/<slug>/`, where `<slug>` is the pane's project key with
-/// every `/` and `.` replaced by `-` — empirically verified character-for-character
-/// in `docs/notes/context-gauge-notes.md` §1.
+/// every character that is not an ASCII letter or digit replaced by `-`.
 ///
 /// **The key comes from the pane's own harness** (WP-25, checkpoint 14), which is
 /// what makes "the gauge and the trust flag agree on one spelling of a cwd" a
@@ -199,8 +232,9 @@ pub struct UsageReading {
 /// the shape from one example is how a seam ends up describing one vendor.
 fn project_dir(source: &TranscriptSource) -> PathBuf {
     let resolved = source.harness.project_key(&source.cwd);
+    // Claude Code's own rule, measured on disk: `_shell` becomes `-shell`.
     let slug: String =
-        resolved.chars().map(|c| if c == '/' || c == '.' { '-' } else { c }).collect();
+        resolved.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
     source.config_dir.join(source.harness.spec().transcript.subdir).join(slug)
 }
 
@@ -267,18 +301,29 @@ fn sample_transcript(source: &TranscriptSource, window_tokens: u32) -> Option<Co
 /// Scans from the end: two identical `usage` lines are written per real turn
 /// (same `message.id`, byte-identical usage), so "last" and "last real turn"
 /// agree without de-duplicating.
+///
+/// **A compaction after the last call wins over it**: the boundary line carries
+/// the size the context was cut to, and the next call may be hours away.
+///
+/// **A line with no usage is skipped**, not read as zero: Claude Code writes a
+/// synthetic `assistant` line for an API error, with every usage field 0.
 fn last_turn_usage(transcript: &str) -> Option<u32> {
     transcript.lines().rev().find_map(|line| {
         let entry: serde_json::Value = serde_json::from_str(line).ok()?;
-        if entry.get("type")?.as_str()? != "assistant" {
-            return None;
+        match entry.get("type")?.as_str()? {
+            "system" if entry.get("subtype")?.as_str()? == "compact_boundary" => {
+                Some(entry.get("compactMetadata")?.get("postTokens")?.as_u64()? as u32)
+            }
+            "assistant" => {
+                let usage = entry.get("message")?.get("usage")?;
+                let field = |name: &str| usage.get(name).and_then(|v| v.as_u64()).unwrap_or(0);
+                let total = field("input_tokens")
+                    + field("cache_creation_input_tokens")
+                    + field("cache_read_input_tokens");
+                (total > 0).then_some(total as u32)
+            }
+            _ => None,
         }
-        let usage = entry.get("message")?.get("usage")?;
-        let field = |name: &str| usage.get(name).and_then(|v| v.as_u64()).unwrap_or(0);
-        let total = field("input_tokens")
-            + field("cache_creation_input_tokens")
-            + field("cache_read_input_tokens");
-        Some(total as u32)
     })
 }
 
@@ -320,7 +365,7 @@ fn last_turn_usage(transcript: &str) -> Option<u32> {
 /// checkpoint 13's contract with its own conformance obligations, and it belongs
 /// to the harvest's ticket rather than being smuggled in behind a gauge. The
 /// consequence is stated rather than discovered: **an archived codex run carries
-/// its transcript without its per-turn usage**, so a Critic reading one cold has
+/// its transcript without its per-turn usage**, so a reader of one cold has
 /// the turns and not the accounting. `state_5.sqlite` happens to travel already,
 /// because the walk filters by extension — but it carries only the thread's
 /// running total, which is the one figure this function refuses to use.
@@ -366,13 +411,14 @@ fn latest_rollout(state_db: &Path) -> Option<PathBuf> {
         .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
 }
 
-/// The last completed turn's `total_tokens`, scanning from the end.
+/// The last model call's `total_tokens`, scanning from the end — the record's
+/// own `usage`, which is one call's prompt plus its reply.
 ///
-/// `turn_token_usage` by name, falling back to the record's own `usage`. The two
-/// were byte-identical in the one measured turn, so this is not a switch between
-/// two meanings — it is the unambiguously-named field, with the ambiguous one
-/// behind it. `thread_token_usage`, the third sibling, is never read: its name
-/// says it accumulates, and a thread total is not a context reading.
+/// **Never `turn_token_usage`.** It is a running sum over every call in the turn,
+/// and each call re-sends the context: measured on 437 records, it equals `usage`
+/// on a turn's first call and the sum of the calls after that, so a 12-call turn
+/// read 178,781 where the context held 18,294. `thread_token_usage` accumulates
+/// further still.
 fn last_turn_total_tokens(rollout: &str) -> Option<u32> {
     rollout.lines().rev().find_map(|line| {
         let entry: serde_json::Value = serde_json::from_str(line).ok()?;
@@ -380,8 +426,7 @@ fn last_turn_total_tokens(rollout: &str) -> Option<u32> {
             return None;
         }
         let payload = entry.get("payload")?;
-        let turn = payload.get("turn_token_usage").or_else(|| payload.get("usage"))?;
-        Some(turn.get("total_tokens")?.as_u64()? as u32)
+        Some(payload.get("usage")?.get("total_tokens")?.as_u64()? as u32)
     })
 }
 
@@ -535,32 +580,13 @@ mod tests {
     }
 
     fn seed_transcript(config_dir: &Path, cwd: &Path, lines: &[String]) {
-        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir: config_dir.to_path_buf(), cwd: cwd.to_path_buf() };
+        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir: config_dir.to_path_buf(), cwd: cwd.to_path_buf(), window_tokens: None };
         let dir = project_dir(&source);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("session-a.jsonl"), lines.join("\n")).unwrap();
     }
 
     // --- project_dir / the slug rule -------------------------------------------
-
-    /// Character-for-character, the rule `docs/notes/context-gauge-notes.md` §1
-    /// verified against a real Claude Code run: every `/` and every `.` in
-    /// the resolved cwd becomes `-`, nothing else changes.
-    #[test]
-    fn project_dir_matches_claude_codes_own_encoding() {
-        let cwd = temp_dir("slug-cwd");
-        let config_dir = temp_dir("slug-config");
-        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir: config_dir.clone(), cwd: cwd.clone() };
-
-        let resolved = crate::placement::spawn::project_key(&cwd);
-        let expected_slug: String =
-            resolved.chars().map(|c| if c == '/' || c == '.' { '-' } else { c }).collect();
-
-        assert_eq!(project_dir(&source), config_dir.join("projects").join(&expected_slug));
-        assert!(!expected_slug.contains('/'), "a slug with a slash would be a nested directory");
-    }
-
-    // --- last_turn_usage: the honest-sum finding --------------------------------
 
     #[test]
     fn no_assistant_line_means_no_reading_at_all() {
@@ -615,7 +641,7 @@ mod tests {
     #[test]
     fn no_transcript_directory_at_all_samples_as_absent() {
         let source =
-            TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir: temp_dir("no-dir-cfg"), cwd: temp_dir("no-dir-cwd") };
+            TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir: temp_dir("no-dir-cfg"), cwd: temp_dir("no-dir-cwd"), window_tokens: None };
         assert_eq!(sample_transcript(&source, WORKER_WINDOW_TOKENS), None);
     }
 
@@ -625,7 +651,7 @@ mod tests {
         let config_dir = temp_dir("empty-turn-cfg");
         seed_transcript(&config_dir, &cwd, &[user_line("are you there")]);
 
-        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir, cwd };
+        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir, cwd, window_tokens: None };
         assert_eq!(sample_transcript(&source, WORKER_WINDOW_TOKENS), None, "no assistant reply yet");
     }
 
@@ -638,7 +664,7 @@ mod tests {
         let tenth = WORKER_WINDOW_TOKENS / 10;
         seed_transcript(&config_dir, &cwd, &[user_line("hi"), assistant_line(u64::from(tenth), 0, 0)]);
 
-        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir, cwd };
+        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir, cwd, window_tokens: None };
         let gauge = sample_transcript(&source, WORKER_WINDOW_TOKENS).expect("a completed turn exists");
         assert_eq!(gauge.used_tokens, tenth);
         assert_eq!(gauge.window_tokens, WORKER_WINDOW_TOKENS);
@@ -652,7 +678,7 @@ mod tests {
     fn the_most_recently_modified_transcript_file_wins() {
         let cwd = temp_dir("multi-cwd");
         let config_dir = temp_dir("multi-cfg");
-        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir: config_dir.clone(), cwd: cwd.clone() };
+        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir: config_dir.clone(), cwd: cwd.clone(), window_tokens: None };
         let dir = project_dir(&source);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -668,7 +694,7 @@ mod tests {
     fn a_non_jsonl_file_in_the_project_dir_is_ignored() {
         let cwd = temp_dir("stray-cwd");
         let config_dir = temp_dir("stray-cfg");
-        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir: config_dir.clone(), cwd: cwd.clone() };
+        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir: config_dir.clone(), cwd: cwd.clone(), window_tokens: None };
         let dir = project_dir(&source);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("notes.txt"), "not a transcript").unwrap();
@@ -798,6 +824,7 @@ mod tests {
                 harness: &stand_ins::PUBLISHES_ITS_OWN_WINDOW,
                 config_dir: config_dir.clone(),
                 cwd: cwd.clone(),
+                window_tokens: None,
             },
         );
         sources.record(
@@ -806,6 +833,7 @@ mod tests {
                 harness: crate::placement::harness::claude_code(),
                 config_dir,
                 cwd,
+                window_tokens: None,
             },
         );
 
@@ -840,6 +868,7 @@ mod tests {
                 harness: &stand_ins::KEEPS_USAGE_ELSEWHERE,
                 config_dir,
                 cwd,
+                window_tokens: None,
             },
         );
 
@@ -865,7 +894,7 @@ mod tests {
         seed_transcript(&config_dir, &cwd, &[assistant_line(u64::from(WORKER_WINDOW_TOKENS / 20), 0, 0)]);
 
         let sources = GaugeSources::default();
-        sources.record(PaneId::Worker(2), TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir, cwd });
+        sources.record(PaneId::Worker(2), TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir, cwd, window_tokens: None });
 
         assert_eq!(sources.sample(PaneId::Worker(2)).map(|g| g.pct), Some(5));
         assert_eq!(sources.sample(PaneId::Worker(3)), None, "an unrecorded peer stays absent");
@@ -982,6 +1011,7 @@ mod tests {
                 harness: crate::placement::codex::codex(),
                 config_dir: home.to_path_buf(),
                 cwd: home.join("worktree"),
+                window_tokens: None,
             },
         );
         sources
@@ -1230,5 +1260,115 @@ mod tests {
         assert!(text.contains("80%") || text.contains(&gauge.pct.to_string()));
         assert!(text.contains("consider"), "it proposes, it does not command: {text}");
         assert!(text.contains("may lag"), "the honesty label the requirements doc requires: {text}");
+    }
+
+    /// Claude Code names a transcript directory by replacing every character
+    /// that is not a letter or digit — `_` included, and every worker's cwd is
+    /// under `_shell`. Measured on disk: `.fleetor/_shell` is `-fleetor--shell`.
+    #[test]
+    fn the_transcript_directory_is_found_for_a_cwd_under_shell() {
+        let source = TranscriptSource {
+            harness: crate::placement::harness::claude_code(),
+            config_dir: PathBuf::from("/cfg"),
+            cwd: PathBuf::from("/nonexistent/.fleetor/_shell/worktrees/repo-f7f9/worker-2"),
+            window_tokens: None,
+        };
+        let dir = project_dir(&source);
+        assert!(
+            dir.ends_with("-nonexistent--fleetor--shell-worktrees-repo-f7f9-worker-2"),
+            "{}",
+            dir.display()
+        );
+    }
+
+    #[test]
+    fn a_compaction_after_the_last_call_is_what_the_context_holds() {
+        let boundary = serde_json::json!({
+            "type": "system",
+            "subtype": "compact_boundary",
+            "compactMetadata": { "preTokens": 588_656, "postTokens": 11_284 }
+        })
+        .to_string();
+        let compacted = [assistant_line(96, 0, 588_560), boundary.clone()].join("\n");
+        assert_eq!(last_turn_usage(&compacted), Some(11_284));
+        let then_a_call = [compacted, assistant_line(40, 0, 48_542)].join("\n");
+        assert_eq!(last_turn_usage(&then_a_call), Some(48_582), "the next call is the newer reading");
+    }
+
+    #[test]
+    fn an_api_error_line_is_not_a_reading_of_zero() {
+        let transcript = [assistant_line(390, 0, 500_000), assistant_line(0, 0, 0)].join("\n");
+        assert_eq!(last_turn_usage(&transcript), Some(500_390));
+        assert_eq!(last_turn_usage(&assistant_line(0, 0, 0)), None);
+    }
+
+    /// A turn of several model calls: `turn_token_usage` sums them, and only the
+    /// last call's own `usage` is what the context holds.
+    #[test]
+    fn a_codex_turn_of_many_calls_reads_its_last_call_not_their_sum() {
+        let call = |this_call: u64, turn_so_far: u64| {
+            serde_json::json!({
+                "type": "token_usage_record",
+                "payload": {
+                    "usage": { "total_tokens": this_call },
+                    "turn_token_usage": { "total_tokens": turn_so_far },
+                    "thread_token_usage": { "total_tokens": turn_so_far }
+                }
+            })
+            .to_string()
+        };
+        let rollout = [call(15_000, 15_000), call(16_500, 31_500), call(18_294, 49_794)].join("\n");
+        assert_eq!(last_turn_total_tokens(&rollout), Some(18_294));
+    }
+
+    // --- model_window_tokens ---------------------------------------------------------
+
+    #[test]
+    fn aliases_and_current_models_get_the_window_claude_code_runs_them_at() {
+        for large in ["sonnet", "opus", "default", "opusplan", "claude-sonnet-5-5", "claude-opus-5", "claude-opus-4-7", "claude-fable-5-1"] {
+            assert_eq!(model_window_tokens(Some(large)), 1_000_000, "{large}");
+        }
+        for standard in ["haiku", "claude-opus-4-6", "claude-sonnet-4-6", "claude-sonnet-4-5", "claude-haiku-4-5"] {
+            assert_eq!(model_window_tokens(Some(standard)), 200_000, "{standard}");
+        }
+    }
+
+    #[test]
+    fn known_claude_models_get_200k() {
+        assert_eq!(model_window_tokens(Some("claude-sonnet-4-20250514")), 200_000);
+        assert_eq!(model_window_tokens(Some("claude-opus-4-20250514")), 200_000);
+        assert_eq!(model_window_tokens(Some("claude-haiku-4-5-20251001")), 200_000);
+    }
+
+    #[test]
+    fn extended_context_models_get_1m() {
+        assert_eq!(model_window_tokens(Some("claude-opus-4-20250514[1m]")), 1_000_000);
+    }
+
+    #[test]
+    fn unknown_models_fall_back_to_the_default_constant() {
+        assert_eq!(model_window_tokens(Some("deepseek-v4-flash-preview")), WORKER_WINDOW_TOKENS);
+        assert_eq!(model_window_tokens(None), WORKER_WINDOW_TOKENS);
+    }
+
+    #[test]
+    fn per_seat_window_overrides_the_spec_constant_in_the_gauge() {
+        let cwd = temp_dir("override-cwd");
+        let config_dir = temp_dir("override-cfg");
+        let tokens = 200_000u32;
+        let used = tokens / 5; // 20%
+        seed_transcript(&config_dir, &cwd, &[assistant_line(u64::from(used), 0, 0)]);
+
+        let sources = GaugeSources::default();
+        sources.record(PaneId::Worker(1), TranscriptSource {
+            harness: crate::placement::harness::claude_code(),
+            config_dir,
+            cwd,
+            window_tokens: Some(tokens),
+        });
+
+        let gauge = sources.sample(PaneId::Worker(1)).expect("a completed turn");
+        assert_eq!(gauge.window_tokens, tokens);
+        assert_eq!(gauge.pct, 20);
     }
 }

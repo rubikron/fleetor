@@ -11,19 +11,8 @@
 //! nothing tests.
 
 pub mod context_gauge;
-/// The Critic (WP-20, D-076) — what it is told, and where it works. Its brief is
-/// `prompts/critic.md`, overridable from `~/.fleetor/prompts/` like every other
-/// brief, and it exists whether or not dev mode is on: it is a product feature.
 pub mod credential_source;
-pub mod critic;
 pub mod deliver;
-/// Dev mode (WP-16) — read by the UI and by later packages, never by the
-/// delivery path (Tier 1.4; `tests/dev_mode.rs` is the tripwire).
-pub mod dev;
-/// The evaluator (WP-15) — whether one may exist, what it is told, and where it
-/// works. Its brief is compiled in from a separate repo behind the `devmode`
-/// feature and has no `~/.fleetor/prompts/` override; a default build has none.
-pub mod evaluator;
 pub mod fleet;
 /// The write guardrail (WP-17) — a `PreToolUse` hook per pane, never anything
 /// the delivery path can read (Tier 1.4; `tests/write_guardrail.rs` is the
@@ -56,11 +45,10 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(FleetState::default())
         // **The start gate's own state, managed for the app rather than for a
-        // fleet** (WP-25 #36). The gate is the screen that runs before
-        // `fleet_bootstrap`, so what it renders from — the harness readings and the
-        // operator's seat selection — cannot live on the fleet it is deciding
-        // whether to start. `Fleet` takes a clone of this same `Arc`, so what the
-        // pickers write is what `spawn_pane` places against (M15).
+        // fleet** (WP-25 #36). The gate always describes the *next* fleet, so what
+        // it renders from — the harness readings and the operator's seat selection
+        // — cannot live on a fleet. A launch copies the seats onto the fleet it
+        // builds (D-099).
         .manage(Arc::new(GateHold::default()))
         .setup(|app| {
             // Before this session spawns anything of its own: reap whatever a
@@ -109,9 +97,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             pty::pty_spawn,
             pty::pty_write,
+            pty::pty_colors,
             pty::pty_resize,
             pty::pty_kill,
-            fleet::fleet_bootstrap,
+            fleet::fleet_launch,
             fleet::fleet_config,
             fleet::fleet_target,
             fleet::fleet_pick_target,
@@ -120,33 +109,16 @@ pub fn run() {
             fleet::fleet_set_seats,
             fleet::fleet_roster,
             fleet::fleet_send,
-            fleet::critic_interview_open,
-            fleet::critic_interview_is_open,
             fleet::runs_list,
             fleet::run_events,
             fleet::run_rename,
             fleet::run_delete,
             fleet::run_export,
-            fleet::run_reopen,
-            dev::dev_mode_get,
-            dev::dev_mode_set,
         ])
         .on_window_event(|window, event| {
             let WindowEvent::CloseRequested { .. } = event else { return };
-            // **Closing is unambiguous because there is exactly one window**
-            // (D-073). WP-15's second window made this handler ambiguous — it
-            // tore the whole fleet down on any `CloseRequested`, which is a
-            // six-pty kill on closing the wrong one — and the label branch that
-            // fixed it was a fix for a hazard the second window had introduced.
-            // The evaluator is now a view inside this window, so the only close
-            // that can arrive is the close of the whole application, and
-            // tearing the fleet down is the only thing it can mean.
-            //
-            // §7 rule 5 has not gone anywhere; it moved to where it belongs. The
-            // evaluator's terminal survives being switched away from because its
-            // view is hidden with `.is-hidden` rather than unmounted, which is
-            // the mechanism every other view already used — not because a close
-            // was intercepted and turned into a hide.
+            // There is exactly one window, so a close is the close of the whole
+            // application and tearing the fleet down is the only thing it can mean.
             teardown_fleet(window);
         })
         .build(tauri::generate_context!())

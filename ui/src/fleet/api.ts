@@ -17,13 +17,23 @@ import {
 } from "./types";
 
 const FLEET_EVENT = "fleet://event";
-// Must match `EVENT_EVALUATOR_WAKE` in src-tauri/src/fleet.rs. Listening on the
-// wrong name renders nothing and reports no error (see types.ts:54).
-const EVALUATOR_WAKE = "evaluator://wake";
+const FLEET_LAUNCHING = "fleet://launching";
 
-/// Start (idempotent) the embedded fleet: store, event bus, hub socket.
-export function bootstrap(): Promise<BootSnapshot> {
-  return invoke<BootSnapshot>("fleet_bootstrap");
+/// What a launch brings up: a new fleet on the gate's picks, or a past run on
+/// the seats and target it recorded (D-099).
+export type LaunchSource = { kind: "fresh" } | { kind: "reopen"; id: string };
+
+/// Why a launch brought no fleet up. `torn_down` is false when it was refused
+/// before anything was touched, so whatever was running still is.
+export interface LaunchFailure {
+  reason: string;
+  torn_down: boolean;
+}
+
+/// The one way a fleet comes up: the running fleet is torn down and archived,
+/// then the new one is built. Rejects with a `LaunchFailure`.
+export function launchFleet(source: LaunchSource): Promise<BootSnapshot> {
+  return invoke<BootSnapshot>("fleet_launch", { source });
 }
 
 /// The live fleet configuration — what a click will run, and where.
@@ -111,55 +121,18 @@ export function sendAsOperator(target: PaneId | "all" | "reply", text: string): 
   return invoke<OperatorSend>("fleet_send", { target, text });
 }
 
-// --- dev mode (WP-16) ---------------------------------------------------------
-//
-// The mode is stored on the Rust side (`dev_mode` in ~/.fleetor/config.json),
-// not in localStorage where the theme and the nav selection live: later packages
-// branch on it from code that has no webview, and two copies of a mode is one
-// copy too many. Both calls work before the fleet is bootstrapped.
-
-/// Whether the app is in dev mode.
-export function fetchDevMode(): Promise<boolean> {
-  return invoke<boolean>("dev_mode_get");
-}
-
-/// Turn dev mode on or off, persistently. Resolves with what is now *stored* —
-/// render that, not the value that was asked for.
-export function setDevMode(enabled: boolean): Promise<boolean> {
-  return invoke<boolean>("dev_mode_set", { enabled });
-}
-
-// --- the Critic's interview (WP-21 stage A) -----------------------------------
-//
-// Whether the Critic is currently an *address*. Closed, `fleet send orch` from
-// inside it fails at resolution the way a send to a pane that does not exist
-// fails — nothing is accepted and then dropped. Open, the same call reaches the
-// pane and spends its turn.
-//
-// The state lives on the Rust side because it is a property of the run, not of
-// this webview: it survives a `/clear` and a pane restart, and code with no
-// webview decides whether a send resolves. So these two calls are a *view* of
-// it, exactly as `dev_mode_get`/`dev_mode_set` are a view of the mode — never a
-// second copy.
-
-/// Whether the operator currently has the interview open.
-export function fetchCriticInterview(): Promise<boolean> {
-  return invoke<boolean>("critic_interview_is_open");
-}
-
-/// Open or close the interview. Resolves with what is now *stored* — render
-/// that, not the value that was asked for. Both edges write a `notice` to the
-/// run's event log on the Rust side: this changes what is possible.
-export function setCriticInterview(open: boolean): Promise<boolean> {
-  return invoke<boolean>("critic_interview_open", { open });
-}
-
 // --- panes --------------------------------------------------------------------
 
 /// Spawn one pane's `claude` under a pty. Spends tokens — every caller is behind
 /// the explicit start gate.
 export function spawnPane(pane: PaneId, rows: number, cols: number): Promise<void> {
   return invoke("pty_spawn", { pane, rows, cols });
+}
+
+/// The terminal theme's default colours, which the backend answers a pane's
+/// colour query with (D-097).
+export function setTerminalColors(fg: string, bg: string): Promise<void> {
+  return invoke("pty_colors", { fg, bg });
 }
 
 /// Relay operator keystrokes to a pane.
@@ -205,22 +178,17 @@ export function deleteRun(id: string): Promise<void> {
 /// Save a run's JSON export. Opens a native save dialog on the Rust side, so no
 /// dialog plugin is needed here. Resolves to `null` when the operator dismissed
 /// it — a cancel, not a failure, and it must not be shown as one.
-/// Reopen a past run: the fleet you have now is archived, and that run's five
-/// panes come back on their own recorded sessions (WP-27, R2, R5).
-///
-/// Resolves to the same `BootSnapshot` a fresh start does, because reopening *is*
-/// a start — one with a seeded log. Rejects with a sentence naming the seat or the
-/// harness when the run cannot be restored (R8), and rejects **before** anything is
-/// torn down, so a refusal leaves the live fleet running.
-export function reopenRun(id: string): Promise<BootSnapshot> {
-  return invoke<BootSnapshot>("run_reopen", { id });
-}
-
 export function exportRun(id: string): Promise<string | null> {
   return invoke<string | null>("run_export", { id });
 }
 
 // --- streams ------------------------------------------------------------------
+
+/// Subscribe to "a launch's verdict passed": the old fleet is down and every
+/// fleet event after this belongs to the new run. A refused launch never fires it.
+export function onFleetLaunching(handler: () => void): Promise<UnlistenFn> {
+  return listen(FLEET_LAUNCHING, () => handler());
+}
 
 /// Subscribe to the live event stream. Returns an unlisten fn for cleanup.
 export function onFleetEvent(handler: (event: FleetEvent) => void): Promise<UnlistenFn> {
@@ -237,13 +205,4 @@ export function onPaneOutput(pane: PaneId, handler: (base64: string) => void): P
 /// Subscribe to one pane's exit.
 export function onPaneExit(pane: PaneId, handler: () => void): Promise<UnlistenFn> {
   return listen(`pty://exit/${paneKey(pane)}`, () => handler());
-}
-
-/// The evaluator woke (D-073). Fires once per handoff that cleared the Rust
-/// side's readiness check — dev mode on, a grader compiled in, and a prepared
-/// mission — which is why this is its own event rather than something derived
-/// from the `FleetEvent::Handoff` the feed already carries: most handoffs must
-/// wake nothing at all, and only Rust knows which ones.
-export function onEvaluatorWake(handler: () => void): Promise<UnlistenFn> {
-  return listen(EVALUATOR_WAKE, () => handler());
 }

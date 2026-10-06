@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Parallel PRD coordination</title>
+<style>
+  :root {
+    --bg: #faf6ef; --panel: #fffdf9; --ink: #2a2420; --muted: #7a6f66;
+    --line: #cfc4b6; --coral: #d2553a; --coral-bg: #fbe6df;
+    --gold: #a97a12; --gold-bg: #f8ecc9; --ok: #4f7a4a; --ok-bg: #e4efe0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1b1815; --panel: #25211d; --ink: #efe8df; --muted: #a2978c;
+      --line: #4a423a; --coral: #ef7f63; --coral-bg: #43241c;
+      --gold: #e0b44a; --gold-bg: #3d3216; --ok: #8fc088; --ok-bg: #223220;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 -apple-system, "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 1040px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  h2 { font-size: 19px; margin: 44px 0 4px; }
+  h2 span { color: var(--muted); font-weight: 500; margin-right: 8px; }
+  p.lede { color: var(--muted); margin: 0 0 14px; max-width: 70ch; }
+  code { font: 13px ui-monospace, Menlo, monospace; background: var(--gold-bg);
+    padding: 1px 5px; border-radius: 4px; }
+  .panel { background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 14px; overflow-x: auto; }
+  svg { display: block; min-width: 860px; width: 100%; height: auto; }
+  svg .b { fill: var(--panel); stroke: var(--line); stroke-width: 1.5; }
+  svg .ui { fill: var(--bg); stroke: var(--ink); stroke-width: 1.5; }
+  svg .bad { fill: var(--coral-bg); stroke: var(--coral); stroke-width: 1.5; }
+  svg .new { fill: var(--gold-bg); stroke: var(--gold); stroke-width: 1.5; }
+  svg .hook { fill: var(--gold-bg); stroke: var(--gold); stroke-width: 1.5; stroke-dasharray: 5 4; }
+  svg .t { fill: var(--ink); font: 600 13px -apple-system, system-ui, sans-serif; text-anchor: middle; }
+  svg .s { fill: var(--muted); font: 11px -apple-system, system-ui, sans-serif; text-anchor: middle; }
+  svg .sb { fill: var(--coral); font: 600 11px -apple-system, system-ui, sans-serif; text-anchor: middle; }
+  svg .n { fill: var(--muted); font: 12px -apple-system, system-ui, sans-serif; }
+  svg .a { stroke: var(--muted); stroke-width: 1.5; fill: none; }
+  svg .ah { fill: var(--muted); }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; color: var(--muted); font-size: 13px; }
+  .legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px;
+    vertical-align: -1px; margin-right: 5px; border: 1.5px solid; }
+  .i-bad { background: var(--coral-bg); border-color: var(--coral) !important; }
+  .i-new { background: var(--gold-bg); border-color: var(--gold) !important; }
+  .i-ui { background: var(--bg); border-color: var(--ink) !important; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+  .card h3 { margin: 0 0 8px; font-size: 15px; }
+  .card h3 b { color: var(--coral); margin-right: 6px; }
+  .card dl { margin: 0; display: grid; grid-template-columns: 78px 1fr; gap: 5px 10px; font-size: 13.5px; }
+  .card dt { color: var(--muted); }
+  .card dd { margin: 0; }
+  .fix { margin-top: 10px; padding: 8px 10px; border-radius: 7px; background: var(--ok-bg);
+    border-left: 3px solid var(--ok); font-size: 13.5px; }
+  .fix b { color: var(--ok); }
+  .lanes { display: grid; grid-template-columns: 110px repeat(4, minmax(150px, 1fr)); gap: 8px; min-width: 820px; }
+  .lanes > div { border-radius: 8px; padding: 9px 10px; font-size: 13px; border: 1px solid var(--line); background: var(--bg); }
+  .lanes .h { border: 0; background: none; color: var(--muted); font-weight: 600; padding-left: 0; }
+  .lanes .lab { border: 0; background: none; font-weight: 600; padding-left: 0; }
+  .lanes .both { grid-column: span 1; background: var(--gold-bg); border-color: var(--gold); }
+  .lanes .gate { background: var(--coral-bg); border-color: var(--coral); }
+  .lanes .wait { border-style: dashed; color: var(--muted); }
+  .lanes b { display: block; margin-bottom: 2px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  ol.rules { margin: 0; padding-left: 20px; }
+  ol.rules li { margin-bottom: 6px; }
+</style>
+</head>
+<body>
+<main>
+<h1>Running the launch PRD and the task PRD in parallel</h1>
+<p class="lede">How the system works today, where the two plans collide, what the resolutions fix, and the rules each Claude Code session follows. Sources: <code>.scratch/one-fleet-launch/PRD.md</code>, <code>.scratch/task-system/PRD.md</code>.</p>
+
+<h2><span>1</span>Before: two start paths, one run log holding everything</h2>
+<p class="lede">New fleet and reopen are separate commands. Only reopen tears the running fleet down. Tasks are events inside the run's own database, so they are archived with the session.</p>
+<div class="panel">
+<svg viewBox="0 0 940 300" role="img" aria-label="Current system flow">
+  <defs><marker id="m1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M0 0L10 5L0 10z"/></marker></defs>
+  <rect class="ui" x="20" y="30" width="150" height="48" rx="8"/><text class="t" x="95" y="50">New fleet</text><text class="s" x="95" y="67">Home</text>
+  <rect class="ui" x="20" y="130" width="150" height="48" rx="8"/><text class="t" x="95" y="150">History row</text><text class="s" x="95" y="167">reopen a past run</text>
+  <rect class="b" x="210" y="130" width="150" height="48" rx="8"/><text class="t" x="285" y="150">run_reopen</text><text class="s" x="285" y="167">teardown + reopen.json</text>
+  <rect class="bad" x="400" y="30" width="150" height="48" rx="8"/><text class="t" x="475" y="50">fleet_bootstrap</text><text class="sb" x="475" y="67">returns early if a fleet is live</text>
+  <rect class="b" x="590" y="30" width="150" height="48" rx="8"/><text class="t" x="665" y="50">rotate</text><text class="s" x="665" y="67">archive old run, blocking</text>
+  <rect class="b" x="780" y="30" width="140" height="48" rx="8"/><text class="t" x="850" y="50">_shell/state.db</text><text class="s" x="850" y="67">events + tasks</text>
+  <rect class="b" x="780" y="130" width="140" height="48" rx="8"/><text class="t" x="850" y="150">hub</text><text class="s" x="850" y="167">one store handle</text>
+  <rect class="b" x="590" y="130" width="150" height="48" rx="8"/><text class="t" x="665" y="150">fleet://event</text><text class="s" x="665" y="167">one stream to the UI</text>
+  <rect class="ui" x="590" y="226" width="150" height="48" rx="8"/><text class="t" x="665" y="246">useFleet</text><text class="s" x="665" y="263">feed · messages · tasks</text>
+  <path class="a" marker-end="url(#m1)" d="M170 54H398"/>
+  <path class="a" marker-end="url(#m1)" d="M170 154H208"/>
+  <path class="a" marker-end="url(#m1)" d="M360 154H475V80"/>
+  <path class="a" marker-end="url(#m1)" d="M550 54H588"/>
+  <path class="a" marker-end="url(#m1)" d="M740 54H778"/>
+  <path class="a" marker-end="url(#m1)" d="M850 78V128"/>
+  <path class="a" marker-end="url(#m1)" d="M780 154H742"/>
+  <path class="a" marker-end="url(#m1)" d="M665 178V224"/>
+  <text class="n" x="20" y="240">Gate target = fleet target, locked while panes exist (D-071).</text>
+  <text class="n" x="20" y="260">Tasks vanish from view when the run is archived.</text>
+</svg>
+<div class="legend"><span><i class="i-ui"></i>UI</span><span><i class="i-bad"></i>the reported bug</span></div>
+</div>
+
+<h2><span>2</span>The conflict: both plans rebuild the same middle</h2>
+<p class="lede">The launch PRD replaces the start path and the archive. The task PRD moves tasks out of the run log into a per-target store wired into that same start path. Written separately, they contradict each other in four places and collide on setup in three.</p>
+<div class="cards">
+  <div class="card"><h3><b>A</b>Tasks reset on launch</h3><dl>
+    <dt>Launch PRD</dt><dd>Clear feed, messages and tasks on every launch.</dd>
+    <dt>Task PRD</dt><dd>Tasks outlive sessions.</dd>
+    <dt>Breaks</dt><dd>The Tasks view empties on every launch.</dd></dl>
+    <div class="fix"><b>Fix.</b> Launch calls a <code>resetTasks()</code> hook. The task PRD fills it with clear + replay of the store.</div></div>
+  <div class="card"><h3><b>B</b>Which target is "current"</h3><dl>
+    <dt>Launch PRD</dt><dd>The gate's target can differ from the live fleet's.</dd>
+    <dt>Task PRD</dt><dd>One store per "current target".</dd>
+    <dt>Breaks</dt><dd>Tasks written to the wrong repo's store.</dd></dl>
+    <div class="fix"><b>Fix.</b> The store follows the target fixed on the fleet. Opened in Build, closed by Teardown.</div></div>
+  <div class="card"><h3><b>C</b><code>tasks.json</code> and the split archive</h3><dl>
+    <dt>Launch PRD</dt><dd>Archive = fast stage + background finish.</dd>
+    <dt>Task PRD</dt><dd>Write <code>tasks.json</code> "when archiving".</dd>
+    <dt>Breaks</dt><dd>Finish runs after the next fleet is up, maybe on another target.</dd></dl>
+    <div class="fix"><b>Fix.</b> Written at stage through a hook, filtered by run id. History reads its task count from that file.</div></div>
+  <div class="card"><h3><b>D</b>Reopen and "earlier run" owners</h3><dl>
+    <dt>Launch PRD</dt><dd>A reopen resumes each pane's conversation under a new run id.</dd>
+    <dt>Task PRD</dt><dd>An owner from an earlier run is available.</dd>
+    <dt>Breaks</dt><dd>A worker mid-task looks free and its task is re-handed.</dd></dl>
+    <div class="fix"><b>Fix.</b> Ownership follows the lineage (<code>sessions</code> id). Startup triage applies to fresh launches only.</div></div>
+  <div class="card"><h3><b>S</b>Setup collisions</h3><dl>
+    <dt>Base</dt><dd>The plans assumed different branches; <code>remove/critic-evaluator</code> rewrites the same files.</dd>
+    <dt>D-099</dt><dd>Claimed by both.</dd>
+    <dt>Machine</dt><dd>Both run the real app on one <code>~/.fleetor/_shell</code>.</dd></dl>
+    <div class="fix"><b>Fix.</b> One shared base, separate worktrees, task PRD starts at D-100, live demos take turns.</div></div>
+</div>
+
+<h2><span>3</span>After: one launch, two stores</h2>
+<p class="lede">Every fleet comes up through one launch with a fixed order. The run log keeps events; goals and tasks live in a store that belongs to the target repo and survives sessions.</p>
+<div class="panel">
+<svg viewBox="0 0 940 390" role="img" aria-label="Target system flow">
+  <defs><marker id="m2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M0 0L10 5L0 10z"/></marker></defs>
+  <rect class="ui" x="20" y="20" width="140" height="40" rx="8"/><text class="t" x="90" y="45">New fleet</text>
+  <rect class="ui" x="20" y="84" width="140" height="40" rx="8"/><text class="t" x="90" y="109">Archived row</text>
+  <rect class="b" x="200" y="48" width="140" height="48" rx="8"/><text class="t" x="270" y="68">launch(source)</text><text class="s" x="270" y="85">Fresh | Reopen(id)</text>
+  <path class="a" marker-end="url(#m2)" d="M160 40H180V64H198"/>
+  <path class="a" marker-end="url(#m2)" d="M160 104H180V80H198"/>
+  <rect class="b" x="370" y="48" width="100" height="48" rx="8"/><text class="t" x="420" y="68">1 Verdict</text><text class="s" x="420" y="85">refuse first</text>
+  <rect class="b" x="485" y="48" width="100" height="48" rx="8"/><text class="t" x="535" y="68">2 Teardown</text><text class="s" x="535" y="85">closes stores</text>
+  <rect class="b" x="600" y="48" width="100" height="48" rx="8"/><text class="t" x="650" y="68">3 Stage</text><text class="s" x="650" y="85">old run aside</text>
+  <rect class="b" x="715" y="48" width="100" height="48" rx="8"/><text class="t" x="765" y="68">4 Build</text><text class="s" x="765" y="85">seats + target fixed</text>
+  <rect class="b" x="830" y="48" width="100" height="48" rx="8"/><text class="t" x="880" y="68">5 Finish</text><text class="s" x="880" y="85">background</text>
+  <path class="a" marker-end="url(#m2)" d="M340 72H368"/><path class="a" marker-end="url(#m2)" d="M470 72H483"/>
+  <path class="a" marker-end="url(#m2)" d="M585 72H598"/><path class="a" marker-end="url(#m2)" d="M700 72H713"/><path class="a" marker-end="url(#m2)" d="M815 72H828"/>
+  <rect class="hook" x="560" y="120" width="160" height="40" rx="8"/><text class="t" x="640" y="137">hook: write tasks.json</text><text class="s" x="640" y="152">resolution C</text>
+  <path class="a" marker-end="url(#m2)" d="M650 96V118"/>
+  <rect class="b" x="740" y="190" width="180" height="48" rx="8"/><text class="t" x="830" y="210">_shell/state.db</text><text class="s" x="830" y="227">run log, events only</text>
+  <rect class="new" x="740" y="266" width="180" height="48" rx="8"/><text class="t" x="830" y="286">targets/&lt;slug&gt;/tasks.db</text><text class="s" x="830" y="303">goals + tasks, fleet's target (B)</text>
+  <path class="a" marker-end="url(#m2)" d="M765 96V188"/><path class="a" marker-end="url(#m2)" d="M765 238V264"/>
+  <rect class="b" x="500" y="228" width="150" height="48" rx="8"/><text class="t" x="575" y="248">hub</text><text class="s" x="575" y="265">two store handles</text>
+  <path class="a" marker-end="url(#m2)" d="M740 214L652 242"/><path class="a" marker-end="url(#m2)" d="M740 290L652 262"/>
+  <rect class="b" x="270" y="190" width="150" height="48" rx="8"/><text class="t" x="345" y="219">fleet://event</text>
+  <rect class="new" x="270" y="266" width="150" height="48" rx="8"/><text class="t" x="345" y="295">fleet://task</text>
+  <path class="a" marker-end="url(#m2)" d="M500 242L422 214"/><path class="a" marker-end="url(#m2)" d="M500 262L422 290"/>
+  <rect class="ui" x="40" y="190" width="170" height="48" rx="8"/><text class="t" x="125" y="210">feed · messages</text><text class="s" x="125" y="227">reset on every launch</text>
+  <rect class="ui" x="40" y="266" width="170" height="48" rx="8"/><text class="t" x="125" y="286">Tasks view</text><text class="s" x="125" y="303">replayed by resetTasks() (A)</text>
+  <path class="a" marker-end="url(#m2)" d="M270 214H212"/><path class="a" marker-end="url(#m2)" d="M270 290H212"/>
+  <text class="n" x="40" y="350">The gate (seats + target) describes the next fleet and stays editable while one runs.</text>
+  <text class="n" x="40" y="370">A reopen is a new run id on the same lineage, so owners keep their tasks (D).</text>
+</svg>
+<div class="legend"><span><i class="i-ui"></i>UI</span><span><i class="i-new"></i>added by the task PRD</span><span>dashed = hook the launch PRD leaves empty</span></div>
+</div>
+
+<h2><span>4</span>Development instructions for the two sessions</h2>
+<p class="lede">Launch slice 1 reshapes the function the task store plugs into, so it merges first. The task session stays in files nobody else touches until then.</p>
+<div class="panel">
+<div class="lanes">
+  <div class="h"></div><div class="h">Step 0</div><div class="h">Phase 1 (parallel)</div><div class="h">Gate</div><div class="h">Phase 2 (parallel)</div>
+  <div class="lab">Launch session</div>
+  <div class="both"><b>Shared base</b>Commit in-flight work, merge <code>remove/critic-evaluator</code>.</div>
+  <div><b>Slice 1</b>One <code>fleet_launch</code> + UI <code>launch()</code>, synchronous archive. Leaves the <code>resetTasks()</code> and stage hooks empty.</div>
+  <div class="gate"><b>Slice 1 merges</b>Live check first.</div>
+  <div><b>Slices 2–3</b>Target editable while running; parallel kills, background finish, History row states.</div>
+  <div class="lab">Task session</div>
+  <div class="both"><b>Own worktree</b>Branch <code>feat/tasks</code> from the same commit.</div>
+  <div><b>S1, crates half</b>Task store, hub operations, CLI, briefs and their tests. Only <code>crates/</code> and <code>prompts/</code>.</div>
+  <div class="wait"><b>Rebase</b>Onto merged slice 1.</div>
+  <div><b>S1 wiring, then S2–S4</b>Open the store in Build, <code>fleet://task</code>, fill both hooks, Tasks UI. S1 demo, then the remaining slices.</div>
+</div>
+</div>
+
+<h2><span>5</span>File ownership until launch slice 1 merges</h2>
+<div class="panel">
+<table>
+  <tr><th>Launch session only</th><th>Task session only</th></tr>
+  <tr><td><code>src-tauri/src/fleet.rs</code><br><code>src-tauri/src/runs.rs</code><br><code>src-tauri/src/lib.rs</code><br><code>ui/src/fleet/useFleet.ts</code><br><code>ui/src/App.tsx</code><br><code>ui/src/fleet/api.ts</code><br><code>Homepage.tsx</code>, <code>RunHistory.tsx</code>, History probe</td>
+  <td><code>crates/</code> (core, cli, server, db)<br><code>prompts/</code><br><code>TaskBoard.tsx</code><br><code>SettingsPanel.tsx</code><br><code>MissionControl.tsx</code></td></tr>
+</table>
+</div>
+
+<h2><span>6</span>Standing rules</h2>
+<div class="panel">
+<ol class="rules">
+  <li><b>Decision numbers.</b> The launch PRD owns D-099. The task PRD records D-100 onward.</li>
+  <li><b>Live demos take turns.</b> One real app instance at a time; both sessions share <code>~/.fleetor/_shell</code>.</li>
+  <li><b>Hooks are the contract.</b> The launch session ships <code>resetTasks()</code> and the stage hook as no-ops and keeps Build and Teardown as single functions. The task session only fills them in.</li>
+  <li><b>No fleet: Tasks view is read-only.</b> It shows the gate target's tasks with a "Carried over" banner; controls are disabled until a fleet is live.</li>
+  <li><b>Reopen.</b> The Activity feed filters task entries by lineage, and a resumed worker re-checks its task with <code>fleet task show</code> before continuing.</li>
+  <li><b>History counts.</b> Running now counts from the live store; Archiving and Archived rows count from <code>tasks.json</code>.</li>
+  <li><b>Cleanup is neither session's job.</b> Deleting old tasks and worktrees from previous projects is approved, but it is a separate cutover step.</li>
+</ol>
+</div>
+</main>
+</body>
+</html>

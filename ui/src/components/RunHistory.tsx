@@ -61,7 +61,6 @@ function size(bytes: number): string {
 /// One past session: what it was, and whether you can go back into it.
 function RunRow({
   run,
-  opening,
   busy,
   intactSaidAbove,
   onOpen,
@@ -70,7 +69,7 @@ function RunRow({
   onSave,
 }: {
   run: RunRecord;
-  opening: boolean;
+  /// A launch is in flight, so a second click would queue another behind it.
   busy: boolean;
   /// The note above the list already said what survives, for every row at once.
   intactSaidAbove: boolean;
@@ -145,7 +144,6 @@ function RunRow({
           <span className="run__chip run__chip--quiet">{size(run.bytes)}</span>
         </div>
         {run.target && <div className="run__target">{run.target}</div>}
-        {opening && <div className="run__why">Opening — archiving the current session first…</div>}
         {/* The cause, then what survives it (R8). The backend names only the
             cause; what survives is the same for every cause, so it is said
             here — and not at all when the note above already said it. */}
@@ -195,16 +193,13 @@ function RunRow({
 
 export function RunHistory({
   runs,
-  onOpened,
+  launching,
+  onOpen,
 }: {
   runs: RunsView;
-  /// Called once a run has actually reopened, to put the operator in front of it.
-  ///
-  /// **R5's whole point, and it was missing.** History is a switcher: clicking a
-  /// row is meant to land you in the panes, not leave you on a list that looks
-  /// unchanged while five terminals quietly come up on another view. It fires only
-  /// on success — a refused reopen leaves the operator here, where the reason is.
-  onOpened: () => void;
+  launching: boolean;
+  /// Reopen this run: a launch, which lands the operator in its panes (D-099).
+  onOpen: (id: string) => void;
 }) {
   const nothingOpens = runs.runs.length > 0 && runs.runs.every((r) => r.cannot_reopen);
 
@@ -248,10 +243,9 @@ export function RunHistory({
             <RunRow
               key={run.id}
               run={run}
-              opening={runs.opening === run.id}
-              busy={runs.opening !== null}
+              busy={launching}
               intactSaidAbove={nothingOpens}
-              onOpen={() => void runs.reopen(run.id).then(onOpened).catch(() => {})}
+              onOpen={() => onOpen(run.id)}
               onRename={(label) => void runs.rename(run.id, label)}
               onDelete={() => void runs.remove(run.id)}
               onSave={() => void runs.save(run.id)}

@@ -517,35 +517,6 @@ fn the_gate_offers_no_provider_picker() {
     }
 }
 
-/// **No harness for the judges** (C15).
-///
-/// #33 made it structural in `PaneSpec`; #35 keeps it structural on the wire and in
-/// the interface. The seats the gate offers a choice for are the orchestrator and
-/// the four workers, and there is no key for anything else.
-#[test]
-fn the_judges_are_offered_no_harness() {
-    let pickers = read(PICKERS);
-    let declared = "export const PICKABLE_SEATS: readonly PaneId[] =";
-    let seats = between(&pickers, declared, ";", "PICKABLE_SEATS");
-    assert!(
-        seats.contains("ORCH") && seats.contains("workerPane"),
-        "`PICKABLE_SEATS` no longer names the orchestrator and the workers:\n{seats}",
-    );
-    for judge in ["EVALUATOR", "CRITIC"] {
-        assert!(
-            !pickers.contains(judge) && !read(GATE).contains(judge),
-            "{judge} appears in the gate's pickers. Both judges judge the fleet's work, and a \
-             judge on the same harness as the judged is a variable this arc does not \
-             introduce (C15).",
-        );
-    }
-    let seats_type = between(&read(WIRE), "export interface FleetSeats {", "}", "FleetSeats");
-    assert!(
-        !seats_type.contains("evaluator") && !seats_type.contains("critic"),
-        "`FleetSeats` grew a judge's seat:\n{seats_type}",
-    );
-}
-
 /// **No plan tier is promised** (C14 as narrowed by C58).
 ///
 /// `doctor` reports the account *shape*; the tier lives inside the stored id token

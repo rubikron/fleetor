@@ -440,3 +440,112 @@ fn nothing_on_the_delivery_path_reads_a_pane_s_bring_up() {
          lost twice. Readiness belongs on the bring-up path, before the pane is announced."
     );
 }
+
+/// **Five panes wake at once, not in a queue** (D-096).
+///
+/// A source read, because the property is about which thread a Tauri command runs
+/// on and no test here has a window. A synchronous `pty_spawn` runs on the main
+/// thread, so each pane's wake waited for the one before it; and a placing lock
+/// still held across `registry.spawn` would queue them again one layer down.
+#[test]
+fn a_wake_holds_neither_the_main_thread_nor_the_placing_lock() {
+    let src = |file: &str| {
+        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file))
+            .unwrap_or_else(|e| panic!("{file}: {e}"))
+    };
+    let pty = src("src/pty.rs");
+    assert!(
+        pty.contains("pub async fn pty_spawn(") && pty.contains("spawn_blocking("),
+        "`pty_spawn` is synchronous again, so every wake runs on the main thread in turn",
+    );
+    let fleet = src("src/fleet.rs");
+    let released = fleet.find("drop(placing);").expect("`spawn_pane` releases the placing lock");
+    let woken = fleet.find("registry.spawn(pane,").expect("`spawn_pane` hands the pane to the registry");
+    assert!(released < woken, "the placing lock is held across the wake");
+}
+
+/// **A pane that asks its terminal for its colours is answered at the pty**
+/// (D-097), with no webview involved — which is the point, since codex stops
+/// listening about 100 ms after it asks.
+///
+/// The shell script asks the way codex does, then `cat -v` and the tty's own
+/// echo make whatever is typed back at it visible as text.
+#[test]
+fn a_colour_query_is_answered_by_the_registry() {
+    let root = scratch("colours");
+    std::fs::create_dir_all(&root).expect("a scratch dir");
+    let pane = PaneId::Worker(4);
+    let painted = Painted::watching(pane);
+    let registry = PaneRegistry::new(painted.emitter(), root.join("panes.pids"));
+    registry.set_colors("#e9e7e2", "#201d18").expect("two hex colours");
+    assert!(registry.set_colors("e9e7e2", "#201d18").is_err(), "a colour without its # is refused");
+
+    let mut cmd = CommandBuilder::new("/bin/sh");
+    cmd.args(["-c", r"printf '\033]10;?\033\\\033]11;?\033\\'; exec cat -v"]);
+    cmd.env("TERM", "dumb");
+    registry.spawn(pane, cmd, &ANNOUNCED_AT_ONCE, 24, 120).expect("spawn");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let answered = |screen: &str| {
+        screen.contains("10;rgb:e9e9/e7e7/e2e2") && screen.contains("11;rgb:2020/1d1d/1818")
+    };
+    while Instant::now() < deadline && !answered(&painted.screen()) {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let screen = painted.screen();
+    registry.kill_all();
+    std::fs::remove_dir_all(&root).ok();
+    assert!(answered(&screen), "the query went unanswered; the pane painted: {screen:?}");
+}
+
+/// **Codex draws its composer bar only when the query is answered** (D-097).
+///
+/// The vendor arm of the test above, with its control: the same pane, brought up
+/// by a registry nobody told the colours, paints no background at all — which is
+/// what a Fleetor pane looked like before this.
+#[test]
+fn codex_draws_its_composer_background_only_when_the_registry_answers() {
+    let Some(vendor) = on_path(VENDOR_BIN) else {
+        announce(&[format!(
+            "SKIPPED: codex composer background (D-097) — `{VENDOR_BIN}` is not on PATH."
+        )]);
+        return;
+    };
+    let background = |pane: &CodexPane| pane.painted.carries(b"48;2;") || pane.painted.carries(b"48;5;");
+
+    let themed = CodexPane::brought_up_in(&vendor, &CODEX_SPEC, "themed", true);
+    assert!(
+        background(&themed),
+        "a codex pane whose colour query was answered painted no background: {:?}",
+        themed.screen(),
+    );
+    let bare = CodexPane::brought_up_in(&vendor, &CODEX_SPEC, "bare", false);
+    assert!(
+        !background(&bare),
+        "the control paints a background too, so the arm above proves nothing",
+    );
+}
+
+/// **The wake leaves the composer as it found it** (D-098).
+///
+/// On `codex-cli 0.160.0` an Enter into a composer that is already reading is not
+/// a no-op: the pane came up on an empty line with its cursor below the prompt
+/// and a turn in progress. The wake now presses only a pane that will not settle
+/// by itself. Read off the last prompt painted: a clean composer still shows its
+/// placeholder there.
+#[test]
+fn a_woken_codex_pane_is_left_on_an_empty_composer() {
+    let Some(vendor) = on_path(VENDOR_BIN) else {
+        announce(&[format!("SKIPPED: codex wake keypress (D-098) — `{VENDOR_BIN}` is not on PATH.")]);
+        return;
+    };
+    let pane = CodexPane::brought_up(&vendor, &CODEX_SPEC, "clean");
+    std::thread::sleep(Duration::from_secs(2));
+    let screen = pane.screen();
+    let last_prompt = &screen[screen.rfind('›').expect("codex painted its prompt")..];
+    assert!(
+        last_prompt.starts_with("›AskCodex"),
+        "the wake left something in the composer; after the last prompt it painted: {}",
+        last_prompt.chars().take(60).collect::<String>(),
+    );
+}

@@ -11,7 +11,7 @@
 //! because a fleet is not obliged to be uniform.
 //!
 //! **This module holds the type and the offer, and no storage.** C75 put the
-//! choice in `~/.fleetor/config.json` beside `dev_mode`, arguing that the spawn
+//! choice in `~/.fleetor/config.json`, arguing that the spawn
 //! path branches on it and so it must be readable without a webview. C78 removed
 //! that: the spawn path branches on [`PaneSpec`], which comes from
 //! [`FleetSeats`], so the seat *is* the home and a config key beside it would be

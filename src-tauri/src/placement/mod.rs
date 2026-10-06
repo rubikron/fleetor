@@ -32,33 +32,11 @@
 //!
 //! ## What is here yet
 //!
-//! [`PaneSpec`] has four variants: `orch`, a worker, the evaluator and the Critic
-//! — every pane kind that can exist today. Every one of them works, which is the
+//! [`PaneSpec`] has two variants: `orch` and a worker — every pane kind that can
+//! exist today. Every one of them works, which is the
 //! rule this module keeps: a variant that existed but errored would be a trap of
 //! exactly the kind `building.md` §6 names, since the obvious next move on
 //! finding one is to point it at something live.
-//!
-//! **[`RunSource`] is the one place that rule is bent, and deliberately** (D-076).
-//! The Critic carries the run it is critiquing, and a run is either the live one
-//! or an archived one; the shape is the design prototype's and both variants are
-//! declared here so that the type says what a Critic is rather than what this
-//! ticket got to. Only [`RunSource::Live`] is built. [`RunSource::Archived`] is
-//! constructed nowhere in the application — no UI offers it, no caller names it —
-//! and [`place_critic`] answers it with [`ARCHIVED_NOT_BUILT`] rather than with a
-//! half-built placement. The §6 trap does not apply, because there is no other
-//! live path for it to be re-pointed at: reading an archived run does not exist
-//! yet anywhere.
-//!
-//! ## The one read that is not from the process, and is not an argument either
-//!
-//! [`Layout::dev_enabled`] opens a file. That is not a hole in the rule above, it
-//! is the rule applied: the file is `config.json` **inside the layout placement
-//! was handed**, so a test pointing the layout at a scratch directory points the
-//! mode at a scratch directory too. It exists because the evaluator arm has to
-//! re-check the mode *itself* rather than trust its caller (D11) — "unreachable
-//! outside dev mode" is a property of the spawn site or it is not a property at
-//! all — and because the mode is documented as read fresh at every wake rather
-//! than snapshotted. Taking a `bool` argument would have lost the first of those.
 //!
 //! ## The one thing this module decides and does not do
 //!
@@ -77,7 +55,7 @@ use portable_pty::CommandBuilder;
 
 use crate::context_gauge::{self, TranscriptSource};
 use crate::prompts::PaneContext;
-use crate::{critic, dev, evaluator, guardrail, runs};
+use crate::guardrail;
 
 /// How a pane's `claude` process is shaped — **an internal of this module** since
 /// D-075.
@@ -181,29 +159,11 @@ impl Layout {
         self.root.join("testbed")
     }
 
-    /// Where the operator names the repo the fleet should work on — and, since
-    /// WP-16, whether the app is in dev mode. One file, so there is one place an
-    /// operator looks and one place `rm -rf ~/.fleetor` removes (Tier 1.1).
+    /// Where the operator names the repo the fleet should work on. One file, so
+    /// there is one place an operator looks and one place `rm -rf ~/.fleetor`
+    /// removes (Tier 1.1).
     pub fn config_file(&self) -> PathBuf {
         self.root.join("config.json")
-    }
-
-    /// Whether *this* installation is in dev mode (D11, D-061).
-    ///
-    /// The stored flag, read through the layout rather than through the
-    /// process-global reader — which is what lets [`place_evaluator`] re-check the
-    /// mode at the spawn site while a test still points it at a scratch
-    /// `config.json`. Three properties at once, and dropping any one of them was a
-    /// rejected alternative: the spawn site genuinely re-checks so a caller cannot
-    /// lie to it, the flag is read fresh at every placement rather than
-    /// snapshotted, and the operator's real `~/.fleetor/config.json` is never
-    /// consulted by a test.
-    ///
-    /// A missing, unreadable or malformed config reads as off, exactly as
-    /// [`crate::dev::is_enabled`] does — this is that function with the file named
-    /// instead of derived.
-    pub fn dev_enabled(&self) -> bool {
-        dev::read_at(&self.config_file())
     }
 
     /// The fleet unix socket the `fleet` CLI dials.
@@ -390,7 +350,7 @@ pub(crate) fn worker_branch(target: &Path, sessions: &SessionsId, slot: u8) -> S
 ///
 /// The layout answers *where this fleet writes*; this answers *what is out there
 /// to find* — the operator's Rust toolchain, the built `fleet` binary, the worker
-/// API key, the mission harness roots, and the stand-in pane override. Two
+/// API key, and the stand-in pane override. Two
 /// concepts, two names.
 ///
 /// **Discovered per spawn, not once at bootstrap (D13.)** This is what the code
@@ -441,8 +401,6 @@ pub struct Host {
     /// [`Host`] rather than read in [`place`] for the reason everything else here
     /// is.
     pub api_key_searched_from: Option<PathBuf>,
-    /// Where prepared mission workspaces, the harness and the answer keys live.
-    pub missions: evaluator::MissionRoots,
     /// **What each harness reports about this machine — login state, account
     /// shape, model list and resolved posture** (WP-25 #34; C8, C14).
     ///
@@ -499,7 +457,6 @@ impl Host {
             toolchain: spawn::operator_toolchain(),
             api_key: crate::fleet::deepseek_api_key(),
             api_key_searched_from: Some(crate::fleet::api_key_search_start()),
-            missions: evaluator::MissionRoots::discover(),
             // **Empty, and that is the ticket.** Everything above is a filesystem
             // check costing microseconds; a harness diagnosis is a subprocess and a
             // live provider reachability request. D13's "discovered per spawn" is
@@ -635,15 +592,8 @@ impl Host {
 /// field and the TypeScript mirror. This is internal, and each kind carries its
 /// own inputs, so a future pane kind costs one variant rather than another
 /// argument two of the three arms discard.
-/// **Which harness a seat runs travels on the two variants that get a choice, and
-/// on neither judge** (WP-25 #33, C15, C23).
-///
-/// That is the shape of C15 rather than a check that enforces it: the gate offers
-/// a harness on the orchestrator row and the workers row, and the evaluator and
-/// the Critic both judge the fleet's work — a judge running the same harness as
-/// the judged is a variable worth not introducing in a first mixed run. Written as
-/// a field on the two variants that have one, there is nowhere for a caller to put
-/// an answer the judges must not have.
+/// **Which harness a seat runs travels on the variant** (WP-25 #33, C23): the gate
+/// offers a harness on the orchestrator row and the workers row.
 #[derive(Clone, Debug)]
 pub enum PaneSpec {
     /// The operator's own pane, in the target itself.
@@ -701,37 +651,6 @@ pub enum PaneSpec {
         /// [`Seed::credential_source`](harness::Seed::credential_source)'s reason.
         on_the_operators_plan: bool,
     },
-    /// The evaluator (WP-15), in a snapshot of the live run.
-    ///
-    /// It carries no inputs of its own, and that is D2 rather than an omission:
-    /// the run it reads is the live one, laid out *by* placement, so there is
-    /// nothing for a caller to pass in and no directory it could point at that
-    /// placement did not write.
-    Evaluator,
-    /// The Critic (WP-20, D-076), in the run it is critiquing.
-    ///
-    /// **The one variant that carries an input, and the input is which run.**
-    /// The evaluator's run is the live one by construction — it wakes on a
-    /// handoff, which only a live run produces. The Critic is opened by the
-    /// operator, who can be looking at the run in progress or at a row in
-    /// History, so *which run* is a real choice a caller makes and therefore
-    /// travels in the spec rather than being re-derived somewhere deeper.
-    Critic { run: RunSource },
-}
-
-/// Which run a Critic is pointed at (WP-20, D-076).
-///
-/// **Both variants are declared and only [`RunSource::Live`] is built.** See this
-/// module's "What is here yet" for why the type says what a Critic is rather than
-/// what this ticket got to, and what placement does with the other one.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RunSource {
-    /// The run in progress, laid out by placement the way the evaluator's is —
-    /// `events.json`, `manifest.json` and every pane's transcript, copied rather
-    /// than moved, from a database that is still being written.
-    Live,
-    /// A past run, by its archive id. Nothing constructs this yet.
-    Archived(String),
 }
 
 impl PaneSpec {
@@ -755,9 +674,9 @@ impl PaneSpec {
     /// the seat and not for a credential, and making fifty lines say `false` would
     /// be noise to serve one.
     ///
-    /// **A no-op on every attended seat**, and that is the asymmetry rather than
-    /// an omission: the orchestrator and the two judges already run the operator's
-    /// own login, so there is nothing here for them to choose.
+    /// **A no-op on the orchestrator**, and that is the asymmetry rather than an
+    /// omission: it already runs the operator's own login, so there is nothing here
+    /// for it to choose.
     pub fn on_the_operators_plan(self) -> Self {
         match self {
             PaneSpec::Worker { slot, harness, model, .. } => {
@@ -770,15 +689,10 @@ impl PaneSpec {
     /// **The same seat, running the model the caller named** (M1, M2).
     ///
     /// A refinement rather than a third argument on the two constructors above,
-    /// because the seats that *can* carry a model are two of four and the fleet has
-    /// one call site that names one. Every other caller — the conformance suite,
-    /// the two judges, every test that places a pane — is asking for the seat and
-    /// not for a model, and making fifty lines say `None` would be noise to serve
-    /// one.
-    ///
-    /// **A no-op on the two judges**, which is C15 rather than an omission: they
-    /// have no field to hold a harness and none to hold a model, so offering one
-    /// later is a type change and not an accident.
+    /// because the fleet has one call site that names one. Every other caller — the
+    /// conformance suite, every test that places a pane — is asking for the seat
+    /// and not for a model, and making fifty lines say `None` would be noise to
+    /// serve one.
     pub fn with_model(self, model: impl Into<String>) -> Self {
         let model = Some(model.into());
         match self {
@@ -786,7 +700,6 @@ impl PaneSpec {
             PaneSpec::Worker { slot, harness, on_the_operators_plan, .. } => {
                 PaneSpec::Worker { slot, harness, model, on_the_operators_plan }
             }
-            judge => judge,
         }
     }
 
@@ -794,7 +707,6 @@ impl PaneSpec {
     pub fn model(&self) -> Option<&str> {
         match self {
             PaneSpec::Orch { model, .. } | PaneSpec::Worker { model, .. } => model.as_deref(),
-            PaneSpec::Evaluator | PaneSpec::Critic { .. } => None,
         }
     }
 
@@ -803,8 +715,6 @@ impl PaneSpec {
         match self {
             PaneSpec::Orch { .. } => PaneId::Orch,
             PaneSpec::Worker { slot, .. } => PaneId::Worker(*slot),
-            PaneSpec::Evaluator => PaneId::Evaluator,
-            PaneSpec::Critic { .. } => PaneId::Critic,
         }
     }
 
@@ -816,16 +726,9 @@ impl PaneSpec {
     /// per role (C23) — so the answer has to be able to differ between two panes
     /// of the same run, which rules out [`Host`] (what the *machine* has) and
     /// [`Layout`] (a path and nothing else).
-    ///
-    /// **The two judges answer Claude Code and have no field to say otherwise**
-    /// (C15). Both the evaluator and the Critic judge the fleet's work, and a
-    /// judge running the same harness as the judged is a variable worth not
-    /// introducing in a first mixed run — so this is not a default the gate could
-    /// later override by accident, it is the absence of a place to put one.
     pub fn harness(&self) -> &'static dyn Harness {
         match self {
             PaneSpec::Orch { harness, .. } | PaneSpec::Worker { harness, .. } => *harness,
-            PaneSpec::Evaluator | PaneSpec::Critic { .. } => harness::claude_code(),
         }
     }
 }
@@ -849,12 +752,12 @@ pub struct Placed {
     ///
     /// **Returned rather than assumed**, for the reason [`Placed::gauge`] is: the
     /// caller has to write this down — `manifest.json` records a pane's harness,
-    /// model and transcript format so a Critic reading a mixed run cold knows what
+    /// model and transcript format so a reader of a mixed run cold knows what
     /// it is holding (M24) — and a fact the caller re-derives is a fact that can
     /// disagree with the one placement acted on.
     ///
     /// **Read by [`crate::fleet::spawn_pane`]**, which hands it and
-    /// [`Placed::model`] to `runs::record_pane`. #33 carried this field with
+    /// [`Placed::model`] to `crate::runs::record_pane`. #33 carried this field with
     /// nothing reading it so that #39 would find it already threaded; it is.
     pub harness: &'static HarnessSpec,
     /// The model this pane was placed against, where the fleet chose one (M24).
@@ -935,8 +838,6 @@ pub fn place(
             target,
             context,
         ),
-        PaneSpec::Evaluator => place_evaluator(harness, layout, host, target, context),
-        PaneSpec::Critic { run } => place_critic(harness, run, layout, host, context),
     }
 }
 
@@ -1011,9 +912,20 @@ fn place_orch(
         &host.orch_path(),
     );
 
-    // `orch` is not on the live gauge: the Loadout counter is a per-run budget line
-    // for the panes doing the work, and the gauge samples worker transcripts.
-    //
+    // The orchestrator is on the live gauge like any worker: its config dir is the
+    // fleet's own (D-062), so this reads nothing of the operator's. No window is
+    // exported to it, so with no pick it runs the account's default model.
+    let gauge = TranscriptSource {
+        harness,
+        config_dir: config_dir.clone(),
+        cwd: target.to_path_buf(),
+        window_tokens: harness
+            .spec()
+            .gauge
+            .window_tokens
+            .map(|_| context_gauge::model_window_tokens(Some(model.unwrap_or("default")))),
+    };
+
     // **`model` is what the gate picked, and `None` is still the ordinary answer**
     // (M2, C56). The manifest keeps the absence rather than inventing a name: an
     // orchestrator on the sentinel runs the operator's login and whatever model that
@@ -1021,7 +933,7 @@ fn place_orch(
     // with #35 is that the operator may now say otherwise, and when they do the
     // record says what they said.
     let model = model.map(str::to_string);
-    Ok(Placed { command, notices, gauge: None, harness: harness.spec(), model, scrubbed: &[] })
+    Ok(Placed { command, notices, gauge: Some(gauge), harness: harness.spec(), model, scrubbed: &[] })
 }
 
 /// One fenced worker: its own checkout of the target, its own `HOME`, the fleet's
@@ -1043,8 +955,8 @@ fn place_orch(
 // **Eight arguments, and the eighth is C75's** — the seat's credential source, an
 // answer only the caller has. The alternative clippy is asking for is a struct, and
 // this ticket already added one (`CredentialSource`); wrapping the other seven
-// alongside it would move `place_orch` and the two judges to a shape none of them
-// needs, to silence a count. `worker_command_with` below carries the same allow for
+// alongside it would move `place_orch` to a shape it does not
+// need, to silence a count. `worker_command_with` below carries the same allow for
 // the same reason.
 #[allow(clippy::too_many_arguments)]
 fn place_worker(
@@ -1179,12 +1091,13 @@ fn place_worker(
         &cwd.display().to_string(),
         &worker_branch_prefix(target, &context.sessions),
     );
+    let seat_window = context_gauge::model_window_tokens(model);
     notices.push((
         NoticeLevel::Info,
         context_gauge::spawn_estimate_notice_text(
             pane,
             &rendered,
-            Some(context_gauge::WORKER_WINDOW_TOKENS),
+            Some(seat_window),
         ),
     ));
 
@@ -1211,7 +1124,13 @@ fn place_worker(
     Ok(Placed {
         command: worker.command,
         notices,
-        gauge: Some(TranscriptSource { harness, config_dir, cwd }),
+        // A harness that publishes its own window is never divided by ours.
+        gauge: Some(TranscriptSource {
+            harness,
+            config_dir,
+            cwd,
+            window_tokens: harness.spec().gauge.window_tokens.map(|_| seat_window),
+        }),
         harness: harness.spec(),
         // **The model this worker was actually placed on** — the gate's pick where
         // there was one, the launch configuration's where there was not, resolved
@@ -1220,168 +1139,6 @@ fn place_worker(
         scrubbed: worker.scrubbed,
     })
 }
-
-/// The evaluator (WP-15): the operator's own `claude` in a snapshot of the run it
-/// is about to read.
-///
-/// **It re-checks the mode itself (D11).** Its one caller has already asked
-/// [`evaluator::readiness`] the same question, and that is not enough: "there is no
-/// evaluator outside dev mode" has to be a property of the spawn site rather than of
-/// whoever happens to call it. What changed with this module is *how* it re-checks —
-/// through [`Layout::dev_enabled`] and [`Host::missions`], so the identical branch a
-/// production spawn takes can be taken against a scratch configuration.
-///
-/// **It lays the run out before it renders anything (D2).** The evaluator's working
-/// directory *is* a snapshot of the run, so there is no order in which a caller could
-/// usefully do this first: the brief cites the directory, and a brief citing a
-/// directory nobody wrote is a pane that spends its first turn asking about a path.
-///
-/// Shaped like `orch` — the operator's account and model, their `HOME`, a full
-/// environment inherit, no Fence — and unlike it in the three ways that are about
-/// the veil rather than about permissions: its brief comes from a separate repo with
-/// no `~/.fleetor/prompts/` override, its config dir is outside `pane-config/` so its
-/// own reasoning never lands in the archive the next generation reads, and its
-/// guardrail roots are its own working directory alone.
-fn place_evaluator(
-    harness: &'static dyn Harness,
-    layout: &Layout,
-    host: &Host,
-    target: &Path,
-    context: &PaneContext,
-) -> Result<Placed, String> {
-    let pane = PaneId::Evaluator;
-
-    let evaluator::Readiness::Ready(mission) =
-        evaluator::readiness(layout.dev_enabled(), target, &host.missions)
-    else {
-        return Err(NO_EVALUATOR.to_string());
-    };
-
-    // The run, laid out for reading. `snapshot_live_run` owns the directory it is
-    // given — it clears and recreates it — so nothing may be seeded into the cwd
-    // before this line.
-    let shell = layout.shell();
-    let run_id = runs::live_run_id(&shell, fleetor_core::time::now_ms());
-    let cwd = evaluator::retro_dir(layout.root(), &run_id);
-    runs::snapshot_live_run(&shell, &cwd, &run_id)?;
-
-    let brief = evaluator::render_brief(&mission, &cwd)?;
-
-    let config_dir = evaluator::config_dir(layout.root());
-    let mut notices = harness.seed_config_dir(
-        &Seed::new(&config_dir, &cwd, host.operator_home.as_deref()).with_brief(&brief),
-    )?;
-    notices.extend(guardrail_notices(harness, layout, pane, &config_dir, &cwd, context, false)?);
-
-    let command = spawn::evaluator_command_with(
-        harness,
-        &cwd,
-        &layout.socket(),
-        &config_dir,
-        &brief,
-        &context.launch.worker_permission_mode,
-        host.pane_program.as_deref(),
-        &host.orch_path(),
-    );
-
-    // Not on the live gauge, for `orch`'s reason: the gauge samples the transcripts
-    // of the panes doing the work, and this pane is not one of them.
-    Ok(Placed { command, notices, gauge: None, harness: harness.spec(), model: None, scrubbed: &[] })
-}
-
-/// The Critic (WP-20, D-076): the operator's own `claude` in the run it is
-/// critiquing, with no way back into the fleet.
-///
-/// **Three things it does not do, and each is the identity rather than an
-/// omission:**
-///
-///  - **It does not check dev mode.** It is a product feature. There is no
-///    readiness question to ask, because there is no answer key it could be
-///    missing — it reports what the archive proves and nothing else.
-///  - **It does not take the target.** The Critic reads a run, and a run is a
-///    directory placement lays out; the repository the fleet was pointed at is
-///    named inside `manifest.json`, where the Critic reads it like every other
-///    fact. A pane that reads a run has no business holding the live checkout.
-///  - **It is given a socket, and it is still not in the fleet** (WP-21, D-079).
-///    [`spawn::critic_command_with`] hands it `FLEET_SOCKET` and `FLEETOR_PANE`
-///    exactly as [`place_evaluator`] does, because a socket baked in at spawn is
-///    the only kind there is — the operator's switch cannot add one later
-///    without respawning the pane. What the switch gates instead is the hub:
-///    while the interview is closed every op from `critic` is refused before it
-///    resolves anything. `PaneId::Critic.is_fleet_member()` is `false` either
-///    way, so this adds no roster row, no broadcast leg and no peer-list entry.
-///
-/// **It lays the run out before it renders anything**, for the reason
-/// [`place_evaluator`] does (D2): the working directory *is* the run, the brief
-/// cites that directory, and a brief citing a directory nobody wrote is a pane
-/// that spends its first turn asking about a path.
-fn place_critic(
-    harness: &'static dyn Harness,
-    run: RunSource,
-    layout: &Layout,
-    host: &Host,
-    context: &PaneContext,
-) -> Result<Placed, String> {
-    let pane = PaneId::Critic;
-    let RunSource::Live = run else {
-        return Err(ARCHIVED_NOT_BUILT.to_string());
-    };
-
-    // The run, laid out for reading. `snapshot_live_run` owns the directory it is
-    // given — it clears and recreates it — so nothing may be seeded into the cwd
-    // before this line.
-    let shell = layout.shell();
-    let run_id = runs::live_run_id(&shell, fleetor_core::time::now_ms());
-    let cwd = critic::run_dir(layout.root(), &run_id);
-    runs::snapshot_live_run(&shell, &cwd, &run_id)?;
-
-    let brief = critic::render_brief(&context.critic_template, &cwd)?;
-
-    let config_dir = critic::config_dir(layout.root());
-    let mut notices = harness.seed_config_dir(
-        &Seed::new(&config_dir, &cwd, host.operator_home.as_deref()).with_brief(&brief),
-    )?;
-    notices.extend(guardrail_notices(harness, layout, pane, &config_dir, &cwd, context, false)?);
-
-    let command = spawn::critic_command_with(
-        harness,
-        &cwd,
-        &layout.socket(),
-        &config_dir,
-        &brief,
-        &context.launch.worker_permission_mode,
-        host.pane_program.as_deref(),
-        &host.orch_path(),
-    );
-
-    // Not on the live gauge, for `orch`'s reason and the evaluator's: the gauge
-    // samples the transcripts of the panes doing the work, and this pane is not
-    // one of them.
-    Ok(Placed { command, notices, gauge: None, harness: harness.spec(), model: None, scrubbed: &[] })
-}
-
-/// What placing a Critic on an archived run answers with, until the ticket that
-/// builds it.
-///
-/// A sentence rather than a half-built placement, and rather than a variant that
-/// silently placed a *live* Critic instead — which would be the worst of the
-/// three, because the operator would get a pane that looked right and was reading
-/// the wrong run.
-pub const ARCHIVED_NOT_BUILT: &str =
-    "the Critic can read the run in progress; reading a past run from History is not built yet";
-
-/// What placing an evaluator fails with when this run does not get one.
-///
-/// One sentence for all three refusals rather than three, because they are three
-/// spellings of the same fact and only one of them is ever a surprise: a default
-/// build has no grader compiled in, an operator with the mode off asked for no
-/// grader, and a fleet pointed at an ordinary repo has no ground truth to grade
-/// against (D-060). The caller that reaches this in production —
-/// [`crate::fleet::wake_evaluator`] — has already told the operator *which* of the
-/// three it is, in the words that case deserves.
-pub const NO_EVALUATOR: &str =
-    "there is no evaluator for this run: it needs a devmode build, dev mode on in \
-     the fleet's own config, and a prepared mission workspace as the target";
 
 /// What placing a worker fails with when this machine has no key at all.
 ///
@@ -1615,25 +1372,15 @@ pub const MISSING_RUSTUP: &str =
 /// The one part of bringing a pane up that is deliberately not inside [`place`],
 /// and the reason is ordering rather than tidiness: these lines have to reach the
 /// operator even when the placement that follows returns `Err`. A machine with no
-/// worker key would otherwise be told only about the key, and a run that gets no
-/// evaluator would never hear that the `fleet` binary is absent — the two cases
-/// where the operator most needs the whole list.
+/// worker key would otherwise be told only about the key — the case where the
+/// operator most needs the whole list.
 ///
 /// What moved here in this ticket is the *decision*: which sentences, under which
 /// conditions, off which [`Host`]. The caller had its own copy of both, reading
-/// the machine a second time to evaluate them; now it holds neither and reads it
+/// the machine a second time to check them; now it holds neither and reads it
 /// once. `orch` is excluded because [`place_orch`] emits the `fleet`-binary line
 /// itself, from this same constant — it is the one pane kind whose placement
 /// cannot fail before that line is reached.
-///
-/// **The Critic was excluded too, and WP-21 put it back** (D-076, then D-079).
-/// The old reason was that the line would be *false* for it: with no
-/// `FLEET_SOCKET` it could not message a pane on a machine where `fleet` was
-/// built, so telling the operator to go build one would have been advice that
-/// changed nothing. It has a socket now, so the line is true — a Critic on a
-/// machine with no `fleet` binary is a Critic whose interview cannot be opened
-/// in any useful sense, and that is exactly the failure this notice exists to
-/// surface before it looks like a healthy pane.
 pub fn machine_notices(host: &Host, pane: PaneId) -> Vec<(NoticeLevel, String)> {
     let mut notices = Vec::new();
     if matches!(pane, PaneId::Orch) {
@@ -1658,13 +1405,8 @@ pub fn machine_notices(host: &Host, pane: PaneId) -> Vec<(NoticeLevel, String)> 
 /// way `shared_checkout_warning` says peer review degrades rather than inventing a
 /// directory that is not there.
 ///
-/// **Private, and that is the point of this ticket.** It had one caller outside
-/// this module — the old sequence's evaluator arm — and `tests/write_guardrail.rs`
-/// had a hand-typed copy of it that had already drifted: it called
-/// [`guardrail::roots_for`] unconditionally, so it could never have produced the
-/// narrower pair the branch below gives the evaluator. Both are gone. The rule now
-/// lives here, has no second spelling, and is reached from a test the only way
-/// production reaches it — through [`place`].
+/// **Private**: the rule lives here, has no second spelling, and is reached from a
+/// test the only way production reaches it — through [`place`].
 fn guardrail_notices(
     harness: &'static dyn Harness,
     layout: &Layout,
@@ -1675,26 +1417,7 @@ fn guardrail_notices(
     operators_own_seat: bool,
 ) -> Result<Vec<(NoticeLevel, String)>, String> {
     let shell = layout.shell();
-    // **A pane that reads a run gets roots narrower than any pane's,
-    // deliberately.** It must read everything the run produced and change almost
-    // nothing — the evaluator's stated boundary is that running a test suite is
-    // fine and editing a tracked file, committing or touching a branch is not, and
-    // the Critic's remit is narrower still: it runs nothing at all. So each gets
-    // its working directory and nothing else: not `_shell` (which would let it
-    // write the live event log it is reading), and not the operator's
-    // `[fence] allow` extras, which exist for panes that are doing the work. Reads
-    // are untouched for every pane alike — the hook is not registered for `Read`
-    // at all (D-065), which is what makes "read everything" true without a rule.
-    //
-    // **Two names on one branch, not a shared predicate** (D-076). They are
-    // separate identities (the arc's D5) that happen to need the same roots for
-    // the same reason; a `PaneId::reads_a_run()` would read as one identity with a
-    // mode flag, which is the shape that decision refused.
-    let roots = if pane.is_evaluator() || pane.is_critic() {
-        vec![cwd.to_path_buf()]
-    } else {
-        guardrail::roots_for(cwd, &shell, &context.launch.fence_allow)
-    };
+    let roots = guardrail::roots_for(cwd, &shell, &context.launch.fence_allow);
     // **Checkpoint 7 is a harness method now** (#31, C32): the settings document
     // is the vendor's — Claude Code's JSON, codex's TOML — so the installer is
     // theirs, exactly as checkpoint 4's seeder is. What crosses the seam is this
@@ -1790,40 +1513,6 @@ mod tests {
                 path.starts_with("/scratch/fleet"),
                 "{} escaped the layout it was derived from",
                 path.display()
-            );
-        }
-    }
-
-    /// **The two judges run Claude Code, and there is nowhere to say otherwise**
-    /// (C15, WP-25 #33).
-    ///
-    /// Issue #12's reasoning, unchanged: both the evaluator and the Critic judge
-    /// the fleet's work, and a judge running the same harness as the judged is a
-    /// variable worth not introducing in a first mixed run. The gate offers a
-    /// harness on the orchestrator row and the workers row (C23) and on neither
-    /// judge.
-    ///
-    /// Held by the shape rather than by a check — `PaneSpec::Evaluator` and
-    /// `PaneSpec::Critic` have no field for a harness — so this test asserts what
-    /// that shape produces, and the compiler asserts the shape. A later ticket
-    /// that gives a judge a harness field has to delete this test to do it.
-    #[test]
-    fn the_judges_run_claude_code_and_carry_no_harness_of_their_own() {
-        let claude_code = harness::claude_code().spec();
-        for judge in [PaneSpec::Evaluator, PaneSpec::Critic { run: RunSource::Live }] {
-            let pane = judge.pane();
-            assert!(
-                std::ptr::eq(judge.harness().spec(), claude_code),
-                "{pane} is a judge and was offered a harness of its own",
-            );
-        }
-
-        // And the two seats that *are* offered one really carry it, so this is an
-        // asymmetry rather than a registry with one usable entry.
-        for spec in [PaneSpec::orch(codex::codex()), PaneSpec::worker(1, codex::codex())] {
-            assert!(
-                std::ptr::eq(spec.harness().spec(), codex::codex().spec()),
-                "the seat did not keep the harness the caller named",
             );
         }
     }

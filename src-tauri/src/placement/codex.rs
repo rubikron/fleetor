@@ -1092,7 +1092,7 @@ impl Harness for CodexCli {
     /// through the whole of phase 1 — a harness that names its model in argv could
     /// not have been registered. `--model` is written from
     /// [`Seat::model`], which is `Some` on the fenced seat alone: the operator's
-    /// own pane and the two judges run the operator's own account and model.
+    /// own pane runs the operator's own account and model.
     ///
     /// **There is no permission flag at all** and that is checkpoint 3's other
     /// half: codex's containment is the seatbelt, which is *configured* — the trio
@@ -4676,8 +4676,8 @@ args = ["--root", "~/notes"]
             codex().command_args(&Seat::new("").for_the_operator()).iter().all(|a| a != BYPASS_HOOK_TRUST),
             "the operator's own pane answers hook trust itself",
         );
-        // And the asymmetry is the seat's, not the posture's: the evaluator and the
-        // Critic carry a permission mode *and* are seats FLEETOR drives.
+        // And the asymmetry is the seat's, not the posture's: a seat that carries a
+        // permission mode and is not the operator's is one FLEETOR drives.
         assert!(
             codex()
                 .command_args(&Seat::new("").with_permission_mode("acceptEdits"))

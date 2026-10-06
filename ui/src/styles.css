@@ -192,6 +192,65 @@
   --border-soft: #e3d6b9;
 }
 
+/* THEME MORPH — the light/dark switch moves every colour together instead of
+   snapping: background and text travel at once, the way Mintaka's page turns
+   dark (a scroll-scrubbed tween of background-color and color together),
+   driven here by the switch rather than by scroll.
+
+   Registering the tokens is what makes this one rule. An unregistered custom
+   property is a string and cannot interpolate, so it would flip at the end of
+   the duration; registered as <color>, each token tweens on :root and every
+   var() that reads it — surfaces, text, borders, color-mix() — follows frame
+   by frame with nothing per-component. The list is exactly the tokens the
+   light block above redeclares; one added there belongs here too, or it
+   snaps while the rest morph. Initial values are the dark ones, never used
+   while :root declares them.
+
+   Scoped to [data-theme-morph], which useTheme.ts sets only for a switch the
+   operator makes. xterm paints its canvas outside CSS, so TerminalPane tweens
+   it itself: THEME_MORPH_MS and easeThemeMorph in theme.ts must move with the
+   duration and curve below. */
+@property --bg-0 { syntax: "<color>"; inherits: true; initial-value: #1b1813; }
+@property --bg-1 { syntax: "<color>"; inherits: true; initial-value: #201d18; }
+@property --bg-2 { syntax: "<color>"; inherits: true; initial-value: #29251e; }
+@property --bg-3 { syntax: "<color>"; inherits: true; initial-value: #312c25; }
+@property --term-bg { syntax: "<color>"; inherits: true; initial-value: #201d18; }
+@property --fg { syntax: "<color>"; inherits: true; initial-value: #e9e7e2; }
+@property --fg-dim { syntax: "<color>"; inherits: true; initial-value: #c2baae; }
+@property --fg-mute { syntax: "<color>"; inherits: true; initial-value: #b6aa96; }
+@property --accent { syntax: "<color>"; inherits: true; initial-value: #d97757; }
+@property --gold { syntax: "<color>"; inherits: true; initial-value: #c69a4e; }
+@property --green { syntax: "<color>"; inherits: true; initial-value: #7fa36a; }
+@property --red { syntax: "<color>"; inherits: true; initial-value: #d66f66; }
+@property --border { syntax: "<color>"; inherits: true; initial-value: #383229; }
+@property --border-soft { syntax: "<color>"; inherits: true; initial-value: #2c2720; }
+
+:root[data-theme-morph] {
+  transition-property:
+    --bg-0,
+    --bg-1,
+    --bg-2,
+    --bg-3,
+    --term-bg,
+    --fg,
+    --fg-dim,
+    --fg-mute,
+    --accent,
+    --gold,
+    --green,
+    --red,
+    --border,
+    --border-soft;
+  transition-duration: 600ms;
+  transition-timing-function: cubic-bezier(0.65, 0, 0.35, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-theme-morph] {
+    transition: none;
+  }
+}
+
 * {
   box-sizing: border-box;
 }
@@ -273,16 +332,9 @@ body,
         can happen under width pressure is an ellipsis truncation of a
         value — never a second line. That guarantee holds regardless of
         window width or the zoom pivot's root font-size.
-   `container-type: inline-size` turns this row into a query container so
-   the lowest-priority values can drop out (see `.status-line__item--gate`
-   / `--workers` below) before truncation ever has to bite into `target` or
-   `branch`, which the operator actually needs to read. The breakpoints use
-   `em`, not `px`: an `em` in a container query resolves against the
-   container's own font-size, which is itself in rem — so the trigger point
-   scales in lockstep with the zoom pivot instead of staying pinned to a
-   physical pixel width that would drop content "too early" at 100% zoom
-   and "too late" at 200%, where the same content needs twice the physical
-   room. */
+   The topbar shows only the brand mark and the repo name. Connection
+   status is invisible when healthy; errors surface as a dismissible
+   banner below the topbar. */
 .topbar {
   display: flex;
   align-items: center;
@@ -306,74 +358,15 @@ body,
   flex-shrink: 0;
 }
 
-/* a plain terminal-style status line, not chips: dense key/value pairs
-   separated by hairlines, the way a tmux or i3 status bar reads.
-
-   `target`/`branch` are the "primary" tier — what the operator needs to
-   confirm they're pointed at the right repo. `workers`/`gate` are the
-   "quiet" tier — configuration set once at launch, sized down (--t-label)
-   and left in the muted foreground so they don't compete with primary at
-   the same volume. `gate` in particular is no longer green: green reads as
-   a live "passing" signal app-wide, and a configured policy isn't one. */
-.status-line {
-  display: flex;
-  align-items: baseline;
-  gap: 1.25rem;
-  font-family: var(--mono);
+.topbar__repo {
   font-size: var(--t-small);
-  min-width: 0;
-  overflow: hidden;
-}
-.status-line__item {
-  display: flex;
-  align-items: baseline;
-  gap: 0.4375rem;
-  padding-left: 1.25rem;
-  border-left: 1px solid var(--border-soft);
-  min-width: 0;
-  flex-shrink: 1;
-}
-.status-line__item:first-child {
-  padding-left: 0;
-  border-left: none;
-}
-.status-line__item--quiet {
-  font-size: var(--t-label);
-  flex-shrink: 2; /* the quiet tier gives up room before primary does */
-}
-.status-line__label {
-  color: var(--fg-mute);
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-.status-line__value {
-  color: var(--fg-dim);
+  color: var(--fg);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
 }
-.status-line__item--primary .status-line__value { color: var(--fg); }
-.status-line__value--gold { color: var(--gold); }
-
-/* progressive disclosure: quietest, longest, least urgent goes first. Pure
-   enhancement — if a webview doesn't support container queries these items
-   just fall back to the universal nowrap+ellipsis truncation above instead
-   of dropping, so nothing here can wrap or grow the row either way. */
-@container topbar (max-width: 46em) {
-  .status-line__item--gate { display: none; }
-}
-@container topbar (max-width: 34em) {
-  .status-line__item--workers { display: none; }
-}
-
 .topbar__spacer { flex: 1 1 auto; min-width: 0.75rem; }
-.topbar__status {
-  font-size: var(--t-small);
-  color: var(--fg-mute);
-  white-space: nowrap;
-  flex-shrink: 0;
-}
 /* shown only when zoom departs from 100% — quiet mono aside, no border, no
    background, no transition (motion here is reserved for the blocked signal). */
 .topbar__zoom {
@@ -384,49 +377,28 @@ body,
   flex-shrink: 0;
 }
 
-/* ---- dev mode band (WP-16) ---- */
-/* Rendered only while the mode is on, directly under the topbar, so it is in
-   every view at once rather than in the one the operator happens to open.
-
-   Coral, and nothing else in the app is allowed to look like this: --accent is
-   the "needs or has attention" token (§7) and a standing evaluation posture is
-   the app's one permanent attention state. Text and dot both take --accent on
-   --bg-2 rather than the reverse (a coral *fill* with --on-accent text) — the
-   light theme deepens --accent precisely so it passes AA as text, and a filled
-   band would be the one place that tuning does not help. Flat: a 2px coral
-   underline is the whole of the emphasis, no gradient and no shadow (§7 rule 1).
-
-   The dot never carries the meaning on its own (§7 rule 3): DEV MODE is written
-   next to it, and the note says what that costs the operator. `flex: 0 0 auto`
-   plus a nowrap label keeps this a single row at any zoom, exactly like the
-   topbar it sits beneath — a band that wrapped would push rows out of the
-   terminals below it. */
-.devbar {
+/* ---- error banner ---- */
+.topbar-banner {
   display: flex;
   align-items: center;
-  gap: 0.625rem;
-  flex: 0 0 auto;
+  gap: 0.75rem;
   padding: 0.375rem 1rem;
-  background: var(--bg-2);
-  border-bottom: 2px solid var(--accent);
   font-size: var(--t-small);
-  overflow: hidden;
-  user-select: none;
+  flex: 0 0 auto;
 }
-.devbar__label {
-  color: var(--accent);
-  font-weight: 600;
-  letter-spacing: 0.16em;
-  white-space: nowrap;
-  flex-shrink: 0;
+.topbar-banner--error {
+  background: var(--coral);
+  color: var(--bg-0);
 }
-.devbar__note {
-  color: var(--fg-mute);
-  font-size: var(--t-label);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
+.topbar-banner__dismiss {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: inherit;
+  font-size: 1rem;
+  cursor: pointer;
+  padding: 0 0.25rem;
+  line-height: 1;
 }
 
 .body {
@@ -610,182 +582,371 @@ body,
 .dot--red { background: var(--red); }
 .dot--muted { background: var(--border); border: 1px solid var(--fg-mute); }
 
-/* split: orchestrator + worker column via react-resizable-panels */
-.split {
+/* fleet layout: single terminal beside mission control */
+.fleet-layout {
   flex: 1 1 auto;
+  min-height: 0;
+  /* Without this the layout cannot shrink below the terminal's fitted width, so
+     a wide terminal pushes the cards off screen and is never re-fitted. */
+  min-width: 0;
+  display: flex;
+}
+.fleet-layout__terminal {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
   min-height: 0;
 }
 .pane-slot {
   min-width: 0;
   min-height: 0;
   display: flex;
-}
-/* The evaluator's view (D-073, replacing WP-15's second window). One terminal
-   filling the stage and no chrome of its own: the pane's own head already names
-   it. Both children are always in the DOM — `.is-hidden` swaps which one is
-   shown, because unmounting the terminal would destroy its xterm buffer with no
-   screen replay behind it (§7 rule 5). */
-/* The Critic (WP-20). Same shape as the evaluator's view below — a waiting
-   state that swaps for a terminal, both hidden with `.is-hidden` rather than
-   unmounted — with one addition: a control, because the operator decides when
-   this one runs. */
-.critic-view,
-.evaluator-view {
-  display: flex;
-  min-height: 0;
-  min-width: 0;
   flex: 1;
 }
-/* The Critic stacks: the interview gate sits above whichever of the two states
-   is showing. Scoped to `.critic-view` alone — the evaluator's view has no bar
-   and keeps the row it has always had. */
-.critic-view {
-  flex-direction: column;
+.pane-slot.is-hidden { display: none; }
+.fleet-layout__control {
+  flex: 0 0 20rem;
+  min-width: 14rem;
+  max-width: 24rem;
+  overflow-y: auto;
+  border-left: 1px solid var(--border);
+  padding: 0.5rem;
 }
-/* **The interview gate** (WP-21 stage A). Always rendered, on purpose: the cost
-   sentence below is an acceptance criterion of the package — the operator must
-   be able to tell *before pressing* that this spends the fleet's turns — and a
-   `title` cannot be seen on the way to the button or reached from a keyboard.
-   It is printed, in the token the palette reserves for cost. */
-.critic-view__interview {
+
+/* ---- Mission control cards ---- */
+.mission-control__grid {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 12px;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--border-soft);
-  background: var(--bg-1);
+  flex-direction: column;
+  gap: 0.375rem;
 }
-/* The state, said in words. "Open interview" on a button is a verb or an
-   adjective depending on who reads it; this is neither. */
-.critic-view__gate {
-  font-family: var(--mono);
+.mc-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.5rem 0.625rem;
+  border-radius: 0.375rem;
+  background: var(--bg-1);
+  border: 1px solid transparent;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: var(--fg);
+}
+.mc-card {
+  position: relative;
+  overflow: hidden;
+}
+.mc-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at var(--mx, 50%) var(--my, 50%), rgba(255,255,255,0.06) 0%, transparent 60%);
+  opacity: 0;
+  transition: opacity 0.2s;
+  pointer-events: none;
+}
+.mc-card:hover::before { opacity: 1; }
+.mc-card:hover { border-color: var(--border); }
+.mc-card--selected { border-color: var(--accent); }
+.mc-card__header {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+.mc-card__name { font-size: var(--t-small); font-weight: 600; }
+.mc-card__status {
+  margin-left: auto;
   font-size: var(--t-label);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  padding: 2px 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
   color: var(--fg-mute);
 }
-/* Open is the state that is costing something, so it is the one the eye finds
-   first — the same coral the rest of the app spends on "active". */
-.critic-view__gate--open {
-  color: var(--accent);
-  border-color: var(--accent);
+.mc-card__mark { padding: 0.125rem 0.25rem; }
+.mc-card__unread {
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: 50%;
+  background: var(--gold);
+  flex: 0 0 auto;
 }
-.critic-view__gate--closed {
+.mc-card__gauge { font-size: var(--t-label); }
+.mc-card__gauge--muted { color: var(--fg-mute); }
+.mc-card__gauge--gold { color: var(--gold); }
+.mc-card__gauge--absent { color: var(--fg-mute); font-style: italic; opacity: 0.8; }
+.mc-card__model {
+  font-size: var(--t-label);
   color: var(--fg-dim);
 }
-.critic-view__gate--unknown,
-.critic-view__gate--norun {
-  color: var(--fg-mute);
+.mc-card__context {
+  position: relative;
+  height: 0.375rem;
+  border-radius: 0.1875rem;
+  background: var(--bg-0);
+  overflow: hidden;
 }
-.critic-view__interview-toggle {
-  padding: 5px 14px;
-  font-size: var(--t-small);
-  font-family: inherit;
-  color: var(--fg);
-  background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+.mc-card__bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  border-radius: 0.1875rem;
+  transition: width 0.3s ease;
+}
+.mc-card__bar--green { background: var(--green); }
+.mc-card__bar--gold { background: var(--gold); }
+.mc-card__bar--coral { background: var(--coral); }
+.mc-card__pct {
+  font-size: var(--t-label);
+  color: var(--fg-mute);
+  font-variant-numeric: tabular-nums;
+}
+.mc-card__task {
+  font-size: var(--t-label);
+  color: var(--fg-dim);
+}
+.mc-card__msg {
+  font-size: var(--t-label);
+  color: var(--fg-mute);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin: 0;
+}
+
+/* ---- Mission control detail panel ---- */
+.mc-detail {
+  border-top: 1px solid var(--border);
+  padding: 0.5rem 0.25rem;
+  margin-top: 0.5rem;
+}
+.mc-detail__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.375rem;
+}
+.mc-detail__title { font-size: var(--t-small); font-weight: 600; }
+.mc-detail__close {
+  background: none;
+  border: none;
+  color: var(--fg-mute);
+  font-size: 1rem;
   cursor: pointer;
-  transition: var(--transition-fast);
+  padding: 0 0.25rem;
+  line-height: 1;
 }
-.critic-view__interview-toggle:hover:not(:disabled) {
-  background: var(--bg-3);
-  border-color: var(--fg-mute);
-}
-.critic-view__interview-toggle:disabled {
+.mc-detail__section { margin-bottom: 0.375rem; }
+.mc-detail__label {
+  display: block;
+  font-size: var(--t-label);
   color: var(--fg-mute);
-  cursor: not-allowed;
+  margin-bottom: 0.125rem;
 }
-/* `--gold` is the palette's declared token for "awareness — review / pending /
-   unread / cost", and this is a cost. Both themes redeclare it, so this reads
-   in either one. */
-.critic-view__cost {
-  flex: 1 1 34ch;
+.mc-detail__line {
+  font-size: var(--t-label);
+  color: var(--fg-dim);
   margin: 0;
+  padding: 0.125rem 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* ---- Feed tabs ---- */
+.feed-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.feed-view__tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+  padding: 0 1rem;
+}
+.feed-view__tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--fg-mute);
+  font: inherit;
   font-size: var(--t-small);
-  line-height: 1.5;
-  color: var(--gold);
+  padding: 0.5rem 0.75rem;
+  cursor: pointer;
 }
-.critic-view__cost code {
-  font-family: var(--mono);
-  color: inherit;
+.feed-view__tab--active {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
 }
-/* Empty until a write fails, and then it says so where the switch that did not
-   move is — the switch itself stays where it was (no optimistic flip). */
-.critic-view__interview-error:empty {
-  display: none;
+.feed-view__tab:hover:not(.feed-view__tab--active) {
+  color: var(--fg-dim);
 }
-.critic-view__interview-error {
-  flex: 1 1 100%;
-  margin: 0;
-  font-size: var(--t-small);
-  color: var(--red);
-}
-.critic-view__terminal,
-.evaluator-view__terminal {
+
+/* ---- Homepage ---- */
+.homepage {
   display: flex;
   flex: 1;
   min-height: 0;
+  gap: 2rem;
+  padding: 1.5rem;
+  overflow-y: auto;
+}
+.homepage__sessions {
+  flex: 1;
   min-width: 0;
 }
-/* The pre-handoff state. Prose, centred, and deliberately without a control:
-   the evaluator wakes on a handoff and there is nothing here to press. */
-.critic-view__waiting,
-.evaluator-view__waiting {
+.homepage__launch {
   flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 10px;
-  padding: 32px;
-  text-align: center;
+  gap: 1rem;
+  padding: 2rem 1rem;
 }
-.critic-view__lede,
-.evaluator-view__lede {
+.homepage__heading {
   font-size: var(--t-body);
-  color: var(--text-primary);
-  margin: 0;
-}
-.critic-view__note,
-.evaluator-view__note {
-  font-size: var(--t-small);
-  color: var(--text-muted);
-  line-height: 1.6;
-  max-width: 46ch;
-  margin: 0;
-}
-.critic-view__note code,
-.evaluator-view__note code {
-  font-family: var(--font-mono);
-  color: var(--text-secondary);
-}
-/* The one control either of these views has. The evaluator has none on purpose;
-   the Critic answers an ordinary question whenever the operator asks it. */
-.critic-view__start {
-  margin-top: 6px;
-  padding: 6px 18px;
-  font-size: var(--t-small);
-  font-family: inherit;
+  font-weight: 600;
+  margin-bottom: 0.75rem;
   color: var(--fg);
-  background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition: var(--transition-fast);
 }
-.critic-view__start:hover:not(:disabled) {
-  background: var(--bg-3);
-  border-color: var(--fg-mute);
-}
-.critic-view__start:disabled {
+.homepage__empty {
   color: var(--fg-mute);
+  font-size: var(--t-small);
+}
+.homepage__run-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.homepage__run {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: 0;
+  border-radius: 0.375rem;
+  background: var(--bg-1);
+  font: inherit;
+  text-align: left;
+}
+button.homepage__run { cursor: pointer; }
+button.homepage__run:hover:not(:disabled) .homepage__run-label { color: var(--accent); }
+button.homepage__run:disabled { cursor: default; }
+.homepage__run--closed .homepage__run-label { color: var(--fg-mute); }
+.homepage__run-label {
+  font-size: var(--t-small);
+  color: var(--fg);
+}
+.homepage__run-meta {
+  font-size: var(--t-label);
+  color: var(--fg-mute);
+}
+.homepage__branch {
+  font-size: var(--t-small);
+  color: var(--fg-dim);
+  background: var(--bg-1);
+  padding: 0.125rem 0.5rem;
+  border-radius: 0.25rem;
+}
+.homepage__target {
+  display: flex;
+  gap: 0.5rem;
+  width: 100%;
+  max-width: 28rem;
+}
+.homepage__target-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--t-small);
+  padding: 0.375rem 0.5rem;
+}
+.homepage__target-pick {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: var(--t-small);
+  padding: 0.375rem 0.75rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.homepage__error {
+  color: var(--coral);
+  font-size: var(--t-small);
+}
+.homepage__config-toggle {
+  background: none;
+  border: none;
+  color: var(--fg-mute);
+  font: inherit;
+  font-size: var(--t-small);
+  cursor: pointer;
+  padding: 0.25rem 0;
+}
+.homepage__config-toggle:hover { color: var(--fg-dim); }
+.homepage__config {
+  width: 100%;
+  max-width: 28rem;
+}
+.homepage__actions {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+.homepage__start {
+  position: relative;
+  background: var(--accent);
+  color: var(--bg-0);
+  border: 2px solid transparent;
+  border-radius: 0.375rem;
+  font: inherit;
+  font-size: var(--t-body);
+  font-weight: 600;
+  padding: 0.625rem 1.5rem;
+  cursor: pointer;
+  overflow: hidden;
+}
+.homepage__start::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  background: conic-gradient(from var(--star-angle, 0deg), var(--accent), var(--gold), var(--accent));
+  z-index: -1;
+  animation: star-spin 3s linear infinite;
+}
+@keyframes star-spin {
+  to { --star-angle: 360deg; }
+}
+@property --star-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+.homepage__start:disabled {
+  opacity: 0.5;
   cursor: not-allowed;
 }
+.homepage__recheck {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: var(--t-small);
+  padding: 0.5rem 1rem;
+  cursor: pointer;
+}
+
 .terminal-pane {
   background: var(--term-bg);
   border: 1px solid var(--border);
@@ -913,6 +1074,37 @@ body,
   padding: 0.375rem;
 }
 .xterm .xterm-viewport { overflow-y: auto; }
+
+/* ---- Boot sequence ---- */
+.boot-sequence {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 1.5rem 1rem;
+  font-family: var(--mono);
+  font-size: var(--t-small);
+  color: var(--fg-mute);
+}
+.boot-step {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  opacity: 0.4;
+}
+.boot-step--done { opacity: 0.7; }
+.boot-step--done .boot-step__mark { color: var(--green); }
+.boot-step--active { opacity: 1; color: var(--fg); }
+.boot-step__mark { width: 1rem; text-align: center; flex-shrink: 0; }
+.boot-step__cursor {
+  display: inline-block;
+  width: 0.5rem;
+  height: 1em;
+  background: var(--fg);
+  animation: blink-cursor 1s step-end infinite;
+}
+@keyframes blink-cursor {
+  50% { opacity: 0; }
+}
 
 /* quiet "jump to bottom" affordance — shown only while the operator has
    scrolled up in this pane (TerminalPane.tsx's onScroll listener). Neutral
@@ -1391,71 +1583,6 @@ body,
   width: 100%;
   gap: 0.5rem;
 }
-.tabstrip {
-  display: flex;
-  gap: 0.375rem;
-  flex: 0 0 auto;
-  /* As many worker tabs as the fleet ever grows to must stay readable, not
-     squeezed into wrapped two-line labels as the strip narrows — so the
-     strip scrolls horizontally instead of shrinking its children. */
-  overflow-x: auto;
-  overflow-y: hidden;
-}
-.tab {
-  display: flex;
-  align-items: center;
-  gap: 0.4375rem;
-  font: inherit;
-  font-size: var(--t-small);
-  color: var(--fg-mute);
-  background: var(--bg-2);
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius-sm);
-  padding: 0.375rem 0.625rem;
-  cursor: pointer;
-  /* Full content width, never compressed by the flex container and never
-     wrapped onto a second line — see .tabstrip's overflow-x above. */
-  flex: 0 0 auto;
-  white-space: nowrap;
-}
-.tab:hover { border-color: var(--border); color: var(--fg-dim); }
-/* Selection, not focus. This used to tint coral, which collided head-on with
-   .terminal-pane--focused: the same hue was answering two different questions
-   ("which worker is displayed" vs "which pane has the keyboard"), and in a
-   five-terminal app the second one is the one that must never be ambiguous.
-   So selection drops to the same lightness-only treatment the sidebar nav
-   uses — surface step + foreground step — and coral is left to mean exactly
-   one thing app-wide. */
-.tab--active {
-  color: var(--fg);
-  background: var(--bg-3);
-  border-color: var(--border);
-}
-.tab__status { font-size: var(--t-label); color: var(--fg-mute); }
-/* The mark's second home — the reason it exists at all. The tab strip is where
-   four workers are compared at a glance, so the harness has to be visible
-   without selecting the tab to read its head. */
-.tab__mark { padding: 0.125rem 0.25rem; }
-/* The WP-04 live gauge's second home — the same figure the pane head shows,
-   so a worker's usage is visible from the tab strip without switching to it.
-   Same muted/gold split as `.pane__gauge`, single-sourced in
-   `lib/contextGaugeTone.ts` so the two places can never disagree. */
-.tab__gauge { font-size: var(--t-label); }
-.tab__gauge--muted { color: var(--fg-mute); }
-.tab__gauge--gold { color: var(--gold); }
-/* Same `absent` treatment as `.pane__gauge--absent`, and for the same reason:
-   the two places must agree about a pane whose usage could not be read. */
-.tab__gauge--absent { color: var(--fg-mute); font-style: italic; opacity: 0.8; }
-/* unread-output marker: presence only, no count. Gold (awareness/unread),
-   never the accent — coral is reserved for the focused-pane frame in this
-   pass (see .terminal-pane--focused). */
-.tab__unread {
-  width: 0.375rem;
-  height: 0.375rem;
-  border-radius: 50%;
-  background: var(--gold);
-  flex: 0 0 auto;
-}
 .worker-slot {
   flex: 1 1 auto;
   min-height: 0;
@@ -1890,14 +2017,6 @@ body,
 }
 .setting-row__label { font-size: var(--t-body); color: var(--fg); }
 .setting-row__desc { font-size: var(--t-small); color: var(--fg-mute); }
-/* a setting that would not save. Gold, not red: nothing is broken and nothing
-   was lost — the preference simply is not what the operator just asked for, and
-   the sentence says which. */
-.setting-row__error {
-  margin: 0.25rem 0 0;
-  font-size: var(--t-small);
-  color: var(--gold);
-}
 
 /* a plain neutral switch — deliberately no accent/gold fill. Both colours are
    already spoken for elsewhere (coral = the one eye-catch, gold = awareness/
@@ -1915,12 +2034,6 @@ body,
   cursor: pointer;
 }
 .switch:hover { border-color: var(--fg-mute); }
-/* a switch whose state is not known yet (WP-16: the backend has not answered
-   what mode the app is in). It must not invite a click, and it must not read as
-   "off" — dimming the whole control says "no answer" where a thumb position
-   would say a wrong answer. */
-.switch:disabled { cursor: default; opacity: 0.45; }
-.switch:disabled:hover { border-color: var(--border); }
 .switch__thumb {
   display: block;
   width: 0.875rem;

@@ -127,7 +127,7 @@ pub fn events(path: &Path, after: i64) -> Result<Vec<(i64, FleetEvent)>> {
 /// use, with no SQLite and no running app.
 ///
 /// This is the **agent-facing** shape, and the reason it exists rather than a
-/// "download" button generating it on demand: an evaluator reading past runs
+/// "download" button generating it on demand: an agent reading past runs
 /// should be able to `cat` a directory, not drive a GUI to produce its own input.
 ///
 /// Each element is the event exactly as it crossed the wire, plus the two
@@ -371,7 +371,7 @@ mod tests {
 
     /// The export is read back through `serde_json`, not through `FleetEvent`, so
     /// a run written by a build that knew a field this one does not still exports
-    /// whole. An evaluator reading old runs is the entire point of the format.
+    /// whole. An agent reading old runs is the entire point of the format.
     #[test]
     fn a_payload_field_this_build_does_not_know_survives_the_export() {
         let dir = tempdir();

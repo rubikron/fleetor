@@ -36,20 +36,13 @@
 
 import type { ReactNode } from "react";
 
-// **This union is one half of a pair.** `ui/src/ui/usePersistedNav.ts` carries
-// the other — the list of views it will restore on relaunch — and a view added
-// here and forgotten there is a view the operator can select and never return
-// to, silently, with no error. That had already happened to `history` before
-// D-073 found it. `src-tauri/tests/views.rs` reads both lists and fails if they
-// stop naming the same things.
+// The views the rail offers. `src-tauri/tests/views.rs` reads this union.
 export type View =
+  | "home"
   | "fleet"
-  | "messages"
+  | "feed"
   | "tasks"
-  | "activity"
   | "history"
-  | "critic"
-  | "evaluator"
   | "settings";
 
 interface SidebarProps {
@@ -58,10 +51,6 @@ interface SidebarProps {
   messageCount: number;
   collapsed: boolean;
   onToggleCollapse: () => void;
-  /// WP-16's mode, straight from `useDevMode`. `null` means the backend has not
-  /// answered yet — the dev-only row stays absent until it says `true`, so it
-  /// never flashes into the rail and back out on launch.
-  devMode: boolean | null;
 }
 
 /// 16×16, stroke-only, `currentColor`. Distinct silhouettes matter more than
@@ -77,6 +66,13 @@ const ICON_PROPS = {
 };
 
 const ICONS: Record<View, ReactNode> = {
+  // a house: the homepage
+  home: (
+    <svg {...ICON_PROPS}>
+      <path d="M2.4 8.4L8 3.2l5.6 5.2" />
+      <path d="M4 7.6v5.8h3.2v-3.2h1.6v3.2H12V7.6" />
+    </svg>
+  ),
   // a terminal: window frame + prompt caret + input line
   fleet: (
     <svg {...ICON_PROPS}>
@@ -85,15 +81,15 @@ const ICONS: Record<View, ReactNode> = {
       <line x1="8.4" y1="10" x2="11.4" y2="10" />
     </svg>
   ),
-  // an envelope: the message record
-  messages: (
+  // a pulse trace + envelope: merged messages + activity
+  feed: (
     <svg {...ICON_PROPS}>
-      <rect x="1.6" y="3.4" width="12.8" height="9.2" rx="1.6" />
-      <polyline points="2.2,4.6 8,8.8 13.8,4.6" />
+      <polyline points="1.6,6 4,6 5.6,3 7.6,9 9.2,6 11.2,6" />
+      <rect x="3.6" y="9" width="8.8" height="5" rx="1" />
+      <polyline points="4,10 8,12.4 12,10" />
     </svg>
   ),
-  // a checklist: the task board. Boxes with rules beside them, not ticks —
-  // this shell never renders a claimed `done` as a checkmark (see TaskBoard).
+  // a checklist: the task board
   tasks: (
     <svg {...ICON_PROPS}>
       <rect x="1.8" y="2.6" width="5" height="5" rx="1.2" />
@@ -102,42 +98,12 @@ const ICONS: Record<View, ReactNode> = {
       <line x1="9.2" y1="11.9" x2="14.2" y2="11.9" />
     </svg>
   ),
-  // a pulse trace: the activity log
-  activity: (
-    <svg {...ICON_PROPS}>
-      <polyline points="1.6,8 4.4,8 6.4,3.6 9.6,12.4 11.6,8 14.4,8" />
-    </svg>
-  ),
-  // a clock wound back: past runs. Deliberately not an archive box — the shape
-  // that reads as "storage" also reads as "somewhere things go to be forgotten",
-  // and this is the one view that is meant to be returned to.
+  // a clock wound back: past runs
   history: (
     <svg {...ICON_PROPS}>
       <path d="M2.4 8a5.6 5.6 0 1 0 1.7-4" />
       <polyline points="2.1,1.9 2.1,4.5 4.7,4.5" />
       <polyline points="8,4.9 8,8 10.3,9.4" />
-    </svg>
-  ),
-  // a speech bubble over a rule: the run read back, and reported on.
-  // Deliberately unlike the magnifier below — in dev mode the two rows sit
-  // together and answer different questions, so they must not read as two
-  // spellings of one thing.
-  critic: (
-    <svg {...ICON_PROPS}>
-      <path d="M2.4 3.4h11.2v7.4H8.6L5.4 13.6v-2.8H2.4z" />
-      <line x1="5" y1="6" x2="11" y2="6" />
-      <line x1="5" y1="8.4" x2="9" y2="8.4" />
-    </svg>
-  ),
-  // a magnifier over a rule: reading the run back. Deliberately not a clipboard
-  // or a tick — this pane grades a finished mission, and both of those shapes
-  // read as the task board next door.
-  evaluator: (
-    <svg {...ICON_PROPS}>
-      <circle cx="6.8" cy="6.8" r="4.2" />
-      <line x1="9.9" y1="9.9" x2="13.8" y2="13.8" />
-      <line x1="5" y1="6.2" x2="8.6" y2="6.2" />
-      <line x1="5" y1="8.4" x2="7.4" y2="8.4" />
     </svg>
   ),
   // a gear: preferences
@@ -157,37 +123,12 @@ const ICONS: Record<View, ReactNode> = {
   ),
 };
 
-const WORKSPACE: { view: View; label: string; hint?: string; devOnly?: true }[] = [
+const WORKSPACE: { view: View; label: string; hint?: string }[] = [
+  { view: "home", label: "Home" },
   { view: "fleet", label: "Terminals" },
-  { view: "messages", label: "Messages" },
-  // Next to Messages on purpose: the board is what the fleet agreed on and the
-  // record is what it then said about it, and they get read together.
+  { view: "feed", label: "Feed", hint: "Feed — messages and activity in one view" },
   { view: "tasks", label: "Tasks" },
-  { view: "activity", label: "Activity" },
-  // Last of the always-present rows, and after the live views on purpose:
-  // everything above is this run, this one is every run before it.
   { view: "history", label: "History" },
-  // **The Critic** (WP-20, D-076). An ordinary row, present whether or not dev
-  // mode is on, because it is a product feature rather than an instrument of an
-  // experiment. It carries a `hint` for the same reason the row below it does:
-  // in dev mode the two sit next to each other, and two panes that both read a
-  // run have to say in the rail which question each answers.
-  {
-    view: "critic",
-    label: "Critic",
-    hint: "Critic — what the fleet did, cited from the run's own archive",
-  },
-  // **Last, and dev-only, and that ordering is the point** (D-073). A row that
-  // appears and disappears with the mode has to sit at the end, or turning dev
-  // mode on shifts every row below it and the rail the operator has learned
-  // moves under them. It carries no start control: the evaluator wakes when
-  // `orch` hands off, and the view says so — see App.tsx.
-  {
-    view: "evaluator",
-    label: "Evaluator",
-    hint: "Evaluator — whether the mission was met, against this mission's own key",
-    devOnly: true,
-  },
 ];
 
 export function Sidebar({
@@ -196,16 +137,12 @@ export function Sidebar({
   messageCount,
   collapsed,
   onToggleCollapse,
-  devMode,
 }: SidebarProps) {
-  // `=== true`, not truthy: `null` is "the backend has not answered yet", and it
-  // must read as absent rather than as present-but-off.
-  const rows = WORKSPACE.filter((item) => !item.devOnly || devMode === true);
   return (
     <nav className={`sidebar ${collapsed ? "sidebar--collapsed" : ""}`}>
       <div className="sidebar__nav" role="tablist" aria-label="Workspace views">
-        {rows.map((item) => {
-          const unread = item.view === "messages" && messageCount > 0;
+        {WORKSPACE.map((item) => {
+          const unread = item.view === "feed" && messageCount > 0;
           return (
             <button
               key={item.view}

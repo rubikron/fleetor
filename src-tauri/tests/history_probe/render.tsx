@@ -50,12 +50,9 @@ const LEGACY: RunRecord = {
 const view = (runs: RunRecord[]): RunsView => ({
   runs,
   error: null,
-  opening: null,
-  generation: 0,
   refresh: () => {},
   rename: async () => {},
   remove: async () => {},
-  reopen: async () => {},
   save: async () => null,
   saved: null,
 });
@@ -65,10 +62,10 @@ const noop = () => {};
 process.stdout.write(
   JSON.stringify({
     // One row that opens beside one that cannot.
-    mixed: renderToStaticMarkup(<RunHistory runs={view([OPENS, BLOCKED])} onOpened={noop} />),
+    mixed: renderToStaticMarkup(<RunHistory runs={view([OPENS, BLOCKED])} launching={false} onOpen={noop} />),
     // Every row blocked, for different causes.
     nothing_opens: renderToStaticMarkup(
-      <RunHistory runs={view([BLOCKED, LEGACY])} onOpened={noop} />,
+      <RunHistory runs={view([BLOCKED, LEGACY])} launching={false} onOpen={noop} />,
     ),
   }),
 );

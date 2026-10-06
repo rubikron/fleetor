@@ -35,7 +35,7 @@ use fleetor_core::wire::{Op, OpResult};
 use fleetor_core::Store;
 use fleetor_db::SqliteStore;
 use fleetor_ipc::UnixTransport;
-use fleetor_server::{AppCommand, BroadcastStore, Hub, Interview};
+use fleetor_server::{AppCommand, BroadcastStore, Hub};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use tokio::runtime::Runtime;
@@ -43,21 +43,16 @@ use tokio::sync::{mpsc, oneshot, Notify};
 
 use crate::context_gauge::GaugeSources;
 use crate::credential_source::{CredentialChoice, Gap, PlanOffer};
-use crate::placement::{self, harness, Host, Layout, PaneSpec, RunSource};
+use crate::placement::{self, harness, Host, Layout, PaneSpec};
 use crate::prompts::PaneContext;
 use crate::pty::PaneRegistry;
-use crate::{deliver, dev, evaluator, guardrail, prompts, runs, testbed};
+use crate::{deliver, guardrail, prompts, runs, testbed};
 
 /// Emitted for every appended event, in `seq` order, the moment it persists.
 const EVENT_FLEET: &str = "fleet://event";
-
-/// Emitted once per handoff that clears [`evaluator::readiness`] — the signal
-/// that replaced creating a second window (D-073).
-///
-/// It carries the Rust-side readiness decision and nothing else, which is why the
-/// webview cannot derive it from the `FleetEvent::Handoff` it already receives: a
-/// handoff with no mission, or with the mode off, must wake nothing at all.
-const EVENT_EVALUATOR_WAKE: &str = "evaluator://wake";
+/// A launch's verdict passed: the UI drops the old run's state on this, so a
+/// refused launch changes nothing on screen.
+const EVENT_LAUNCHING: &str = "fleet://launching";
 
 /// One event as the webview sees it: the `seq` cursor plus the flattened
 /// [`FleetEvent`] (its `#[serde(tag = "type")]` discriminator carries through, so
@@ -69,10 +64,10 @@ pub struct WireEvent {
     event: FleetEvent,
 }
 
-/// What a freshly-mounted UI gets back from bootstrap. The feed itself arrives
+/// What the UI gets back from a launch. The feed itself arrives
 /// entirely over [`EVENT_FLEET`] — the follower replays history from 0 — so all
 /// this carries is the cursor. It used to carry the board too; there is no board.
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct BootSnapshot {
     latest_seq: i64,
 }
@@ -135,10 +130,7 @@ pub struct SeatChoice {
 
 /// **What the operator picked, for every seat that may carry a choice** (C23).
 ///
-/// Five seats: the orchestrator and the four workers. **The two judges are absent
-/// and there is no field for them**, which is C15 made structural one layer up from
-/// [`PaneSpec`] — offering a judge a harness later is a type change here as well as
-/// there, rather than a value somebody sets.
+/// Five seats: the orchestrator and the four workers.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct FleetSeats {
     /// The operator's own seat.
@@ -214,16 +206,44 @@ impl FleetSeats {
         Ok(self)
     }
 
+    /// This selection with every seat a past run recorded put back on what it ran
+    /// (D-095). A seat the run never placed, or one on a harness this build lacks,
+    /// keeps the gate's pick; a record older than D-095 keeps the gate's credential.
+    fn as_recorded(mut self, recorded: &std::collections::BTreeMap<String, runs::PaneRecord>) -> Self {
+        let slots = fleetor_core::pane::WORKER_SLOTS.iter().map(|&slot| PaneId::Worker(slot));
+        let seats = std::iter::once(&mut self.orch).chain(&mut self.workers);
+        for (pane, seat) in std::iter::once(PaneId::Orch).chain(slots).zip(seats) {
+            let Some(rec) = recorded.get(&pane.to_string()) else { continue };
+            if harness::by_name(&rec.harness).is_none() {
+                continue;
+            }
+            seat.harness = rec.harness.clone();
+            seat.model = rec.model.clone();
+            if let Some(credential) = rec.credential {
+                seat.credential = credential;
+            }
+        }
+        self
+    }
+
+    /// The choice one seat carries, if it carries one.
+    fn choice_for(&self, pane: PaneId) -> Option<&SeatChoice> {
+        match pane {
+            PaneId::Orch => Some(&self.orch),
+            PaneId::Worker(slot) => self.workers.get(usize::from(slot).checked_sub(1)?),
+            _ => None,
+        }
+    }
+
     /// The spec one seat places as, resolved against the registry.
     ///
-    /// `None` for a pane that carries no choice — the two judges and the operator —
-    /// so the caller keeps the arms it already had rather than growing a branch
-    /// here.
+    /// `None` for the operator, who carries no choice, so the caller keeps the arm
+    /// it already had rather than growing a branch here.
     fn spec_for(&self, pane: PaneId) -> Option<PaneSpec> {
         let seat = match pane {
             PaneId::Orch => &self.orch,
             PaneId::Worker(slot) => self.workers.get(usize::from(slot).checked_sub(1)?)?,
-            PaneId::Evaluator | PaneId::Critic | PaneId::Operator => return None,
+            PaneId::Operator => return None,
         };
         let harness = harness::by_name(&seat.harness)?;
         let placed = match pane {
@@ -352,7 +372,7 @@ pub struct CredentialFallback {
 #[derive(Serialize, Clone, Debug, PartialEq, Eq, Default)]
 pub struct StartVerdict {
     /// Empty exactly when the fleet may start. Non-empty is a refusal, not a
-    /// warning: the interface disables the button and [`fleet_bootstrap`] refuses.
+    /// warning: the interface disables the button and [`fleet_launch`] refuses.
     refusals: Vec<StartRefusal>,
     /// One sentence per harness per role, in seat order.
     cost: Vec<CostLine>,
@@ -627,7 +647,7 @@ impl StartVerdict {
     /// The refusal as one sentence, or `None` when the fleet may start.
     ///
     /// Assembled here rather than at the two call sites so the operator reads the
-    /// same words whether the interface stopped them or [`fleet_bootstrap`] did.
+    /// same words whether the interface stopped them or [`fleet_launch`] did.
     fn why_it_will_not_start(&self) -> Option<String> {
         if self.refusals.is_empty() {
             return None;
@@ -682,7 +702,7 @@ fn refusal_for(reading: Option<&harness::HarnessReadiness>) -> Option<String> {
 ///
 /// **It goes through `StartRefusal` rather than beside it**, so the interface needs
 /// no new wire: `StartGate.tsx` already renders every refusal and disables Start on
-/// a non-empty list, and [`fleet_bootstrap`] already refuses on the same list. A
+/// a non-empty list, and [`fleet_launch`] already refuses on the same list. A
 /// second channel would have been a second implementation of "may this fleet start",
 /// which is the disagreement M15 exists to prevent.
 ///
@@ -877,7 +897,7 @@ impl HarnessGate {
 /// **Where the start gate's two answers live — before there is a fleet to hold
 /// them** (WP-25 #36).
 ///
-/// The gate is the screen that runs *before* [`fleet_bootstrap`], and both of the
+/// The gate is the screen that runs *before* [`fleet_launch`], and both of the
 /// things it renders from are things a fleet that does not exist yet cannot own:
 /// what each harness reports about this machine, and which harness and model the
 /// operator put on each seat. #35 hung both off [`Fleet`], where [`fleet_gate`]
@@ -886,7 +906,7 @@ impl HarnessGate {
 ///
 /// They live here instead, managed for the app's lifetime, and [`Fleet`] holds **the
 /// same `Arc`** rather than a second copy of the values. That is the idiom
-/// [`Target`] and `Interview` already use in this file, for the identical reason:
+/// [`Target`] already uses in this file, for the identical reason:
 /// two copies of one fact means the copy that is wrong is the one somebody reads.
 #[derive(Default)]
 pub struct GateHold {
@@ -902,7 +922,7 @@ pub struct GateHold {
     /// **Sentences from a probe that ran before there was a feed to put them on.**
     ///
     /// The gate probes at app launch, when no store exists; the Activity feed is
-    /// opened by [`fleet_bootstrap`]. Without this the operator's first reading of
+    /// opened by [`fleet_launch`]. Without this the operator's first reading of
     /// their own machine — including the caveat about what a passing check does not
     /// prove — would be discovered and then dropped.
     pending: Mutex<Vec<(NoticeLevel, String)>>,
@@ -1055,7 +1075,7 @@ pub struct GateState {
     /// from `seats` above and the same readings `harnesses` was built from.
     ///
     /// On the gate's own value rather than derived by the interface, so the summary
-    /// the operator reads and the rule [`fleet_bootstrap`] enforces are one answer.
+    /// the operator reads and the rule [`fleet_launch`] enforces are one answer.
     verdict: StartVerdict,
     /// **Which harnesses this machine has a readable operator login for** (C78),
     /// so a row can say *why* `your plan` is unavailable instead of offering
@@ -1121,8 +1141,7 @@ impl HarnessOffer {
     }
 }
 
-/// The live backend, created once by [`fleet_bootstrap`] and kept for the app's
-/// lifetime. Owns the tokio runtime the follower, hub, and delivery loop run on.
+/// The live backend, built by a [`launch`] and dropped by the next one or by quit. Owns the tokio runtime the follower, hub, and delivery loop run on.
 struct Fleet {
     rt: Runtime,
     store: Arc<dyn Store>,
@@ -1139,25 +1158,22 @@ struct Fleet {
     /// **The handoff watch holds a clone of this same cell, not a copy of its
     /// value** (D14) — see [`Target`] for what that fixed.
     target: Target,
+    /// The seats this fleet places, fixed at launch (D-099): the gate's settled
+    /// picks for a fresh launch, the run's recorded ones for a reopen (D-095).
+    /// Editing the gate afterwards describes the next fleet, never this one.
+    seats: FleetSeats,
+    /// The id this run is archived under and its lineage's seat directory, which
+    /// differ on a reopen. Neither is shared with any other run or lineage.
+    /// Held for the task store (D-099, Coordination D).
+    #[allow(dead_code)]
+    run_id: String,
+    #[allow(dead_code)]
+    sessions: placement::SessionsId,
     /// The briefs and launch settings every pane spawns with, from `prompts/`
     /// and the operator's `~/.fleetor/prompts/`. Resolved once for the same
     /// reason the target is: a fleet whose panes were briefed from two revisions
     /// of a file being edited is not a fleet anyone can reason about.
     context: PaneContext,
-    /// **What the operator picked at the start gate, and what the harnesses said**
-    /// (#35, #36; M1, M15, C23, C58).
-    ///
-    /// **A handle on the app's own cell, not a copy of its values.** The gate writes
-    /// it before this struct exists — that is the whole point of [`GateHold`] — and
-    /// [`spawn_pane`] reads it afterwards, which is M15's chain with nothing in the
-    /// middle: the summary renders what this cell holds, and this cell is what
-    /// places. Snapshotting it at bootstrap would put the selection and the thing
-    /// that spawns one `Arc::clone` apart and the divergence would be silent.
-    ///
-    /// Held here rather than passed at spawn because panes come up one at a time,
-    /// lazily, as their terminals mount — so a selection travelling on the spawn
-    /// call would be one choice spread across five invocations of the pty path.
-    gate: Arc<GateHold>,
     /// Where each worker's own transcript lives, recorded at spawn — the WP-04
     /// live gauge's source of truth. Empty until a worker has actually spawned.
     gauges: Arc<GaugeSources>,
@@ -1189,17 +1205,6 @@ struct Fleet {
     /// identical function `Hub::serve_conn` calls after reading a `Hello`, with
     /// the socket the only thing missing.
     hub: Arc<Hub>,
-    /// Whether the operator has opened the Critic's interview (WP-21, D-079).
-    /// Closed on a fresh fleet, and a property of the *run* rather than of a
-    /// pane's session — a `/clear` or a respawn inside the Critic does not
-    /// close it, because nothing about a restarted terminal changes what the
-    /// operator decided to allow.
-    ///
-    /// **A handle on the hub's own cell, taken from [`Hub::interview`], not a
-    /// second copy of the value** — the mistake [`Target`] exists to have
-    /// fixed. The hub is what enforces the switch; these commands only move it,
-    /// and two `bool`s would let the UI report open while the hub still refused.
-    interview: Interview,
 }
 
 /// Managed Tauri state: at most one embedded fleet.
@@ -1209,19 +1214,8 @@ pub struct FleetState(Mutex<Option<Fleet>>);
 /// The repo the fleet works on — **one value, shared by everything that reads it**
 /// (WP-21, D14).
 ///
-/// Before this type there were two: the field on [`Fleet`], which
-/// [`apply_target`] rewrites, and a `PathBuf` the handoff watch was handed at
-/// bootstrap and kept forever. [`wake_evaluator`]'s doc comment claimed the two
-/// were "the same one", and they were not — a target set at the start gate moved
-/// the spawn path and left the watch on whatever bootstrap had resolved. The
-/// comment was right about what should be true; this makes it true, by giving the
-/// two readers one cell instead of two copies.
-///
-/// **No behaviour change, and there is a reason to expect none rather than a hope:**
-/// D-071 fixed the target the moment a pane exists, and a handoff cannot happen
-/// before `orch` exists to send one. So the value the watch used to snapshot and
-/// the value it now reads can only differ in a fleet that never reaches a handoff.
-/// The behaviour-change half of D14 was that freeze, and it is already in.
+/// [`apply_target`] rewrites it and [`spawn_pane`] reads it, through one cell
+/// rather than two copies.
 ///
 /// A `Mutex` rather than an `RwLock` because there is one writer, at most a
 /// handful of times, before any pane exists; a poisoned lock hands back the value
@@ -1248,7 +1242,7 @@ impl Target {
 
 /// **Archive the session that ended, as the app opens** (D-085).
 ///
-/// Rotation used to run only inside [`fleet_bootstrap`], so the session the operator
+/// Rotation used to run only inside [`fleet_launch`], so the session the operator
 /// had just closed was still the live slot on the start gate — not a History row —
 /// and "reopen the app, go back to what I was doing" found nothing to click. Called
 /// from `setup` straight after `orphans::sweep`, so the panes that wrote the slot
@@ -1277,8 +1271,8 @@ fn archive_previous_run_under(shell: &Path, runs_dir: &Path, gate: &GateHold) {
 /// `Layout::for_operator()` wearing a different name, kept while the improvised
 /// bring-up sequence still called them. The sequence is gone, so they are: a
 /// running fleet reads [`Fleet::layout`], and the handful of commands that run
-/// before bootstrap (the start gate's configuration, the History list, the dev-mode
-/// flag, the orphan sweep) call this and then one accessor, which is one spelling
+/// before bootstrap (the start gate's configuration, the History list, the orphan
+/// sweep) call this and then one accessor, which is one spelling
 /// of where a thing lives rather than six.
 pub(crate) fn layout() -> Layout {
     Layout::for_operator()
@@ -1319,90 +1313,197 @@ fn parse_target(text: &str) -> Result<Option<PathBuf>, String> {
     Ok((!s.is_empty()).then(|| PathBuf::from(s)))
 }
 
-// --- bootstrap ----------------------------------------------------------------
+// --- launch (D-099) -----------------------------------------------------------
 
-/// Start the embedded fleet (idempotent) and return the boot snapshot.
-///
-/// First call: opens the store, wraps it in the live bus, spawns the follower
-/// pump, resolves the target, and binds the hub. Later calls (e.g. React
-/// StrictMode's double-mount) find it already running and just return a fresh
-/// snapshot.
-///
-/// **This is where the fleet refuses to start** (WP-25 #36, story 11). A seat on a
-/// harness this machine cannot log into would come up on a login prompt, and the
-/// operator would be watching a pane that is never going to answer. The refusal is
-/// here rather than in [`spawn_pane`] because a pane-by-pane failure arrives *after*
-/// the operator has been told the fleet started; and it comes before the run
-/// boundary is cut, because a refusal that has already archived the last run and
-/// opened an empty database is not a refusal, it is a start that failed.
-///
-/// The interface disables the button on the same verdict, so this is the belt to
-/// that brace — and the only one of the two a caller cannot skip.
+/// What a launch brings up: a new fleet on the gate's picks, or a past run.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum LaunchSource {
+    Fresh,
+    Reopen { id: String },
+}
+
+/// Why a launch brought no fleet up. `torn_down` is false for a refusal at the
+/// verdict, which leaves whatever was running exactly as it was.
+#[derive(Debug, Clone, Serialize)]
+pub struct LaunchFailure {
+    pub reason: String,
+    pub torn_down: bool,
+}
+
+/// What a launch tells the webview.
+enum Signal {
+    /// The verdict passed and the old fleet is down; the new log is not open
+    /// yet, so everything after this belongs to the new run.
+    Launching,
+    Event(WireEvent),
+}
+
+/// How a [`Signal`] reaches the webview; `false` once nobody is listening. A
+/// callback rather than an `AppHandle`, so [`launch`] runs without a window.
+type FeedEmit = Arc<dyn Fn(Signal) -> bool + Send + Sync>;
+
+/// What the verdict settled, and what the rest of the launch builds from.
+struct LaunchPlan {
+    seats: FleetSeats,
+    /// The run to reopen and the target it recorded. `None` on a fresh launch.
+    reopen: Option<(String, Option<PathBuf>)>,
+    probe_notices: Vec<(NoticeLevel, String)>,
+}
+
+/// **The one way a fleet comes up** (D-099): verdict, teardown, archive, build.
+/// Replaces `fleet_bootstrap` and `run_reopen`.
 #[tauri::command]
-pub fn fleet_bootstrap(
+pub fn fleet_launch(
     app: AppHandle,
     state: State<'_, FleetState>,
     registry: State<'_, Arc<PaneRegistry>>,
     gate: State<'_, Arc<GateHold>>,
-) -> Result<BootSnapshot, String> {
-    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-    if let Some(fleet) = guard.as_ref() {
-        return snapshot(&fleet.store);
-    }
+    source: LaunchSource,
+) -> Result<BootSnapshot, LaunchFailure> {
+    let emit: FeedEmit = Arc::new(move |signal| match signal {
+        Signal::Launching => app.emit(EVENT_LAUNCHING, ()).is_ok(),
+        Signal::Event(event) => app.emit(EVENT_FLEET, event).is_ok(),
+    });
+    launch(&state, &registry, &gate, Layout::for_operator(), &plan_offer(), source, emit)
+}
 
-    // Where this installation lives, resolved once and then held on `Fleet` — the
-    // one process-global read the whole spawn path performs (D1, D-075).
-    let layout = Layout::for_operator();
+/// [`fleet_launch`] with no Tauri state, so a test drives it over a scratch layout.
+///
+/// **The order is the contract.** Nothing is touched before the verdict, so a
+/// launch that was never going to work costs the running fleet nothing. A launch
+/// issued while another is in flight waits on the fleet lock behind it.
+fn launch(
+    state: &FleetState,
+    registry: &Arc<PaneRegistry>,
+    gate: &GateHold,
+    layout: Layout,
+    offer: &PlanOffer,
+    source: LaunchSource,
+    emit: FeedEmit,
+) -> Result<BootSnapshot, LaunchFailure> {
+    let refused = |reason: String| LaunchFailure { reason, torn_down: false };
+    let failed = |reason: String| LaunchFailure { reason, torn_down: true };
+    // A pane mid-placement writes the live `run.json`; it finishes before the slot
+    // is archived. Same order as `spawn_pane`: placing, then the fleet.
+    let _placing = PLACING.lock().map_err(|e| refused(e.to_string()))?;
+    let mut slot = state.0.lock().map_err(|e| refused(e.to_string()))?;
+
+    let plan = verdict(&layout, gate, offer, &source).map_err(refused)?;
+    teardown(&mut slot, registry);
+    // On every launch, and after the teardown so no event of the old fleet can
+    // follow it.
+    emit(Signal::Launching);
+    let started_ms = fleetor_core::time::now_ms();
+    let archived = runs::rotate(&layout.shell(), &runs::runs_dir(layout.root()), started_ms);
+    let fleet = build(layout, registry, gate, plan, started_ms, archived, emit).map_err(failed)?;
+    let snap = snapshot(&fleet.store).map_err(failed)?;
+    *slot = Some(fleet);
+    Ok(snap)
+}
+
+/// **Whether this launch can start, decided before anything is torn down**
+/// (WP-25 #36, R8). A seat on a harness this machine cannot log into would come up
+/// on a login prompt; a reopen whose sessions or target are gone would kill the
+/// live fleet for nothing.
+fn verdict(
+    layout: &Layout,
+    gate: &GateHold,
+    offer: &PlanOffer,
+    source: &LaunchSource,
+) -> Result<LaunchPlan, String> {
+    let runs_dir = runs::runs_dir(layout.root());
+    let cannot_open = |id: &str, why: String| format!("\u{201c}{id}\u{201d} can\u{2019}t be opened: {why}");
+    let reopen = match source {
+        LaunchSource::Fresh => None,
+        LaunchSource::Reopen { id } => {
+            if let Some(why) = runs::reopen_blocker_for(&runs_dir, id) {
+                return Err(cannot_open(id, why));
+            }
+            let target = runs::recorded_target(&runs_dir, id);
+            if let Some(gone) = target.as_ref().filter(|t| !t.is_dir()) {
+                let why = format!("its target {} is no longer a folder", gone.display());
+                return Err(cannot_open(id, why));
+            }
+            Some((id.clone(), target, runs::recorded_panes(&runs_dir, id)))
+        }
+    };
+
+    // The gate has almost always probed already; a launch reached without a
+    // reading pays for the probe here.
+    let (readings, probe_notices) = gate.harnesses.read();
+    // A reopen places what the run recorded, not what the gate holds (D-095).
+    let asked = match &reopen {
+        Some((_, _, recorded)) => gate.seats().as_recorded(recorded),
+        None => gate.seats(),
+    };
+    // Settled first, so a model the vendor no longer lists has already fallen
+    // back rather than reaching a `--model` flag (story 14).
+    let (settled, model_fallbacks) = settle_models(asked, &readings);
+    let (settled, credential_fallbacks) = settle_credentials(settled, offer);
+    // A fresh launch writes what it settled back into the gate; a reopen leaves
+    // the gate's selection for the next new fleet.
+    let seats = if reopen.is_some() { settled } else { gate.store_seats(settled) };
+    let start =
+        StartVerdict::for_seats(&seats, &readings, model_fallbacks, credential_fallbacks, offer);
+    if let Some(why) = start.why_it_will_not_start() {
+        return Err(match source {
+            LaunchSource::Fresh => why,
+            LaunchSource::Reopen { id } => cannot_open(id, why),
+        });
+    }
+    Ok(LaunchPlan {
+        seats,
+        reopen: reopen.map(|(id, target, _)| (id, target)),
+        probe_notices,
+    })
+}
+
+/// Kill every pane and drop the live fleet, which closes its store and frees
+/// `state.db` for the archive. The one teardown: launch and quit both call it.
+///
+/// The runtime goes before the hub can unlink its socket, so the socket is
+/// removed here.
+fn teardown(slot: &mut Option<Fleet>, registry: &Arc<PaneRegistry>) {
+    crate::pty::kill_all(registry);
+    if let Some(fleet) = slot.take() {
+        fleet.shutdown.notify_one();
+        let socket = fleet.layout.socket();
+        drop(fleet);
+        let _ = std::fs::remove_file(socket);
+    }
+}
+
+/// Bring the new fleet up in the empty live slot: seed it for a reopen, open the
+/// store, fix the target and seats, start the hub.
+fn build(
+    layout: Layout,
+    registry: &Arc<PaneRegistry>,
+    gate: &GateHold,
+    plan: LaunchPlan,
+    started_ms: i64,
+    archived: Vec<(NoticeLevel, String)>,
+    emit: FeedEmit,
+) -> Result<Fleet, String> {
     let dir = layout.shell();
+    let runs_dir = runs::runs_dir(layout.root());
     std::fs::create_dir_all(&dir).map_err(|e| format!("create shell dir: {e}"))?;
 
-    // Prompts and launch settings, resolved before anything else is touched: the
-    // refusal below needs the launch configuration's worker model to know what the
-    // unpicked fleet is. Its notices wait for a feed to exist (below) — an override
-    // that silently did nothing is the one failure the whole override path is built
-    // to avoid, and it is the *emit* that has to wait, not the read.
+    // Resolved once per fleet, for the reason the target is.
     let mut context = PaneContext::resolve(&prompts::override_dir(layout.root()));
-
-    // **What each harness makes of this machine** (WP-25 #34; C8, C14) — held on the
-    // gate, which has almost always probed already: the start gate renders at app
-    // launch and reads it there, off every path the operator is waiting on. A start
-    // reached without one pays for the probe here, and that is the right end to pay
-    // it at: the operator has just committed to spending money, and 1.4 s is less
-    // than a pane takes to come up.
-    let (readings, probe_notices) = gate.harnesses.read();
-
-    // **What a click will do, decided once and enforced here** (#36). The seats are
-    // settled first, so a model the vendor no longer lists has already fallen back
-    // to the seat's own default rather than reaching a `--model` flag (story 14).
-    let offer = plan_offer();
-    let (settled, model_fallbacks) = settle_models(gate.seats(), &readings);
-    let (settled, credential_fallbacks) = settle_credentials(settled, &offer);
-    let seats = gate.store_seats(settled);
-    let verdict =
-        StartVerdict::for_seats(&seats, &readings, model_fallbacks, credential_fallbacks, &offer);
-    if let Some(why) = verdict.why_it_will_not_start() {
-        return Err(why);
-    }
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|e| format!("start runtime: {e}"))?;
 
-    // Cut the run boundary before anything opens the log (WP-11, D-058). This is
-    // the whole of run isolation: the previous run becomes a frozen file under
-    // `runs/` and this one opens an empty database. Held rather than emitted —
-    // there is no store to append a notice to yet.
-    let started_ms = fleetor_core::time::now_ms();
-    let runs_dir = runs::runs_dir(layout.root());
-    let rotation = runs::rotate(&dir, &runs_dir, started_ms);
-
-    // **Reopening a past run is this same path with a seeded slot** (WP-27, R2).
-    // Rotation has just archived whatever was live, so the slot is empty; if the
-    // operator asked for a past run, its frozen log is copied in here — after the
-    // archive, before the store opens, which is the only window where the slot is
-    // both empty and unopened. Every ordinary boot gets `None` and starts empty.
-    let reopened = runs::apply_reopen(&dir, &runs_dir)?;
+    // **A reopen is this same path with a seeded slot** (WP-27, R2): the archive
+    // has just emptied it and nothing has opened it yet.
+    let (reopened, recorded_target) = match plan.reopen {
+        Some((id, target)) => (Some(runs::seed_reopen(&dir, &runs_dir, &id)?), target),
+        None => (None, None),
+    };
+    let no_recorded_target = reopened.is_some() && recorded_target.is_none();
 
     // The observability core: real store, wrapped once so every append publishes.
     let bcast = Arc::new(BroadcastStore::new(Arc::new(
@@ -1410,53 +1511,56 @@ pub fn fleet_bootstrap(
     )));
     let store: Arc<dyn Store> = bcast.clone();
 
-    spawn_follower(&rt, bcast.clone(), app.clone());
+    spawn_follower(&rt, bcast.clone(), emit);
 
-    for (level, text) in &rotation {
+    for (level, text) in &archived {
         note(&store, *level, text);
     }
 
-    let target = Target::new(resolve_target(&layout, &store)?);
-    let config = fleet_config_for(&target.get());
+    // **Fixed here for the fleet's life** (D-099). A reopen runs against the
+    // target it recorded and writes no config; a run that recorded none, like a
+    // fresh launch, takes the gate's.
+    let target = match recorded_target {
+        Some(target) => {
+            note(&store, NoticeLevel::Info, &format!("target: {}", target.display()));
+            target
+        }
+        None => resolve_target(&layout, &store)?,
+    };
+    if no_recorded_target {
+        note(
+            &store,
+            NoticeLevel::Warn,
+            &format!(
+                "this run recorded no target, so it reopened on the gate\u{2019}s: {}",
+                target.display()
+            ),
+        );
+    }
+    let config = fleet_config_for(&target);
 
-    // **What each harness makes of this machine, on the feed** (WP-25 #34; C8, C14).
-    // The reading itself was taken above, before this fleet was allowed to exist;
-    // these are its sentences, and they reach the operator here because this is the
-    // first moment there is a feed to put them on.
-    //
-    // Two sources, one drain. `take_pending` is everything the *gate's* probe said
-    // at app launch, when no store existed to say it to — the ordinary case, since
-    // the start gate renders before anything can be started. `probe_notices` is
-    // non-empty only when nothing had probed and this call paid for it. The
-    // sentences and the conditions are placement's (`Host::harness_notices`); this
-    // is the emit and nothing more, exactly as `machine_notices` is above.
-    for (level, text) in gate.take_pending().into_iter().chain(probe_notices) {
+    // What the gate's probe said before there was a feed, and what this launch's
+    // own probe said if nothing had probed.
+    for (level, text) in gate.take_pending().into_iter().chain(plan.probe_notices) {
         note(&store, level, &text);
     }
 
-    // Stamp what this run is, for the History row it becomes at the next start.
-    // The target is only ever prose inside a notice in the log, so a run that
-    // ended without this marker lists with an unknown target rather than a guess.
     // **Which seat directory this run's panes live in** (WP-27, R4). A fresh run
-    // gets its own; a reopened one inherits its parent's, because a lineage shares
-    // one directory and that is what lets its panes resume in place with no copy.
+    // gets its own; a reopened one inherits its lineage's, which is what lets its
+    // panes resume in place with no copy.
+    let run_id = runs::new_run_id(&dir, &runs_dir, started_ms);
     let sessions = match &reopened {
         Some(r) => r.sessions.clone(),
-        None => placement::SessionsId::new(runs::timestamp_id_for(started_ms)),
+        None => placement::SessionsId::new(run_id.clone()),
     };
-    runs::begin(&dir, started_ms, &target.get(), &sessions, reopened.as_ref().map(|r| r.parent.as_str()));
-    // The one line that tells every placement in this run which seat directories
-    // are its own (R4). `placement.rs`'s
-    // `a_placed_pane_is_seeded_under_its_own_runs_sessions_id` fails without it.
+    let parent = reopened.as_ref().map(|r| r.parent.as_str());
+    runs::begin_as(&dir, &run_id, started_ms, &target, &sessions, parent);
     context.sessions = sessions.clone();
-    // **And which branch prefix its workers are on** (R26). A pure function of
-    // the target, set here for the same reason the line above is: the spawn path
-    // renders briefs from a worktree and cannot recover the target from one.
-    context.branch_prefix = placement::worker_branch_prefix(&target.get(), &sessions);
-    // **And which session each seat reopens** (R6). Empty on an ordinary boot, so
-    // the spawn path's choice stays a lookup rather than a flag. Resolved through
-    // the lineage, not the parent alone, for the reason the reopen gate is:
-    // a reopen quit before its panes registered still knows its seats.
+    // A pure function of the target (R26): the spawn path renders briefs from a
+    // worktree and cannot recover the target from one.
+    context.branch_prefix = placement::worker_branch_prefix(&target, &sessions);
+    // Which session each seat reopens (R6), through the lineage: a reopen quit
+    // before its panes registered still knows its seats. Empty on a fresh launch.
     context.resume = match &reopened {
         Some(r) => runs::lineage_session_ids(&runs_dir, &r.parent),
         None => Default::default(),
@@ -1473,9 +1577,6 @@ pub fn fleet_bootstrap(
         );
     }
 
-    // Every notice the prompt resolver produced, from the read at the top of this
-    // function — an override that silently did nothing is the one failure the whole
-    // override path is built to avoid.
     for (level, text) in &context.notices {
         note(&store, *level, text);
     }
@@ -1484,41 +1585,29 @@ pub fn fleet_bootstrap(
     // purpose — a bounded channel would make a busy fleet block a send (D-034).
     let (app_tx, app_rx) = mpsc::unbounded_channel();
     let gauges = Arc::new(GaugeSources::default());
-    deliver::spawn_delivery(&rt, registry.inner().clone(), app_rx, store.clone(), gauges.clone());
-    // The hub takes its own clone; `fleet_roster` sends into the original so
-    // the UI's poll reaches the identical `AppCommand::Roster` arm the CLI's
-    // `fleet roster` does over the socket (see the `Fleet::app` doc).
+    deliver::spawn_delivery(&rt, registry.clone(), app_rx, store.clone(), gauges.clone());
+    // The hub takes its own clone; `fleet_roster` sends into the original (see the
+    // `Fleet::app` doc).
     let (hub, shutdown) = spawn_hub(&rt, store.clone(), app_tx.clone(), layout.socket());
 
-    // The write guardrail's own feed (WP-17). Started with the run and emptied
-    // by it, so what the operator reads is this run's refusals and not the last
-    // one's — those went to `runs/` with the rest of that log (D-058).
+    // The write guardrail's own feed (WP-17), started with the run and emptied by it.
     spawn_guardrail_feed(&rt, store.clone(), &dir);
 
-    // The wake (WP-15), a second subscriber on the bus D-020 built for exactly
-    // this: downstream of `append_event`, outside the hub, sending no
-    // `AppCommand` and holding nothing up. See `spawn_evaluator_wake`.
-    spawn_evaluator_wake(&rt, bcast.clone(), store.clone(), app, target.clone());
-
-    let snap = snapshot(&store)?;
-    *guard = Some(Fleet {
+    Ok(Fleet {
         rt,
         store,
         shutdown,
         config,
-        target,
-        // The same cell the gate wrote the selection into, not a copy of what it
-        // held a moment ago (M15). What places is what the operator picked, and
-        // there is no second value that could disagree.
-        gate: Arc::clone(&gate),
+        target: Target::new(target),
+        seats: plan.seats,
+        run_id,
+        sessions,
         context,
         gauges,
         app: app_tx,
         layout,
-        interview: hub.interview(),
         hub,
-    });
-    Ok(snap)
+    })
 }
 
 // --- panes --------------------------------------------------------------------
@@ -1546,24 +1635,17 @@ pub fn fleet_bootstrap(
 /// a line, not by forgetting a code path.
 /// The spec for a pane the gate offers no choice for.
 ///
-/// **Three of the four arms are the arms `spawn_pane` always had**, lifted out
-/// whole when the picked seats moved above them, and matched exhaustively rather
-/// than with a wildcard so a new pane kind still has to say what places it.
+/// **The operator arm is the one `spawn_pane` always had**, lifted out whole when
+/// the picked seats moved above it, and matched exhaustively rather than with a
+/// wildcard so a new pane kind still has to say what places it.
 ///
-/// The fourth is the one this ticket added: a seat the gate *does* carry a choice
+/// The other is the one this ticket added: a seat the gate *does* carry a choice
 /// for, whose choice would not resolve. `FleetSeats::spec_for` refuses rather than
 /// substituting — a fleet that quietly placed a different harness than the gate
 /// promised is the failure M15 exists to prevent — and `fleet_set_seats` is what
 /// stops such a value being stored. This arm is the belt to that pair of braces.
 fn spec_without_a_choice(pane: PaneId, seats: &FleetSeats) -> Result<PaneSpec, String> {
     match pane {
-        PaneId::Evaluator => Ok(PaneSpec::Evaluator),
-        // **The live run, because that is the only run this name can mean here**
-        // (D-076). `pty_spawn` carries a pane and nothing else, so a Critic opened
-        // from the rail is a Critic on the run in progress; pointing one at a
-        // History row is a different gesture with a different argument, and it does
-        // not exist yet (`placement::ARCHIVED_NOT_BUILT`).
-        PaneId::Critic => Ok(PaneSpec::Critic { run: RunSource::Live }),
         // Never spawnable, and refused here rather than left to fail somewhere
         // deeper: there is no command to run for a human, no cwd that is theirs, and
         // no config dir to seed. WP-07's "the operator is never spawnable or
@@ -1586,6 +1668,8 @@ fn spec_without_a_choice(pane: PaneId, seats: &FleetSeats) -> Result<PaneSpec, S
     }
 }
 
+static PLACING: Mutex<()> = Mutex::new(());
+
 pub(crate) fn spawn_pane(
     fleet: &FleetState,
     registry: &Arc<PaneRegistry>,
@@ -1593,6 +1677,14 @@ pub(crate) fn spawn_pane(
     rows: u16,
     cols: u16,
 ) -> Result<(), String> {
+    // Placement writes files the panes share (`run.json`, the worktrees), so it is
+    // one pane at a time. The lock is dropped before the wake, which takes seconds
+    // and runs for every pane at once (D-096).
+    let placing = PLACING.lock().map_err(|e| e.to_string())?;
+    // StrictMode's second mount, or a caller racing the first: nothing to place.
+    if registry.is_up(pane)? {
+        return Ok(());
+    }
     let (target, layout, store, context, gauges, seats) = {
         let guard = fleet.0.lock().map_err(|e| e.to_string())?;
         let f = guard.as_ref().ok_or("fleet not bootstrapped")?;
@@ -1602,10 +1694,7 @@ pub(crate) fn spawn_pane(
             f.store.clone(),
             f.context.clone(),
             f.gauges.clone(),
-            // The gate's own cell, read at the moment this pane comes up — the far
-            // end of M15's chain. The worker default is only reached on a fleet
-            // nothing ever picked for, which is the unpicked fleet #35 preserved.
-            f.gate.seats(),
+            f.seats.clone(),
         )
     };
 
@@ -1623,10 +1712,9 @@ pub(crate) fn spawn_pane(
     // **Which harness and which model each seat runs is the operator's answer, read
     // here** (WP-25 #35; M1, M15, C23). #33 carried the choice on `PaneSpec` with
     // one call site that said Claude Code twice; this is that call site asking the
-    // gate instead. `FleetSeats::spec_for` answers `None` for every pane that
-    // carries no choice — the two judges, whose specs have no field to hold one
-    // (C15), and the operator, who is refused below — so the arms after it are the
-    // arms they always were.
+    // gate instead. `FleetSeats::spec_for` answers `None` for the operator, who
+    // carries no choice and is refused below, so the arm after it is the arm it
+    // always was.
     //
     // **The whole of M15 is this line.** The gate renders its summary from the same
     // `seats` value, so a fleet the gate described and a fleet that spawns cannot be
@@ -1666,8 +1754,8 @@ pub(crate) fn spawn_pane(
     // *previous* run, whose panes and whose fleet are both gone, and a
     // configuration directory is named for its seat and says nothing about which
     // vendor was pointed at it (C33). The feed's copy is the spawn event, so an
-    // operator watching a mixed fleet come up is not poorer than a Critic reading
-    // the same run afterwards.
+    // operator watching a mixed fleet come up is not poorer than a reader of the
+    // same run afterwards.
     //
     // Both are the values placement *returned*, never re-derived from `spec`: a
     // fact the caller recomputes is a fact that can disagree with the one the pane
@@ -1676,7 +1764,13 @@ pub(crate) fn spawn_pane(
     // Neither is on the message path and neither can become so (Tier 1.4) — this is
     // the spawn path, several filesystem writes deep already, and a `fleet send`
     // reads none of it.
-    runs::record_pane(&layout.shell(), &pane.to_string(), placed.harness, placed.model.as_deref());
+    runs::record_pane(
+        &layout.shell(),
+        &pane.to_string(),
+        placed.harness,
+        placed.model.as_deref(),
+        seats.choice_for(pane).map(|seat| seat.credential),
+    );
     if let Err(e) = store.append_event(&FleetEvent::PaneState {
         pane,
         // A pane with no pty is `Dead` to every reader in the fleet — the roster
@@ -1693,6 +1787,7 @@ pub(crate) fn spawn_pane(
         eprintln!("fleet: could not append the spawn event: {e}");
     }
 
+    drop(placing);
     registry.spawn(pane, placed.command, placed.harness, rows, cols)
 }
 
@@ -1717,127 +1812,6 @@ fn spawn_guardrail_feed(rt: &Runtime, store: Arc<dyn Store>, shell: &Path) {
             }
         }
     });
-}
-
-// --- the wake (WP-15) ----------------------------------------------------------
-
-/// Watch the run's own event stream for a handoff, and wake the evaluator on one.
-///
-/// ## Why this is not on the message path, and why that is structural
-///
-/// Tier 1.4 forbids anything between `fleet send` and a pty that can delay,
-/// refuse, reorder, drop or alter a message.
-/// `crates/fleetor-server/tests/handoff.rs` counts the `AppCommand`s a handoff
-/// causes and expects **zero**. This task sends none: `Hub::handoff` is still not
-/// `async`, still never touches `self.app`, and still answers `Recorded` from its
-/// own append alone. The wake reaches the registry the way `pty_spawn` does —
-/// through [`spawn_pane`] — which is not a road any message travels.
-///
-/// It rides D-020's bus, which is **persist-then-publish**: by the time an event
-/// is on the channel it is already durable, and `broadcast::Sender::send` never
-/// blocks its publisher. So the handoff op is answered whether or not this task
-/// ever runs, a crash between the two loses the wake and never the record, and
-/// a lagging follower recovers from the database rather than from the ring.
-/// Nothing waits on any of it.
-///
-/// ## What it does mean, said plainly
-///
-/// **WP-15 is the first thing that reads a handoff back**, and `Hub::handoff`'s
-/// own doc had to be corrected to say so (it claimed *nothing anywhere* did).
-/// What `task.rs`'s tripwire list actually bars is a read that goes on to
-/// **permit, order or refuse** something — a board that became a dispatcher.
-/// This permits nothing, orders nothing and refuses nothing: it changes what
-/// *exists* (a window, an address), which is the allowed shape WP-16 named and
-/// WP-19 is held to. A `fleet send` is byte-identical before and after, and the
-/// test that says so is untouched.
-///
-/// Idempotent for a second handoff: `PaneRegistry::spawn` is a no-op for a pane
-/// that is still running, so `orch` finding more work and handing back again
-/// does not get a second evaluator — it gets the one that is already there.
-fn spawn_evaluator_wake(
-    rt: &Runtime,
-    bcast: Arc<BroadcastStore>,
-    store: Arc<dyn Store>,
-    app: AppHandle,
-    target: Target,
-) {
-    rt.spawn(async move {
-        // A follower of its own rather than an arm inside `spawn_follower`, so a
-        // slow wake can never hold up the feed the operator is watching — and so
-        // the file that pushes events to the webview stays a file about that.
-        let mut follower = match bcast.follow(0) {
-            Ok(f) => f,
-            Err(e) => {
-                eprintln!("fleet: the handoff watch failed to start: {e}");
-                return;
-            }
-        };
-        while let Ok(Some((_, event))) = follower.next().await {
-            if !matches!(event, FleetEvent::Handoff { .. }) {
-                continue;
-            }
-            for (level, text) in wake_evaluator(&app, &target.get()) {
-                note(&store, level, &text);
-            }
-        }
-    });
-}
-
-/// One wake. Returns what the operator should be told — never nothing, unless
-/// the mode is simply off, because a wake that silently did nothing is
-/// indistinguishable from a wake that is broken.
-/// `target` is read out of the fleet's own [`Target`] cell — **literally the same
-/// value [`spawn_pane`] places the evaluator against** (D14), rather than a copy
-/// taken at bootstrap that a target set at the start gate would leave behind.
-/// Re-reading `config.json` here instead would let a mid-run target change send
-/// the two at different repos.
-fn wake_evaluator(app: &AppHandle, target: &Path) -> Vec<(NoticeLevel, String)> {
-    let mut notices = Vec::new();
-    match evaluator::readiness(dev::is_enabled(), target, &evaluator::MissionRoots::discover()) {
-        // A build with no grader in it, and the ordinary non-dev case. Both are
-        // silent: the first is what every release build is, and the second is
-        // what the operator asked for by leaving the mode off.
-        evaluator::Readiness::NotBuilt | evaluator::Readiness::ModeOff => return notices,
-        evaluator::Readiness::NoMission { target, workspaces } => {
-            notices.push((
-                NoticeLevel::Warn,
-                format!(
-                    "dev mode is on, but {} is not a prepared mission workspace under {} — \
-                     so this handoff has no ground truth to be judged against and nothing \
-                     was started. Point the fleet at a prepared workspace first.",
-                    target.display(),
-                    workspaces.display(),
-                ),
-            ));
-            return notices;
-        }
-        evaluator::Readiness::Ready(mission) => {
-            // The answer key lands **before** the pane exists: the brief has the
-            // evaluator seal a verdict against it before it speaks to `orch`, so
-            // a key that arrived mid-conversation would be read after its
-            // position had already formed from the fleet's own account.
-            match evaluator::reveal_answer_key(&mission) {
-                Ok(Some(text)) => notices.push((NoticeLevel::Info, text)),
-                Ok(None) => {}
-                Err(why) => notices.push((NoticeLevel::Warn, why)),
-            }
-        }
-    }
-    // **The wake is an event, not a window** (D-073). Creating a second OS window
-    // was never what made the evaluator exist — the pane is spawned by the React
-    // root's own `pty_spawn`, exactly like every other terminal, and the window
-    // was only how that root got mounted. So the wake says *the evaluator is
-    // awake* and the one webview turns its always-mounted view on. Idempotent for
-    // a second handoff for the same reason `PaneRegistry::spawn` is: the view is
-    // already showing a pane that is already running.
-    match app.emit(EVENT_EVALUATOR_WAKE, ()) {
-        Ok(()) => notices.push((
-            NoticeLevel::Info,
-            "the mission was handed back — the review view is live".to_string(),
-        )),
-        Err(why) => notices.push((NoticeLevel::Warn, format!("the review view: {why}"))),
-    }
-    notices
 }
 
 /// Decide where the fleet works, announcing the choice on the feed so it is never
@@ -1876,9 +1850,9 @@ fn fall_back_to_testbed(
     Ok(testbed)
 }
 
-/// Pump every appended event to the webview, oldest-first then live. Started once;
-/// runs for the app's lifetime.
-fn spawn_follower(rt: &Runtime, bcast: Arc<BroadcastStore>, app: AppHandle) {
+/// Pump every appended event to the webview, oldest-first then live, for the
+/// fleet's lifetime.
+fn spawn_follower(rt: &Runtime, bcast: Arc<BroadcastStore>, emit: FeedEmit) {
     rt.spawn(async move {
         let mut follower = match bcast.follow(0) {
             Ok(f) => f,
@@ -1888,7 +1862,7 @@ fn spawn_follower(rt: &Runtime, bcast: Arc<BroadcastStore>, app: AppHandle) {
             }
         };
         while let Ok(Some((seq, event))) = follower.next().await {
-            if app.emit(EVENT_FLEET, WireEvent { seq, event }).is_err() {
+            if !emit(Signal::Event(WireEvent { seq, event })) {
                 break; // webview gone
             }
         }
@@ -2292,9 +2266,8 @@ pub fn fleet_gate(
 
 /// Record what the operator picked, and answer with **the whole gate** read back.
 ///
-/// **The return is the stored value read back rather than the argument echoed**,
-/// which is `critic_interview_open`'s property and is here for a sharper reason: the
-/// gate's summary renders from what this returns, and a summary rendered from what
+/// **The return is the stored value read back rather than the argument echoed**:
+/// the gate's summary renders from what this returns, and a summary rendered from what
 /// the interface *asked for* rather than from what took effect is precisely the
 /// fleet-that-is-not-what-spawns M15 refuses.
 ///
@@ -2326,7 +2299,7 @@ pub fn fleet_set_seats(
 ///
 /// A running fleet answers from what it resolved at bootstrap — the value its panes
 /// were placed against, never a re-read. Before one exists there is no feed and the
-/// prompts are resolved on the spot, which is the same read `fleet_bootstrap` will
+/// prompts are resolved on the spot, which is the same read `fleet_launch` will
 /// do and cannot disagree with: `PaneContext::resolve` is a pure function of a
 /// directory.
 fn launch_and_feed(state: &FleetState) -> Result<(String, Option<Arc<dyn Store>>), String> {
@@ -2384,7 +2357,7 @@ fn answer(
 
 /// **What the operator picked, paired with what this machine can honour** (C75).
 ///
-/// Assembled here rather than passed down from `fleet_bootstrap` because both
+/// Assembled here rather than passed down from `fleet_launch` because both
 /// readers — the gate's summary and [`workers_run`] — are reached on paths that
 /// do not share a [`Host`], and two hand-built offers is two answers to one
 /// question.
@@ -2398,54 +2371,6 @@ fn plan_offer() -> PlanOffer {
         host.operator_logins.iter().map(|(name, _)| (*name).to_string()).collect(),
         load_api_key().is_ok(),
     )
-}
-
-// --- the Critic's interview (WP-21, D-079) ------------------------------------
-//
-// Two commands over one `bool`, and the asymmetry between them is the point: the
-// setter writes a `Notice` and the reader writes nothing. Opening and closing
-// each change *what is possible* in the run — one of them makes a pane that was
-// unable to reach the fleet able to interrupt it — and the log records outcomes
-// (Tier 1.6). Reading the switch is not an outcome.
-//
-// Neither command is on the message path and neither can be: they move a cell
-// the hub reads *before* it resolves anything. See `Hub::handle`'s doc comment
-// for why that is the only legal shape here, and `decisions.md` D-079 for the
-// argument in full.
-
-/// Open or close the Critic's interview, and answer with what is now stored.
-///
-/// The return is deliberately the **stored** state read back rather than the
-/// argument echoed: the operator's control renders from this, and a control that
-/// reported what it asked for rather than what took effect is the class of lie
-/// this codebase spends most of its doc comments avoiding.
-///
-/// Both edges write a `Notice` naming which it was, so an operator reading the
-/// Activity feed later can see the decision beside the turns it spent.
-#[tauri::command]
-pub fn critic_interview_open(open: bool, state: State<'_, FleetState>) -> Result<bool, String> {
-    let guard = state.0.lock().map_err(|e| e.to_string())?;
-    let fleet = guard.as_ref().ok_or("no fleet is running")?;
-    let stored = fleet.interview.set(open);
-    note(
-        &fleet.store,
-        NoticeLevel::Info,
-        if stored {
-            "the Critic's interview is open — it can now message the fleet, and doing so \
-             spends the fleet's turns"
-        } else {
-            "the Critic's interview is closed — it can read the run and reach no pane"
-        },
-    );
-    Ok(stored)
-}
-
-/// Whether the interview is open. Read-only, and writes nothing to the log.
-#[tauri::command]
-pub fn critic_interview_is_open(state: State<'_, FleetState>) -> Result<bool, String> {
-    let guard = state.0.lock().map_err(|e| e.to_string())?;
-    let fleet = guard.as_ref().ok_or("no fleet is running")?;
-    Ok(fleet.interview.is_open())
 }
 
 // --- past runs (WP-11) --------------------------------------------------------
@@ -2493,48 +2418,6 @@ pub fn run_delete(id: String) -> Result<(), String> {
 /// added for it — `fleet_pick_target` set the pattern. `Ok(None)` means the
 /// operator dismissed the dialog, which is not an error and must not be shown
 /// as one.
-/// **Reopen a past run** (WP-27, R2, R5, R8) — the whole of what clicking a
-/// History row does.
-///
-/// One sequenced operation, in the order that makes each step safe:
-///
-///  1. **Refuse first, from the manifest.** A run that cannot be fully restored
-///     does not reopen (R8), and finding that out *after* five panes are gone
-///     would be the worst version of this feature — so the check runs while the
-///     live fleet is still up and returns it untouched.
-///  2. **Tear the panes down.** Rotation's transcript walk and the archive move
-///     are only safe with no pane alive; `rotate` has assumed that since D-058 and
-///     still does.
-///  3. **Drop the fleet**, which closes the store and releases `state.db`. Without
-///     this the slot cannot be rotated *or* seeded, and `fleet_bootstrap` would
-///     short-circuit on the fleet already in the guard.
-///  4. **Leave the request** and re-enter bootstrap, which rotates the run being
-///     left into History, copies the requested log into the empty slot, and brings
-///     the five panes back on their own recorded sessions.
-///
-/// **It is deliberately not a second archive path.** R2 makes reopening *be* a
-/// rotation; everything here is sequencing plus one marker file.
-#[tauri::command]
-pub fn run_reopen(
-    app: AppHandle,
-    state: State<'_, FleetState>,
-    registry: State<'_, Arc<PaneRegistry>>,
-    gate: State<'_, Arc<GateHold>>,
-    id: String,
-) -> Result<BootSnapshot, String> {
-    let layout = layout();
-    let runs_dir = runs::runs_dir(layout.root());
-    // Gate, teardown, request — the order lives in `begin_reopen`, where a test
-    // holds it (R8): nothing below the gate runs for a run that cannot open.
-    runs::begin_reopen(&layout.shell(), &runs_dir, &id, || {
-        crate::pty::kill_all(&registry);
-        let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-        *guard = None;
-        Ok(())
-    })?;
-    fleet_bootstrap(app, state, registry, gate)
-}
-
 #[tauri::command]
 pub fn run_export(app: AppHandle, id: String) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
@@ -2573,8 +2456,8 @@ fn write_target(target: &Path) -> Result<(), String> {
 
 /// Set one key in `~/.fleetor/config.json`, leaving every other key alone.
 ///
-/// The one writer of that file, so a second setting (WP-16's `dev_mode`) cannot
-/// grow a second spelling of "merge, don't clobber" that drops the first one.
+/// The one writer of that file, so a second setting cannot grow a second spelling
+/// of "merge, don't clobber" that drops the first one.
 pub(crate) fn write_config_key(key: &str, value: serde_json::Value) -> Result<(), String> {
     write_config_key_at(&layout().config_file(), key, value)
 }
@@ -2624,8 +2507,10 @@ pub(crate) fn merge_config_key(
 pub fn quit(state: &FleetState, registry: &Arc<PaneRegistry>, gate: &GateHold) {
     let layout = layout();
     archive_after_teardown(&layout.shell(), &runs::runs_dir(layout.root()), gate, || {
-        crate::pty::kill_all(registry);
-        shutdown(state);
+        match state.0.lock() {
+            Ok(mut slot) => teardown(&mut slot, registry),
+            Err(_) => crate::pty::kill_all(registry),
+        }
     });
 }
 
@@ -2636,25 +2521,6 @@ pub fn quit(state: &FleetState, registry: &Arc<PaneRegistry>, gate: &GateHold) {
 fn archive_after_teardown(shell: &Path, runs_dir: &Path, gate: &GateHold, teardown: impl FnOnce()) {
     teardown();
     archive_previous_run_under(shell, runs_dir, gate);
-}
-
-/// Stop the hub and drop the fleet. Best-effort, called on quit after the panes.
-///
-/// **Dropping it is what closes the live log** (D-086). Every task holding the
-/// store — the follower, the hub, delivery, the guardrail feed, the evaluator wake
-/// — runs on the fleet's own runtime, so taking the fleet out of state ends them
-/// and releases the last connection to `state.db`. `run_reopen`'s teardown already
-/// did exactly this before its rotation; quit used to leave the fleet in place.
-///
-/// The runtime goes before the hub can unlink its socket, so the socket is
-/// removed here instead — a quit should leave no stale `fleet.sock` behind.
-pub fn shutdown(state: &FleetState) {
-    let Ok(mut guard) = state.0.lock() else { return };
-    if let Some(fleet) = guard.take() {
-        fleet.shutdown.notify_one();
-        drop(fleet);
-        let _ = std::fs::remove_file(layout().socket());
-    }
 }
 
 fn snapshot(store: &Arc<dyn Store>) -> Result<BootSnapshot, String> {
@@ -2773,8 +2639,7 @@ mod tests {
     use std::time::Duration;
 
     /// The target-shaped view of [`merge_config_key`], so these tests read as
-    /// what they are about. `write_target` calls the generic writer directly —
-    /// there is one merge, and WP-16's `dev_mode` goes through the same one.
+    /// what they are about. `write_target` calls the generic writer directly.
     fn merge_target(existing: Option<&str>, target: &Path) -> Result<String, String> {
         merge_config_key(existing, "target", target.to_string_lossy().into_owned().into())
     }
@@ -3038,6 +2903,20 @@ mod tests {
         assert_eq!(parse_target(r#"{"target": "   "}"#).unwrap(), None);
     }
 
+    /// A key this build does not read — a `dev_mode` left by an older one (D-094)
+    /// — is ignored, and a target write leaves it in place.
+    #[test]
+    fn a_stale_key_in_the_config_is_ignored() {
+        let stale = r#"{"dev_mode": true, "target": "/Users/me/code/thing"}"#;
+        assert_eq!(parse_target(stale).unwrap(), Some(PathBuf::from("/Users/me/code/thing")));
+        assert_eq!(parse_target(r#"{"dev_mode": true}"#).unwrap(), None);
+
+        let merged = merge_target(Some(stale), Path::new("/picked")).unwrap();
+        assert_eq!(parse_target(&merged).unwrap(), Some(PathBuf::from("/picked")));
+        let config: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        assert_eq!(config["dev_mode"], serde_json::json!(true));
+    }
+
     /// A broken config must be loud. Reading it as "nothing configured" would put
     /// the fleet in the testbed while the operator believes it is in their repo.
     #[test]
@@ -3154,6 +3033,292 @@ mod tests {
                     credential: CredentialChoice::FleetKey,
                 })
                 .collect(),
+        }
+    }
+
+    // --- one launch (D-099) ---------------------------------------------------
+    //
+    // Driven through `launch` over a scratch layout, a real registry and a gate
+    // whose harness reading is described rather than probed.
+
+    struct Bench {
+        root: PathBuf,
+        layout: Layout,
+        state: FleetState,
+        registry: Arc<PaneRegistry>,
+        gate: GateHold,
+        /// How many launches told the webview their verdict passed.
+        launchings: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Bench {
+        fn new(name: &str) -> Self {
+            let root = std::env::temp_dir().join(format!("fl-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(&root).unwrap();
+            let bench = Self {
+                layout: Layout::under(&root),
+                state: FleetState::default(),
+                registry: Arc::new(PaneRegistry::new(Arc::new(|_, _| {}), root.join("panes.pids"))),
+                gate: GateHold::default(),
+                launchings: Arc::default(),
+                root,
+            };
+            *bench.gate.harnesses.held() = Some(vec![logged_in("claude-code", AccountShape::ApiKey)]);
+            bench.pick("m");
+            bench.point_at("repo-a");
+            bench
+        }
+
+        /// Put every worker seat on `model`, as the gate's pickers would.
+        fn pick(&self, model: &str) {
+            let mut seats = seats_on("claude-code", "claude-code");
+            for worker in &mut seats.workers {
+                worker.model = Some(model.to_string());
+            }
+            self.gate.store_seats(seats);
+        }
+
+        /// Set the gate's target, as the Home input would.
+        fn point_at(&self, repo: &str) -> PathBuf {
+            let target = self.root.join(repo);
+            std::fs::create_dir_all(&target).unwrap();
+            let value = target.to_string_lossy().into_owned().into();
+            write_config_key_at(&self.layout.config_file(), "target", value).unwrap();
+            target
+        }
+
+        fn launch(&self, source: LaunchSource) -> Result<BootSnapshot, LaunchFailure> {
+            let offer = PlanOffer::fleet_key();
+            let launchings = self.launchings.clone();
+            let emit: FeedEmit = Arc::new(move |signal| {
+                if matches!(signal, Signal::Launching) {
+                    launchings.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+                true
+            });
+            launch(&self.state, &self.registry, &self.gate, self.layout.clone(), &offer, source, emit)
+        }
+
+        fn fresh(&self) {
+            self.launch(LaunchSource::Fresh).expect("a fresh launch on a logged-in machine");
+        }
+
+        fn reopen(&self, id: &str) -> Result<BootSnapshot, LaunchFailure> {
+            self.launch(LaunchSource::Reopen { id: id.to_string() })
+        }
+
+        /// A pane of the live fleet: recorded as placement records one, with a
+        /// real pty behind it. `sleep` stands in for the harness.
+        fn bring_up_orch(&self, model: &str) {
+            let spec = harness::claude_code().spec();
+            runs::record_pane(&self.layout.shell(), "orch", spec, Some(model), Some(CredentialChoice::Plan));
+            let mut cmd = portable_pty::CommandBuilder::new("sleep");
+            cmd.arg("30");
+            self.registry.spawn(PaneId::Orch, cmd, spec, 24, 80).expect("a pty for sleep");
+        }
+
+        /// What the live fleet places against: orch's model, the workers' model, the target.
+        fn placing(&self) -> Option<(Option<String>, Option<String>, PathBuf)> {
+            let slot = self.state.0.lock().unwrap();
+            let fleet = slot.as_ref()?;
+            Some((
+                fleet.seats.orch.model.clone(),
+                fleet.seats.workers[0].model.clone(),
+                fleet.target.get(),
+            ))
+        }
+
+        fn runs_dir(&self) -> PathBuf {
+            runs::runs_dir(self.layout.root())
+        }
+
+        fn launchings(&self) -> usize {
+            self.launchings.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        /// The live fleet's run id and sessions id.
+        fn ids(&self) -> (String, String) {
+            let slot = self.state.0.lock().unwrap();
+            let fleet = slot.as_ref().expect("a live fleet");
+            (fleet.run_id.clone(), fleet.sessions.to_string())
+        }
+
+        /// Every archived run folder, lineage members included.
+        fn archives(&self) -> Vec<PathBuf> {
+            let Ok(entries) = std::fs::read_dir(self.runs_dir()) else { return Vec::new() };
+            let mut dirs: Vec<_> =
+                entries.flatten().map(|e| e.path()).filter(|p| p.join("state.db").is_file()).collect();
+            dirs.sort();
+            dirs
+        }
+    }
+
+    impl Drop for Bench {
+        fn drop(&mut self) {
+            teardown(&mut self.state.0.lock().unwrap_or_else(|e| e.into_inner()), &self.registry);
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    /// **The reported bug** (D-099): New fleet while a reopened run is live starts
+    /// a fleet on the gate's picks, and the reopened run goes to History.
+    #[test]
+    fn a_new_fleet_after_a_reopen_places_the_gates_seats_and_archives_the_reopened_run() {
+        let bench = Bench::new("after-reopen");
+        let repo_a = bench.root.join("repo-a");
+        bench.fresh();
+        bench.bring_up_orch("recorded");
+        bench.fresh();
+        assert!(!bench.registry.any_pane(), "the first fleet's pane went with it");
+        let first = runs::list(&bench.runs_dir())[0].id.clone();
+
+        // The gate moves on; the reopen must not follow it, and must not move it.
+        bench.pick("gate");
+        bench.reopen(&first).expect("the first run reopens");
+        let (orch, workers, target) = bench.placing().expect("a reopened fleet");
+        assert_eq!(orch.as_deref(), Some("recorded"), "a reopen places what the run recorded");
+        assert_eq!(workers.as_deref(), Some("gate"), "a seat with no record keeps the gate's pick");
+        assert_eq!(target, repo_a);
+        assert_eq!(bench.gate.seats().orch.model, None, "and the gate is left for the next new fleet");
+        bench.bring_up_orch("recorded");
+
+        bench.fresh();
+
+        let (orch, workers, _) = bench.placing().expect("a new fleet");
+        assert_eq!((orch, workers.as_deref()), (None, Some("gate")), "the new fleet is the gate's");
+        assert!(!bench.registry.any_pane(), "the reopened run's pane is gone");
+        assert_eq!(bench.archives().len(), 3, "the first run, the empty second, and the reopened sitting");
+    }
+
+    /// **A refusal kills nothing** (stories 10, 27): the verdict runs before the
+    /// teardown, so the running fleet and its panes survive it.
+    #[test]
+    fn a_launch_refused_at_the_verdict_leaves_the_running_fleet_untouched() {
+        let bench = Bench::new("refused");
+        bench.fresh();
+        assert_eq!(bench.launchings(), 1, "a first launch, with nothing to tear down, still says so");
+        bench.bring_up_orch("m");
+
+        let unknown = bench.reopen("2020-01-01T00-00-00Z").expect_err("no such run");
+        assert!(!unknown.torn_down && unknown.reason.contains("no such run"), "{unknown:?}");
+
+        *bench.gate.harnesses.held() = Some(vec![reading(
+            "claude-code",
+            LoginState::NoCredential { summary: "records no login".into(), provider_key: None },
+        )]);
+        let logged_out = bench.launch(LaunchSource::Fresh).expect_err("a logged-out fleet may not start");
+        assert!(!logged_out.torn_down && logged_out.reason.contains("records no login"), "{logged_out:?}");
+
+        assert!(bench.registry.any_pane(), "the running fleet's pane is still up");
+        assert!(bench.placing().is_some(), "and so is the fleet");
+        assert!(bench.archives().is_empty(), "nothing was archived for a launch that never started");
+        assert_eq!(bench.launchings(), 1, "and the webview was told nothing, so it resets nothing");
+    }
+
+    /// **A reopen runs on the target it recorded** (stories 8, 9), whatever the
+    /// gate holds, and is refused before teardown once that folder is gone.
+    #[test]
+    fn a_reopen_uses_its_recorded_target_and_refuses_when_that_folder_is_gone() {
+        let bench = Bench::new("target");
+        let repo_a = bench.root.join("repo-a");
+        bench.fresh();
+        bench.bring_up_orch("m");
+        let repo_b = bench.point_at("repo-b");
+        bench.fresh();
+        assert_eq!(bench.placing().unwrap().2, repo_b, "a fresh launch takes the gate's target");
+        let on_a = runs::list(&bench.runs_dir())[0].id.clone();
+
+        bench.reopen(&on_a).expect("repo A's session reopens while the gate is on repo B");
+        assert_eq!(bench.placing().unwrap().2, repo_a);
+        assert_eq!(configured_target(&bench.layout).unwrap(), Some(repo_b.clone()), "config is not written");
+
+        std::fs::remove_dir_all(&repo_a).unwrap();
+        let gone = bench.reopen(&on_a).expect_err("its folder is gone");
+        assert!(!gone.torn_down && gone.reason.contains("no longer a folder"), "{gone:?}");
+        assert_eq!(bench.placing().unwrap().2, repo_a, "the live fleet is the one that was running");
+    }
+
+    /// A run archived before targets were recorded reopens on the gate's, and
+    /// says so on the feed.
+    #[test]
+    fn a_reopen_with_no_recorded_target_says_it_took_the_gates() {
+        let bench = Bench::new("no-target");
+        bench.fresh();
+        bench.bring_up_orch("m");
+        let repo_b = bench.point_at("repo-b");
+        bench.fresh();
+        let id = runs::list(&bench.runs_dir())[0].id.clone();
+        let manifest_path = bench.runs_dir().join(&id).join("manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        manifest["run"].as_object_mut().unwrap().remove("target");
+        std::fs::write(&manifest_path, manifest.to_string()).unwrap();
+
+        bench.reopen(&id).expect("it still reopens");
+
+        assert_eq!(bench.placing().unwrap().2, repo_b);
+        let slot = bench.state.0.lock().unwrap();
+        let said = slot.as_ref().unwrap().store.events_since(0).unwrap().into_iter().any(|(_, e)| {
+            matches!(&e, FleetEvent::Notice { text, .. } if text.contains("recorded no target"))
+        });
+        assert!(said, "the fallback is on the feed");
+    }
+
+    /// **Rapid relaunches each archive cleanly** (story 36): one self-contained
+    /// folder per run left, frozen to a single file.
+    #[test]
+    fn rapid_relaunches_each_leave_one_single_file_archive() {
+        let bench = Bench::new("rapid");
+        let mut ids = Vec::new();
+        for _ in 0..3 {
+            bench.fresh();
+            let (run, sessions) = bench.ids();
+            assert_eq!(run, sessions, "a fresh run's seat directory is its own");
+            ids.push(run);
+        }
+        // Launched within one second, which is one timestamp.
+        assert_eq!(ids.iter().collect::<std::collections::BTreeSet<_>>().len(), 3, "{ids:?}");
+        let archives = bench.archives();
+        assert_eq!(archives.len(), 2, "two runs were left; the third is live");
+        for (archive, id) in archives.iter().zip(&ids) {
+            assert_eq!(archive.file_name().unwrap().to_string_lossy(), *id, "archived under the id it ran as");
+            let manifest = std::fs::read_to_string(archive.join("manifest.json")).unwrap();
+            assert!(manifest.contains(&format!("\"sessions\": \"{id}\"")), "{manifest}");
+            assert!(!archive.join("state.db-wal").exists(), "{} was not frozen", archive.display());
+            assert!(archive.join("manifest.json").is_file(), "{} has no manifest", archive.display());
+        }
+        assert!(bench.layout.shell().join("state.db").is_file(), "and the live slot holds the third");
+    }
+
+    /// **A reopen places what the run recorded** (D-095): harness, model and
+    /// credential come from the record; a seat with no record, or on a harness
+    /// this build lacks, keeps the gate's pick.
+    #[test]
+    fn recorded_seats_replace_the_gates_pick() {
+        let claude = harness::claude_code().spec().name;
+        let codex = crate::placement::codex::codex().spec().name;
+        let record = |harness: &str, model: Option<&str>, credential| runs::PaneRecord {
+            harness: harness.to_string(),
+            model: model.map(str::to_string),
+            credential,
+            transcript_format: String::new(),
+            session_id: None,
+        };
+        let recorded = std::collections::BTreeMap::from([
+            ("orch".to_string(), record(codex, Some("gpt-x"), None)),
+            ("worker-1".to_string(), record(codex, None, Some(CredentialChoice::Plan))),
+            ("worker-2".to_string(), record("gamma-cli", Some("g"), None)),
+        ]);
+
+        let seats = seats_on(claude, claude).as_recorded(&recorded);
+
+        assert_eq!((seats.orch.harness.as_str(), seats.orch.model.as_deref()), (codex, Some("gpt-x")));
+        let w1 = &seats.workers[0];
+        assert_eq!((w1.harness.as_str(), w1.model.as_deref(), w1.credential), (codex, None, CredentialChoice::Plan));
+        for kept in &seats.workers[1..] {
+            assert_eq!((kept.harness.as_str(), kept.model.as_deref()), (claude, Some("m")));
+            assert_eq!(kept.credential, CredentialChoice::FleetKey);
         }
     }
 

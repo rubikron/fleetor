@@ -33,6 +33,7 @@ use fleetor_core::event::{FleetEvent, NoticeLevel};
 use fleetor_db::archive;
 use serde::{Deserialize, Serialize};
 
+use crate::credential_source::CredentialChoice;
 use crate::placement::harness::{HarnessSpec, Transport};
 use crate::placement::SessionsId;
 
@@ -48,7 +49,7 @@ const MANIFEST_JSON: &str = "manifest.json";
 ///
 /// It used to say "that pane's Claude Code session `.jsonl` files", which was true
 /// of every run a one-harness fleet could produce and becomes a false statement to
-/// any Critic reading a mixed run cold — the wrong kind of false, too: a reader
+/// any reader of a mixed run cold — the wrong kind of false, too: a reader
 /// who believes it will look for a format that is not there and conclude the
 /// evidence is missing rather than that the sentence is. It now says what is
 /// invariant (one directory per pane, raw, this run only) and points at `panes`
@@ -134,6 +135,10 @@ pub struct RunRecord {
 /// an unknown target rather than a parsed guess.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct LiveMeta {
+    /// The id this run is archived under, claimed at launch ([`new_run_id`]).
+    /// `None` on a run begun before D-099, which is named by its start time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     started_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -169,7 +174,7 @@ struct LiveMeta {
 /// vendor's binary was pointed at it; by the time rotation archives a run its
 /// panes are gone and the fleet that placed them is gone with them (C33). So the
 /// harvest still finds transcripts by looking under every registered harness's
-/// answer, and this is what tells a Critic reading the result cold *which* vendor
+/// answer, and this is what tells a reader of the result cold *which* vendor
 /// wrote the files it is now holding, and in what format.
 ///
 /// C33 named this exact reversal: "a run manifest that already records each pane's
@@ -187,6 +192,10 @@ pub struct PaneRecord {
     /// account defaults to — the honest answer rather than a guessed name (M2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Whose usage the seat spent, so a reopen restores the pair the model belongs
+    /// to. Absent on runs recorded before D-095.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<CredentialChoice>,
     /// Checkpoint 13's `format`, so the transcripts filed under this pane can be
     /// named without knowing which vendor wrote them.
     pub transcript_format: String,
@@ -229,11 +238,6 @@ fn live_meta(shell: &Path) -> PathBuf {
     shell.join("run.json")
 }
 
-/// The pending-reopen marker (WP-27, R2).
-fn reopen_request(shell: &Path) -> PathBuf {
-    shell.join("reopen.json")
-}
-
 // --- the live run -------------------------------------------------------------
 
 /// Record what the run that is starting now is pointed at, for the History list
@@ -242,10 +246,50 @@ fn reopen_request(shell: &Path) -> PathBuf {
 /// Best-effort on purpose: a failure here costs one row's target column, and is
 /// not worth failing a boot over.
 pub fn begin(shell: &Path, started_ms: i64, target: &Path, sessions: &SessionsId, parent: Option<&str>) {
+    begin_run(shell, None, started_ms, target, sessions, parent);
+}
+
+/// [`begin`] for a run whose id was claimed at launch, so the fleet and the
+/// archive name it the same thing.
+pub fn begin_as(
+    shell: &Path,
+    id: &str,
+    started_ms: i64,
+    target: &Path,
+    sessions: &SessionsId,
+    parent: Option<&str>,
+) {
+    begin_run(shell, Some(id), started_ms, target, sessions, parent);
+}
+
+/// An id for the run starting at `started_ms` that no archive and no seat
+/// directory already uses. Two launches in one second would otherwise share a
+/// seat directory, and the task store is keyed by it.
+pub fn new_run_id(shell: &Path, runs: &Path, started_ms: i64) -> String {
+    let base = timestamp_id_for(started_ms);
+    let taken = |id: &str| {
+        runs.join(id).exists()
+            || crate::placement::pane_config_run(shell, &SessionsId::new(id)).exists()
+    };
+    (1u32..)
+        .map(|n| if n == 1 { base.clone() } else { format!("{base}-{n}") })
+        .find(|id| !taken(id))
+        .expect("an unbounded search")
+}
+
+fn begin_run(
+    shell: &Path,
+    id: Option<&str>,
+    started_ms: i64,
+    target: &Path,
+    sessions: &SessionsId,
+    parent: Option<&str>,
+) {
     // The panes are empty here and are filled in one at a time by
     // [`record_pane`], because at bootstrap there are none: rotation has just run
     // and the first pane is several operator gestures away.
     let meta = LiveMeta {
+        id: id.map(str::to_string),
         started_ms: Some(started_ms),
         target: Some(target.display().to_string()),
         sessions: Some(sessions.to_string()),
@@ -271,13 +315,20 @@ pub fn begin(shell: &Path, started_ms: i64, target: &Path, sessions: &SessionsId
 /// it could not describe it would be trading the run for the record of it. A pane
 /// missing here is a pane the manifest does not name; its transcripts are still
 /// harvested and still filed under its seat.
-pub fn record_pane(shell: &Path, pane: &str, harness: &'static HarnessSpec, model: Option<&str>) {
+pub fn record_pane(
+    shell: &Path,
+    pane: &str,
+    harness: &'static HarnessSpec,
+    model: Option<&str>,
+    credential: Option<CredentialChoice>,
+) {
     let mut meta = read_live_meta(shell);
     meta.panes.insert(
         pane.to_string(),
         PaneRecord {
             harness: harness.name.to_string(),
             model: model.map(str::to_string),
+            credential,
             transcript_format: harness.transcript.format.to_string(),
             // Read at rotation, not here: checkpoint 15's reader wants a finished
             // session, and this runs while the pane is still starting (R6).
@@ -298,41 +349,10 @@ pub fn record_pane(shell: &Path, pane: &str, harness: &'static HarnessSpec, mode
 /// to discover it after five panes are gone: a reopen that killed the live fleet
 /// and then failed would be the worst version of this feature.
 pub fn reopen_blocker_for(runs: &Path, id: &str) -> Option<String> {
-    reopen_blocker(runs, id)
-}
-
-/// Gate, then tear down, then ask the next boot to reopen — **in that order, and
-/// the order is the whole function** (R8, R2).
-///
-/// `teardown` is the caller's: killing the panes and dropping the live fleet are
-/// Tauri state this module never holds. It runs only once the gate has passed, so
-/// a refused reopen leaves the live fleet exactly as it was and writes no request.
-/// One function rather than three lines in `run_reopen` so that the ordering is
-/// something a test can hold, not something a command happens to do.
-pub fn begin_reopen(
-    shell: &Path,
-    runs: &Path,
-    id: &str,
-    teardown: impl FnOnce() -> Result<(), String>,
-) -> Result<(), String> {
-    if let Some(why) = reopen_blocker(runs, id) {
-        return Err(format!("\u{201c}{id}\u{201d} can\u{2019}t be opened: {why}"));
+    if run_dir(runs, id).ok().and_then(|dir| manifest_of(&dir)).is_none() {
+        return Some("there is no such run in History".into());
     }
-    teardown()?;
-    request_reopen(shell, id)
-}
-
-/// Ask the next bootstrap to reopen run `id` instead of starting empty (R2).
-///
-/// **A request consumed by rotation rather than a second archive path.** R2 makes
-/// reopening *be* a rotation — teardown, archive what is live, then seed the slot
-/// — and the only difference from an ordinary boot is which database the slot
-/// starts from. Expressing that as a marker the existing path reads keeps one
-/// archive mechanism instead of two that can drift.
-pub fn request_reopen(shell: &Path, id: &str) -> Result<(), String> {
-    std::fs::create_dir_all(shell).map_err(|e| format!("create {}: {e}", shell.display()))?;
-    std::fs::write(reopen_request(shell), id)
-        .map_err(|e| format!("write {}: {e}", reopen_request(shell).display()))
+    reopen_blocker(runs, id)
 }
 
 /// **Each seat's resumable session id for a lineage** (WP-27, R6) — what the
@@ -352,6 +372,23 @@ pub fn lineage_session_ids(runs: &Path, id: &str) -> BTreeMap<String, String> {
     out
 }
 
+/// The target run `id` recorded, which a reopen launches against whatever the
+/// gate holds (D-099). `None` for a run that recorded none.
+pub fn recorded_target(runs: &Path, id: &str) -> Option<PathBuf> {
+    let manifest = manifest_of(&run_dir(runs, id).ok()?)?;
+    Some(PathBuf::from(manifest.get("run")?.get("target")?.as_str()?))
+}
+
+/// What each seat of a lineage was placed as (D-095): the harness, model and
+/// credential a reopen brings it back on, whatever the gate is set to now.
+pub fn recorded_panes(runs: &Path, id: &str) -> BTreeMap<String, PaneRecord> {
+    lineage_panes(runs, id)
+        .into_iter()
+        .flatten()
+        .filter_map(|(seat, rec)| Some((seat, serde_json::from_value(rec).ok()?)))
+        .collect()
+}
+
 /// What a reopen tells [`begin`] about the run it is starting (WP-27, R1, R4).
 pub struct Reopened {
     /// The lineage's seat directory — the parent's, because a lineage shares one.
@@ -360,25 +397,17 @@ pub struct Reopened {
     pub parent: String,
 }
 
-/// Consume a pending reopen: copy the archived log into the live slot (R1).
+/// Copy run `id`'s archived log into the live slot (R1).
 ///
-/// Called from bootstrap **after [`rotate`] and before the store is opened**, which
-/// is the only window in which the slot is both empty and unopened. Returns `None`
-/// when no reopen was requested, which is every ordinary boot.
+/// Called by a reopen launch **after [`rotate`] and before the store is opened**,
+/// the only window in which the slot is both empty and unopened.
 ///
 /// **The parent is read, never written.** D-058's invariant is that a new run
 /// cannot be corrupted by an old one; copying satisfies it exactly, and the
 /// archive stays frozen (R1).
-pub fn apply_reopen(shell: &Path, runs: &Path) -> Result<Option<Reopened>, String> {
-    let marker = reopen_request(shell);
-    let Ok(id) = std::fs::read_to_string(&marker) else { return Ok(None) };
-    let id = id.trim().to_string();
-    // Consumed whatever happens next: a marker that survived a failure would
-    // reopen the same run on every subsequent boot.
-    let _ = std::fs::remove_file(&marker);
-
-    let dir = run_dir(runs, &id)?;
-    if let Some(why) = reopen_blocker(runs, &id) {
+pub fn seed_reopen(shell: &Path, runs: &Path, id: &str) -> Result<Reopened, String> {
+    let dir = run_dir(runs, id)?;
+    if let Some(why) = reopen_blocker(runs, id) {
         return Err(format!("cannot reopen {id}: {why}"));
     }
     let manifest = manifest_of(&dir).ok_or_else(|| format!("run {id} has no manifest"))?;
@@ -391,13 +420,15 @@ pub fn apply_reopen(shell: &Path, runs: &Path) -> Result<Option<Reopened>, Strin
 
     // The board and the message history come with the log, which is the whole
     // reason R1 copies it rather than starting empty.
-    std::fs::copy(dir.join("state.db"), live_db(shell))
-        .map_err(|e| format!("seed the live run from {id}: {e}"))?;
+    if let Err(e) = std::fs::copy(dir.join("state.db"), live_db(shell)) {
+        let _ = std::fs::remove_file(live_db(shell));
+        return Err(format!("seed the live run from {id}: {e}"));
+    }
     // A copied database must not inherit a stale journal from the live slot.
     for suffix in ["-wal", "-shm"] {
         let _ = std::fs::remove_file(with_suffix(&live_db(shell), suffix));
     }
-    Ok(Some(Reopened { sessions: SessionsId::new(sessions), parent: id }))
+    Ok(Reopened { sessions: SessionsId::new(sessions), parent: id.to_string() })
 }
 
 // --- rotation -----------------------------------------------------------------
@@ -414,7 +445,8 @@ pub fn rotate(shell: &Path, runs: &Path, now_ms: i64) -> Vec<(NoticeLevel, Strin
 
     let mut meta = read_live_meta(shell);
     let started = meta.started_ms.or_else(|| file_started_ms(&live)).unwrap_or(now_ms);
-    let dest = match reserve(runs, &timestamp_id_for(started)) {
+    let claimed = meta.id.clone().unwrap_or_else(|| timestamp_id_for(started));
+    let dest = match reserve(runs, &claimed) {
         Ok(dir) => dir,
         Err(e) => return vec![(NoticeLevel::Warn, format!("could not archive the previous run: {e}"))],
     };
@@ -450,6 +482,9 @@ pub fn rotate(shell: &Path, runs: &Path, now_ms: i64) -> Vec<(NoticeLevel, Strin
     }
 
     let id = dest.file_name().unwrap_or_default().to_string_lossy().to_string();
+    if let Some(target) = &meta.target {
+        archive_tasks(&dest, &id, Path::new(target));
+    }
     match record_for(&dest, &id, meta.target.as_deref()) {
         Ok(mut record) => {
             record.transcripts = transcripts;
@@ -476,6 +511,10 @@ pub fn rotate(shell: &Path, runs: &Path, now_ms: i64) -> Vec<(NoticeLevel, Strin
     }
     notices
 }
+
+/// Where an archived run's `tasks.json` is written (D-099, Coordination C).
+/// A no-op here; the task PRD fills it in.
+fn archive_tasks(_dest: &Path, _run_id: &str, _target: &Path) {}
 
 /// Freeze the live database and move it, leaving one self-contained file.
 ///
@@ -506,10 +545,7 @@ fn archive_files(live: &Path, dest: &Path) -> std::io::Result<()> {
 /// Take one transcript into the archive the way its harness says it may be taken,
 /// and answer whether it arrived.
 ///
-/// The two verbs are separated from the two transports on purpose: whether the
-/// original survives is the *caller's* contract (rotation moves, the live snapshot
-/// copies), and how a file is read is the *harness's*. Crossing them would give
-/// four bespoke branches instead of two facts.
+/// How a file is read is the *harness's* answer, which is all this branches on.
 fn take_transcript(from: &Path, to: &Path, transport: Transport) -> bool {
     match transport {
         Transport::Rename => std::fs::copy(from, to).is_ok(),
@@ -546,9 +582,7 @@ fn sqlite_backup(from: &Path, to: &Path) -> Result<(), String> {
 /// that goal and drops the mechanism, because R4 made a run's sessions a
 /// *directory* — so an archive is scoped by which directory it walks rather than
 /// by emptying the one it walked. The two verbs this function used to take
-/// collapsed to one the moment rotation stopped being destructive: rotation and
-/// the live snapshot now do the identical thing, and keeping two names for it
-/// would be exactly the drift the old `Take` enum existed to prevent.
+/// collapsed to one the moment rotation stopped being destructive.
 ///
 /// **The vendor's session stays where the vendor keeps it**, which is what makes
 /// reopening `--resume <id>` against a file that never left, with no restore step
@@ -677,102 +711,6 @@ struct Location {
     subdir: &'static str,
     file_ext: &'static str,
     transport: Transport,
-}
-
-// --- the live run, laid out for a reader (WP-15) --------------------------------
-
-/// Lay the run that is **still being written** out in the archive's own shape,
-/// somewhere a reader can be pointed at.
-///
-/// Rotation (above) archives the *previous* run at bootstrap, so at the moment
-/// `orch` hands back, the run worth reading is the live one: `_shell/state.db`
-/// in WAL mode with this process's own writer holding it open, and transcripts
-/// still being appended to inside `pane-config/`. This produces the same three
-/// things an archived run holds — `events.json`, `manifest.json`, `transcripts/`
-/// — without disturbing any of it.
-///
-/// **Three decisions, all measured rather than reasoned
-/// (`docs/notes/live-run-snapshot-notes.md`):**
-///
-///  - **The log is read in place, read-only.** `archive::to_json` opens
-///    `SQLITE_OPEN_READ_ONLY` and sees every committed row while the writer is
-///    live; the spike confirmed the writer is undisturbed by it. So this is the
-///    *same function* rotation calls, and the `events.json` an agent reads
-///    mid-run cannot drift from the one it reads afterwards (D-059's rule).
-///  - **`archive::freeze` is never called here.** It flips the database out of
-///    WAL mode, which against a live writer fails by design — and reusing
-///    rotation's file-moving path wholesale would try it.
-///  - **Transcripts are copied, not moved.** [`harvest_transcripts`] moves them,
-///    which is right at rotation because no pane exists then. Here every pane is
-///    alive and its harness still has those files open; moving one is a
-///    data-loss bug in the very run being judged. The two are named functions
-///    over one walk rather than a `copy: bool` — see [`copy_transcripts`] for why
-///    the distinction survived being factored.
-///
-/// The directory is rebuilt from scratch on every call, so a second handoff in
-/// one run gets a snapshot of the run at *that* moment rather than a merge of
-/// two.
-pub fn snapshot_live_run(shell: &Path, dest: &Path, run_id: &str) -> Result<u32, String> {
-    let live = live_db(shell);
-    if !live.is_file() {
-        return Err(format!("there is no live run at {}", live.display()));
-    }
-    let _ = std::fs::remove_dir_all(dest);
-    std::fs::create_dir_all(dest).map_err(|e| format!("create {}: {e}", dest.display()))?;
-
-    let json = fleetor_db::archive::to_json(&live)
-        .map_err(|e| format!("reading the live run at {}: {e}", live.display()))?;
-    std::fs::write(dest.join(EVENTS_JSON), json)
-        .map_err(|e| format!("writing {}: {e}", dest.join(EVENTS_JSON).display()))?;
-
-    let meta = read_live_meta(shell);
-    // **The run's own seat directory, which is not its archive id on a reopened
-    // run** (WP-27, R4): a lineage shares one directory, so a snapshot that
-    // derived it from the run id would photograph an empty directory for exactly
-    // the runs an evaluator most wants to read. Falls back to the id for a
-    // snapshot taken before `begin` has written one.
-    let sessions = meta.sessions.clone().map(SessionsId::new).unwrap_or_else(|| SessionsId::new(run_id));
-    let transcripts = walk_transcripts(shell, &sessions, dest);
-    let manifest = serde_json::json!({
-        "run": {
-            "id": run_id,
-            "state": "live",
-            "started_ms": meta.started_ms,
-            "target": meta.target,
-            "transcripts": transcripts,
-        },
-        "panes": meta.panes,
-        "layout": {
-            "events.json": "the whole event log so far, one JSON array, oldest first; `seq` and `ts` are the row's own columns",
-            "transcripts/": TRANSCRIPTS_ARE,
-            "panes": PANES_ARE,
-        },
-        "reading_this": READING_THIS,
-        "this_is_a_snapshot": format!(
-            "Taken when the mission was handed back, while the run was still open. It holds \
-             the run up to that moment and nothing after it. There is no state.db here — the \
-             live database belongs to the running app. The final archive at runs/{run_id}/ \
-             supersedes this after the next fleet start."
-        ),
-    });
-    std::fs::write(
-        dest.join(MANIFEST_JSON),
-        serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| format!("writing {}: {e}", dest.join(MANIFEST_JSON).display()))?;
-    Ok(transcripts)
-}
-
-
-/// The directory name the live run *will* be archived under, computed from the
-/// same `started_ms` rotation will use. Naming the snapshot after it means an
-/// operator holding a retro in one hand and a `runs/` entry in the other does
-/// not have to work out which is which.
-pub fn live_run_id(shell: &Path, fallback_ms: i64) -> String {
-    let meta = read_live_meta(shell);
-    let started =
-        meta.started_ms.or_else(|| file_started_ms(&live_db(shell))).unwrap_or(fallback_ms);
-    timestamp_id_for(started)
 }
 
 /// Write the two files an agent reads: the log as JSON, and a manifest saying
@@ -1024,8 +962,17 @@ fn lineage_panes(runs: &Path, id: &str) -> Option<serde_json::Map<String, serde_
         // next reopen started them on fresh sessions without a word.
         if let Some(panes) = manifest.get("panes").and_then(|p| p.as_object()) {
             let into = merged.get_or_insert_with(serde_json::Map::new);
+            // A record that names a session beats a nearer one that does not
+            // (D-095): a seat that came up without resuming must not hide the
+            // session its ancestor left.
+            let has_session = |r: &serde_json::Value| r.get("session_id").is_some_and(|v| v.is_string());
             for (seat, record) in panes {
-                into.entry(seat.clone()).or_insert_with(|| record.clone());
+                match into.get(seat) {
+                    Some(held) if has_session(held) || !has_session(record) => {}
+                    _ => {
+                        into.insert(seat.clone(), record.clone());
+                    }
+                }
             }
         }
         at = manifest
@@ -1285,105 +1232,6 @@ mod tests {
         }
     }
 
-    /// **The snapshot's whole reason for existing** (WP-15): the run the
-    /// evaluator has to read is the *live* one, because rotation archives the
-    /// previous run at bootstrap. The writer here is deliberately still open
-    /// across the snapshot — that is the situation, and a version of this test
-    /// that dropped the store first would pass while proving nothing.
-    ///
-    /// `docs/notes/live-run-snapshot-notes.md` measured the shell-level version
-    /// of this; this is the same claim through the code that actually runs.
-    #[test]
-    fn a_live_run_is_readable_while_its_writer_still_holds_it() {
-        let root = scratch("snapshot");
-        let shell = root.join("_shell");
-        begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("run-1"), None);
-
-        // The live writer, held open for the whole test.
-        let store = SqliteStore::open(&shell.join("state.db")).unwrap();
-        let say = |body: &str| {
-            store
-                .append_event(&FleetEvent::Message {
-                    id: fleetor_core::ids::new_id("msg"),
-                    from: PaneId::Orch,
-                    to: PaneId::Worker(1),
-                    body: body.into(),
-                    group: None,
-                    accepted: true,
-                    detail: None,
-                })
-                .unwrap();
-        };
-        say("take the parser");
-        say("on it");
-
-        // A transcript, where a pane's config dir really puts one — under the
-        // run's *recorded* seat directory, which is `begin`'s above and not the
-        // snapshot's id. On a reopened run those differ (R4), and a snapshot that
-        // guessed from the id would photograph an empty directory.
-        let sessions = shell.join("pane-config/run-1/orch/projects/-tmp-logstat");
-        std::fs::create_dir_all(&sessions).unwrap();
-        std::fs::write(sessions.join("a1b2.jsonl"), "{\"role\":\"assistant\"}\n").unwrap();
-
-        let dest = root.join("dev/retro/2026-08-07T14-32-05Z");
-        let copied = snapshot_live_run(&shell, &dest, "2026-08-07T14-32-05Z").unwrap();
-
-        let rows: Vec<serde_json::Value> =
-            serde_json::from_str(&std::fs::read_to_string(dest.join(EVENTS_JSON)).unwrap()).unwrap();
-        assert_eq!(rows.len(), 2, "every committed row, uncheckpointed WAL and all");
-        assert_eq!(rows[0]["body"], "take the parser");
-
-        assert_eq!(copied, 1);
-        assert!(dest.join("transcripts/orch/a1b2.jsonl").is_file());
-        // **Copied, never moved.** Claude Code still has this file open; moving
-        // it would be a data-loss bug in the very run being judged.
-        assert!(sessions.join("a1b2.jsonl").is_file(), "the live transcript stayed where it was");
-
-        // No `state.db`: the live database belongs to the running app, and a
-        // copy of it here would be the stale-prefix failure the notes measured.
-        assert!(!dest.join("state.db").exists());
-        let manifest: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(dest.join(MANIFEST_JSON)).unwrap())
-                .unwrap();
-        assert_eq!(manifest["run"]["state"], "live");
-        assert!(manifest["this_is_a_snapshot"].as_str().unwrap().contains("still open"));
-
-        // And the writer is undisturbed: the run goes on after the retro starts.
-        say("one more thing");
-        assert_eq!(store.events_since(0).unwrap().len(), 3);
-    }
-
-    /// A second `fleet handoff` is a real sequence (D-064 refuses to argue with
-    /// it), so the snapshot is rebuilt rather than merged — otherwise the
-    /// evaluator reads a directory that is two runs' worth of one run.
-    #[test]
-    fn a_second_snapshot_replaces_the_first_rather_than_merging_into_it() {
-        let root = scratch("resnapshot");
-        let shell = root.join("_shell");
-        begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("run-1"), None);
-        let store = SqliteStore::open(&shell.join("state.db")).unwrap();
-        store.append_event(&FleetEvent::Notice { level: NoticeLevel::Info, text: "up".into() }).unwrap();
-
-        let dest = root.join("dev/retro/run");
-        snapshot_live_run(&shell, &dest, "run").unwrap();
-        std::fs::write(dest.join("stale.txt"), "from the first handoff").unwrap();
-        snapshot_live_run(&shell, &dest, "run").unwrap();
-
-        assert!(!dest.join("stale.txt").exists(), "the directory is rebuilt, not added to");
-        assert!(dest.join(EVENTS_JSON).is_file());
-    }
-
-    /// The retro directory is outside `_shell`, which is the only reason the
-    /// fleet being judged cannot write into it: every pane's write guardrail
-    /// has `_shell` as a root (D-065).
-    #[test]
-    fn the_snapshot_refuses_when_there_is_no_live_run() {
-        let root = scratch("norun");
-        let err = snapshot_live_run(&root.join("_shell"), &root.join("dev/retro/x"), "x")
-            .expect_err("no database, no snapshot");
-        assert!(err.contains("no live run"), "{err}");
-    }
-
     #[test]
     fn the_first_run_on_a_machine_has_nothing_to_archive() {
         let root = scratch("first");
@@ -1529,7 +1377,7 @@ mod tests {
     /// WP-14, D-062: the pane that makes the decisions is archived like every
     /// other one. `orch`'s config dir is a sibling of the workers' under the same
     /// `pane-config/` root, so rotation files it under `transcripts/orch/` with
-    /// no arm of its own — and an evaluator reading the run gets the reasoning
+    /// no arm of its own — and anyone reading the run gets the reasoning
     /// behind the messages, not only the messages.
     #[test]
     fn a_run_takes_orchs_transcript_with_it_the_same_way_it_takes_a_workers() {
@@ -1583,8 +1431,8 @@ mod tests {
             std::fs::write(project.join(format!("{session}.jsonl")), r#"{"type":"user"}"#).unwrap();
         }
         begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("run-1"), None);
-        record_pane(&shell, "orch", crate::placement::harness::claude_code().spec(), None);
-        record_pane(&shell, "worker-1", crate::placement::harness::claude_code().spec(), None);
+        record_pane(&shell, "orch", crate::placement::harness::claude_code().spec(), None, None);
+        record_pane(&shell, "worker-1", crate::placement::harness::claude_code().spec(), None, None);
         write_live(&shell, &["take the parser"]);
 
         rotate(&shell, &runs, 0);
@@ -1625,8 +1473,8 @@ mod tests {
         std::fs::create_dir_all(&project).unwrap();
         std::fs::write(project.join("abc.jsonl"), r#"{"type":"user"}"#).unwrap();
         begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("run-1"), None);
-        record_pane(&shell, "orch", crate::placement::harness::claude_code().spec(), None);
-        record_pane(&shell, "worker-1", crate::placement::harness::claude_code().spec(), None);
+        record_pane(&shell, "orch", crate::placement::harness::claude_code().spec(), None, None);
+        record_pane(&shell, "worker-1", crate::placement::harness::claude_code().spec(), None, None);
         write_live(&shell, &["take the parser"]);
 
         rotate(&shell, &runs, 0);
@@ -1681,7 +1529,7 @@ mod tests {
         std::fs::create_dir_all(&project).unwrap();
         std::fs::write(project.join("sess-a.jsonl"), r#"{"type":"user"}"#).unwrap();
         begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("root-run"), None);
-        record_pane(&shell, "orch", crate::placement::harness::claude_code().spec(), None);
+        record_pane(&shell, "orch", crate::placement::harness::claude_code().spec(), None, None);
         write_live(&shell, &["take the parser"]);
         rotate(&shell, &runs, 0);
         let parent_id = list(&runs)[0].id.clone();
@@ -1717,7 +1565,7 @@ mod tests {
         std::fs::create_dir_all(&project).unwrap();
         std::fs::write(project.join("abc.jsonl"), r#"{"type":"user"}"#).unwrap();
         begin(shell, 1_800_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("run-1"), None);
-        record_pane(shell, "orch", crate::placement::harness::claude_code().spec(), None);
+        record_pane(shell, "orch", crate::placement::harness::claude_code().spec(), None, None);
         write_live(shell, &["take the parser"]);
         rotate(shell, runs, 0);
         list(runs)[0].id.clone()
@@ -1744,34 +1592,7 @@ mod tests {
         let why = list(&runs)[0].cannot_reopen.clone().expect("a session gone from disk blocks the row");
         assert!(why.contains("orch") && why.contains("no longer on disk"), "{why}");
 
-        let mut torn_down = false;
-        let refused = begin_reopen(&shell, &runs, &id, || {
-            torn_down = true;
-            Ok(())
-        });
-        assert!(refused.is_err(), "the reopen must be refused");
-        assert!(!torn_down, "a refused reopen must not touch the live fleet");
-        assert!(!reopen_request(&shell).exists(), "and must leave no request for the next boot");
-    }
-
-    /// **An openable run is torn down first and only then requested** (R8, R2) —
-    /// the ordering `run_reopen` depends on, held by one function a test can call.
-    #[test]
-    fn an_openable_run_tears_the_live_fleet_down_before_it_requests_the_reopen() {
-        let root = scratch("ordered");
-        let shell = root.join("_shell");
-        let runs = runs_dir(&root);
-        let id = an_archived_one_seat_run(&shell, &runs);
-
-        let mut requested_during_teardown = None;
-        begin_reopen(&shell, &runs, &id, || {
-            requested_during_teardown = Some(reopen_request(&shell).exists());
-            Ok(())
-        })
-        .expect("an openable run reopens");
-
-        assert_eq!(requested_during_teardown, Some(false), "teardown ran, and before the request");
-        assert_eq!(std::fs::read_to_string(reopen_request(&shell)).unwrap(), id);
+        assert!(reopen_blocker_for(&runs, &id).is_some(), "and the launch's verdict is asked the same question");
     }
 
     /// **A seat on a harness this build does not have names the seat and the
@@ -1815,8 +1636,8 @@ mod tests {
             std::fs::write(project.join(format!("{session}.jsonl")), r#"{"type":"user"}"#).unwrap();
         }
         begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("root-run"), None);
-        record_pane(&shell, "orch", cc, None);
-        record_pane(&shell, "worker-1", cc, None);
+        record_pane(&shell, "orch", cc, None, None);
+        record_pane(&shell, "worker-1", cc, None, None);
         write_live(&shell, &["take the parser"]);
         rotate(&shell, &runs, 0);
         let parent_id = list(&runs)[0].id.clone();
@@ -1829,7 +1650,7 @@ mod tests {
             &SessionsId::new("root-run"),
             Some(&parent_id),
         );
-        record_pane(&shell, "orch", cc, None);
+        record_pane(&shell, "orch", cc, None, None);
         write_live(&shell, &["still going"]);
         rotate(&shell, &runs, 0);
 
@@ -1843,6 +1664,44 @@ mod tests {
             "worker-1 was recorded by the parent alone, and a partial child must not hide it: {resumed:?}",
         );
         assert_eq!(list(&runs)[0].cannot_reopen, None);
+    }
+
+    /// **A reopen that came up on the wrong harness does not hide the session**
+    /// (D-095). The child here ran another vendor against the parent's seats and
+    /// so recorded no session; the lineage still answers with what the parent ran.
+    #[test]
+    fn a_seat_reopened_on_the_wrong_harness_still_resolves_to_what_it_ran() {
+        let root = scratch("lineage-wrong-harness");
+        let shell = root.join("_shell");
+        let runs = runs_dir(&root);
+        let cc = crate::placement::harness::claude_code().spec();
+        let project = shell.join("pane-config/root-run/worker-1/projects/-tmp-slug");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("sess-w1.jsonl"), r#"{"type":"user"}"#).unwrap();
+        begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("root-run"), None);
+        record_pane(&shell, "worker-1", cc, Some("a-model"), Some(CredentialChoice::FleetKey));
+        write_live(&shell, &["take the parser"]);
+        rotate(&shell, &runs, 0);
+        let parent_id = list(&runs)[0].id.clone();
+
+        begin(
+            &shell,
+            1_900_000_000_000,
+            Path::new("/tmp/logstat"),
+            &SessionsId::new("root-run"),
+            Some(&parent_id),
+        );
+        record_pane(&shell, "worker-1", crate::placement::codex::codex().spec(), None, None);
+        write_live(&shell, &["still going"]);
+        rotate(&shell, &runs, 0);
+        let child_id = list(&runs)[0].id.clone();
+        assert_ne!(child_id, parent_id);
+
+        let seat = recorded_panes(&runs, &child_id).remove("worker-1").expect("the seat is recorded");
+        assert_eq!(seat.harness, cc.name);
+        assert_eq!(seat.model.as_deref(), Some("a-model"));
+        assert_eq!(seat.credential, Some(CredentialChoice::FleetKey));
+        assert_eq!(seat.session_id.as_deref(), Some("sess-w1"));
     }
 
     /// One live WAL-mode thread store, shaped like the one a codex pane leaves
@@ -1948,7 +1807,7 @@ mod tests {
         assert_eq!(found, ["at-the-root.sqlite", "one-below.sqlite"]);
     }
 
-    /// **What a Critic reading a mixed run cold is told** (M24, #39).
+    /// **What a reader of a mixed run cold is told** (M24, #39).
     ///
     /// Two things at once, because they are one failure: the manifest names each
     /// pane's harness, model and transcript format, and the sentence describing
@@ -1968,8 +1827,8 @@ mod tests {
         // Two seats placed as two different harnesses — the run the old sentence
         // could not describe. Recorded through the production path, so what is
         // asserted is what a spawn writes.
-        record_pane(&shell, "orch", crate::placement::harness::claude_code().spec(), None);
-        record_pane(&shell, "worker-1", crate::placement::codex::codex().spec(), Some("a-model"));
+        record_pane(&shell, "orch", crate::placement::harness::claude_code().spec(), None, None);
+        record_pane(&shell, "worker-1", crate::placement::codex::codex().spec(), Some("a-model"), None);
 
         rotate(&shell, &runs, 0);
 

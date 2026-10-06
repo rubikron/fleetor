@@ -19,7 +19,8 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
-import { warmTheme, warmThemeLight } from "../theme";
+import type { ITheme } from "@xterm/xterm";
+import { THEME_MORPH_MS, easeThemeMorph, mixTheme, warmTheme, warmThemeLight } from "../theme";
 import { onPaneExit, onPaneOutput, resizePane, spawnPane, writePane } from "../fleet/api";
 import { stopListening } from "../fleet/listeners";
 import { PaneHead } from "./PaneHead";
@@ -54,7 +55,7 @@ interface TerminalPaneProps {
   started: boolean;
   /// This pane's live status, shown as a dot + word in its own head — the
   /// detail the dashboard band used to duplicate now lives only here and in
-  /// the worker tab strip.
+  /// the mission control cards.
   status: PaneStatus;
   /// **What this pane was actually placed as** — its harness, that harness's mark
   /// and the model it was pointed at, as the spawn event reported them (#50).
@@ -118,13 +119,10 @@ export function TerminalPane({
   const onFocusReadyRef = useRef(onFocusReady);
   onFocusReadyRef.current = onFocusReady;
 
-  // Whether this pane's terminal currently owns keyboard focus — drives the
-  // always-on focused-pane frame (five live terminals share one keyboard;
-  // nothing else shows which one is listening).
   const [isFocused, setIsFocused] = useState(false);
-  // Whether the operator has scrolled up in this pane's scrollback — drives
-  // the "jump to bottom" affordance (see the onScroll listener below).
   const [scrolledUp, setScrolledUp] = useState(false);
+  const [bootPhase, setBootPhase] = useState<number>(-1);
+  const [hasOutput, setHasOutput] = useState(false);
 
   // Mount the xterm view once. No pty is spawned here — that waits for `started`.
   useEffect(() => {
@@ -135,7 +133,17 @@ export function TerminalPane({
       theme: themeRef.current === "light" ? warmThemeLight : warmTheme,
       fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
       fontSize: fontSizeRef.current,
-      lineHeight: 1.2,
+      // **1.0, because the panes hold TUIs and a TUI draws boxes.** Leading is a
+      // prose virtue: a chat log reads better at 1.2, which is why this was 1.2.
+      // But `│`, `╭` and `─` are drawn *inside the cell*, so any leading above 1
+      // puts a gap between one row's vertical border and the next — codex's
+      // header panels and composer frame come out as dashed columns rather than
+      // boxes, and no amount of font choice fixes it. Terminals ship 1.0 for this
+      // reason; xterm's own default is 1.0.
+      lineHeight: 1.0,
+      // Glyphs that overflow their cell (box drawing, powerline, the odd emoji)
+      // are scaled to fit instead of being clipped by the next cell's paint.
+      rescaleOverlappingGlyphs: true,
       cursorBlink: true,
       scrollback,
       allowProposedApi: true,
@@ -144,6 +152,13 @@ export function TerminalPane({
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
+
+    // A pane's default-colour query (OSC 10/11) is answered at the pty, because
+    // the asker gives up before an answer from here could arrive (D-097). Claimed
+    // here so xterm does not send a second, late one.
+    const colourQueries = [10, 11].map((code) =>
+      term.parser.registerOscHandler(code, (data) => data === "?"),
+    );
 
     // Render on the GPU. Without this addon xterm falls back to its DOM
     // renderer — a <span> per styled run, per row, per terminal — and this app
@@ -184,6 +199,7 @@ export function TerminalPane({
     void onPaneOutput(pane, (payload) => {
       term.write(decodeBase64(payload));
       onStatusRef.current(pane, "live");
+      setHasOutput(true);
     }).then(keep);
     void onPaneExit(pane, () => {
       term.write(`\r\n${DIM}[${label} exited]${RESET}\r\n`);
@@ -243,6 +259,7 @@ export function TerminalPane({
       window.clearTimeout(refitTimer);
       window.removeEventListener("resize", refit);
       onData.dispose();
+      colourQueries.forEach((handler) => handler.dispose());
       onResize.dispose();
       onScroll.dispose();
       disposers.forEach((un) => stopListening(un, label));
@@ -310,23 +327,54 @@ export function TerminalPane({
   // mount effect's deps, so switching light/dark never tears down and
   // recreates the terminal (L7/L8). xterm's options object applies a new
   // theme immediately, no refit needed.
+  //
+  // A switch the operator makes morphs instead of snapping, in step with the
+  // chrome around the pane (styles.css, THEME MORPH): that transition cannot
+  // reach xterm's canvas, so this steps the terminal's theme over the same
+  // duration and curve. It starts from what is on screen rather than from the
+  // other theme, so a second click mid-morph turns around where it is.
+  const shownThemeRef = useRef<ITheme | null>(null);
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
-    term.options.theme = theme === "light" ? warmThemeLight : warmTheme;
+    const target = theme === "light" ? warmThemeLight : warmTheme;
+    const apply = (next: ITheme) => {
+      term.options.theme = next;
+      shownThemeRef.current = next;
+    };
+    const from = shownThemeRef.current;
+    if (!from || from === target || !document.documentElement.hasAttribute("data-theme-morph")) {
+      apply(target);
+      return;
+    }
+    const start = performance.now();
+    let frame = requestAnimationFrame(function step(now) {
+      const t = Math.min(1, Math.max(0, (now - start) / THEME_MORPH_MS));
+      if (t === 1) {
+        apply(target);
+        return;
+      }
+      apply(mixTheme(from, target, easeThemeMorph(t)));
+      frame = requestAnimationFrame(step);
+    });
+    return () => cancelAnimationFrame(frame);
   }, [theme]);
 
-  // Spawn once the operator has started the fleet. The command is idempotent, so
-  // a re-run after a spurious flip is harmless; a failure is written into the
-  // pane itself, because a pane that silently never starts is the worst outcome.
   useEffect(() => {
     if (!started) return;
+    setBootPhase(0);
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    const BOOT_STEPS = 4;
+    for (let i = 1; i <= BOOT_STEPS; i++) {
+      timers.push(setTimeout(() => setBootPhase(i), i * 400));
+    }
     const term = termRef.current;
     if (!term) return;
     void spawnPane(pane, term.rows, term.cols).catch((e) => {
       term.write(`\r\n${DIM}[${label} could not start — ${e}]${RESET}\r\n`);
       onStatusRef.current(pane, "dead");
     });
+    return () => timers.forEach(clearTimeout);
   }, [started, pane, label]);
 
   // Clicking anywhere in the pane — its head, its padding, its frame, the
@@ -340,6 +388,15 @@ export function TerminalPane({
     if (target.closest(".pane__ctl")) return;
     termRef.current?.focus();
   };
+
+  const showBoot = started && !hasOutput && bootPhase >= 0;
+  const BOOT_LABELS = [
+    "pty allocated",
+    "fence configured",
+    "worktree mounted",
+    "harness version detected",
+    "waiting for first output",
+  ];
 
   return (
     <div
@@ -355,7 +412,20 @@ export function TerminalPane({
         onRestart={onRestart}
       />
       <div className="terminal-wrap">
-        <div ref={hostRef} className="terminal-host" />
+        {showBoot && (
+          <div className="boot-sequence">
+            {BOOT_LABELS.map((step, i) => (
+              <div key={step} className={`boot-step ${i < bootPhase ? "boot-step--done" : i === bootPhase ? "boot-step--active" : ""}`}>
+                <span className="boot-step__mark">
+                  {i < bootPhase ? "✓" : i === bootPhase ? "▸" : "·"}
+                </span>
+                <span className="boot-step__label">{step}</span>
+                {i === bootPhase && <span className="boot-step__cursor" />}
+              </div>
+            ))}
+          </div>
+        )}
+        <div ref={hostRef} className={`terminal-host ${showBoot ? "is-hidden" : ""}`} />
         {scrolledUp && (
           <button
             className="terminal-jump"

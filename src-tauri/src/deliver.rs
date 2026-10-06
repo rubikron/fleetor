@@ -178,8 +178,8 @@ pub fn spawn_delivery(
 }
 
 /// One roster row, with its context gauge attached if one could be sampled
-/// (WP-04). An unsampled pane — the orchestrator, always; a worker with no
-/// completed turn yet — comes back unchanged, `context: None`.
+/// (WP-04). An unsampled pane — one with no completed turn yet — comes back
+/// unchanged, `context: None`.
 ///
 /// The one place a live sample can turn into a persisted event: on a pane's
 /// first crossing of [`context_gauge::NOTICE_THRESHOLD_PCT`] this session,
@@ -632,13 +632,13 @@ mod tests {
     fn a_pane_with_a_sampled_transcript_carries_its_gauge_on_the_roster() {
         let cwd = temp_dir("cwd");
         let config_dir = temp_dir("cfg");
-        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir: config_dir.clone(), cwd: cwd.clone() };
+        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir: config_dir.clone(), cwd: cwd.clone(), window_tokens: None };
 
         // Seed a transcript with usage well under the notice threshold —
         // `crate::placement::spawn::project_key` canonicalizes the same way
         // `context_gauge::project_dir` does, so this mirrors a real spawn.
         let resolved = crate::placement::spawn::project_key(&cwd);
-        let slug: String = resolved.chars().map(|c| if c == '/' || c == '.' { '-' } else { c }).collect();
+        let slug: String = resolved.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
         let project_dir = config_dir.join("projects").join(slug);
         std::fs::create_dir_all(&project_dir).unwrap();
         // A twentieth of the window constant — derived, so 5% stays 5% if
@@ -667,17 +667,6 @@ mod tests {
         assert!(notified.is_empty(), "well under the notice threshold");
     }
 
-    /// The orchestrator is never recorded in `GaugeSources` at all (its
-    /// transcript is the operator's own — out of scope), so it must never
-    /// carry a context gauge no matter how the roster is asked.
-    #[test]
-    fn orch_never_carries_a_context_gauge() {
-        let entry = PaneEntry::new(PaneId::Orch, fleetor_core::pane::PaneState::Live);
-        let mut notified = HashSet::new();
-        let augmented = augment_with_gauge(entry, &gauges(), &store(), &mut notified);
-        assert_eq!(augmented.context, None);
-    }
-
     /// The invariant guardrail with teeth: **at most one** Notice per pane per
     /// session, even when the same over-threshold pane is asked about
     /// repeatedly (the UI polls every ~10s; the orchestrator may call `fleet
@@ -688,7 +677,7 @@ mod tests {
         let cwd = temp_dir("hot-cwd");
         let config_dir = temp_dir("hot-cfg");
         let resolved = crate::placement::spawn::project_key(&cwd);
-        let slug: String = resolved.chars().map(|c| if c == '/' || c == '.' { '-' } else { c }).collect();
+        let slug: String = resolved.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
         let project_dir = config_dir.join("projects").join(slug);
         std::fs::create_dir_all(&project_dir).unwrap();
         // 85% of the window constant — derived, over the 80% threshold
@@ -705,7 +694,7 @@ mod tests {
         .unwrap();
 
         let sources = gauges();
-        sources.record(PaneId::Worker(3), TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir, cwd });
+        sources.record(PaneId::Worker(3), TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir, cwd, window_tokens: None });
         let shared_store = store();
         let mut notified = HashSet::new();
 

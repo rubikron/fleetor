@@ -96,6 +96,11 @@ impl Painted {
         self.bytes.lock().expect("the paint lock").len()
     }
 
+    /// Whether the raw paint, escapes included, carries `needle`.
+    pub fn carries(&self, needle: &[u8]) -> bool {
+        self.bytes.lock().expect("the paint lock").windows(needle.len()).any(|w| w == needle)
+    }
+
     /// What the pane painted, escapes removed and **all** whitespace collapsed.
     ///
     /// Codex repaints character by character with cursor moves between, so a word
@@ -268,6 +273,12 @@ impl CodexPane {
     /// has to be the one a pane actually gets (C6), or neither caller is
     /// measuring the pane a fleet places.
     pub fn brought_up(vendor: &Path, spec: &'static HarnessSpec, tag: &str) -> Self {
+        Self::brought_up_in(vendor, spec, tag, true)
+    }
+
+    /// `themed` is whether the registry was told the terminal's colours, which the
+    /// shell always does at launch (D-097). `false` is the control arm.
+    pub fn brought_up_in(vendor: &Path, spec: &'static HarnessSpec, tag: &str, themed: bool) -> Self {
         let root = scratch(tag);
         let operator_home = root.join("operator");
         let pane_home = root.join("pane-home");
@@ -315,6 +326,9 @@ impl CodexPane {
 
         let painted = Painted::watching(PANE);
         let registry = PaneRegistry::new(painted.emitter(), root.join("panes.pids"));
+        if themed {
+            registry.set_colors("#e9e7e2", "#201d18").expect("the theme's colours");
+        }
         registry.spawn(PANE, cmd, spec, ROWS, COLS).expect("a codex pane");
 
         Self { painted, capture, registry, root }

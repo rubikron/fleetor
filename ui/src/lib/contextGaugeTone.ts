@@ -3,7 +3,7 @@
 // hook module pulls in the Tauri IPC bridge.
 import { PENDING, type ContextGauge, type GaugeReading } from "../fleet/types";
 
-// Shared between the pane head and the worker tab strip so a gauge's color
+// Shared between the pane head and the mission control cards so a gauge's color
 // and its text never drift apart between the two places it's shown — the
 // same reason statusTone.ts exists for pane state. Mirrors the backend's own
 // NOTICE_THRESHOLD_PCT (`src-tauri/src/context_gauge.rs`): informational only,
@@ -33,7 +33,7 @@ export function gaugeTitle(gauge: ContextGauge): string {
 // --- what the rail actually says, per reading (#48) ----------------------------
 
 /// The qualifier every state wears, so the three visible answers occupy one
-/// shape in the pane head and the tab strip rather than three. Without it
+/// shape in the pane head and the cards rather than three. Without it
 /// `unavailable` on its own is a word next to a status word, and nothing on
 /// screen says which instrument it belongs to.
 const QUALIFIER = "ctx";
@@ -49,7 +49,7 @@ export interface GaugeView {
 
 /// A reading, resolved to what the operator sees. **The one place the words
 /// live**, for the same reason the tone and the label already lived here: the
-/// pane head and the tab strip must never disagree about whether a pane's
+/// pane head and the cards must never disagree about whether a pane's
 /// usage could be read.
 ///
 /// `undefined` resolves to [`PENDING`] rather than to nothing, which is the

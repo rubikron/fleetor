@@ -9,7 +9,7 @@
 
 import { useEffect, useState } from "react";
 import { fetchRoster } from "./api";
-import { ORCH, OUT_OF_SCOPE, type GaugeReading, type PaneId } from "./types";
+import { type GaugeReading, type PaneId } from "./types";
 
 /// Slow on purpose: a live gauge that lagged a few seconds behind a fast-
 /// moving pane is still useful, and every tick is a filesystem read per
@@ -37,14 +37,6 @@ export function useContextGauge(active: boolean): ContextGaugeMap {
         if (cancelled) return;
         const next: ContextGaugeMap = {};
         for (const entry of roster) {
-          // The orchestrator is on the roster and always carries
-          // `context: None`, but that is scope rather than a failed reading —
-          // recording it as `unavailable` would put the word on the one pane
-          // it is untrue of.
-          if (entry.pane === ORCH) {
-            next[entry.pane] = OUT_OF_SCOPE;
-            continue;
-          }
           // The backend answered about this pane. A row with no context is a
           // reading that was attempted and produced nothing — which is what
           // `unavailable` means, and the only thing that entitles the rail to

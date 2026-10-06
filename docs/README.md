@@ -40,8 +40,8 @@ Each is stamped with the Claude Code version it measured; re-measure on a CC upd
 | [`run-rotation-notes.md`](./notes/run-rotation-notes.md) | Which files an archived run has to take, measured against a crashed WAL (D-058) | 2026-08-07, SQLite/macOS 15 |
 | [`orch-config-dir-notes.md`](./notes/orch-config-dir-notes.md) | Why a fleet-owned `CLAUDE_CONFIG_DIR` silently logs `orch` out, and the variable that keeps its login (D-062) | CC 2.1.224 |
 | [`write-guardrail-notes.md`](./notes/write-guardrail-notes.md) | That a `PreToolUse` deny really stops `Bash`, and where a real build and a real commit actually write (D-065) | CC 2.1.224 |
-| [`live-run-snapshot-notes.md`](./notes/live-run-snapshot-notes.md) | That a run still being written reads whole through a read-only connection, and that copying `state.db` alone loses it (D-066) | 2026-08-07, sqlite3 3.43.2 |
-| [`critic-spike-notes.md`](./notes/critic-spike-notes.md) | Whether a judge with no answer key finds anything worth reading, and the prompt that became the Critic's brief (WP-20 D15) | 2026-09-02, archives CC 2.1.224 |
+| [`live-run-snapshot-notes.md`](./notes/live-run-snapshot-notes.md) | That a run still being written reads whole through a read-only connection, and that copying `state.db` alone loses it (D-066) — feature removed (D-092, D-094) | 2026-08-07, sqlite3 3.43.2 |
+| [`critic-spike-notes.md`](./notes/critic-spike-notes.md) | Whether a judge with no answer key finds anything worth reading, and the prompt that became the Critic's brief (WP-20 D15) — feature removed (D-092) | 2026-09-02, archives CC 2.1.224 |
 | [`codex-spike-notes.md`](./notes/codex-spike-notes.md) | What codex honours as a brief, what its sandbox refuses, and the one key that reaches the hub (C3, C5, C7, C22) — **re-runnable**: `examples/codex-spike/probe.py` | `codex-cli 0.153.4` |
 | [`codex-clear-notes.md`](./notes/codex-clear-notes.md) | Whether the brief carried as `model_instructions_file` survives a `/clear` — yes, on both carriers; and what C22's "startup wait" actually was (C37) — **re-runnable**: `examples/codex-spike/probe_clear.py` | `codex-cli 0.153.4` |
 | [`codex-trust-key-notes.md`](./notes/codex-trust-key-notes.md) | How codex resolves the project trust key — canonical cwd or git root, matched exactly; what a linked worktree resolves to; what an unseeded pane parks on (C34) — **re-runnable**: `examples/codex-spike/trust_probe.py` | `codex-cli 0.153.4` |
@@ -57,31 +57,16 @@ package: it carries the self-improvement design (both flow diagrams, the hiding 
 four invariant arguments) and files WP-13..19, each written from `TEMPLATE.md` when picked
 up. The rewind harness it names lives in a separate repo by design.
 
-[`16-dev-mode.md`](./roadmap/16-dev-mode.md) is the first of those to land (D-061). It is
-also the as-built record for dev mode: where the flag lives, the one function that reads
-it, and the two tests that keep the mode out of the delivery path (Tier 1.4) and out of
-every word a pane is told (WP-12's open question 4).
-
 [`17-write-guardrail.md`](./roadmap/17-write-guardrail.md) landed the write guardrail
 (D-065) and is also its as-built record: the per-pane roots, the `PreToolUse` hook that
 enforces them, what it deliberately does not stop, and why narrowing auto-approve does not
-trip Tier 1.7. It is the package WP-12 puts between an auto-approving worker and the
-evaluator's own code, so it blocks any improve run.
+trip Tier 1.7. It blocks any improve run.
 
 [`13-done-verb.md`](./roadmap/13-done-verb.md) landed the ninth `fleet` verb (D-064):
 `fleet handoff`, by which `orch` declares the confirmed goal met. The message path's
 account of it is [`fleet-comms-map.md`](./fleet-comms-map.md) §3e; the package doc carries
 why the verb is not called `done`, why it answers `recorded`, and the nine places a verb
 list is written down.
-
-[`15-evaluator-window.md`](./roadmap/15-evaluator-window.md) landed the evaluator (D-066)
-and is the as-built record for it: the `PaneId` that is in no enumeration, the wake that
-rides the event bus rather than the message path, how a run that is still being written
-gets read, and the `devmode` cargo feature that compiles the grader's brief in from a
-separate repo. Read its section **"The one test whose letter changed"** before touching
-`tests/dev_mode.rs` — it is the one existing tripwire this arc rewrote, and why the
-replacement is stricter. The message path's account is
-[`fleet-comms-map.md`](./fleet-comms-map.md) §3f, which is written to be read beside §3c.
 
 `roadmap/source/` is the raw upstream material — the operator's vision-tenets essay (`vision_tenets.md`; the shipped copy is `prompts/vision-tenets.md`, D-056) and the "Autonomy Designs" catalogue (`fleetor-autonomy.html` and `fleetor-autonomy-plain.html` — two renders of one document).
 
@@ -98,6 +83,9 @@ Kept as the record behind decisions still in force, or as handoffs that were act
 | `MORNING-HANDOFF.md` | The overnight Blackboard build's handoff to the operator |
 | `OVERNIGHT-QUESTIONS.md` | Q-1..Q-4 — unattended judgment calls, all closed by measurement |
 | `prompt-budget-menu.md` | Six costed prompt-cut candidates; overtaken by D-054/D-056 |
+| `15-evaluator-window.md` | WP-15, the evaluator — removed by D-092 |
+| `16-dev-mode.md` | WP-16, dev mode — removed by D-094 |
+| `21-the-critic-interviews.md` | WP-21, the Critic's interview gate — removed by D-092 |
 
 ## Adding or updating a doc
 

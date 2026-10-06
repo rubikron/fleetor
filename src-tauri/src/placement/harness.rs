@@ -299,9 +299,8 @@ pub struct BriefCarrier {
 /// command: which model this pane runs, and how far it may act without being
 /// asked.
 ///
-/// `orch`, the evaluator and the Critic run the operator's own account and model,
-/// so the model channel is unused for them and only the permission one is set —
-/// that asymmetry is the product (D-030, D-052) and belongs at the call site, not
+/// `orch` runs the operator's own account and model, so the model channel is
+/// unused for it — that asymmetry is the product (D-030, D-052) and belongs at the call site, not
 /// here. This says what channels *exist*.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Posture {
@@ -818,7 +817,7 @@ pub struct Transcript {
     /// The extension the harvest looks for.
     pub file_ext: &'static str,
     /// What `manifest.json` records as this pane's `transcript_format`, so a
-    /// Critic reading a mixed run cold knows what it is holding (M24).
+    /// reader of a mixed run cold knows what it is holding (M24).
     pub format: &'static str,
     /// **How the archive is allowed to take it** — the field that used to be
     /// `file_move_is_safe: bool` (#39).
@@ -1164,8 +1163,8 @@ impl<'a> Seed<'a> {
 ///
 /// **The seat asymmetry is the caller's to state, and every field says so.** The
 /// operator's own pane runs their account, their model and their approval, so it
-/// arrives with the brief alone; the two judges carry a posture and no model
-/// (D-030, D-052); a worker carries both.
+/// arrives with the brief alone (D-030, D-052); a worker carries a posture and a
+/// model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Seat<'a> {
     /// This pane's rendered brief, for a harness whose
@@ -1183,10 +1182,8 @@ pub struct Seat<'a> {
     pub permission_mode: Option<&'a str>,
     /// **Whether this is the operator's own pane** — the same question
     /// [`Seed::operators_own_seat`] asks, and not derivable from
-    /// [`permission_mode`](Self::permission_mode) (#46, C49, C50): the evaluator
-    /// and the Critic both carry a posture *and* are seats FLEETOR drives, so
-    /// inferring one from the other would hand the orchestrator's answer to two
-    /// panes that must not have it.
+    /// [`permission_mode`](Self::permission_mode) (#46, C49, C50): a posture says
+    /// how far a pane may act, not whose pane it is.
     pub operators_own_seat: bool,
 }
 
@@ -1914,10 +1911,8 @@ pub fn registered() -> &'static [&'static dyn Harness] {
     &REGISTERED
 }
 
-/// Claude Code, by name — the harness
-/// [`PaneSpec::harness`](crate::placement::PaneSpec::harness) answers for the two
-/// judges (C15), and the one every caller names until the gate offers a choice
-/// (#35).
+/// Claude Code, by name — the one every caller names until the gate offers a
+/// choice (#35).
 pub fn claude_code() -> &'static dyn Harness {
     &CLAUDE_CODE
 }
