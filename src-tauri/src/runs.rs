@@ -42,6 +42,7 @@ const MS_PER_DAY: i64 = 86_400_000;
 
 /// The agent-facing export, written into every run at archive time.
 const EVENTS_JSON: &str = "events.json";
+const TASKS_JSON: &str = "tasks.json";
 /// What the run is and what else is in its directory, for a reader arriving cold.
 const MANIFEST_JSON: &str = "manifest.json";
 
@@ -482,8 +483,16 @@ pub fn rotate(shell: &Path, runs: &Path, now_ms: i64) -> Vec<(NoticeLevel, Strin
     }
 
     let id = dest.file_name().unwrap_or_default().to_string_lossy().to_string();
-    if let Some(target) = &meta.target {
-        archive_tasks(&dest, &id, Path::new(target));
+    match &meta.target {
+        Some(target) => {
+            if let Err(e) = archive_tasks(shell, &dest, &id, Path::new(target)) {
+                notices.push((NoticeLevel::Warn, format!("archived run {id}, but its tasks.json did not write: {e}")));
+            }
+        }
+        None => notices.push((
+            NoticeLevel::Info,
+            format!("run {id} recorded no target, so its archive has no tasks.json"),
+        )),
     }
     match record_for(&dest, &id, meta.target.as_deref()) {
         Ok(mut record) => {
@@ -512,9 +521,33 @@ pub fn rotate(shell: &Path, runs: &Path, now_ms: i64) -> Vec<(NoticeLevel, Strin
     notices
 }
 
-/// Where an archived run's `tasks.json` is written (D-099, Coordination C).
-/// A no-op here; the task PRD fills it in.
-fn archive_tasks(_dest: &Path, _run_id: &str, _target: &Path) {}
+/// Write the archived run's `tasks.json`: the goals and tasks this run
+/// touched, each with its whole chain (D-099 Coordination C, D-100). Read from
+/// the target's task store read-only, after the fleet that held it is gone.
+fn archive_tasks(shell: &Path, dest: &Path, run_id: &str, target: &Path) -> Result<(), String> {
+    let root = shell.parent().ok_or("the shell has no parent directory")?;
+    let store = crate::placement::Layout::under(root).task_store(target);
+    let events = if store.is_file() {
+        archive::events(&store, 0).map_err(|e| e.to_string())?
+    } else {
+        Vec::new()
+    };
+    let touched: Vec<_> = fleetor_core::task::board(events.iter().map(|(_, event)| event))
+        .into_iter()
+        .filter(|record| record.chain.iter().any(|line| line.run == run_id))
+        .collect();
+    let json = serde_json::json!({ "run": run_id, "target": target, "tasks": touched });
+    std::fs::write(dest.join(TASKS_JSON), serde_json::to_string_pretty(&json).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())
+}
+
+/// How many tasks an archived run touched, from its `tasks.json`. `None` for a
+/// run archived before tasks left the run log, whose count is the digest's.
+fn archived_task_count(dir: &Path) -> Option<i64> {
+    let text = std::fs::read_to_string(dir.join(TASKS_JSON)).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&text).ok()?;
+    Some(json.get("tasks")?.as_array()?.len() as i64)
+}
 
 /// Freeze the live database and move it, leaving one self-contained file.
 ///
@@ -735,6 +768,7 @@ fn write_agent_view(
         "layout": {
             "events.json": "the whole event log, one JSON array, oldest first; `seq` and `ts` are the row's own columns",
             "state.db": "the same log as SQLite — the source of truth events.json is generated from",
+            "tasks.json": "the goals and tasks this run touched, each with its whole chain; absent on runs archived before tasks had their own store",
             "transcripts/": TRANSCRIPTS_ARE,
             "panes": PANES_ARE,
         },
@@ -886,7 +920,7 @@ fn record_for(dir: &Path, id: &str, target: Option<&str>) -> Result<RunRecord, S
         ended_ms: digest.last_ts,
         events: digest.events,
         messages: digest.messages,
-        tasks: digest.tasks,
+        tasks: archived_task_count(dir).unwrap_or(digest.tasks),
         bytes: dir_bytes(dir),
         transcripts: count_transcripts(dir),
         sessions: None,

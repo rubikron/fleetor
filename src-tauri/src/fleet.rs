@@ -3380,6 +3380,19 @@ mod tests {
         assert_eq!(list[0].chain[0].run, first_run);
         assert_eq!(list[1].chain[0].run, second_run);
 
+        // The first run is archived by now, with the one goal it touched.
+        let tasks_json = |run: &str| -> serde_json::Value {
+            let text = std::fs::read_to_string(bench.runs_dir().join(run).join("tasks.json")).unwrap();
+            serde_json::from_str(&text).unwrap()
+        };
+        let archived = tasks_json(&first_run);
+        assert_eq!(archived["run"], first_run.as_str());
+        assert_eq!(archived["tasks"].as_array().unwrap().len(), 1);
+        assert_eq!(archived["tasks"][0]["number"], 1);
+        assert_eq!(archived["tasks"][0]["chain"][0]["entry"], "opened");
+        let history = runs::list(&bench.runs_dir());
+        assert_eq!(history.iter().find(|r| r.id == first_run).unwrap().tasks, 1, "History counts from tasks.json");
+
         let live = task_snapshot(&bench.state, &bench.layout).unwrap();
         assert!(live.live);
         assert_eq!((live.events.len(), live.run.as_deref()), (2, Some(second_run.as_str())));
@@ -3388,6 +3401,9 @@ mod tests {
         let repo_b = bench.point_at("repo-b");
         bench.fresh();
         assert!(bench.task_list().is_empty(), "another target has its own store");
+        let second = tasks_json(&second_run);
+        let numbers: Vec<_> = second["tasks"].as_array().unwrap().iter().map(|t| t["number"].clone()).collect();
+        assert_eq!(numbers, vec![serde_json::json!(2)], "only what that run touched, not the whole store");
 
         // With no fleet, the gate target's store is shown read-only and a
         // target that never had one is not given one.
