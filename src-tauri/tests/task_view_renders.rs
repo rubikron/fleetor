@@ -181,7 +181,7 @@ fn with_no_fleet_the_view_is_marked_read_only() {
     let controls: Vec<&str> = readonly
         .split("<button type=\"")
         .skip(1)
-        .filter(|b| !b.contains("class=\"task-row"))
+        .filter(|b| !b.contains("aria-pressed"))
         .collect();
     let labels = ["New goal", "New task", "Edit", "Close", "Reopen", "Comment"];
     assert_eq!(controls.len(), labels.len(), "{controls:#?}");
@@ -248,4 +248,44 @@ fn a_live_record_offers_comment_edit_close_and_reopen() {
     assert!(!done.contains("start a fleet"), "nothing is off while a fleet runs: {done}");
     let dropped = controls("dropped");
     assert!(dropped.contains(">Reopen<") && !dropped.contains(">Close<"), "{dropped}");
+}
+
+/// The list narrows to one status; a goal stays while one of its tasks matches.
+#[test]
+fn the_list_filters_by_status_and_keeps_the_goal_of_a_matching_task() {
+    let Some(all) = rendered() else { return };
+    let list = markup(&all, "list");
+    for label in ["All", "Planned", "In progress", "Done"] {
+        assert!(list.contains(&format!(">{label}</button>")), "the {label} filter is offered");
+    }
+
+    let done = markup(&all, "done");
+    let rows = rows(&done);
+    assert_eq!(rows.len(), 2, "the goal and its one done task:\n{done}");
+    assert!(rows[0].contains("task-row--goal") && rows[0].contains("1 done · 1 dropped"), "the goal still counts every task: {}", rows[0]);
+    assert!(rows[1].contains("#2"), "{}", rows[1]);
+    assert!(!done.contains("No goal"), "a group with no match is hidden");
+
+    let none = markup(&all, "inProgress");
+    assert!(self::rows(&none).is_empty() && none.contains("No in-progress tasks."), "{none}");
+}
+
+/// Task entries sit in the Activity feed where they arrived among the run-log
+/// events, newest first.
+#[test]
+fn task_entries_join_the_activity_feed_in_arrival_order() {
+    let Some(all) = rendered() else { return };
+    let feed = markup(&all, "activity");
+    let lines: Vec<&str> = feed.split("line__text\">").skip(1).map(|l| l.split('<').next().unwrap()).collect();
+    assert_eq!(
+        lines,
+        vec![
+            "third",
+            "worker-2 marked #2 done — cargo test passes",
+            "second",
+            "worker-2 took up #2 — starting",
+            "first",
+        ],
+    );
+    assert!(feed.contains(">seq 3<"), "the head still names the latest run-log seq: {feed}");
 }

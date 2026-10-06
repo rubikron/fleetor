@@ -5,8 +5,9 @@
 // nothing — the same shape as `tests/history_probe/render.tsx`.
 
 import { renderToStaticMarkup } from "react-dom/server";
+import { EventFeed } from "../../../ui/src/components/EventFeed";
 import { TaskBoard, type TaskOps } from "../../../ui/src/components/TaskBoard";
-import type { ChainEntry, ChainEvent, PaneId, TaskBlock } from "../../../ui/src/fleet/types";
+import type { ChainEntry, ChainEvent, FleetEvent, PaneId, TaskBlock } from "../../../ui/src/fleet/types";
 import type { TaskStoreInfo } from "../../../ui/src/fleet/useFleet";
 
 let seq = 0;
@@ -54,6 +55,8 @@ const GATE: TaskStoreInfo = { live: false, target: "/work/logstat", run: null, l
 
 const OPS: TaskOps = { run: async () => "1", message: async () => {} };
 
+const notice = (seq: number, text: string): FleetEvent => ({ seq, type: "notice", level: "info", text });
+
 process.stdout.write(
   JSON.stringify({
     list: renderToStaticMarkup(<TaskBoard chain={CHAIN} store={LIVE} ops={OPS} />),
@@ -63,6 +66,20 @@ process.stdout.write(
     newTask: renderToStaticMarkup(<TaskBoard chain={CHAIN} store={LIVE} ops={OPS} initialForm="task" />),
     editing: renderToStaticMarkup(
       <TaskBoard chain={CHAIN} store={LIVE} ops={OPS} initialOpen={2} initialEdit />,
+    ),
+    done: renderToStaticMarkup(<TaskBoard chain={CHAIN} store={LIVE} ops={OPS} initialFilter="done" />),
+    inProgress: renderToStaticMarkup(
+      <TaskBoard chain={CHAIN} store={LIVE} ops={OPS} initialFilter="in-progress" />,
+    ),
+    // Newest first: the take-up arrived after run-log seq 1, the done after seq 2.
+    activity: renderToStaticMarkup(
+      <EventFeed
+        feed={[notice(3, "third"), notice(2, "second"), notice(1, "first")]}
+        tasks={[
+          { event: CHAIN[4], after: 1 },
+          { event: CHAIN[7], after: 2 },
+        ]}
+      />,
     ),
     dropped: renderToStaticMarkup(<TaskBoard chain={CHAIN} store={LIVE} ops={OPS} initialOpen={3} />),
     empty: renderToStaticMarkup(<TaskBoard chain={[]} store={GATE} />),

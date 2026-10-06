@@ -27,6 +27,15 @@ export interface TaskOps {
 
 const NEEDS_FLEET = "start a fleet to change tasks";
 
+/// What the list can be narrowed to. `all` includes dropped tasks.
+export type TaskFilter = "all" | "planned" | "in-progress" | "done";
+const FILTERS: [TaskFilter, string][] = [
+  ["all", "All"],
+  ["planned", "Planned"],
+  ["in-progress", "In progress"],
+  ["done", "Done"],
+];
+
 const lines = (text: string): string[] =>
   text
     .split("\n")
@@ -477,6 +486,7 @@ export function TaskBoard({
   initialOpen = null,
   initialForm = null,
   initialEdit = false,
+  initialFilter = "all",
 }: {
   chain: ChainEvent[];
   store: TaskStoreInfo | null;
@@ -485,6 +495,7 @@ export function TaskBoard({
   initialOpen?: number | null;
   initialForm?: "goal" | "task" | null;
   initialEdit?: boolean;
+  initialFilter?: TaskFilter;
 }) {
   const board = useMemo(() => replayBoard(chain), [chain]);
   const groups = useMemo(() => byGoal(board), [board]);
@@ -492,6 +503,15 @@ export function TaskBoard({
   const shown = board.find((r) => r.number === open);
   const toggle = (number: number) => setOpen((now) => (now === number ? null : number));
   const [form, setForm] = useState<"goal" | "task" | null>(initialForm);
+  const [filter, setFilter] = useState<TaskFilter>(initialFilter);
+  // A filter narrows the tasks; a goal stays while any of its tasks match, and
+  // its counts still describe all of them.
+  const visible = groups
+    .map((group) => ({
+      ...group,
+      shown: group.tasks.filter((task) => filter === "all" || task.status === filter),
+    }))
+    .filter((group) => filter === "all" || group.shown.length > 0);
   // Writes go only through the hub, so with no fleet every control is off.
   const writable = !!store?.live && !!ops;
   const why = writable ? undefined : NEEDS_FLEET;
@@ -536,14 +556,28 @@ export function TaskBoard({
       ) : (
         <div className="tasks">
           <div className="tasks__list">
-            {groups.map(({ goal, tasks }) => (
+            <div className="tasks__filters" role="group" aria-label="filter tasks by status">
+              {FILTERS.map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={`task-form__quiet ${filter === value ? "is-on" : ""}`}
+                  aria-pressed={filter === value}
+                  onClick={() => setFilter(value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {visible.length === 0 && <div className="feed--empty">No {filter} tasks.</div>}
+            {visible.map(({ goal, tasks, shown: matching }) => (
               <section key={goal?.number ?? "none"} className="tasks__group">
                 {goal ? (
                   <Row record={goal} tasks={tasks} open={open === goal.number} onOpen={toggle} />
                 ) : (
                   <div className="tasks__no-goal">No goal</div>
                 )}
-                {tasks.map((task) => (
+                {matching.map((task) => (
                   <Row key={task.number} record={task} open={open === task.number} onOpen={toggle} />
                 ))}
               </section>

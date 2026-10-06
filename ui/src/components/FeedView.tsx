@@ -2,6 +2,7 @@ import { useState } from "react";
 import { MessageFeed } from "./MessageFeed";
 import { EventFeed } from "./EventFeed";
 import type { MessageEvent, CommandEvent, FleetEvent } from "../fleet/types";
+import type { TaskFeedEntry } from "../fleet/useFleet";
 
 type FeedTab = "messages" | "activity";
 
@@ -9,9 +10,10 @@ interface FeedViewProps {
   messages: MessageEvent[];
   commands: CommandEvent[];
   feed: FleetEvent[];
+  taskFeed: TaskFeedEntry[];
 }
 
-export function FeedView({ messages, commands, feed }: FeedViewProps) {
+export function FeedView({ messages, commands, feed, taskFeed }: FeedViewProps) {
   const [tab, setTab] = useState<FeedTab>("messages");
   return (
     <div className="feed-view">
@@ -37,7 +39,7 @@ export function FeedView({ messages, commands, feed }: FeedViewProps) {
         <MessageFeed messages={messages} commands={commands} />
       </div>
       <div className={`feed-view__panel ${tab === "activity" ? "" : "is-hidden"}`}>
-        <EventFeed feed={feed} />
+        <EventFeed feed={feed} tasks={taskFeed} />
       </div>
     </div>
   );

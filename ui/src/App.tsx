@@ -247,6 +247,7 @@ export function App() {
                 messages={fleet.messages}
                 commands={fleet.commands}
                 feed={fleet.feed}
+                taskFeed={fleet.taskFeed}
               />
             </div>
 
