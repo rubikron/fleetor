@@ -110,6 +110,7 @@ pub fn run() {
             fleet::fleet_roster,
             fleet::fleet_send,
             fleet::fleet_tasks,
+            fleet::fleet_task,
             fleet::runs_list,
             fleet::run_events,
             fleet::run_rename,

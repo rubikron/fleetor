@@ -757,6 +757,13 @@ body,
   flex: 1;
   min-height: 0;
 }
+/* each tab's panel bounds its own height, or the feed inside cannot scroll */
+.feed-view__panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+.feed-view__panel.is-hidden { display: none; }
 .feed-view__tabs {
   display: flex;
   gap: 0;
@@ -1820,6 +1827,24 @@ button.homepage__run:disabled { cursor: default; }
 .chain__text { flex: 1 1 100%; margin: 0; font-family: var(--sans); font-size: var(--t-small); line-height: 1.5; color: var(--fg); white-space: pre-wrap; word-break: break-word; }
 .chain__edit { flex: 1 1 100%; }
 .chain__run { font-size: var(--t-label); letter-spacing: 0.06em; text-transform: uppercase; color: var(--fg-mute); border-top: 1px dashed var(--border-soft); padding-top: 0.25rem; }
+
+/* the operator's task forms: stacked fields, reusing the composer's inputs. */
+.task-form { display: flex; flex-direction: column; gap: 0.4375rem; padding: 0.625rem 0.75rem; border-bottom: 1px solid var(--border-soft); }
+.task-page .task-form { padding: 0; border-bottom: 0; }
+.task-form__title { margin: 0; font-size: var(--t-small); color: var(--fg); }
+.task-form__field { display: flex; flex-direction: column; gap: 0.1875rem; }
+.task-form__field .composer__input { flex: 0 0 auto; resize: vertical; }
+.task-form__check { display: flex; align-items: center; gap: 0.375rem; font-size: var(--t-label); color: var(--fg-dim); }
+.task-form__actions { display: flex; gap: 0.4375rem; align-items: center; flex-wrap: wrap; }
+.task-form__comment { display: flex; gap: 0.4375rem; }
+.task-form__quiet {
+  font-family: var(--mono); font-size: var(--t-label); color: var(--fg-dim);
+  background: transparent; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 0.125rem 0.5rem; cursor: pointer;
+}
+.task-form__quiet:hover:not(:disabled) { color: var(--fg); border-color: var(--fg-dim); }
+.task-form__quiet:disabled { color: var(--fg-mute); cursor: default; }
+.task-controls { margin-top: 0.625rem; padding-top: 0.5rem; border-top: 1px solid var(--border-soft); display: flex; flex-direction: column; gap: 0.4375rem; }
 
 /* activity log */
 .events-view {

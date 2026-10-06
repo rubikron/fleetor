@@ -30,9 +30,19 @@ import { useSidebarCollapse } from "./ui/useSidebarCollapse";
 import { usePaneJump } from "./ui/usePaneJump";
 import { useWindowState } from "./ui/useWindowState";
 import { useTheme } from "./ui/useTheme";
-import { killPane, setTerminalColors, type LaunchFailure, type LaunchSource } from "./fleet/api";
+import {
+  killPane,
+  sendAsOperator,
+  setTerminalColors,
+  taskOp,
+  type LaunchFailure,
+  type LaunchSource,
+} from "./fleet/api";
 import { warmTheme, warmThemeLight } from "./theme";
 import { ORCH, type PaneId, type PaneStatus } from "./fleet/types";
+
+/// The operator's task changes go through the hub, like the composer's messages.
+const TASK_OPS = { run: taskOp, message: sendAsOperator };
 
 export function App() {
   // Always Home at launch: no fleet is running yet, so any other view would
@@ -241,7 +251,7 @@ export function App() {
             </div>
 
             <div className={`stage-view ${view === "tasks" ? "" : "is-hidden"}`}>
-              <TaskBoard chain={fleet.chain} store={fleet.taskStore} />
+              <TaskBoard chain={fleet.chain} store={fleet.taskStore} ops={TASK_OPS} />
             </div>
 
             <div className={`stage-view ${view === "history" ? "" : "is-hidden"}`}>

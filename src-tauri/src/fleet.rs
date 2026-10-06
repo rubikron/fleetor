@@ -31,7 +31,7 @@ use std::sync::{Arc, Mutex};
 
 use fleetor_core::event::{FleetEvent, NoticeLevel};
 use fleetor_core::pane::{PaneEntry, PaneId, PaneState};
-use fleetor_core::wire::{Op, OpResult};
+use fleetor_core::wire::{Op, OpResult, TaskAction};
 use fleetor_core::Store;
 use fleetor_db::SqliteStore;
 use fleetor_ipc::UnixTransport;
@@ -1968,6 +1968,23 @@ pub fn fleet_config(state: State<'_, FleetState>) -> Result<FleetConfig, String>
     let layout = layout();
     let target = configured_target(&layout)?.unwrap_or_else(|| layout.testbed());
     Ok(fleet_config_for(&target))
+}
+
+/// One task operation by the operator, through the hub as `operator` — the
+/// path the composer's messages take. The UI never writes the store itself.
+/// Resolves to the task's number; rejects with the hub's refusal.
+#[tauri::command]
+pub fn fleet_task(state: State<'_, FleetState>, action: TaskAction) -> Result<String, String> {
+    let (hub, handle) = {
+        let guard = state.0.lock().map_err(|e| e.to_string())?;
+        let fleet = guard.as_ref().ok_or("start a fleet to change tasks")?;
+        (fleet.hub.clone(), fleet.rt.handle().clone())
+    };
+    match handle.block_on(hub.handle(PaneId::Operator, Op::Task { action })) {
+        OpResult::Recorded { record_id } => Ok(record_id),
+        OpResult::Error { message } => Err(message),
+        other => Err(format!("the hub answered a task change with something else: {other:?}")),
+    }
 }
 
 /// Every chain entry for the Tasks view, and whether it can be written to.

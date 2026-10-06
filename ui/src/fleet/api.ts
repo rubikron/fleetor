@@ -15,6 +15,7 @@ import {
   type PaneEntry,
   type PaneId,
   type RunRecord,
+  type TaskAction,
   type TaskSnapshot,
 } from "./types";
 
@@ -201,6 +202,12 @@ export function onTaskEvent(handler: (event: ChainEvent) => void): Promise<Unlis
 /// The whole task store: the live fleet's, or the gate target's read-only.
 export function fetchTasks(): Promise<TaskSnapshot> {
   return invoke<TaskSnapshot>("fleet_tasks");
+}
+
+/// One task change as `operator`. Resolves to the task's number; rejects with
+/// the hub's refusal, which says what to do instead.
+export function taskOp(action: TaskAction): Promise<string> {
+  return invoke<string>("fleet_task", { action });
 }
 
 /// Subscribe to the live event stream. Returns an unlisten fn for cleanup.

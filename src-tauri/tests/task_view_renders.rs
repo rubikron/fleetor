@@ -176,6 +176,76 @@ fn with_no_fleet_the_view_is_marked_read_only() {
     let readonly = markup(&all, "readonly");
     assert!(readonly.contains("read-only · start a fleet to change tasks"), "{readonly}");
     assert_eq!(rows(&readonly).len(), 4);
+
+    // Every operator control is there, off, and says why.
+    let controls: Vec<&str> = readonly
+        .split("<button type=\"")
+        .skip(1)
+        .filter(|b| !b.contains("class=\"task-row"))
+        .collect();
+    let labels = ["New goal", "New task", "Edit", "Close", "Reopen", "Comment"];
+    assert_eq!(controls.len(), labels.len(), "{controls:#?}");
+    for (control, label) in controls.iter().zip(labels) {
+        let tag = control.split('>').next().unwrap();
+        assert!(control.contains(&format!(">{label}<")), "{control}");
+        assert!(tag.contains("disabled") && tag.contains("start a fleet to change tasks"), "{label}: {tag}");
+    }
     let empty = markup(&all, "empty");
     assert!(empty.contains("No goals or tasks for this repository yet"), "{empty}");
+}
+
+fn fields(form: &str) -> Vec<String> {
+    form.split("class=\"composer__label\">").skip(1).map(|f| f.split('<').next().unwrap().to_string()).collect()
+}
+
+/// The operator's forms carry the fields `fleet task post` and `edit` take.
+#[test]
+fn the_operators_forms_carry_the_same_fields_an_agent_uses() {
+    let Some(all) = rendered() else { return };
+
+    let goal = markup(&all, "newGoal");
+    let goal = goal.split("<form class=\"task-form\"").nth(1).expect("the new goal form");
+    assert!(goal.contains("New goal"));
+    assert_eq!(fields(goal), vec!["outcome", "vision criteria, one per line"], "a goal needs no technical checks");
+
+    let task = markup(&all, "newTask");
+    let task = task.split("<form class=\"task-form\"").nth(1).expect("the new task form");
+    assert_eq!(
+        fields(task),
+        vec![
+            "outcome",
+            "technical criteria, one per line",
+            "vision criteria, one per line",
+            "instructions (optional)",
+            "goal",
+            "owner",
+        ],
+    );
+    assert!(task.contains(">No goal<") && task.contains("#1 one grammar"), "a goal is optional: {task}");
+    assert!(task.contains(">unowned<") && task.contains(">worker-4<"), "an owner is optional: {task}");
+    let tell = task.split("type=\"checkbox\"").nth(1).expect("the message-the-owner choice");
+    assert!(tell.contains("message the owner with this task"));
+    assert!(tell.split('>').next().unwrap().contains("disabled"), "off until an owner is chosen, and never ticked for you");
+
+    let edit = markup(&all, "editing");
+    let edit = edit.split("<form class=\"task-form\"").nth(1).expect("the edit form");
+    assert!(edit.contains("Edit #2") && edit.contains("value=\"nested groups parse\""), "prefilled: {edit}");
+    assert!(edit.contains("cargo test -p parser\nclippy is clean"), "the whole current list, to restate: {edit}");
+}
+
+/// A live record offers comment, edit and close; a closed one offers reopen.
+#[test]
+fn a_live_record_offers_comment_edit_close_and_reopen() {
+    let Some(all) = rendered() else { return };
+    let controls = |key: &str| {
+        let page = markup(&all, key);
+        page.split("<div class=\"task-controls\">").nth(1).expect("the controls").to_string()
+    };
+    let done = controls("page");
+    for label in ["Edit", "Close", "Reopen", "Comment"] {
+        assert!(done.contains(&format!(">{label}<")), "a done task offers {label}: {done}");
+    }
+    assert!(!done.contains("start a fleet"), "nothing is off while a fleet runs: {done}");
+    let dropped = controls("dropped");
+    assert!(dropped.contains(">Reopen<") && !dropped.contains(">Close<"), "{dropped}");
 }

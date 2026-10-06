@@ -311,6 +311,23 @@ export type ChainEvent = {
   entry: ChainEntry;
 };
 
+/// A task operation as the hub takes it (`fleetor_core::wire::TaskAction`),
+/// limited to what the operator's controls send.
+export type TaskAction =
+  | {
+      action: "post";
+      goal: boolean;
+      outcome: string;
+      technical: string[];
+      vision: string[];
+      owner?: PaneId | null;
+      instructions?: string | null;
+      parent?: number | null;
+    }
+  | { action: "update"; task: number; status: TaskStatus; note?: string | null }
+  | { action: "comment"; task: number; text: string }
+  | { action: "edit"; task: number; outcome?: string | null; technical: string[]; vision: string[] };
+
 /// The run-log task event as it was before D-100. Nothing writes it; a reopened
 /// old run still replays it.
 export type LegacyTaskStatus = "planned" | "claimed" | "done" | "dropped";

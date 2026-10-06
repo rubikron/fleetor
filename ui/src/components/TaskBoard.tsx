@@ -6,8 +6,290 @@
 
 import { Fragment, useMemo, useState } from "react";
 import { byGoal, replayBoard, type TaskRecord } from "../fleet/board";
-import type { ChainEvent, TaskStatus } from "../fleet/types";
+import {
+  WORKER_SLOTS,
+  workerPane,
+  type ChainEvent,
+  type PaneId,
+  type TaskAction,
+  type TaskStatus,
+} from "../fleet/types";
 import type { TaskStoreInfo } from "../fleet/useFleet";
+
+/// How the operator's controls reach the hub. Passed in rather than imported,
+/// so the view renders with no backend behind it.
+export interface TaskOps {
+  /// One task change as `operator`; resolves to the task's number, rejects
+  /// with the hub's refusal.
+  run: (action: TaskAction) => Promise<string>;
+  message: (to: PaneId, text: string) => Promise<unknown>;
+}
+
+const NEEDS_FLEET = "start a fleet to change tasks";
+
+const lines = (text: string): string[] =>
+  text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+/// Run one change, holding the hub's refusal for display.
+function useChange(): [string | null, boolean, (change: () => Promise<void>) => void] {
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const act = (change: () => Promise<void>) => {
+    setBusy(true);
+    setError(null);
+    change()
+      .catch((e) => setError(String(e)))
+      .finally(() => setBusy(false));
+  };
+  return [error, busy, act];
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="task-form__field">
+      <span className="composer__label">{label}</span>
+      {children}
+    </label>
+  );
+}
+
+/// The new goal / new task form: the same fields `fleet task post` takes.
+function NewForm({
+  kind,
+  goals,
+  ops,
+  onDone,
+  onCancel,
+}: {
+  kind: "goal" | "task";
+  goals: TaskRecord[];
+  ops: TaskOps;
+  onDone: (number: number) => void;
+  onCancel: () => void;
+}) {
+  const [outcome, setOutcome] = useState("");
+  const [technical, setTechnical] = useState("");
+  const [vision, setVision] = useState("");
+  const [instructions, setInstructions] = useState("");
+  const [owner, setOwner] = useState<PaneId | "">("");
+  const [parent, setParent] = useState<string>("");
+  const [tell, setTell] = useState(false);
+  const [error, busy, act] = useChange();
+
+  const submit = () =>
+    act(async () => {
+      const number = await ops.run({
+        action: "post",
+        goal: kind === "goal",
+        outcome,
+        technical: lines(technical),
+        vision: lines(vision),
+        owner: owner || null,
+        instructions: instructions.trim() || null,
+        parent: parent ? Number(parent) : null,
+      });
+      // Opening a task assigns nobody; telling the owner is a separate, chosen act.
+      if (kind === "task" && owner && tell) {
+        await ops.message(
+          owner,
+          `Task #${number} is yours: ${outcome.trim()}. Run \`fleet task show ${number}\` for its criteria.`,
+        );
+      }
+      onDone(Number(number));
+    });
+
+  return (
+    <form
+      className="task-form"
+      onSubmit={(e) => {
+        e.preventDefault();
+        submit();
+      }}
+    >
+      <h4 className="task-form__title">New {kind}</h4>
+      <Field label="outcome">
+        <input className="composer__input" value={outcome} onChange={(e) => setOutcome(e.target.value)} />
+      </Field>
+      {kind === "task" && (
+        <Field label="technical criteria, one per line">
+          <textarea className="composer__input" rows={2} value={technical} onChange={(e) => setTechnical(e.target.value)} />
+        </Field>
+      )}
+      <Field label="vision criteria, one per line">
+        <textarea className="composer__input" rows={2} value={vision} onChange={(e) => setVision(e.target.value)} />
+      </Field>
+      {kind === "task" && (
+        <>
+          <Field label="instructions (optional)">
+            <textarea className="composer__input" rows={2} value={instructions} onChange={(e) => setInstructions(e.target.value)} />
+          </Field>
+          <Field label="goal">
+            <select className="composer__target" value={parent} onChange={(e) => setParent(e.target.value)}>
+              <option value="">No goal</option>
+              {goals.map((goal) => (
+                <option key={goal.number} value={goal.number}>
+                  #{goal.number} {goal.block.outcome}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="owner">
+            <select className="composer__target" value={owner} onChange={(e) => setOwner(e.target.value as PaneId | "")}>
+              <option value="">unowned</option>
+              {WORKER_SLOTS.map(workerPane).map((pane) => (
+                <option key={pane} value={pane}>
+                  {pane}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <label className="task-form__check">
+            <input type="checkbox" checked={tell} disabled={!owner} onChange={(e) => setTell(e.target.checked)} />
+            message the owner with this task
+          </label>
+        </>
+      )}
+      <div className="task-form__actions">
+        <button type="submit" className="composer__send" disabled={busy}>
+          Open {kind}
+        </button>
+        <button type="button" className="task-form__quiet" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+      {error && <p className="composer__result composer__result--bad">{error}</p>}
+    </form>
+  );
+}
+
+/// The operator's controls on one record: comment, edit, close and reopen.
+function Controls({
+  record,
+  ops,
+  writable,
+  startEditing,
+}: {
+  record: TaskRecord;
+  ops: TaskOps | null;
+  writable: boolean;
+  startEditing: boolean;
+}) {
+  const { block } = record;
+  const [comment, setComment] = useState("");
+  const [editing, setEditing] = useState(startEditing);
+  const [outcome, setOutcome] = useState(block.outcome);
+  const [technical, setTechnical] = useState((block.technical ?? []).join("\n"));
+  const [vision, setVision] = useState(block.vision.join("\n"));
+  const [error, busy, act] = useChange();
+  const off = !writable || busy;
+  const why = writable ? undefined : NEEDS_FLEET;
+  const run = (action: TaskAction, then?: () => void) =>
+    act(async () => {
+      if (!ops) return;
+      await ops.run(action);
+      then?.();
+    });
+  const same = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
+
+  // Each field is sent whole, and only when it differs; the hub refuses an
+  // edit that changes nothing.
+  const saveEdit = () =>
+    run(
+      {
+        action: "edit",
+        task: record.number,
+        outcome: outcome.trim() === block.outcome ? null : outcome,
+        technical: same(lines(technical), block.technical ?? []) ? [] : lines(technical),
+        vision: same(lines(vision), block.vision) ? [] : lines(vision),
+      },
+      () => setEditing(false),
+    );
+
+  return (
+    <div className="task-controls">
+      {editing ? (
+        <form
+          className="task-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            saveEdit();
+          }}
+        >
+          <h4 className="task-form__title">Edit #{record.number}</h4>
+          <Field label="outcome">
+            <input className="composer__input" value={outcome} onChange={(e) => setOutcome(e.target.value)} />
+          </Field>
+          {block.kind === "task" && (
+            <Field label="technical criteria, one per line">
+              <textarea className="composer__input" rows={2} value={technical} onChange={(e) => setTechnical(e.target.value)} />
+            </Field>
+          )}
+          <Field label="vision criteria, one per line">
+            <textarea className="composer__input" rows={2} value={vision} onChange={(e) => setVision(e.target.value)} />
+          </Field>
+          <div className="task-form__actions">
+            <button type="submit" className="composer__send" disabled={off} title={why}>
+              Save edit
+            </button>
+            <button type="button" className="task-form__quiet" onClick={() => setEditing(false)}>
+              Cancel
+            </button>
+          </div>
+        </form>
+      ) : (
+        <div className="task-form__actions">
+          <button type="button" className="task-form__quiet" disabled={off} title={why} onClick={() => setEditing(true)}>
+            Edit
+          </button>
+          {record.status !== "dropped" && (
+            <button
+              type="button"
+              className="task-form__quiet"
+              disabled={off}
+              title={why}
+              onClick={() => run({ action: "update", task: record.number, status: "dropped" })}
+            >
+              Close
+            </button>
+          )}
+          {(record.status === "dropped" || record.status === "done") && (
+            <button
+              type="button"
+              className="task-form__quiet"
+              disabled={off}
+              title={why}
+              onClick={() => run({ action: "update", task: record.number, status: "planned" })}
+            >
+              Reopen
+            </button>
+          )}
+        </div>
+      )}
+      <form
+        className="task-form__comment"
+        onSubmit={(e) => {
+          e.preventDefault();
+          run({ action: "comment", task: record.number, text: comment }, () => setComment(""));
+        }}
+      >
+        <input
+          className="composer__input"
+          placeholder={writable ? "comment as operator" : NEEDS_FLEET}
+          value={comment}
+          disabled={!writable}
+          onChange={(e) => setComment(e.target.value)}
+        />
+        <button type="submit" className="composer__send" disabled={off || comment.trim() === ""} title={why}>
+          Comment
+        </button>
+      </form>
+      {error && <p className="composer__result composer__result--bad">{error}</p>}
+    </div>
+  );
+}
 
 const STATUSES: TaskStatus[] = ["planned", "in-progress", "done", "dropped"];
 
@@ -126,7 +408,19 @@ function Entry({ event }: { event: ChainEvent }) {
   );
 }
 
-function TaskPage({ record, goal }: { record: TaskRecord; goal: TaskRecord | undefined }) {
+function TaskPage({
+  record,
+  goal,
+  ops,
+  writable,
+  startEditing,
+}: {
+  record: TaskRecord;
+  goal: TaskRecord | undefined;
+  ops: TaskOps | null;
+  writable: boolean;
+  startEditing: boolean;
+}) {
   const { block } = record;
   return (
     <article className="task-page">
@@ -171,6 +465,7 @@ function TaskPage({ record, goal }: { record: TaskRecord; goal: TaskRecord | und
           );
         })}
       </ol>
+      <Controls record={record} ops={ops} writable={writable} startEditing={startEditing} />
     </article>
   );
 }
@@ -178,18 +473,29 @@ function TaskPage({ record, goal }: { record: TaskRecord; goal: TaskRecord | und
 export function TaskBoard({
   chain,
   store,
+  ops = null,
   initialOpen = null,
+  initialForm = null,
+  initialEdit = false,
 }: {
   chain: ChainEvent[];
   store: TaskStoreInfo | null;
-  /// Which record's page starts open; the render probe uses it.
+  ops?: TaskOps | null;
+  /// What starts open; the render probe uses these.
   initialOpen?: number | null;
+  initialForm?: "goal" | "task" | null;
+  initialEdit?: boolean;
 }) {
   const board = useMemo(() => replayBoard(chain), [chain]);
   const groups = useMemo(() => byGoal(board), [board]);
   const [open, setOpen] = useState<number | null>(initialOpen);
   const shown = board.find((r) => r.number === open);
   const toggle = (number: number) => setOpen((now) => (now === number ? null : number));
+  const [form, setForm] = useState<"goal" | "task" | null>(initialForm);
+  // Writes go only through the hub, so with no fleet every control is off.
+  const writable = !!store?.live && !!ops;
+  const why = writable ? undefined : NEEDS_FLEET;
+  const goals = board.filter((r) => r.block.kind === "goal");
 
   return (
     <div className="events-view">
@@ -201,7 +507,26 @@ export function TaskBoard({
           <span className="tasks__readonly">read-only · start a fleet to change tasks</span>
         )}
         {store && <span className="mono text-mute tasks__target">{store.target}</span>}
+        <button type="button" className="task-form__quiet" disabled={!writable} title={why} onClick={() => setForm("goal")}>
+          New goal
+        </button>
+        <button type="button" className="task-form__quiet" disabled={!writable} title={why} onClick={() => setForm("task")}>
+          New task
+        </button>
       </div>
+      {form && ops && writable && (
+        <NewForm
+          key={form}
+          kind={form}
+          goals={goals}
+          ops={ops}
+          onCancel={() => setForm(null)}
+          onDone={(number) => {
+            setForm(null);
+            setOpen(number);
+          }}
+        />
+      )}
       {board.length === 0 ? (
         <div className="feed feed--empty">
           No goals or tasks for this repository yet. Once the vision is confirmed, the orchestrator
@@ -226,7 +551,11 @@ export function TaskBoard({
           </div>
           {shown && (
             <TaskPage
+              key={shown.number}
               record={shown}
+              ops={ops}
+              writable={writable}
+              startEditing={initialEdit}
               goal={board.find((r) => r.number === shown.block.parent && r.block.kind === "goal")}
             />
           )}

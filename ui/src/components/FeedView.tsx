@@ -33,10 +33,10 @@ export function FeedView({ messages, commands, feed }: FeedViewProps) {
           Activity
         </button>
       </div>
-      <div className={tab === "messages" ? "" : "is-hidden"}>
+      <div className={`feed-view__panel ${tab === "messages" ? "" : "is-hidden"}`}>
         <MessageFeed messages={messages} commands={commands} />
       </div>
-      <div className={tab === "activity" ? "" : "is-hidden"}>
+      <div className={`feed-view__panel ${tab === "activity" ? "" : "is-hidden"}`}>
         <EventFeed feed={feed} />
       </div>
     </div>

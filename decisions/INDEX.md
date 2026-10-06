@@ -110,3 +110,4 @@ Note: D-005 is referenced elsewhere in this file (e.g. D-009, D-011) but has no 
 | [D-101](D-101.md) | S1 | alive | `fleet task post --goal` is a flag; a task names its goal with `--parent` |
 | [D-102](D-102.md) | S1 | alive | the hub takes the task store through `Hub::with_tasks`; `Hub::new` is unchanged |
 | [D-103](D-103.md) | S1 | alive | an edit replaces a whole field and keeps both texts; a comment changes nothing else; the briefs say task, not block |
+| [D-104](D-104.md) | S1 | alive | S1 wiring: the store sits under `targets/<slug>/`, the UI reads it through one snapshot command, and the operator writes through the hub |
