@@ -15,9 +15,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   fetchConfig,
+  fetchTasks,
   launchFleet,
   onFleetEvent,
   onFleetLaunching,
+  onTaskEvent,
   type LaunchFailure,
   type LaunchSource,
 } from "./api";
@@ -26,6 +28,7 @@ import {
   isCommand,
   isMessage,
   isTask,
+  type ChainEvent,
   type CommandEvent,
   type FleetConfig,
   type FleetEvent,
@@ -34,13 +37,35 @@ import {
   type TaskEvent,
 } from "./types";
 
+/// The task store on screen: the live fleet's (`live`), or the gate target's
+/// shown read-only when no fleet runs.
+export interface TaskStoreInfo {
+  live: boolean;
+  target: string;
+  run: string | null;
+  lineage: string | null;
+}
+
+/// Add entries to a list kept oldest first, once each by `seq`.
+function mergeChain(have: ChainEvent[], incoming: ChainEvent[]): ChainEvent[] {
+  const seen = new Set(have.map((e) => e.seq));
+  const fresh = incoming.filter((e) => !seen.has(e.seq));
+  if (fresh.length === 0) return have;
+  return [...have, ...fresh].sort((a, b) => a.seq - b.seq);
+}
+
 export interface FleetView {
   ready: boolean;
   error: string | null;
   feed: FleetEvent[];
   messages: MessageEvent[];
   commands: CommandEvent[];
+  /// Legacy run-log task events; only a reopened pre-D-100 run has any.
   tasks: TaskEvent[];
+  /// Every chain entry in the task store being shown, oldest first.
+  chain: ChainEvent[];
+  /// Whose store that is and whether it can be written; `null` until read.
+  taskStore: TaskStoreInfo | null;
   config: FleetConfig | null;
   /// What each pane was placed as, folded out of the spawn events (#50).
   ///
@@ -79,9 +104,35 @@ export function useFleet(): FleetView {
   // The reset a launch in flight is owed, taken exactly once.
   const owedReset = useRef<(() => void) | null>(null);
 
-  // Task state on a launch (D-099, Coordination A). Clears the list; the task
-  // PRD replaces the body with a replay of the fleet's task store.
-  const resetTasks = useCallback(() => setTasks([]), []);
+  const [chain, setChain] = useState<ChainEvent[]>([]);
+  const [taskStore, setTaskStore] = useState<TaskStoreInfo | null>(null);
+  // Bumped whenever the store on screen changes, so a read of the old one is dropped.
+  const taskStoreGen = useRef(0);
+
+  // Task state on a launch (D-099, Coordination A): clear, then the new fleet's
+  // store arrives on `fleet://task` and through `loadTasks`.
+  const resetTasks = useCallback(() => {
+    taskStoreGen.current += 1;
+    setTasks([]);
+    setChain([]);
+  }, []);
+
+  const loadTasks = useCallback(async () => {
+    const gen = taskStoreGen.current;
+    try {
+      const snapshot = await fetchTasks();
+      if (gen !== taskStoreGen.current) return;
+      setTaskStore({
+        live: snapshot.live,
+        target: snapshot.target,
+        run: snapshot.run ?? null,
+        lineage: snapshot.lineage ?? null,
+      });
+      setChain((have) => mergeChain(have, snapshot.events));
+    } catch {
+      /* the Tasks view renders empty */
+    }
+  }, []);
 
   // Drop the run being left. Fired by the backend's "verdict passed" event; the
   // launch's own settle calls it too, so it happens once whichever lands first.
@@ -127,6 +178,7 @@ export function useFleet(): FleetView {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
     let unlistenLaunching: (() => void) | undefined;
+    let unlistenTasks: (() => void) | undefined;
 
     (async () => {
       try {
@@ -144,9 +196,11 @@ export function useFleet(): FleetView {
           }
         });
         unlistenLaunching = await onFleetLaunching(reset);
+        unlistenTasks = await onTaskEvent((event) => setChain((have) => mergeChain(have, [event])));
         if (cancelled) {
           stopListening(unlisten, "fleet events");
           stopListening(unlistenLaunching, "fleet launching");
+          stopListening(unlistenTasks, "task events");
           return;
         }
         listenerReady.current = true;
@@ -159,8 +213,19 @@ export function useFleet(): FleetView {
       cancelled = true;
       stopListening(unlisten, "fleet events");
       stopListening(unlistenLaunching, "fleet launching");
+      stopListening(unlistenTasks, "task events");
     };
   }, [reset]);
+
+  // The store on screen: the live fleet's once one is up, otherwise the gate
+  // target's, re-read whenever the gate's target may have moved.
+  useEffect(() => {
+    if (!ready) {
+      taskStoreGen.current += 1;
+      setChain([]);
+    }
+    void loadTasks();
+  }, [ready, configNonce, loadTasks]);
 
   // Config works before a launch (fleet_config reads config.json directly
   // when no fleet is up), so the start gate can show what
@@ -187,6 +252,8 @@ export function useFleet(): FleetView {
     messages,
     commands,
     tasks,
+    chain,
+    taskStore,
     config,
     panes,
     refreshConfig: () => setConfigNonce((n) => n + 1),

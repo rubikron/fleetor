@@ -1719,7 +1719,7 @@ button.homepage__run:disabled { cursor: default; }
   border: 1px solid currentColor;
 }
 .task__status--planned { color: var(--fg-mute); }
-.task__status--claimed { color: var(--gold); }
+.task__status--in-progress { color: var(--gold); }
 /* green for a `done` *claim*, never a tick and never a bar — the word is the
    whole of what is being reported, and WP-06's review is what verifies it. */
 .task__status--done { color: var(--green); }
@@ -1788,6 +1788,38 @@ button.homepage__run:disabled { cursor: default; }
   color: var(--fg-mute);
   word-break: break-word;
 }
+
+/* the Tasks view (D-100): a list grouped by goal, and one record's page with
+   its chain beside it. */
+.tasks { display: flex; gap: 0.75rem; padding: 0.625rem 0.75rem; min-height: 0; flex: 1 1 auto; overflow: auto; align-items: flex-start; }
+.tasks__list { flex: 1 1 22rem; min-width: 0; display: flex; flex-direction: column; gap: 0.75rem; }
+.tasks__group { display: flex; flex-direction: column; gap: 0.25rem; }
+.tasks__no-goal { font-size: var(--t-label); letter-spacing: 0.06em; text-transform: uppercase; color: var(--fg-mute); }
+.tasks__readonly { font-size: var(--t-label); color: var(--gold); border: 1px solid currentColor; border-radius: var(--radius-sm); padding: 0 0.3125rem; }
+.tasks__target { font-size: var(--t-label); margin-left: 0.5rem; }
+.task-row {
+  display: flex; align-items: baseline; gap: 0.4375rem; flex-wrap: wrap;
+  width: 100%; text-align: left; font: inherit; font-size: var(--t-small); color: var(--fg);
+  background: var(--bg-2); border: 1px solid var(--border-soft); border-radius: var(--radius);
+  padding: 0.375rem 0.6875rem; margin-left: 1.25rem; width: calc(100% - 1.25rem); cursor: pointer;
+}
+.task-row--goal { margin-left: 0; width: 100%; border-left: 2px solid var(--gold); }
+.task-row:hover, .task-row.is-open { background: var(--bg-3); }
+.task-row__number { color: var(--fg-dim); }
+.task-row__kind { font-size: var(--t-label); letter-spacing: 0.06em; text-transform: uppercase; color: var(--gold); }
+.task-row__owner { color: var(--fg-dim); }
+.task-row__outcome { font-family: var(--sans); flex: 1 1 12rem; min-width: 0; word-break: break-word; }
+.task-row__counts, .task-row__comments { font-size: var(--t-label); color: var(--fg-mute); }
+.task-row__latest { flex: 1 1 100%; font-size: var(--t-label); color: var(--fg-mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-page { flex: 1 1 26rem; min-width: 0; background: var(--bg-2); border: 1px solid var(--border-soft); border-radius: var(--radius); padding: 0.5rem 0.6875rem; }
+.chain { list-style: none; margin: 0.625rem 0 0; padding: 0.375rem 0 0; border-top: 1px solid var(--border-soft); display: flex; flex-direction: column; gap: 0.375rem; }
+.chain__entry { display: flex; align-items: baseline; gap: 0.375rem; flex-wrap: wrap; font-size: var(--t-label); }
+.chain__from { color: var(--fg-dim); }
+.chain__what { color: var(--fg); }
+.chain__at { color: var(--fg-mute); margin-left: auto; }
+.chain__text { flex: 1 1 100%; margin: 0; font-family: var(--sans); font-size: var(--t-small); line-height: 1.5; color: var(--fg); white-space: pre-wrap; word-break: break-word; }
+.chain__edit { flex: 1 1 100%; }
+.chain__run { font-size: var(--t-label); letter-spacing: 0.06em; text-transform: uppercase; color: var(--fg-mute); border-top: 1px dashed var(--border-soft); padding-top: 0.25rem; }
 
 /* activity log */
 .events-view {

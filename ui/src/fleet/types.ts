@@ -273,32 +273,61 @@ export const DEFAULT_YOUR_LOGIN = "default (your login)";
 /// no name for because an unspawned pane simply is not in its registry.
 export type PaneStatus = "idle" | "live" | "dead";
 
-/// What someone *claims* a task block's state is, mirroring
-/// `fleetor_core::task::TaskStatus`. Descriptive only — nothing in this UI or
-/// behind it enforces a transition, and `done` is an unverified claim until
-/// WP-06's review, so nothing here may render it as a verified fact.
-export type TaskStatus = "planned" | "claimed" | "done" | "dropped";
+/// `fleetor_core::task::TaskStatus`. A status is what someone said, never a
+/// verified fact, so nothing renders `done` as a tick.
+export type TaskStatus = "planned" | "in-progress" | "done" | "dropped";
 
-/// One task block, in the vision's own shape
-/// (`fleetor_core::task::TaskBlock`). The id is not here: it lives on the event
-/// that posted the block, so a post and its updates join on one field.
+/// What a goal or task says (`fleetor_core::task::TaskBlock`).
 export interface TaskBlock {
+  kind: "goal" | "task";
+  outcome: string;
+  technical?: string[];
+  vision: string[];
+  owner?: PaneId | null;
+  instructions?: string | null;
+  /// The goal this task belongs to, by number.
+  parent?: number | null;
+  converges_on?: number | null;
+}
+
+/// One thing that happened to a task (`fleetor_core::task::ChainEntry`).
+export type ChainEntry =
+  | { entry: "opened"; block: TaskBlock }
+  | { entry: "taken-up"; note?: string | null }
+  | { entry: "status"; status: TaskStatus; note?: string | null }
+  | { entry: "commented"; text: string }
+  | { entry: "edited"; field: "outcome" | "technical" | "vision"; old: string[]; new: string[] };
+
+/// A chain entry as it arrives on `fleet://task`: who, when, and in which run
+/// and lineage. `seq` is the task store's own, not the run log's.
+export type ChainEvent = {
+  seq: number;
+  type: "chain";
+  task: number;
+  from: PaneId;
+  at: number;
+  run: string;
+  lineage: string;
+  entry: ChainEntry;
+};
+
+/// The run-log task event as it was before D-100. Nothing writes it; a reopened
+/// old run still replays it.
+export type LegacyTaskStatus = "planned" | "claimed" | "done" | "dropped";
+
+export interface LegacyTaskBlock {
   outcome: string;
   technical: string[];
   semantic: string[];
   worker: PaneId;
   instructions?: string | null;
-  /// The block this one was cut out of, by id.
   parent?: string | null;
-  /// The block this stream of work comes back together in, by id.
   converges_on?: string | null;
 }
 
-/// What one task event says: the block went up, or something was claimed about
-/// it. Internally tagged on `change`, exactly as the Rust enum serializes.
 export type TaskChange =
-  | { change: "posted"; block: TaskBlock }
-  | { change: "updated"; status?: TaskStatus | null; note?: string | null };
+  | { change: "posted"; block: LegacyTaskBlock }
+  | { change: "updated"; status?: LegacyTaskStatus | null; note?: string | null };
 
 /// The append-only event, discriminated on `type`, each carrying its `seq`.
 ///
@@ -425,7 +454,17 @@ export type PaneIdentityMap = Partial<Record<PaneId, PaneIdentity>>;
 
 export type MessageEvent = Extract<FleetEvent, { type: "message" }>;
 export type CommandEvent = Extract<FleetEvent, { type: "command" }>;
+/// The legacy run-log task event (pre-D-100).
 export type TaskEvent = Extract<FleetEvent, { type: "task" }>;
+
+/// What `fleet_tasks` answers: the whole task store and whether it is writable.
+export interface TaskSnapshot {
+  live: boolean;
+  target: string;
+  run?: string | null;
+  lineage?: string | null;
+  events: ChainEvent[];
+}
 
 export function isMessage(event: FleetEvent): event is MessageEvent {
   return event.type === "message";

@@ -241,7 +241,7 @@ export function App() {
             </div>
 
             <div className={`stage-view ${view === "tasks" ? "" : "is-hidden"}`}>
-              <TaskBoard tasks={fleet.tasks} />
+              <TaskBoard chain={fleet.chain} store={fleet.taskStore} />
             </div>
 
             <div className={`stage-view ${view === "history" ? "" : "is-hidden"}`}>

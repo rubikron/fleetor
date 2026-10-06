@@ -1,52 +1,95 @@
-// The board: the decomposition the fleet agreed on, as everyone can see it.
+// The Tasks view: goals, the tasks cut from them, and each one's chain (D-100).
 //
-// A sibling of MessageFeed (the unbounded record) and EventFeed (the bounded
-// tail), and the third thing this shell shows. Where those two are timelines,
-// this is a *state* — replayed from the same log, in `fleet/board.ts`.
-//
-// Three rules it must not break:
-//
-//  1. **Read-only, and visibly so.** There is no post button, no status
-//     dropdown, no drag-to-reorder. The board is maintained by the agents
-//     through `fleet task`; an operator control here would be a second writer
-//     with no attribution, and every entry on this screen is an attributed
-//     claim. WP-07 is where the operator gets a voice, and it will be by
-//     speaking to the fleet, not by editing its record behind its back.
-//  2. **A status is a claim, never a verdict.** `done` is what somebody said,
-//     unverified until WP-06's review — so the card says who claimed it and
-//     shows the note they left, and nothing renders as a checkmark or a
-//     progress bar. A board that looked like a burndown would be asserting
-//     completion this product cannot observe.
-//  3. **Links are shown as written.** A parent id that names nothing on the
-//     board still renders, as a chip, dimmed. Cycles need no special case at
-//     all, because this view does not build a tree: children are shown by an
-//     explicit indent one level deep, and anything whose parent is not directly
-//     above it keeps its chip instead. Nothing here validates a graph.
+// Folded from the task store's chain entries in `fleet/board.ts`. A status is
+// what someone said, so nothing here renders a tick or a progress bar; a goal's
+// tasks are counted by status as text.
 
-import { useMemo } from "react";
-import { replayBoard, type BoardEntry } from "../fleet/board";
-import type { TaskEvent, TaskStatus } from "../fleet/types";
+import { Fragment, useMemo, useState } from "react";
+import { byGoal, replayBoard, type TaskRecord } from "../fleet/board";
+import type { ChainEvent, TaskStatus } from "../fleet/types";
+import type { TaskStoreInfo } from "../fleet/useFleet";
 
-/// Gold labels, never a colour alone (building.md §7 rule 3) — every pill
-/// carries its word. Coral is reserved for attention; a `done` claim is not
-/// urgent and a `dropped` one is not an error.
-const STATUS_TONE: Record<TaskStatus, string> = {
-  planned: "task__status--planned",
-  claimed: "task__status--claimed",
-  done: "task__status--done",
-  dropped: "task__status--dropped",
+const STATUSES: TaskStatus[] = ["planned", "in-progress", "done", "dropped"];
+
+function Status({ status }: { status: TaskStatus }) {
+  return <span className={`task__status task__status--${status}`}>{status}</span>;
+}
+
+const FIELD: Record<string, string> = {
+  outcome: "the outcome",
+  technical: "the technical criteria",
+  vision: "the vision criteria",
 };
 
-function Chip({ label, id }: { label: string; id: string }) {
+/// One chain entry in a sentence, for a row's "latest" column.
+function summary(event: ChainEvent): string {
+  const { entry } = event;
+  switch (entry.entry) {
+    case "opened":
+      return "opened this";
+    case "taken-up":
+      return "took this up";
+    case "status":
+      return `marked it ${entry.status}`;
+    case "commented":
+      return entry.text;
+    case "edited":
+      return `edited ${FIELD[entry.field]}`;
+  }
+}
+
+function counts(tasks: TaskRecord[]): string {
+  if (tasks.length === 0) return "no tasks yet";
+  return STATUSES.map((status) => [tasks.filter((t) => t.status === status).length, status] as const)
+    .filter(([n]) => n > 0)
+    .map(([n, status]) => `${n} ${status}`)
+    .join(" · ");
+}
+
+function Row({
+  record,
+  tasks,
+  open,
+  onOpen,
+}: {
+  record: TaskRecord;
+  tasks?: TaskRecord[];
+  open: boolean;
+  onOpen: (number: number) => void;
+}) {
+  const goal = record.block.kind === "goal";
+  const latest = record.chain[record.chain.length - 1];
+  const comments = record.chain.filter((e) => e.entry.entry === "commented").length;
   return (
-    <span className="task__link">
-      {label} <span className="mono">{id}</span>
-    </span>
+    <button
+      type="button"
+      className={`task-row ${goal ? "task-row--goal" : ""} ${open ? "is-open" : ""}`}
+      aria-pressed={open}
+      onClick={() => onOpen(record.number)}
+    >
+      <span className="mono task-row__number">#{record.number}</span>
+      <Status status={record.status} />
+      {goal ? (
+        <span className="task-row__kind">goal</span>
+      ) : (
+        <span className="mono task-row__owner">{record.owner?.pane ?? "unowned"}</span>
+      )}
+      <span className="task-row__outcome">{record.block.outcome}</span>
+      {tasks && <span className="task-row__counts">{counts(tasks)}</span>}
+      <span className="task-row__latest">
+        <span className="mono">{latest.from}</span> {summary(latest)}
+      </span>
+      {comments > 0 && (
+        <span className="task-row__comments">
+          {comments} comment{comments === 1 ? "" : "s"}
+        </span>
+      )}
+    </button>
   );
 }
 
-function Criteria({ label, items }: { label: string; items: string[] }) {
-  if (items.length === 0) return null;
+function Criteria({ label, items }: { label: string; items: string[] | undefined }) {
+  if (!items || items.length === 0) return null;
   return (
     <div className="task__crits">
       <span className="task__crits-label">{label}</span>
@@ -61,96 +104,132 @@ function Criteria({ label, items }: { label: string; items: string[] }) {
   );
 }
 
-function TaskCard({ entry, nested }: { entry: BoardEntry; nested: boolean }) {
-  const { block } = entry;
+function Entry({ event }: { event: ChainEvent }) {
+  const { entry } = event;
+  const note = entry.entry === "taken-up" || entry.entry === "status" ? entry.note : null;
   return (
-    <article className={`task ${nested ? "task--nested" : ""}`}>
+    <li className={`chain__entry chain__entry--${entry.entry}`}>
+      <span className="mono chain__from">{event.from}</span>
+      <span className="chain__what">
+        {entry.entry === "commented" ? "commented" : summary(event)}
+      </span>
+      <time className="chain__at">{new Date(event.at).toLocaleString()}</time>
+      {entry.entry === "commented" && <p className="chain__text">{entry.text}</p>}
+      {note && <p className="chain__text">{note}</p>}
+      {entry.entry === "edited" && (
+        <div className="chain__edit">
+          <Criteria label="was" items={entry.old} />
+          <Criteria label="now" items={entry.new} />
+        </div>
+      )}
+    </li>
+  );
+}
+
+function TaskPage({ record, goal }: { record: TaskRecord; goal: TaskRecord | undefined }) {
+  const { block } = record;
+  return (
+    <article className="task-page">
       <header className="task__head">
-        <span className="mono task__id">{entry.id}</span>
-        <span className={`task__status ${STATUS_TONE[entry.status]}`}>{entry.status}</span>
-        <span className="mono task__worker">{block.worker}</span>
-        <span className="grow" style={{ flex: "1 1 auto" }} />
+        <span className="mono task__id">#{record.number}</span>
+        <span className="task-row__kind">{block.kind}</span>
+        <Status status={record.status} />
+        {block.kind === "task" && (
+          <span className="task__posted">
+            owner <span className="mono">{record.owner?.pane ?? "unowned"}</span>
+          </span>
+        )}
         <span className="task__posted">
-          posted by <span className="mono">{entry.postedBy}</span>
+          opened by <span className="mono">{record.creator}</span>
         </span>
       </header>
 
       <p className="task__outcome">{block.outcome}</p>
-
-      {/* The criteria are the point of a block, so they are on the card rather
-          than behind a disclosure: a board you have to expand to see what
-          "done" means is a board of titles. */}
       <Criteria label="technical" items={block.technical} />
-      <Criteria label="vision" items={block.semantic} />
-
+      <Criteria label="vision" items={block.vision} />
       {block.instructions && <p className="task__instructions">{block.instructions}</p>}
-
-      {(block.parent || block.converges_on) && (
+      {goal && (
         <div className="task__links">
-          {block.parent && <Chip label="cut from" id={block.parent} />}
-          {block.converges_on && <Chip label="converges on" id={block.converges_on} />}
+          <span className="task__link">
+            serves goal <span className="mono">#{goal.number}</span> {goal.block.outcome}
+          </span>
         </div>
       )}
 
-      {entry.updates.length > 0 && (
-        <footer className="task__trail">
-          {entry.updates.map((update, index) => (
-            <div key={`${update.at}-${index}`} className="task__claim">
-              <span className="mono task__claim-from">{update.from}</span>
-              {update.status && (
-                <span className={`task__status ${STATUS_TONE[update.status]}`}>
-                  {update.status}
-                </span>
+      <ol className="chain">
+        {record.chain.map((event, index) => {
+          const previous = record.chain[index - 1];
+          return (
+            <Fragment key={event.seq}>
+              {/* Run boundaries are not entries: they are drawn wherever
+                  neighbouring entries carry different run ids. */}
+              {previous && previous.run !== event.run && (
+                <li className="chain__run">a later session</li>
               )}
-              {/* Never truncated. The note is why a status changed, and a trail
-                  of statuses with the reasoning dropped is the part of the
-                  record that would have been worth keeping. */}
-              {update.note && <span className="task__claim-note">{update.note}</span>}
-            </div>
-          ))}
-        </footer>
-      )}
+              <Entry event={event} />
+            </Fragment>
+          );
+        })}
+      </ol>
     </article>
   );
 }
 
-export function TaskBoard({ tasks }: { tasks: TaskEvent[] }) {
-  const board = useMemo(() => replayBoard(tasks), [tasks]);
-  const claimed = board.filter((entry) => entry.status !== "planned").length;
+export function TaskBoard({
+  chain,
+  store,
+  initialOpen = null,
+}: {
+  chain: ChainEvent[];
+  store: TaskStoreInfo | null;
+  /// Which record's page starts open; the render probe uses it.
+  initialOpen?: number | null;
+}) {
+  const board = useMemo(() => replayBoard(chain), [chain]);
+  const groups = useMemo(() => byGoal(board), [board]);
+  const [open, setOpen] = useState<number | null>(initialOpen);
+  const shown = board.find((r) => r.number === open);
+  const toggle = (number: number) => setOpen((now) => (now === number ? null : number));
 
   return (
     <div className="events-view">
       <div className="events-view__head">
         <h3>Tasks</h3>
-        <span className="label">
-          the fleet's own record of the work · a status is a claim, not a verdict
-        </span>
+        <span className="label">a status is what someone said, not a verdict</span>
         <span className="grow" style={{ flex: "1 1 auto" }} />
-        <span className="mono text-mute">
-          {claimed}/{board.length}
-        </span>
+        {store && !store.live && (
+          <span className="tasks__readonly">read-only · start a fleet to change tasks</span>
+        )}
+        {store && <span className="mono text-mute tasks__target">{store.target}</span>}
       </div>
       {board.length === 0 ? (
         <div className="feed feed--empty">
-          Nothing on the board. Once the vision is confirmed, the orchestrator cuts the work into
-          blocks with{" "}
-          <span className="mono">
-            fleet task post --to 2 --outcome "…" --crit-t "…" --crit-s "…"
-          </span>
-          .
+          No goals or tasks for this repository yet. Once the vision is confirmed, the orchestrator
+          records it with <span className="mono">fleet task post --goal</span> and cuts tasks under
+          it.
         </div>
       ) : (
-        <div className="feed feed--tasks">
-          {board.map((entry, index) => (
-            <TaskCard
-              key={entry.id}
-              entry={entry}
-              // One level of indent, and only when the parent is the card
-              // directly above — enough to read a decomposition, and not a tree
-              // walk that would have to decide what a cycle means.
-              nested={!!entry.block.parent && entry.block.parent === board[index - 1]?.id}
+        <div className="tasks">
+          <div className="tasks__list">
+            {groups.map(({ goal, tasks }) => (
+              <section key={goal?.number ?? "none"} className="tasks__group">
+                {goal ? (
+                  <Row record={goal} tasks={tasks} open={open === goal.number} onOpen={toggle} />
+                ) : (
+                  <div className="tasks__no-goal">No goal</div>
+                )}
+                {tasks.map((task) => (
+                  <Row key={task.number} record={task} open={open === task.number} onOpen={toggle} />
+                ))}
+              </section>
+            ))}
+          </div>
+          {shown && (
+            <TaskPage
+              record={shown}
+              goal={board.find((r) => r.number === shown.block.parent && r.block.kind === "goal")}
             />
-          ))}
+          )}
         </div>
       )}
     </div>
