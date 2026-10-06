@@ -335,7 +335,7 @@ fn last_turn_usage(transcript: &str) -> Option<u32> {
 /// checkpoint 13's contract with its own conformance obligations, and it belongs
 /// to the harvest's ticket rather than being smuggled in behind a gauge. The
 /// consequence is stated rather than discovered: **an archived codex run carries
-/// its transcript without its per-turn usage**, so a Critic reading one cold has
+/// its transcript without its per-turn usage**, so a reader of one cold has
 /// the turns and not the accounting. `state_5.sqlite` happens to travel already,
 /// because the walk filters by extension — but it carries only the thread's
 /// running total, which is the one figure this function refuses to use.

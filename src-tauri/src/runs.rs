@@ -49,7 +49,7 @@ const MANIFEST_JSON: &str = "manifest.json";
 ///
 /// It used to say "that pane's Claude Code session `.jsonl` files", which was true
 /// of every run a one-harness fleet could produce and becomes a false statement to
-/// any Critic reading a mixed run cold — the wrong kind of false, too: a reader
+/// any reader of a mixed run cold — the wrong kind of false, too: a reader
 /// who believes it will look for a format that is not there and conclude the
 /// evidence is missing rather than that the sentence is. It now says what is
 /// invariant (one directory per pane, raw, this run only) and points at `panes`
@@ -170,7 +170,7 @@ struct LiveMeta {
 /// vendor's binary was pointed at it; by the time rotation archives a run its
 /// panes are gone and the fleet that placed them is gone with them (C33). So the
 /// harvest still finds transcripts by looking under every registered harness's
-/// answer, and this is what tells a Critic reading the result cold *which* vendor
+/// answer, and this is what tells a reader of the result cold *which* vendor
 /// wrote the files it is now holding, and in what format.
 ///
 /// C33 named this exact reversal: "a run manifest that already records each pane's
@@ -535,10 +535,7 @@ fn archive_files(live: &Path, dest: &Path) -> std::io::Result<()> {
 /// Take one transcript into the archive the way its harness says it may be taken,
 /// and answer whether it arrived.
 ///
-/// The two verbs are separated from the two transports on purpose: whether the
-/// original survives is the *caller's* contract (rotation moves, the live snapshot
-/// copies), and how a file is read is the *harness's*. Crossing them would give
-/// four bespoke branches instead of two facts.
+/// How a file is read is the *harness's* answer, which is all this branches on.
 fn take_transcript(from: &Path, to: &Path, transport: Transport) -> bool {
     match transport {
         Transport::Rename => std::fs::copy(from, to).is_ok(),
@@ -575,9 +572,7 @@ fn sqlite_backup(from: &Path, to: &Path) -> Result<(), String> {
 /// that goal and drops the mechanism, because R4 made a run's sessions a
 /// *directory* — so an archive is scoped by which directory it walks rather than
 /// by emptying the one it walked. The two verbs this function used to take
-/// collapsed to one the moment rotation stopped being destructive: rotation and
-/// the live snapshot now do the identical thing, and keeping two names for it
-/// would be exactly the drift the old `Take` enum existed to prevent.
+/// collapsed to one the moment rotation stopped being destructive.
 ///
 /// **The vendor's session stays where the vendor keeps it**, which is what makes
 /// reopening `--resume <id>` against a file that never left, with no restore step
@@ -706,102 +701,6 @@ struct Location {
     subdir: &'static str,
     file_ext: &'static str,
     transport: Transport,
-}
-
-// --- the live run, laid out for a reader (WP-15) --------------------------------
-
-/// Lay the run that is **still being written** out in the archive's own shape,
-/// somewhere a reader can be pointed at.
-///
-/// Rotation (above) archives the *previous* run at bootstrap, so at the moment
-/// `orch` hands back, the run worth reading is the live one: `_shell/state.db`
-/// in WAL mode with this process's own writer holding it open, and transcripts
-/// still being appended to inside `pane-config/`. This produces the same three
-/// things an archived run holds — `events.json`, `manifest.json`, `transcripts/`
-/// — without disturbing any of it.
-///
-/// **Three decisions, all measured rather than reasoned
-/// (`docs/notes/live-run-snapshot-notes.md`):**
-///
-///  - **The log is read in place, read-only.** `archive::to_json` opens
-///    `SQLITE_OPEN_READ_ONLY` and sees every committed row while the writer is
-///    live; the spike confirmed the writer is undisturbed by it. So this is the
-///    *same function* rotation calls, and the `events.json` an agent reads
-///    mid-run cannot drift from the one it reads afterwards (D-059's rule).
-///  - **`archive::freeze` is never called here.** It flips the database out of
-///    WAL mode, which against a live writer fails by design — and reusing
-///    rotation's file-moving path wholesale would try it.
-///  - **Transcripts are copied, not moved.** [`harvest_transcripts`] moves them,
-///    which is right at rotation because no pane exists then. Here every pane is
-///    alive and its harness still has those files open; moving one is a
-///    data-loss bug in the very run being judged. The two are named functions
-///    over one walk rather than a `copy: bool` — see [`copy_transcripts`] for why
-///    the distinction survived being factored.
-///
-/// The directory is rebuilt from scratch on every call, so a second handoff in
-/// one run gets a snapshot of the run at *that* moment rather than a merge of
-/// two.
-pub fn snapshot_live_run(shell: &Path, dest: &Path, run_id: &str) -> Result<u32, String> {
-    let live = live_db(shell);
-    if !live.is_file() {
-        return Err(format!("there is no live run at {}", live.display()));
-    }
-    let _ = std::fs::remove_dir_all(dest);
-    std::fs::create_dir_all(dest).map_err(|e| format!("create {}: {e}", dest.display()))?;
-
-    let json = fleetor_db::archive::to_json(&live)
-        .map_err(|e| format!("reading the live run at {}: {e}", live.display()))?;
-    std::fs::write(dest.join(EVENTS_JSON), json)
-        .map_err(|e| format!("writing {}: {e}", dest.join(EVENTS_JSON).display()))?;
-
-    let meta = read_live_meta(shell);
-    // **The run's own seat directory, which is not its archive id on a reopened
-    // run** (WP-27, R4): a lineage shares one directory, so a snapshot that
-    // derived it from the run id would photograph an empty directory for exactly
-    // the runs an evaluator most wants to read. Falls back to the id for a
-    // snapshot taken before `begin` has written one.
-    let sessions = meta.sessions.clone().map(SessionsId::new).unwrap_or_else(|| SessionsId::new(run_id));
-    let transcripts = walk_transcripts(shell, &sessions, dest);
-    let manifest = serde_json::json!({
-        "run": {
-            "id": run_id,
-            "state": "live",
-            "started_ms": meta.started_ms,
-            "target": meta.target,
-            "transcripts": transcripts,
-        },
-        "panes": meta.panes,
-        "layout": {
-            "events.json": "the whole event log so far, one JSON array, oldest first; `seq` and `ts` are the row's own columns",
-            "transcripts/": TRANSCRIPTS_ARE,
-            "panes": PANES_ARE,
-        },
-        "reading_this": READING_THIS,
-        "this_is_a_snapshot": format!(
-            "Taken when the mission was handed back, while the run was still open. It holds \
-             the run up to that moment and nothing after it. There is no state.db here — the \
-             live database belongs to the running app. The final archive at runs/{run_id}/ \
-             supersedes this after the next fleet start."
-        ),
-    });
-    std::fs::write(
-        dest.join(MANIFEST_JSON),
-        serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| format!("writing {}: {e}", dest.join(MANIFEST_JSON).display()))?;
-    Ok(transcripts)
-}
-
-
-/// The directory name the live run *will* be archived under, computed from the
-/// same `started_ms` rotation will use. Naming the snapshot after it means an
-/// operator holding a retro in one hand and a `runs/` entry in the other does
-/// not have to work out which is which.
-pub fn live_run_id(shell: &Path, fallback_ms: i64) -> String {
-    let meta = read_live_meta(shell);
-    let started =
-        meta.started_ms.or_else(|| file_started_ms(&live_db(shell))).unwrap_or(fallback_ms);
-    timestamp_id_for(started)
 }
 
 /// Write the two files an agent reads: the log as JSON, and a manifest saying
@@ -1323,105 +1222,6 @@ mod tests {
         }
     }
 
-    /// **The snapshot's whole reason for existing** (WP-15): the run the
-    /// evaluator has to read is the *live* one, because rotation archives the
-    /// previous run at bootstrap. The writer here is deliberately still open
-    /// across the snapshot — that is the situation, and a version of this test
-    /// that dropped the store first would pass while proving nothing.
-    ///
-    /// `docs/notes/live-run-snapshot-notes.md` measured the shell-level version
-    /// of this; this is the same claim through the code that actually runs.
-    #[test]
-    fn a_live_run_is_readable_while_its_writer_still_holds_it() {
-        let root = scratch("snapshot");
-        let shell = root.join("_shell");
-        begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("run-1"), None);
-
-        // The live writer, held open for the whole test.
-        let store = SqliteStore::open(&shell.join("state.db")).unwrap();
-        let say = |body: &str| {
-            store
-                .append_event(&FleetEvent::Message {
-                    id: fleetor_core::ids::new_id("msg"),
-                    from: PaneId::Orch,
-                    to: PaneId::Worker(1),
-                    body: body.into(),
-                    group: None,
-                    accepted: true,
-                    detail: None,
-                })
-                .unwrap();
-        };
-        say("take the parser");
-        say("on it");
-
-        // A transcript, where a pane's config dir really puts one — under the
-        // run's *recorded* seat directory, which is `begin`'s above and not the
-        // snapshot's id. On a reopened run those differ (R4), and a snapshot that
-        // guessed from the id would photograph an empty directory.
-        let sessions = shell.join("pane-config/run-1/orch/projects/-tmp-logstat");
-        std::fs::create_dir_all(&sessions).unwrap();
-        std::fs::write(sessions.join("a1b2.jsonl"), "{\"role\":\"assistant\"}\n").unwrap();
-
-        let dest = root.join("dev/retro/2026-08-07T14-32-05Z");
-        let copied = snapshot_live_run(&shell, &dest, "2026-08-07T14-32-05Z").unwrap();
-
-        let rows: Vec<serde_json::Value> =
-            serde_json::from_str(&std::fs::read_to_string(dest.join(EVENTS_JSON)).unwrap()).unwrap();
-        assert_eq!(rows.len(), 2, "every committed row, uncheckpointed WAL and all");
-        assert_eq!(rows[0]["body"], "take the parser");
-
-        assert_eq!(copied, 1);
-        assert!(dest.join("transcripts/orch/a1b2.jsonl").is_file());
-        // **Copied, never moved.** Claude Code still has this file open; moving
-        // it would be a data-loss bug in the very run being judged.
-        assert!(sessions.join("a1b2.jsonl").is_file(), "the live transcript stayed where it was");
-
-        // No `state.db`: the live database belongs to the running app, and a
-        // copy of it here would be the stale-prefix failure the notes measured.
-        assert!(!dest.join("state.db").exists());
-        let manifest: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(dest.join(MANIFEST_JSON)).unwrap())
-                .unwrap();
-        assert_eq!(manifest["run"]["state"], "live");
-        assert!(manifest["this_is_a_snapshot"].as_str().unwrap().contains("still open"));
-
-        // And the writer is undisturbed: the run goes on after the retro starts.
-        say("one more thing");
-        assert_eq!(store.events_since(0).unwrap().len(), 3);
-    }
-
-    /// A second `fleet handoff` is a real sequence (D-064 refuses to argue with
-    /// it), so the snapshot is rebuilt rather than merged — otherwise the
-    /// evaluator reads a directory that is two runs' worth of one run.
-    #[test]
-    fn a_second_snapshot_replaces_the_first_rather_than_merging_into_it() {
-        let root = scratch("resnapshot");
-        let shell = root.join("_shell");
-        begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("run-1"), None);
-        let store = SqliteStore::open(&shell.join("state.db")).unwrap();
-        store.append_event(&FleetEvent::Notice { level: NoticeLevel::Info, text: "up".into() }).unwrap();
-
-        let dest = root.join("dev/retro/run");
-        snapshot_live_run(&shell, &dest, "run").unwrap();
-        std::fs::write(dest.join("stale.txt"), "from the first handoff").unwrap();
-        snapshot_live_run(&shell, &dest, "run").unwrap();
-
-        assert!(!dest.join("stale.txt").exists(), "the directory is rebuilt, not added to");
-        assert!(dest.join(EVENTS_JSON).is_file());
-    }
-
-    /// The retro directory is outside `_shell`, which is the only reason the
-    /// fleet being judged cannot write into it: every pane's write guardrail
-    /// has `_shell` as a root (D-065).
-    #[test]
-    fn the_snapshot_refuses_when_there_is_no_live_run() {
-        let root = scratch("norun");
-        let err = snapshot_live_run(&root.join("_shell"), &root.join("dev/retro/x"), "x")
-            .expect_err("no database, no snapshot");
-        assert!(err.contains("no live run"), "{err}");
-    }
-
     #[test]
     fn the_first_run_on_a_machine_has_nothing_to_archive() {
         let root = scratch("first");
@@ -1567,7 +1367,7 @@ mod tests {
     /// WP-14, D-062: the pane that makes the decisions is archived like every
     /// other one. `orch`'s config dir is a sibling of the workers' under the same
     /// `pane-config/` root, so rotation files it under `transcripts/orch/` with
-    /// no arm of its own — and an evaluator reading the run gets the reasoning
+    /// no arm of its own — and anyone reading the run gets the reasoning
     /// behind the messages, not only the messages.
     #[test]
     fn a_run_takes_orchs_transcript_with_it_the_same_way_it_takes_a_workers() {
@@ -2024,7 +1824,7 @@ mod tests {
         assert_eq!(found, ["at-the-root.sqlite", "one-below.sqlite"]);
     }
 
-    /// **What a Critic reading a mixed run cold is told** (M24, #39).
+    /// **What a reader of a mixed run cold is told** (M24, #39).
     ///
     /// Two things at once, because they are one failure: the manifest names each
     /// pane's harness, model and transcript format, and the sentence describing

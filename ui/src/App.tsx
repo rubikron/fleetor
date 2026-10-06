@@ -22,8 +22,6 @@ import { TerminalGrid } from "./components/TerminalGrid";
 import { Homepage } from "./components/Homepage";
 import { RunHistory } from "./components/RunHistory";
 import { FeedView } from "./components/FeedView";
-import { ReviewView } from "./components/ReviewView";
-import { DevModeBanner } from "./components/DevModeBanner";
 import { useFleet } from "./fleet/useFleet";
 import { useRuns } from "./fleet/useRuns";
 import { useContextGauge } from "./fleet/useContextGauge";
@@ -32,11 +30,8 @@ import { useSidebarCollapse } from "./ui/useSidebarCollapse";
 import { usePaneJump } from "./ui/usePaneJump";
 import { useWindowState } from "./ui/useWindowState";
 import { useTheme } from "./ui/useTheme";
-import { useDevMode } from "./ui/useDevMode";
-import { useCriticInterview } from "./ui/useCriticInterview";
-import { killPane, onEvaluatorWake, setTerminalColors } from "./fleet/api";
+import { killPane, setTerminalColors } from "./fleet/api";
 import { warmTheme, warmThemeLight } from "./theme";
-import { stopListening } from "./fleet/listeners";
 import { ORCH, type PaneId, type PaneStatus } from "./fleet/types";
 
 export function App() {
@@ -66,10 +61,6 @@ export function App() {
   const zoom = useZoom();
   const sidebar = useSidebarCollapse();
   const themeControls = useTheme();
-  // WP-16. Read from ~/.fleetor/config.json rather than localStorage, because
-  // later packages branch on the same flag from the Rust side. While the mode is
-  // off, the settings row below is the only trace of it in the whole app.
-  const devMode = useDevMode();
   // Restores the window's saved size/position, then keeps them current. Pure
   // side effect on the OS window — see useWindowState.ts for why a saved
   // position is re-validated against the connected monitors before use.
@@ -146,43 +137,6 @@ export function App() {
     return () => window.clearTimeout(id);
   }, [view, selectedPane, sidebar.collapsed]);
 
-  // **The evaluator's wake** (D-073). Latched, and it only ever goes true: the
-  // terminal below is mounted for the life of the app either way, and this flag
-  // decides whether it may spawn a pty (TerminalPane's `started`, the same gate
-  // the start gate uses) and whether the operator sees the terminal or the
-  // sentence explaining what it is waiting for. Nothing here can start the
-  // evaluator — only Rust decides a handoff cleared readiness, and it says so
-  // with this event.
-  const [evaluatorAwake, setEvaluatorAwake] = useState(false);
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    let cancelled = false;
-    void onEvaluatorWake(() => setEvaluatorAwake(true)).then((fn) => {
-      if (cancelled) stopListening(fn, "evaluator wake");
-      else unlisten = fn;
-    });
-    return () => {
-      cancelled = true;
-      stopListening(unlisten, "evaluator wake");
-    };
-  }, []);
-
-  // **The Critic starts when the operator says so** (WP-20, D-076), which is the
-  // one place it differs from the evaluator's view above and the difference is
-  // the whole point: the evaluator's sequencing is evidence and must not be
-  // anticipated, while the Critic answers an ordinary question the operator asks
-  // whenever they want it answered. Latched like the wake, and for the same
-  // reason — the terminal below is mounted for the life of the app either way,
-  // and this flag only decides whether it may spawn a pty.
-  const [criticStarted, setCriticStarted] = useState(false);
-
-  // **The interview gate** (WP-21 stage A). Rust holds it, because it decides
-  // whether a `fleet send` from inside the Critic resolves at all; this is a
-  // view of that state, on the `useDevMode` shape, with no optimistic flip.
-  // Keyed on the fleet being up: with no run there is nothing to interview, and
-  // that is also when the control is disabled below.
-  const interview = useCriticInterview(started);
-
   // A reopen bootstraps the fleet itself, so from Home — before any fleet has
   // started — `started` must flip here or the remounted panes never spawn.
   const landInReopened = () => {
@@ -205,7 +159,6 @@ export function App() {
         error={fleet.error}
         zoom={zoom.zoom}
       />
-      {devMode.enabled === true && <DevModeBanner />}
       <div className="body">
         <Sidebar
           view={view}
@@ -275,25 +228,10 @@ export function App() {
               <RunHistory runs={runs} onOpened={landInReopened} />
             </div>
 
-            <div className={`stage-view ${view === "review" ? "" : "is-hidden"}`}>
-              <ReviewView
-                started={started}
-                criticStarted={criticStarted}
-                onCriticStart={() => setCriticStarted(true)}
-                evaluatorAwake={evaluatorAwake}
-                statuses={statuses}
-                fontSize={zoom.terminalFontSize}
-                theme={themeControls.theme}
-                onStatus={onStatus}
-                interview={interview}
-              />
-            </div>
-
             <div className={`stage-view ${view === "settings" ? "" : "is-hidden"}`}>
               <SettingsPanel
                 theme={themeControls.theme}
                 onToggleTheme={themeControls.toggle}
-                devMode={devMode}
               />
             </div>
 

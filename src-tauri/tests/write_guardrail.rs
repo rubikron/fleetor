@@ -6,9 +6,8 @@
 //! 1. **Tier 1.4** — nothing between `fleet send` and a pty may delay, refuse,
 //!    reorder, drop or alter a message. A hook that could refuse a *delivery* is
 //!    the thing `building.md` §9.3 records as argued and lost twice. This one
-//!    governs a pane's own tool calls and nothing else, and that is checked the
-//!    way `tests/dev_mode.rs` checks the same invariant for dev mode: by reading
-//!    the source, so a future session cannot add the branch without the test
+//!    governs a pane's own tool calls and nothing else, and that is checked by
+//!    reading the source, so a future session cannot add the branch without the test
 //!    noticing.
 //! 2. **The decision itself**, driven through the *installed* artifact — the
 //!    `settings.json` command a real [`placement::place`] wrote, executed by a real
@@ -23,10 +22,7 @@
 //! **The setup.** This file used to rebuild the bring-up sequence by hand, because
 //! it needed the roots and could not call the code that computes them: it invented a
 //! `_shell` and a worktree directory, then called `guardrail::roots_for` and
-//! `guardrail::install` itself. That copy had already drifted — `roots_for` is
-//! unconditional, so the hand-built version could never have produced the
-//! evaluator's narrower pair, and the one pane whose roots matter most was the one
-//! pane this file could not test. There is no copy now: every `settings.json` below
+//! `guardrail::install` itself. There is no copy now: every `settings.json` below
 //! is written by the same `place` call the application makes, against a scratch
 //! layout.
 //!
@@ -52,7 +48,7 @@ mod common;
 /// Every spelling of *this* guardrail a search would plausibly find, lowercased:
 /// the module path, the file, the hook event, and the name in prose.
 ///
-/// Note what is deliberately **not** here, for `tests/dev_mode.rs`'s reason.
+/// Note what is deliberately **not** here.
 /// Bare `guardrail` is a word the message path already uses about itself
 /// (`deliver.rs`'s once-per-session Notice calls itself "the invariant guardrail
 /// with teeth"), and `allowlist` is the `fleet cmd` allowlist D-045 checks at
@@ -70,8 +66,7 @@ fn repo_root() -> PathBuf {
 /// The list is every file a message actually passes through: the hub that routes
 /// it, the bus and store it is recorded in, the wire and message contracts it is
 /// spelled in, the delivery loop that types it, the registry that owns the pty,
-/// and the CLI that sends it. It is the same list `tests/dev_mode.rs` pins, for
-/// the same reason.
+/// and the CLI that sends it.
 #[test]
 fn the_delivery_path_cannot_read_the_write_guardrail() {
     let root = repo_root();
@@ -134,7 +129,7 @@ fn the_guardrail_cannot_reach_the_message_path_either() {
 /// for every matched tool call, and the directory it will run in.
 struct Pane {
     /// The pane's own working directory, as *placement* resolved it — a worker's
-    /// worktree, `orch`'s target repo, the evaluator's laid-out run. Read off the
+    /// worktree, `orch`'s target repo. Read off the
     /// command rather than chosen by the test, so a placement that put a pane
     /// somewhere else would move these assertions with it.
     cwd: PathBuf,
@@ -387,53 +382,4 @@ fn the_two_unnamed_writes_a_pane_cannot_work_without_are_allowed() {
     // The same operation aimed somewhere it *does* name is refused, which is the
     // whole distinction this package rests on.
     assert!(pane.bash("git -C /Users/somebody/repo commit -am wip").is_some());
-}
-
-/// **The evaluator is refused writes every other pane is allowed** — the narrowest
-/// roots in the fleet, run through the hook rather than read off a file.
-///
-/// This is the test the hand-built setup could not have written. It called
-/// `guardrail::roots_for` unconditionally, so an evaluator built by it would have
-/// carried a worker's roots and passed every assertion below for the wrong reason.
-/// Driving the real placement is what makes the veil's filesystem half checkable at
-/// all.
-///
-/// The three refusals are the three things a grader must not be able to touch:
-///
-///  1. **`_shell`** — where the live event log it is reading lives. A judge that can
-///     write its own evidence is not one.
-///  2. **The target repo** — the work it is judging.
-///  3. **The operator's `[fence] allow` extra** — widening what the fleet may reach
-///     must not widen what its judge may reach.
-///
-/// And it may write in the run it was handed, or it cannot do its job at all.
-#[test]
-#[cfg(feature = "devmode")]
-fn the_evaluator_may_write_in_the_run_it_was_given_and_in_nothing_else() {
-    let mut bench = common::Bench::new("evaluator");
-    bench.dev_mode(true);
-    let extra = bench.operator_allows("operator-scratch");
-
-    // `orch` is the comparison, and it is the exact one: its three roots are these
-    // three directories, so every assertion below is the *asymmetry* between the two
-    // panes rather than a fence in general.
-    let orch = bench.pane(PaneSpec::orch(claude_code()));
-    let evaluator = bench.pane(PaneSpec::Evaluator);
-    assert_eq!(evaluator.cwd, bench.retro_dir(), "it works in the snapshot of the run");
-
-    // What it must be able to do: write inside the run it was given.
-    assert_eq!(evaluator.touch(&evaluator.cwd, "verdict.md"), None, "the sealed verdict");
-
-    for (why, dir) in [
-        ("the state root, which holds the log it is reading", bench.layout.shell()),
-        ("the target repo, which holds the work it is judging", bench.target.clone()),
-        ("the operator's own extra root", extra),
-    ] {
-        assert_eq!(orch.touch(&dir, "x"), None, "orch may write in {why}");
-        assert!(
-            evaluator.touch(&dir, "x").is_some(),
-            "the evaluator must be refused {why}: {}",
-            dir.display(),
-        );
-    }
 }

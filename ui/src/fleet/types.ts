@@ -18,25 +18,6 @@ export const ORCH: PaneId = "orch";
 /// `accepted`. See `hasPty`.
 export const OPERATOR: PaneId = "operator";
 
-/// A terminal that is not part of the fleet (WP-15), mirroring
-/// `fleetor_core::pane::PaneId::Evaluator`.
-///
-/// **The mirror image of `OPERATOR`.** The human is in the `fleet roster`
-/// listing and has no terminal; this has a real terminal and is in no listing at
-/// all — not `ROSTER`, not a broadcast's legs, not any brief's peer list. It is
-/// addressable by name in both directions and enumerated by nothing.
-export const EVALUATOR: PaneId = "evaluator";
-
-/// The Critic (WP-20), mirroring `fleetor_core::pane::PaneId::Critic`.
-///
-/// A real terminal that is in no listing, like `EVALUATOR` — and outside the
-/// fleet for a different reason: it is a **reader** of a run rather than a
-/// participant in one. Nothing hides it. It is named in the rail, its brief is
-/// `prompts/critic.md` for the operator to edit, and it exists whether or not
-/// dev mode is on. It is also the one pane with no route back: placement hands
-/// it no fleet socket, so `fleet send` inside it reaches nothing.
-export const CRITIC: PaneId = "critic";
-
 export const WORKER_SLOTS = [1, 2, 3, 4] as const;
 
 export function workerPane(slot: number): PaneId {
@@ -60,7 +41,7 @@ export function hasPty(pane: PaneId): boolean {
 }
 
 /// The suffix in a pane's event channel names (`pty://output/orch`,
-/// `pty://output/2`, `pty://output/evaluator`). Single-sourced here because
+/// `pty://output/2`). Single-sourced here because
 /// listening on the wrong name renders nothing and reports no error — there is
 /// no failure signal for it.
 ///

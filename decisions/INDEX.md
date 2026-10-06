@@ -68,12 +68,12 @@ Note: D-005 is referenced elsewhere in this file (e.g. D-009, D-011) but has no 
 | [D-058](D-058.md) | WP-11 | alive | WP-11: a run is a database, rotated at start, and history is a directory of frozen files |
 | [D-059](D-059.md) | meta | alive | the archive is written for an agent to read, and it takes the workers' transcripts with it |
 | [D-060](D-060.md) | WP-12 | alive | the self-improving loop: an answer key the orchestrator cannot see, and a grader it cannot change |
-| [D-061](D-061.md) | WP-16 | alive | WP-16: dev mode is a key in the operator's config, not a webview preference |
+| [D-061](D-061.md) | WP-16 | reversed | WP-16: dev mode is a key in the operator's config, not a webview preference |
 | [D-062](D-062.md) | WP-14 | alive | WP-14: `orch` gets a config dir of its own, and D-059's named gap closes |
-| [D-063](D-063.md) | WP-12 | alive | the answer key is absent, not unobtainable, and a frozen grader is not enough |
+| [D-063](D-063.md) | WP-12 | reversed | the answer key is absent, not unobtainable, and a frozen grader is not enough |
 | [D-064](D-064.md) | WP-13 | alive | WP-13: the done verb is spelled `handoff`, it answers `recorded`, and the orch cap moves to 3,800 |
 | [D-065](D-065.md) | WP-17 | alive | WP-17: the write guardrail is a `PreToolUse` hook, writes only, and its Bash half enforces stated intent |
-| [D-066](D-066.md) | WP-15 | superseded | WP-15: the evaluator is a `PaneId` in no enumeration, its wake is a bus subscriber, and it reads the live run in place |
+| [D-066](D-066.md) | WP-15 | reversed | WP-15: the evaluator is a `PaneId` in no enumeration, its wake is a bus subscriber, and it reads the live run in place |
 | [D-067](D-067.md) | meta | alive | worktrees namespaced by target repo |
 | [D-068](D-068.md) | meta | alive | orch answers with `fleet reply`, including to names it does not know |
 | [D-069](D-069.md) | meta | alive | the Fence learns about rustup: both toolchain homes are the fleet's own |
@@ -83,11 +83,11 @@ Note: D-005 is referenced elsewhere in this file (e.g. D-009, D-011) but has no 
 | [D-073](D-073.md) | meta | alive | the evaluator is a view in the rail, not a second window (supersedes the window half of D-066) |
 | [D-074](D-074.md) | meta | alive | the evaluator is placed, dev mode is read through the layout, and the target is one cell |
 | [D-075](D-075.md) | meta | alive | the process-shaping module becomes an internal of placement, and the layout goes on the fleet |
-| [D-076](D-076.md) | meta | alive | the Critic: a fourth pane identity, a fifth brief, and a sixth finding category the spike earned |
+| [D-076](D-076.md) | meta | reversed | the Critic: a fourth pane identity, a fifth brief, and a sixth finding category the spike earned |
 | [D-077](D-077.md) | meta | alive | `fleet reply` refuses a recipient at parse, and the discriminator is the argv element rather than the first word |
 | [D-078](D-078.md) | meta | alive | `fleet broadcast` refuses a recipient too, and the two message verbs move together |
-| [D-079](D-079.md) | meta | alive | the Critic gets a socket and a switch, and the switch is in the hub |
-| [D-080](D-080.md) | meta | alive | the Critic's brief learns the interview: a remit line, a third citation form, and testimony that can corroborate but never anchor |
+| [D-079](D-079.md) | meta | reversed | the Critic gets a socket and a switch, and the switch is in the hub |
+| [D-080](D-080.md) | meta | reversed | the Critic's brief learns the interview: a remit line, a third citation form, and testimony that can corroborate but never anchor |
 | [D-081](D-081.md) | meta | alive | the vendor-binary tier is wired into the conformance suite, runs by default, and shouts when it skips |
 | [D-082](D-082.md) | meta | alive | a fenced worker is handed `DISABLE_AUTOUPDATER=1`, because its private HOME had become four Claude Code installations nobody runs |
 | [D-083](D-083.md) | meta | alive | the light/dark switch morphs every colour together, the way Mintaka's page turns dark, instead of snapping |
@@ -99,6 +99,8 @@ Note: D-005 is referenced elsewhere in this file (e.g. D-009, D-011) but has no 
 | [D-089](D-089.md) | WP-29 | alive | a reopened pane keeps the posture a fresh one gets, and checkpoint 15 now asserts it |
 | [D-090](D-090.md) | WP-30 | alive | harness.rs becomes interface-only, and machine-probing joins the trait |
 | [D-091](D-091.md) | meta | alive | the orchestrator seat spawns `--permission-mode auto` |
+| [D-092](D-092.md) | meta | alive | the Critic and the Evaluator are removed from the product |
+| [D-094](D-094.md) | meta | alive | dev mode and the live-run snapshot helpers are removed |
 | [D-095](D-095.md) | WP-27 | alive | a reopened run comes back on the harness, model and credential it recorded, not on what the gate holds |
 | [D-096](D-096.md) | meta | alive | panes wake at once: `pty_spawn` leaves the main thread, and placement alone is one at a time |
 | [D-097](D-097.md) | meta | alive | a pane's colour query is answered at the pty, by the registry, and xterm is told not to answer |

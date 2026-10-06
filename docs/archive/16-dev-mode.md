@@ -1,5 +1,12 @@
 # WP-16 — Dev mode
 
+> ## ⚠ ARCHIVED — feature removed (2026-10-02)
+>
+> **Superseded by D-094:** dev mode was removed — the Settings switch, the band, the `dev_mode`
+> config key's reader and writer, and `tests/dev_mode.rs`. D-092 had already removed its only
+> consumers. Nothing below describes the code any more; a `dev_mode` key left in
+> `~/.fleetor/config.json` is ignored.
+
 status: landed size: S/M
 depends-on: — blocks: 15, 17
 brief-cost: 0 — this package touches nothing under `prompts/`, and that is a requirement rather than an accident (see "Invariant guardrails").

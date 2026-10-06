@@ -246,126 +246,6 @@ pub(super) fn orch_command_with(
     cmd
 }
 
-// --- the evaluator ------------------------------------------------------------
-
-/// The evaluator's `claude` (WP-15), in the directory the run was laid out in.
-///
-/// **Shaped like `orch`, not like a worker, and for the same reason `orch` is:**
-/// it is a judge, so it runs on the operator's own account and model with a full
-/// environment inherit. It gets no private `HOME` — the Fence is worker-only
-/// (D-052) and this pane has to reach a real `git` and a real toolchain to check
-/// the fleet's claims — and no `ANTHROPIC_*` override.
-///
-/// Two things it does **not** share with `orch`:
-///
-///  - **Its brief is not from `prompts/`.** It is `brief` here, compiled in from
-///    a separate repo under the `devmode` feature (`crate::evaluator`), and
-///    there is no `~/.fleetor/prompts/` override for it.
-///  - **`--permission-mode auto`, which `orch` does not get.** `orch` is watched
-///    by an operator who approves its calls; this pane is expected to read a few
-///    hundred archived files and run the target's own test suite unattended, and
-///    a `manual` posture would park it on its first `Read` while looking exactly
-///    like a healthy pane — the risk register's worst entry. This is **not** a
-///    widening of Tier 1.7: its write guardrail is narrower than any worker's
-///    (`placement::guardrail_notices` gives it its own directory and not
-///    `_shell`), so what auto-approve can actually change here is a strict subset
-///    of what a worker's already could. Said plainly so it is not re-litigated,
-///    exactly as WP-17 said the inverse — and, since WP-21, asserted rather than
-///    said: `tests/write_guardrail.rs` runs the installed hook and watches this
-///    pane be refused a write a worker is allowed.
-///
-/// `config_dir` must already have been through [`seed_config_dir`] for this
-/// exact `cwd` (L1), and the `CLAUDE_SECURESTORAGE_CONFIG_DIR` pairing is
-/// `orch`'s (D-062): set and empty, so the operator's own login is found rather
-/// than an empty namespace keyed by a hash of the config dir.
-/// **`program` and `path` are handed in, never read here (WP-21, D-075)**, exactly
-/// as for [`orch_command_with`]. The `PATH` it is given is `orch`'s — this pane is
-/// the operator's own `claude` and gets their tool rungs — never a worker's fenced
-/// one.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn evaluator_command_with(
-    harness: &'static dyn Harness,
-    cwd: &Path,
-    socket: &Path,
-    config_dir: &Path,
-    brief: &str,
-    permission_mode: &str,
-    program: Option<&str>,
-    path: &str,
-) -> CommandBuilder {
-    // A judge: a posture because nobody is watching it, and no model because it
-    // runs the operator's own account (D-030, D-052).
-    let mut cmd = base_command_with(
-        harness,
-        program,
-        &harness.command_args(&Seat::new(brief).with_permission_mode(permission_mode)),
-    );
-    cmd.cwd(cwd);
-    apply_pane_env(&mut cmd, PaneId::Evaluator, socket, path.to_string());
-    apply_attended_config(&mut cmd, harness.spec(), config_dir);
-    cmd
-}
-
-// --- the Critic ---------------------------------------------------------------
-
-/// The Critic's `claude` (WP-20, D-076), in the directory the run was laid out in.
-///
-/// **Shaped like `orch`, and it is handed `FLEETOR_PANE` and `FLEET_SOCKET`
-/// exactly as the evaluator is** (WP-21, D-079). It called
-/// [`apply_terminal_env`] rather than [`apply_pane_env`] in WP-20, and the
-/// absence of a socket was the whole identity; that absence is gone, and the
-/// reason it had to go is mechanical rather than a change of mind. Both
-/// variables are baked into this `CommandBuilder` at spawn, so "hand it a socket
-/// when the operator opens the interview" cannot be built here without
-/// respawning the pane — which would destroy the operator's conversation with
-/// the pane they just decided to let speak. **The switch moved to the hub
-/// instead** (`fleetor_server::hub::Hub::handle`): while the interview is
-/// closed, an op from `critic` is refused at accept time, before anything is
-/// resolved, asked or logged.
-///
-/// What did *not* move: [`PaneId::Critic::is_fleet_member`](PaneId::is_fleet_member)
-/// is still `false` with the socket in hand — no roster row, no broadcast leg, in
-/// no rendered brief's peer list — and this pane's write guardrail is still its
-/// own working directory alone. It gained a voice, not a pen.
-///
-/// Otherwise it is `orch`: the operator's own account and model, their `HOME`, a
-/// full environment inherit, no Fence — because it has to reach a real `git` and
-/// read a few hundred archived files.
-///
-/// **`--permission-mode` is the worker's, for the evaluator's reason.** This pane
-/// reads an archive unattended, and a `manual` posture would park it on its first
-/// `Read` while looking exactly like a healthy pane. It is not a widening of Tier
-/// 1.7: its write guardrail is its own working directory alone
-/// (`placement::guardrail_notices`), which is a strict subset of what any worker's
-/// auto-approve could already change.
-///
-/// `config_dir` must already have been through [`seed_config_dir`] for this exact
-/// `cwd` (L1), and the `CLAUDE_SECURESTORAGE_CONFIG_DIR` pairing is `orch`'s
-/// (D-062): set and empty, so the operator's own login is found rather than an
-/// empty credential namespace keyed by a hash of the config dir.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn critic_command_with(
-    harness: &'static dyn Harness,
-    cwd: &Path,
-    socket: &Path,
-    config_dir: &Path,
-    brief: &str,
-    permission_mode: &str,
-    program: Option<&str>,
-    path: &str,
-) -> CommandBuilder {
-    // The evaluator's shape exactly: a posture, and the operator's own model.
-    let mut cmd = base_command_with(
-        harness,
-        program,
-        &harness.command_args(&Seat::new(brief).with_permission_mode(permission_mode)),
-    );
-    cmd.cwd(cwd);
-    apply_pane_env(&mut cmd, PaneId::Critic, socket, path.to_string());
-    apply_attended_config(&mut cmd, harness.spec(), config_dir);
-    cmd
-}
-
 // --- the workers --------------------------------------------------------------
 
 /// One worker pane: isolated config dir, its own worktree, its own private
@@ -638,15 +518,9 @@ pub(super) fn pane_program() -> Option<String> {
 /// PATH that can find `claude`, and no inherited child-session marker.
 ///
 /// `path` is the caller's to choose (WP-08, the Fence):
-/// [`Host::orch_path`](crate::placement::Host) for orch, the evaluator and the
-/// Critic, `Host::worker_path` for a worker. Both resolve `fleet`'s location the
-/// identical way; they differ only in whether the operator's own HOME contributes
-/// rungs.
-///
-/// **Split from [`apply_pane_env`] so that one pane kind can have this and not
-/// that** (WP-20, D-076). Everything here is about being a terminal; everything
-/// there is about being addressable in the fleet's record, and the Critic is the
-/// first identity that is the first without being the second.
+/// [`Host::orch_path`](crate::placement::Host) for orch, `Host::worker_path` for a
+/// worker. Both resolve `fleet`'s location the identical way; they differ only in
+/// whether the operator's own HOME contributes rungs.
 fn apply_terminal_env(cmd: &mut CommandBuilder, path: String) {
     cmd.env("PATH", path);
     cmd.env("TERM", "xterm-256color");
@@ -664,15 +538,6 @@ fn apply_terminal_env(cmd: &mut CommandBuilder, path: String) {
 /// `fleet` CLI reads `FLEET_SOCKET` before it does anything else and refuses
 /// with a sentence naming the variable, so a `fleet send` typed inside such a
 /// pane exits non-zero and reaches nothing.
-///
-/// **Every pane kind that exists is handed both, as of WP-21 (D-079).** The
-/// Critic was the one exception — that was its whole shape in WP-20 — and it
-/// stopped being one for a mechanical reason: these two variables are fixed on
-/// the `CommandBuilder` at spawn, so a runtime control over a pane's route
-/// cannot live here without respawning the pane. It lives in the hub instead.
-/// Being handed these is therefore *not* a claim of fleet membership, and it
-/// never was one: [`PaneId::is_fleet_member`] answers that, and it is `false`
-/// for two of the panes this function is called for.
 fn apply_pane_env(cmd: &mut CommandBuilder, pane: PaneId, socket: &Path, path: String) {
     apply_terminal_env(cmd, path);
     cmd.env("FLEETOR_PANE", pane.to_string());
