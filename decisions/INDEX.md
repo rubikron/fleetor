@@ -54,7 +54,7 @@ Note: D-005 is referenced elsewhere in this file (e.g. D-009, D-011) but has no 
 | [D-044](D-044.md) | meta | alive | the orchestrator becomes a vision partner, and the workers get a culture |
 | [D-045](D-045.md) | meta | alive | `fleet cmd`: a command channel that is not the message path |
 | [D-046](D-046.md) | WP-04 | alive | WP-04: the context gauge is `AppCommand::Roster`'s job, not a new channel; the window is our own 128k, not CC's 200k guess; the live gauge never estimates |
-| [D-047](D-047.md) | WP-05 | alive | WP-05: the task board is a fold over the event log, and the one arm that never reaches a terminal |
+| [D-047](D-047.md) | WP-05 | amended by D-100 | WP-05: the task board is a fold over the event log, and the one arm that never reaches a terminal |
 | [D-048](D-048.md) | WP-06 | alive | WP-06: the worktrees stay, because the object database was already shared |
 | [D-049](D-049.md) | WP-06 | alive | WP-06: the reviewer is named in the assignment message, not in a field on the block |
 | [D-050](D-050.md) | WP-06 | alive | WP-06: `fleet done` runs the check locally, and its exit code still means delivery |
@@ -106,3 +106,6 @@ Note: D-005 is referenced elsewhere in this file (e.g. D-009, D-011) but has no 
 | [D-097](D-097.md) | meta | alive | a pane's colour query is answered at the pty, by the registry, and xterm is told not to answer |
 | [D-098](D-098.md) | meta | alive | the wake waits for quiet first, and presses only a pane that will not settle by itself |
 | [D-099](D-099.md) | meta | alive | a new fleet and a reopen are one launch: tear down, stage the old run, fix seats and target at launch |
+| [D-100](D-100.md) | S1 | alive | tasks live in a per-target store as chain entries; the run log's task event is read-only |
+| [D-101](D-101.md) | S1 | alive | `fleet task post --goal` is a flag; a task names its goal with `--parent` |
+| [D-102](D-102.md) | S1 | alive | the hub takes the task store through `Hub::with_tasks`; `Hub::new` is unchanged |

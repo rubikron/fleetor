@@ -16,7 +16,7 @@
 //! are the seed of the ticket system growing back.
 
 use crate::pane::{PaneEntry, PaneId};
-use crate::task::{TaskEntry, TaskStatus};
+use crate::task::{TaskRecord, TaskStatus};
 use serde::{Deserialize, Serialize};
 
 pub const WIRE_VERSION: u32 = 1;
@@ -114,27 +114,33 @@ pub enum TaskAction {
     /// [`TaskBlock`](crate::task::TaskBlock); they arrive flat because a weak
     /// model emits flat flags far more reliably than JSON.
     Post {
+        /// Open a goal rather than a task.
+        #[serde(default)]
+        goal: bool,
         outcome: String,
+        #[serde(default)]
         technical: Vec<String>,
-        semantic: Vec<String>,
-        worker: PaneId,
+        vision: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        owner: Option<PaneId>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         instructions: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        parent: Option<String>,
+        parent: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        converges_on: Option<String>,
+        converges_on: Option<u64>,
     },
     /// Append a claim to a block already on the board. Anyone may; the `from` on
     /// the resulting event is the accountability.
     Update {
-        task: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        status: Option<TaskStatus>,
+        task: u64,
+        status: TaskStatus,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         note: Option<String>,
     },
-    /// Read the board back, replayed from the log.
+    /// One goal or task with its whole chain.
+    Show { task: u64 },
+    /// Every goal and task in the target's store.
     List,
 }
 
@@ -189,7 +195,7 @@ pub enum OpResult {
         record_id: String,
     },
     /// The board, replayed from the event log (`task list`).
-    Board { tasks: Vec<TaskEntry> },
+    Board { tasks: Vec<TaskRecord> },
     /// Every pane and its state (`Roster`).
     Roster { panes: Vec<PaneEntry> },
     /// The op could not be served (unknown pane, nothing to reply to, no app).
@@ -212,31 +218,26 @@ impl Response {
 mod tests {
     use super::*;
     use crate::pane::{PaneEntry, PaneId, PaneState};
-    use crate::task::{TaskBlock, TaskEntry, TaskNote};
+    use crate::task::{board, ChainEntry, Kind, TaskBlock, TaskRecord};
 
-    fn sample_entry() -> TaskEntry {
-        TaskEntry {
-            id: "task-1-0".into(),
-            block: TaskBlock::new(
-                "the parser accepts nested groups",
-                &["cargo test -p parser".to_string()],
-                &["one grammar".to_string()],
-                PaneId::Worker(2),
-                Some("start from the tokenizer"),
-                None,
-                Some("task-1-9"),
-            )
-            .unwrap(),
-            posted_by: PaneId::Orch,
-            posted_at: 1_730_413_200_123,
-            status: TaskStatus::Claimed,
-            updates: vec![TaskNote {
-                from: PaneId::Worker(2),
-                at: 1_730_413_300_000,
-                status: Some(TaskStatus::Claimed),
-                note: Some("on it".into()),
-            }],
-        }
+    fn sample_record() -> TaskRecord {
+        let block = TaskBlock::new(
+            Kind::Task,
+            "the parser accepts nested groups",
+            &["cargo test -p parser".to_string()],
+            &["one grammar".to_string()],
+            Some(PaneId::Worker(2)),
+            Some("start from the tokenizer"),
+            Some(11),
+            None,
+        )
+        .unwrap();
+        let log = [
+            ChainEntry::Opened { block }.into_event(14, PaneId::Orch, "run-1", "lin-1"),
+            ChainEntry::status(TaskStatus::InProgress, Some("on it"))
+                .into_event(14, PaneId::Worker(2), "run-1", "lin-1"),
+        ];
+        board(&log).remove(0)
     }
 
     /// Both `Request` and `Response` `#[serde(flatten)]` their payload enum into
@@ -257,22 +258,24 @@ mod tests {
             },
             Op::Task {
                 action: TaskAction::Post {
+                    goal: false,
                     outcome: "the parser accepts nested groups".into(),
                     technical: vec!["cargo test -p parser".into()],
-                    semantic: vec!["one grammar".into()],
-                    worker: PaneId::Worker(2),
+                    vision: vec!["one grammar".into()],
+                    owner: Some(PaneId::Worker(2)),
                     instructions: Some("start from the tokenizer".into()),
-                    parent: Some("task-1-0".into()),
+                    parent: Some(11),
                     converges_on: None,
                 },
             },
             Op::Task {
                 action: TaskAction::Update {
-                    task: "task-1-0".into(),
-                    status: Some(TaskStatus::Done),
+                    task: 14,
+                    status: TaskStatus::Done,
                     note: Some("cargo test passes".into()),
                 },
             },
+            Op::Task { action: TaskAction::Show { task: 14 } },
             Op::Task { action: TaskAction::List },
             Op::Handoff {
                 built: "the parser accepts nested groups".into(),
@@ -307,7 +310,7 @@ mod tests {
             },
             OpResult::Recorded { record_id: "task-1-0".into() },
             OpResult::Recorded { record_id: "msg-1".into() },
-            OpResult::Board { tasks: vec![sample_entry()] },
+            OpResult::Board { tasks: vec![sample_record()] },
             OpResult::Board { tasks: vec![] },
             OpResult::Roster {
                 panes: vec![PaneEntry::new(PaneId::Operator, PaneState::Present)],
@@ -339,7 +342,7 @@ mod tests {
         assert_eq!(tag(Op::Task { action: TaskAction::List }), "task");
         assert_eq!(
             tag(Op::Task {
-                action: TaskAction::Update { task: "t".into(), status: None, note: Some("n".into()) }
+                action: TaskAction::Update { task: 14, status: TaskStatus::Done, note: None }
             }),
             "task"
         );

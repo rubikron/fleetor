@@ -1,31 +1,18 @@
-//! WP-05 — the task board, proved to be a diary rather than a dispatcher.
+//! Goals and tasks over a real socket, against a dummy task store (D-100).
 //!
-//! **The test this file exists for is
-//! [`a_send_is_byte_identical_whether_the_board_is_empty_or_full`].** The
-//! requirements call it the delivery-independence pin, and it is the one that
-//! stops this package regrowing what D-030 deleted: the old `Assign` op returned
-//! `Ack` while nothing ever ran, and `wire.rs:16` records that `Assign` and
-//! `FleetStatus` "are the seed of the ticket system growing back". A board is
-//! only a record for as long as nothing consults it, so that claim is checked
-//! here rather than asserted in a comment.
-//!
-//! The fake app is deliberately the *same* one `pane_messaging.rs` uses, with one
-//! addition: it counts every [`AppCommand`] it receives, so "the task ops never
-//! ask the app for anything" is a number rather than a reading of the code.
-//!
-//! A separate file from `pane_messaging.rs` on purpose. That file is the message
-//! path's own test, and this package's diff on the message path has to be empty —
-//! including its tests.
+//! Two pins carried from WP-05: task operations ask the app for nothing, and a
+//! `fleet send` is byte-identical whether the task store is empty or full.
 
 use fleetor_core::event::FleetEvent;
 use fleetor_core::pane::{PaneEntry, PaneId, PaneState};
-use fleetor_core::task::{TaskChange, TaskStatus};
+use fleetor_core::task::{ChainEntry, Kind, TaskRecord, TaskStatus};
 use fleetor_core::wire::{Hello, Op, OpResult, TaskAction};
 use fleetor_core::Store;
 use fleetor_db::SqliteStore;
 use fleetor_ipc::{Client, Transport, UnixTransport};
-use fleetor_server::{AppCommand, DeliveryResult, Hub};
+use fleetor_server::{AppCommand, BroadcastStore, DeliveryResult, Hub, TaskContext};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
@@ -70,36 +57,63 @@ fn spawn_app(roster: Vec<PaneEntry>) -> (mpsc::UnboundedSender<AppCommand>, Writ
     (tx, writes, asks)
 }
 
-async fn start_hub() -> (Arc<UnixTransport>, Arc<SqliteStore>, Writes, Asks) {
-    let roster: Vec<PaneEntry> =
-        PaneId::roster(&SLOTS).into_iter().map(|p| PaneEntry::new(p, PaneState::Live)).collect();
+struct Fleet {
+    transport: Arc<UnixTransport>,
+    hub: Arc<Hub>,
+    /// The run log.
+    store: Arc<SqliteStore>,
+    /// The dummy `tasks.db`, wrapped the way the app will wrap it.
+    tasks: Arc<BroadcastStore>,
+    writes: Writes,
+    asks: Asks,
+}
+
+fn tempdir() -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "fleetor-task-{}-{}",
         std::process::id(),
         fleetor_core::ids::new_id("t")
     ));
     std::fs::create_dir_all(&dir).unwrap();
-    let transport = Arc::new(UnixTransport::new(dir.join("fleet.sock")));
+    dir
+}
+
+/// A hub for `run` in `lineage` over the `tasks.db` in `dir`.
+async fn start_hub_at(dir: &std::path::Path, run: &str, lineage: &str) -> Fleet {
+    let roster: Vec<PaneEntry> =
+        PaneId::roster(&SLOTS).into_iter().map(|p| PaneEntry::new(p, PaneState::Live)).collect();
+    let transport = Arc::new(UnixTransport::new(dir.join(format!("{run}.sock"))));
     let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let tasks =
+        Arc::new(BroadcastStore::new(Arc::new(SqliteStore::open(&dir.join("tasks.db")).unwrap())));
     let (app, writes, asks) = spawn_app(roster);
-    let hub = Hub::new(store.clone(), app);
+    let hub = Hub::with_tasks(
+        store.clone(),
+        app,
+        tasks.clone(),
+        TaskContext { run: run.into(), lineage: lineage.into() },
+    );
     let listener = transport.bind().await.unwrap();
-    tokio::spawn(hub.serve(listener));
-    (transport, store, writes, asks)
+    tokio::spawn(hub.clone().serve(listener));
+    Fleet { transport, hub, store, tasks, writes, asks }
 }
 
-async fn pane(transport: &UnixTransport, pane: PaneId) -> Client {
-    Client::connect(transport, Hello::for_pane(pane)).await.unwrap()
+async fn start_hub() -> Fleet {
+    start_hub_at(&tempdir(), "run-1", "lin-1").await
 }
 
-/// A complete block, differing only in its outcome so a board of ten is readable.
-fn post(outcome: &str, worker: u8) -> Op {
+async fn pane(fleet: &Fleet, pane: PaneId) -> Client {
+    Client::connect(&*fleet.transport, Hello::for_pane(pane)).await.unwrap()
+}
+
+fn open_goal(outcome: &str) -> Op {
     Op::Task {
         action: TaskAction::Post {
+            goal: true,
             outcome: outcome.into(),
-            technical: vec!["cargo test -p parser".into()],
-            semantic: vec!["one grammar".into()],
-            worker: PaneId::Worker(worker),
+            technical: vec![],
+            vision: vec!["the parser is the product".into()],
+            owner: None,
             instructions: None,
             parent: None,
             converges_on: None,
@@ -107,327 +121,278 @@ fn post(outcome: &str, worker: u8) -> Op {
     }
 }
 
-fn task_id(result: OpResult) -> String {
-    match result {
-        OpResult::Recorded { record_id } => record_id,
-        other => panic!("expected a recorded claim, got {other:?}"),
+fn open_task(outcome: &str, owner: Option<u8>, parent: Option<u64>) -> Op {
+    Op::Task {
+        action: TaskAction::Post {
+            goal: false,
+            outcome: outcome.into(),
+            technical: vec!["cargo test -p parser".into()],
+            vision: vec!["one grammar".into()],
+            owner: owner.map(PaneId::Worker),
+            instructions: None,
+            parent,
+            converges_on: None,
+        },
     }
 }
 
-fn board(result: OpResult) -> Vec<fleetor_core::task::TaskEntry> {
+fn set(task: u64, status: TaskStatus) -> Op {
+    Op::Task { action: TaskAction::Update { task, status, note: None } }
+}
+
+fn number(result: OpResult) -> u64 {
+    match result {
+        OpResult::Recorded { record_id } => record_id.parse().expect("a task number"),
+        other => panic!("expected a recorded entry, got {other:?}"),
+    }
+}
+
+fn refusal(result: OpResult) -> String {
+    match result {
+        OpResult::Error { message } => message,
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+fn records(result: OpResult) -> Vec<TaskRecord> {
     match result {
         OpResult::Board { tasks } => tasks,
-        other => panic!("expected the board, got {other:?}"),
+        other => panic!("expected records, got {other:?}"),
     }
 }
 
-fn tasks_in_log(store: &SqliteStore) -> Vec<FleetEvent> {
-    store
-        .events_since(0)
-        .unwrap()
-        .into_iter()
-        .map(|(_, e)| e)
-        .filter(|e| matches!(e, FleetEvent::Task { .. }))
-        .collect()
+async fn list(client: &mut Client) -> Vec<TaskRecord> {
+    records(client.call(Op::Task { action: TaskAction::List }).await.unwrap())
 }
 
-/// **The delivery-independence pin.**
-///
-/// A `fleet send` to worker-2 with an empty board and the same send with ten
-/// blocks on it — one of them assigned to worker-2 and marked `done` — must be
-/// the same event, byte for byte, at the pty and in the log. If any code path
-/// ever consults task state before a delivery, this is what catches it.
-///
-/// It also counts the app's asks: the ten posts, the update and the two list
-/// calls between the two sends contribute **zero**. A board that reached a
-/// terminal, or a delivery that read the board, would move one of these numbers.
+fn chain_len(fleet: &Fleet) -> usize {
+    fleet.tasks.events_since(0).unwrap().len()
+}
+
+/// **The delivery-independence pin.** The same send, before and after ten
+/// tasks exist (one of them the recipient's own, marked done), is the same
+/// bytes at the pty and the same row in the run log, and the task operations
+/// in between ask the app for nothing.
 #[tokio::test]
-async fn a_send_is_byte_identical_whether_the_board_is_empty_or_full() {
-    let (transport, store, writes, asks) = start_hub().await;
-    let mut orch = pane(&transport, PaneId::Orch).await;
+async fn a_send_is_byte_identical_whether_the_task_store_is_empty_or_full() {
+    let fleet = start_hub().await;
+    let mut orch = pane(&fleet, PaneId::Orch).await;
+    let mut worker = pane(&fleet, PaneId::Worker(2)).await;
+    let send = || Op::Send { to: PaneId::Worker(2), text: "take the parser".into() };
 
-    // 1 — a send against an empty board.
-    let before = orch
-        .call(Op::Send { to: PaneId::Worker(2), text: "take the parser".into() })
-        .await
-        .unwrap();
-    assert_eq!(asks.load(Ordering::Relaxed), 1, "one send is one ask");
-    let empty_board_bytes = writes.lock().unwrap().clone();
+    let before = orch.call(send()).await.unwrap();
+    assert_eq!(fleet.asks.load(Ordering::Relaxed), 1, "one send is one ask");
 
-    // 2 — ten blocks, one of them worker-2's own, and a claim on it.
-    let asks_before_the_board = asks.load(Ordering::Relaxed);
-    let mut ids = Vec::new();
+    let goal = number(orch.call(open_goal("one grammar")).await.unwrap());
+    let mut numbers = Vec::new();
     for n in 0..10 {
-        ids.push(task_id(orch.call(post(&format!("slice {n}"), 2)).await.unwrap()));
+        numbers.push(number(orch.call(open_task(&format!("slice {n}"), Some(2), Some(goal))).await.unwrap()));
     }
-    orch.call(Op::Task {
-        action: TaskAction::Update {
-            task: ids[3].clone(),
-            status: Some(TaskStatus::Done),
-            note: Some("cargo test passes".into()),
-        },
-    })
-    .await
-    .unwrap();
-    assert_eq!(board(orch.call(Op::Task { action: TaskAction::List }).await.unwrap()).len(), 10);
-    assert_eq!(
-        asks.load(Ordering::Relaxed),
-        asks_before_the_board,
-        "ten posts, an update and a list asked the app for nothing at all",
-    );
+    worker.call(set(numbers[3], TaskStatus::InProgress)).await.unwrap();
+    worker.call(set(numbers[3], TaskStatus::Done)).await.unwrap();
+    worker.call(Op::Task { action: TaskAction::Show { task: numbers[3] } }).await.unwrap();
+    assert_eq!(list(&mut orch).await.len(), 11);
+    assert_eq!(fleet.asks.load(Ordering::Relaxed), 1, "task operations asked the app for nothing");
 
-    // 3 — the same send again.
-    let after = orch
-        .call(Op::Send { to: PaneId::Worker(2), text: "take the parser".into() })
-        .await
-        .unwrap();
-    assert_eq!(asks.load(Ordering::Relaxed), asks_before_the_board + 1, "still one ask per send");
+    let after = orch.call(send()).await.unwrap();
+    assert_eq!(fleet.asks.load(Ordering::Relaxed), 2, "still one ask per send");
 
-    let all_bytes = writes.lock().unwrap().clone();
-    assert_eq!(all_bytes.len(), 2, "the board wrote nothing to any pty: {all_bytes:?}");
-    assert_eq!(
-        all_bytes[1], empty_board_bytes[0],
-        "a send to a worker with ten blocks must be byte-identical to one with none",
-    );
+    let bytes = fleet.writes.lock().unwrap().clone();
+    assert_eq!(bytes.len(), 2, "task operations wrote nothing to any pty: {bytes:?}");
+    assert_eq!(bytes[0], bytes[1]);
 
-    // The answers agree on everything but the per-message id.
     let (OpResult::Delivered { accepted: a, detail: da, .. }, OpResult::Delivered { accepted: b, detail: db, .. }) =
         (&before, &after)
     else {
         panic!("expected two deliveries, got {before:?} / {after:?}")
     };
-    assert_eq!((a, da), (b, db), "the delivery outcome did not depend on the board");
+    assert_eq!((a, da), (b, db));
 
-    // And the two logged messages are the same message twice.
-    let messages: Vec<(PaneId, PaneId, String, bool)> = store
-        .events_since(0)
-        .unwrap()
-        .into_iter()
+    let log = fleet.store.events_since(0).unwrap();
+    let messages: Vec<_> = log
+        .iter()
         .filter_map(|(_, e)| match e {
             FleetEvent::Message { from, to, body, accepted, .. } => Some((from, to, body, accepted)),
             _ => None,
         })
         .collect();
     assert_eq!(messages.len(), 2);
-    assert_eq!(messages[0], messages[1], "the record does not depend on the board either");
+    assert_eq!(messages[0], messages[1]);
+    assert_eq!(log.len(), 2, "no task entry reached the run log: {log:?}");
 }
 
-/// A posted block reaches the log as one attributed, timestamped claim, and the
-/// id the poster got back is the id the board answers with. No second table: the
-/// only thing written is a `FleetEvent::Task`.
+/// The thin path: the operator opens a goal, orch opens a task under it, a
+/// worker takes it up and marks it done, and `show` reads the chain back.
 #[tokio::test]
-async fn a_posted_block_is_one_event_and_the_board_reads_it_back() {
-    let (transport, store, _writes, _asks) = start_hub().await;
-    let mut orch = pane(&transport, PaneId::Orch).await;
+async fn a_goal_is_split_taken_up_and_done_and_the_chain_says_who() {
+    let fleet = start_hub().await;
+    let mut orch = pane(&fleet, PaneId::Orch).await;
+    let mut worker = pane(&fleet, PaneId::Worker(2)).await;
 
-    let id = task_id(
-        orch.call(Op::Task {
-            action: TaskAction::Post {
-                outcome: "the parser accepts nested groups".into(),
-                technical: vec!["cargo test -p parser".into(), "the CLI round-trips one".into()],
-                semantic: vec!["serves the one-grammar part of the vision".into()],
-                worker: PaneId::Worker(2),
-                instructions: Some("start from the existing tokenizer".into()),
-                parent: None,
-                converges_on: Some("task-later".into()),
-            },
-        })
-        .await
-        .unwrap(),
-    );
-    assert!(id.starts_with("task-"), "ids say what they are: {id}");
+    let goal = number(fleet.hub.handle(PaneId::Operator, open_goal("one grammar")).await);
+    let task = number(orch.call(open_task("nested groups parse", None, Some(goal))).await.unwrap());
+    assert_eq!((goal, task), (1, 2), "numbers count up per target");
 
-    let logged = tasks_in_log(&store);
-    assert_eq!(logged.len(), 1, "one post is one event");
-    let FleetEvent::Task { task, from, at, change } = &logged[0] else { panic!("expected a task") };
-    assert_eq!(task, &id);
-    assert_eq!(*from, PaneId::Orch, "the claim is attributed");
-    assert!(*at > 0, "and timestamped");
-    assert!(matches!(change, TaskChange::Posted { .. }));
-
-    let tasks = board(orch.call(Op::Task { action: TaskAction::List }).await.unwrap());
-    assert_eq!(tasks.len(), 1);
-    assert_eq!(tasks[0].id, id);
-    assert_eq!(tasks[0].block.worker, PaneId::Worker(2));
-    assert_eq!(tasks[0].block.technical.len(), 2);
-    assert_eq!(tasks[0].block.converges_on.as_deref(), Some("task-later"));
-    assert_eq!(tasks[0].status, TaskStatus::Planned, "a fresh block is planned, never inferred");
-}
-
-/// Ownership is social, not coded. A peer may append a claim to a block that is
-/// not theirs — that is what makes WP-06's review possible without a permission
-/// system — and the log records who said it.
-#[tokio::test]
-async fn any_pane_may_update_any_block_and_the_log_names_them() {
-    let (transport, _store, _writes, _asks) = start_hub().await;
-    let mut orch = pane(&transport, PaneId::Orch).await;
-    let mut peer = pane(&transport, PaneId::Worker(3)).await;
-
-    let id = task_id(orch.call(post("the parser lands", 2)).await.unwrap());
-    peer.call(Op::Task {
-        action: TaskAction::Update {
-            task: id.clone(),
-            status: Some(TaskStatus::Dropped),
-            note: Some("duplicate of the tokenizer block".into()),
-        },
-    })
-    .await
-    .unwrap();
-
-    let tasks = board(orch.call(Op::Task { action: TaskAction::List }).await.unwrap());
-    assert_eq!(tasks[0].status, TaskStatus::Dropped);
-    assert_eq!(tasks[0].block.worker, PaneId::Worker(2), "the block is still worker-2's");
-    assert_eq!(tasks[0].updates[0].from, PaneId::Worker(3), "worker-3 said this, and it shows");
-}
-
-/// Referential validation, not a gate: an update has to have a block to be a
-/// claim *about*. Nothing is written when it does not — a typo'd id would
-/// otherwise vanish into the log unread — and nothing about *which* status may
-/// follow which is checked, here or anywhere.
-#[tokio::test]
-async fn an_update_to_a_block_that_is_not_there_is_refused_and_writes_nothing() {
-    let (transport, store, _writes, _asks) = start_hub().await;
-    let mut orch = pane(&transport, PaneId::Orch).await;
-
-    let result = orch
+    assert_eq!(number(worker.call(set(task, TaskStatus::InProgress)).await.unwrap()), task);
+    worker
         .call(Op::Task {
             action: TaskAction::Update {
-                task: "task-typo".into(),
-                status: Some(TaskStatus::Done),
-                note: None,
+                task,
+                status: TaskStatus::Done,
+                note: Some("cargo test passes".into()),
             },
         })
         .await
         .unwrap();
-    let OpResult::Error { message } = result else { panic!("expected a refusal, got {result:?}") };
-    assert!(message.contains("fleet task list"), "the refusal says how to find the ids: {message}");
-    assert!(tasks_in_log(&store).is_empty(), "a refused update writes nothing");
 
-    // A block with no criteria is refused the same way, and for the same reason:
-    // this is input validation at the boundary, not permission.
-    let empty = orch
-        .call(Op::Task {
-            action: TaskAction::Post {
-                outcome: "something good".into(),
-                technical: vec![],
-                semantic: vec!["the vision".into()],
-                worker: PaneId::Worker(1),
-                instructions: None,
-                parent: None,
-                converges_on: None,
-            },
-        })
-        .await
-        .unwrap();
-    assert!(matches!(empty, OpResult::Error { .. }), "got {empty:?}");
-    assert!(tasks_in_log(&store).is_empty());
+    let shown = records(orch.call(Op::Task { action: TaskAction::Show { task } }).await.unwrap());
+    assert_eq!(shown.len(), 1);
+    let record = &shown[0];
+    assert_eq!(record.number, task);
+    assert_eq!(record.creator, PaneId::Orch);
+    assert_eq!(record.block.parent, Some(goal));
+    assert_eq!(record.status, TaskStatus::Done);
+    let owner = record.owner.as_ref().expect("taking it up made worker-2 the owner");
+    assert_eq!((owner.pane, owner.run.as_str(), owner.lineage.as_str()), (PaneId::Worker(2), "run-1", "lin-1"));
+
+    let said: Vec<(PaneId, &ChainEntry)> = record.chain.iter().map(|l| (l.from, &l.entry)).collect();
+    assert!(matches!(said[0], (PaneId::Orch, ChainEntry::Opened { .. })), "{said:?}");
+    assert!(matches!(said[1], (PaneId::Worker(2), ChainEntry::TakenUp { .. })), "{said:?}");
+    assert!(
+        matches!(said[2], (PaneId::Worker(2), ChainEntry::Status { status: TaskStatus::Done, note: Some(n) }) if n == "cargo test passes"),
+        "{said:?}"
+    );
+    assert!(record.chain.iter().all(|l| l.run == "run-1" && l.lineage == "lin-1" && l.at > 0));
+
+    let all = list(&mut worker).await;
+    assert_eq!(all[0].block.kind, Kind::Goal);
+    assert_eq!(all[0].creator, PaneId::Operator);
 }
 
-/// No enforced transitions, at the socket rather than in a unit test: a worker
-/// who claimed `done` and then found a failing criterion has to be able to walk
-/// it back, and every claim stays on the record.
+/// Every refusal names what to do instead, and none of them writes anything.
 #[tokio::test]
-async fn a_status_may_go_backwards_and_the_whole_trail_survives() {
-    let (transport, _store, _writes, _asks) = start_hub().await;
-    let mut orch = pane(&transport, PaneId::Orch).await;
-    let mut worker = pane(&transport, PaneId::Worker(2)).await;
+async fn refusals_follow_who_is_asking_and_write_nothing() {
+    let fleet = start_hub().await;
+    let mut orch = pane(&fleet, PaneId::Orch).await;
+    let mut owner = pane(&fleet, PaneId::Worker(2)).await;
+    let mut peer = pane(&fleet, PaneId::Worker(3)).await;
 
-    let id = task_id(orch.call(post("the parser lands", 2)).await.unwrap());
-    for (status, note) in [
-        (Some(TaskStatus::Claimed), Some("starting now")),
-        (Some(TaskStatus::Done), Some("cargo test passes")),
-        (Some(TaskStatus::Claimed), Some("crit 2 fails after all")),
-        (None, Some("reworking the tokenizer first")),
-    ] {
-        worker
-            .call(Op::Task {
-                action: TaskAction::Update {
-                    task: id.clone(),
-                    status,
-                    note: note.map(str::to_string),
-                },
-            })
-            .await
-            .unwrap();
-    }
+    let goal = number(orch.call(open_goal("one grammar")).await.unwrap());
+    let task = number(orch.call(open_task("nested groups parse", None, Some(goal))).await.unwrap());
+    let found = number(peer.call(open_task("the tokenizer leaks", None, None)).await.unwrap());
+    owner.call(set(task, TaskStatus::InProgress)).await.unwrap();
+    let written = chain_len(&fleet);
 
-    let tasks = board(orch.call(Op::Task { action: TaskAction::List }).await.unwrap());
-    assert_eq!(tasks[0].status, TaskStatus::Claimed, "the last status claimed wins, backwards or not");
-    assert_eq!(tasks[0].updates.len(), 4, "nothing is folded away");
-    assert_eq!(tasks[0].updates[3].status, None, "a note-only claim keeps the status it found");
+    let why = refusal(peer.call(open_goal("my own vision")).await.unwrap());
+    assert!(why.contains("orch and the operator") && why.contains("worker-3"), "{why}");
+    let why = refusal(peer.call(open_task("hand this to a peer", Some(2), None)).await.unwrap());
+    assert!(why.contains("starts unowned"), "{why}");
+
+    let why = refusal(orch.call(open_task("serves nothing", Some(2), None)).await.unwrap());
+    assert!(why.contains("--parent"), "{why}");
+    let why = refusal(orch.call(open_task("under a task", None, Some(task))).await.unwrap());
+    assert!(why.contains(&format!("#{task} is a task")), "{why}");
+    let why = refusal(orch.call(open_task("under nothing", None, Some(99))).await.unwrap());
+    assert!(why.contains("there is no #99"), "{why}");
+
+    let why = refusal(peer.call(set(task, TaskStatus::Done)).await.unwrap());
+    assert!(why.contains("only the owner") && why.contains("owner is worker-2"), "{why}");
+    let why = refusal(orch.call(set(task, TaskStatus::Done)).await.unwrap());
+    assert!(why.contains("only the owner"), "orch is not the owner either: {why}");
+    let why = refusal(orch.call(set(goal, TaskStatus::Done)).await.unwrap());
+    assert!(why.contains("is a goal"), "{why}");
+
+    let why = refusal(owner.call(set(task, TaskStatus::Dropped)).await.unwrap());
+    assert!(why.contains("opened by orch"), "the owner is not the creator: {why}");
+    let why = refusal(owner.call(set(found, TaskStatus::Dropped)).await.unwrap());
+    assert!(why.contains("opened by worker-3"), "{why}");
+
+    let why = refusal(owner.call(set(99, TaskStatus::InProgress)).await.unwrap());
+    assert!(why.contains("there is no #99") && why.contains("fleet task list"), "{why}");
+    let why = refusal(owner.call(Op::Task { action: TaskAction::Show { task: 99 } }).await.unwrap());
+    assert!(why.contains("there is no #99"), "{why}");
+
+    assert_eq!(chain_len(&fleet), written, "a refusal writes nothing");
+
+    // The same acts by someone with the authority.
+    orch.call(set(found, TaskStatus::Dropped)).await.unwrap();
+    peer.call(set(found, TaskStatus::Planned)).await.unwrap();
+    peer.call(set(task, TaskStatus::InProgress)).await.unwrap();
+    peer.call(set(task, TaskStatus::Done)).await.unwrap();
+    let why = refusal(owner.call(set(task, TaskStatus::Done)).await.unwrap());
+    assert!(why.contains("owner is worker-3"), "taking it up moved the owner: {why}");
 }
 
-/// The board is the log and nothing else. A second hub over the same store — a
-/// restart, in effect — computes the same board, which it could not do if any
-/// part of it lived in memory.
+/// A second session over the same `tasks.db`: the same records, numbers that
+/// carry on, and an owner from the earlier lineage who can no longer say done.
 #[tokio::test]
-async fn a_restarted_hub_replays_the_same_board_from_the_log_alone() {
-    let (transport, store, _writes, _asks) = start_hub().await;
-    let mut orch = pane(&transport, PaneId::Orch).await;
-    let first = task_id(orch.call(post("slice one", 1)).await.unwrap());
-    let second = task_id(orch.call(post("slice two", 2)).await.unwrap());
-    orch.call(Op::Task {
-        action: TaskAction::Update {
-            task: second.clone(),
-            status: Some(TaskStatus::Claimed),
-            note: None,
-        },
-    })
-    .await
-    .unwrap();
-    let before = board(orch.call(Op::Task { action: TaskAction::List }).await.unwrap());
-
-    // A brand-new hub, a brand-new app, the same store.
-    let dir = std::env::temp_dir()
-        .join(format!("fleetor-task-restart-{}", fleetor_core::ids::new_id("t")));
-    std::fs::create_dir_all(&dir).unwrap();
-    let restarted = Arc::new(UnixTransport::new(dir.join("fleet.sock")));
-    let (app, _writes, _asks) = spawn_app(Vec::new());
-    let listener = restarted.bind().await.unwrap();
-    tokio::spawn(Hub::new(store.clone(), app).serve(listener));
-
-    let mut after_restart = pane(&restarted, PaneId::Worker(4)).await;
-    let after = board(after_restart.call(Op::Task { action: TaskAction::List }).await.unwrap());
-
-    assert_eq!(after, before, "the board is a fold over the log, not state a hub holds");
-    assert_eq!(after[0].id, first, "post order survives the replay");
-    assert_eq!(after[1].id, second);
-    assert_eq!(after[1].status, TaskStatus::Claimed);
-}
-
-/// Tree links are ids and nothing validates them into a graph. A block may name a
-/// parent that does not exist, and two blocks may name each other — the board
-/// still answers, because the shape is somebody's note about how the work fits
-/// together rather than a workflow the fleet executes.
-#[tokio::test]
-async fn tree_links_are_ids_and_a_cycle_is_still_a_board() {
-    let (transport, _store, _writes, _asks) = start_hub().await;
-    let mut orch = pane(&transport, PaneId::Orch).await;
-
-    let linked = |parent: &str| Op::Task {
-        action: TaskAction::Post {
-            outcome: "a slice".into(),
-            technical: vec!["cargo test".into()],
-            semantic: vec!["the vision".into()],
-            worker: PaneId::Worker(1),
-            instructions: None,
-            parent: Some(parent.to_string()),
-            converges_on: None,
-        },
+async fn a_new_session_over_the_same_store_reads_the_same_records() {
+    let dir = tempdir();
+    let before = {
+        let first = start_hub_at(&dir, "run-1", "lin-1").await;
+        let mut orch = pane(&first, PaneId::Orch).await;
+        let mut worker = pane(&first, PaneId::Worker(2)).await;
+        let goal = number(orch.call(open_goal("one grammar")).await.unwrap());
+        let task = number(orch.call(open_task("nested groups parse", None, Some(goal))).await.unwrap());
+        worker.call(set(task, TaskStatus::InProgress)).await.unwrap();
+        list(&mut orch).await
     };
 
-    let dangling = task_id(orch.call(linked("task-nobody-posted")).await.unwrap());
-    let first = task_id(orch.call(linked("placeholder")).await.unwrap());
-    let second = task_id(orch.call(linked(&first)).await.unwrap());
+    let second = start_hub_at(&dir, "run-2", "lin-2").await;
+    let mut orch = pane(&second, PaneId::Orch).await;
+    let mut worker = pane(&second, PaneId::Worker(2)).await;
+    assert_eq!(list(&mut orch).await, before);
 
-    let tasks = board(orch.call(Op::Task { action: TaskAction::List }).await.unwrap());
-    assert_eq!(tasks.len(), 3, "every block is on the board, links or no links");
-    assert_eq!(tasks[0].id, dangling);
-    assert_eq!(
-        tasks[0].block.parent.as_deref(),
-        Some("task-nobody-posted"),
-        "a link to nothing is kept as written — validating it away would lose what was meant",
-    );
-    assert_eq!(tasks[2].block.parent.as_deref(), Some(first.as_str()));
-    assert_ne!(first, second);
+    assert_eq!(number(orch.call(open_task("errors name the token", None, Some(1))).await.unwrap()), 3);
+
+    let why = refusal(worker.call(set(2, TaskStatus::Done)).await.unwrap());
+    assert!(why.contains("worker-2, earlier run"), "{why}");
+    worker.call(set(2, TaskStatus::InProgress)).await.unwrap();
+    worker.call(set(2, TaskStatus::Done)).await.unwrap();
+
+    let record = list(&mut orch).await.remove(1);
+    let runs: Vec<&str> = record.chain.iter().map(|l| l.run.as_str()).collect();
+    assert_eq!(runs, vec!["run-1", "run-1", "run-2", "run-2"], "the chain shows where one run ended");
+    assert_eq!(record.owner.unwrap().lineage, "lin-2");
+}
+
+/// The task store's own pipe: a follower from zero sees every chain entry once,
+/// in order, whether it was written before or after it subscribed.
+#[tokio::test]
+async fn the_task_pipe_replays_without_gaps_and_the_run_log_stays_empty() {
+    let fleet = start_hub().await;
+    let mut orch = pane(&fleet, PaneId::Orch).await;
+    let mut run_log = fleet.store.events_since(0).unwrap().len();
+    assert_eq!(run_log, 0);
+
+    let goal = number(orch.call(open_goal("one grammar")).await.unwrap());
+    orch.call(open_task("before the follower", None, Some(goal))).await.unwrap();
+    let mut follower = fleet.tasks.follow(0).unwrap();
+    orch.call(open_task("after the follower", None, Some(goal))).await.unwrap();
+    orch.call(set(2, TaskStatus::InProgress)).await.unwrap();
+
+    let mut seen = Vec::new();
+    for _ in 0..4 {
+        let (seq, event) = follower.next().await.unwrap().expect("the pipe is open");
+        let FleetEvent::Chain { task, .. } = event else { panic!("only chain entries: {event:?}") };
+        seen.push((seq, task));
+    }
+    assert_eq!(seen, vec![(1, 1), (2, 2), (3, 3), (4, 2)]);
+
+    run_log = fleet.store.events_since(0).unwrap().len();
+    assert_eq!(run_log, 0, "task entries never enter the run log");
+}
+
+/// A hub built without a task store says so instead of recording anywhere else.
+#[tokio::test]
+async fn a_hub_without_a_task_store_refuses_task_operations() {
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let (app, _writes, asks) = spawn_app(vec![]);
+    let hub = Hub::new(store.clone(), app);
+    for op in [open_goal("one grammar"), Op::Task { action: TaskAction::List }] {
+        let why = refusal(hub.handle(PaneId::Orch, op).await);
+        assert!(why.contains("no task store attached"), "{why}");
+    }
+    assert!(store.events_since(0).unwrap().is_empty());
+    assert_eq!(asks.load(Ordering::Relaxed), 0);
 }

@@ -34,7 +34,7 @@ use fleetor_core::event::FleetEvent;
 use fleetor_core::handoff::Handoff;
 use fleetor_core::message::Message;
 use fleetor_core::pane::{PaneEntry, PaneId, PaneState};
-use fleetor_core::task::{self, TaskBlock, TaskUpdate};
+use fleetor_core::task::{self, ChainEntry, Kind, TaskBlock, TaskRecord};
 use fleetor_core::wire::{Hello, Op, OpResult, Request, Response, TaskAction};
 use fleetor_core::{ids, Store};
 use fleetor_ipc::{Conn, Transport};
@@ -100,7 +100,26 @@ pub struct Hub {
     state: Arc<HubState>,
     store: Arc<dyn Store>,
     app: mpsc::UnboundedSender<AppCommand>,
+    tasks: Option<TaskSide>,
 }
+
+/// The run and lineage every chain entry this hub writes is stamped with.
+#[derive(Debug, Clone)]
+pub struct TaskContext {
+    pub run: String,
+    pub lineage: String,
+}
+
+/// The target's task store (D-100). Written only by [`Hub::task`].
+struct TaskSide {
+    store: Arc<dyn Store>,
+    ctx: TaskContext,
+    /// Held across read-then-append, so a number is assigned once.
+    write: Mutex<()>,
+}
+
+const NO_TASK_STORE: &str = "this fleet has no task store attached, so `fleet task` cannot \
+                             record or read anything — tell the operator";
 
 impl Hub {
     /// A hub whose pane ops are served by the fleet app holding the pty registry.
@@ -111,6 +130,22 @@ impl Hub {
             state: Arc::new(HubState { last_inbound_from: Mutex::new(HashMap::new()) }),
             store,
             app,
+            tasks: None,
+        })
+    }
+
+    /// A hub that also serves `fleet task` from the target's task store.
+    pub fn with_tasks(
+        store: Arc<dyn Store>,
+        app: mpsc::UnboundedSender<AppCommand>,
+        tasks: Arc<dyn Store>,
+        ctx: TaskContext,
+    ) -> Arc<Hub> {
+        Arc::new(Hub {
+            state: Arc::new(HubState { last_inbound_from: Mutex::new(HashMap::new()) }),
+            store,
+            app,
+            tasks: Some(TaskSide { store: tasks, ctx, write: Mutex::new(()) }),
         })
     }
 
@@ -211,98 +246,18 @@ impl Hub {
         }
     }
 
-    /// `fleet task post|update|list` — the blackboard (WP-05).
+    /// `fleet task …` — goals and tasks in the target's task store (D-100).
     ///
-    /// **Read the signature first: this arm is not `async` and never touches
-    /// `self.app`.** Every other op here asks the app to do something to a
-    /// terminal. This one only writes to, and reads from, the log. That is the
-    /// whole of what makes the board a diary rather than a dispatcher, and it is
-    /// checkable rather than asserted — `crates/fleetor-server/tests/task_board.rs`
-    /// pins that ten posted blocks send the app exactly zero commands and leave a
-    /// `fleet send` byte-identical.
-    ///
-    /// Two asymmetries with the message path, both deliberate:
-    ///
-    ///  - **A failed append fails the op.** For a message the store is a record
-    ///    of something that already happened, so a logging failure is reported to
-    ///    stderr and the send still succeeds. For a task the store *is* the
-    ///    deliverable: if the append fails, nothing happened at all, and telling
-    ///    the poster otherwise would put a block on a board that does not have it.
-    ///  - **An update names a block that must already be there.** Referential
-    ///    validation, the same class as "no pane worker-9 is running" — not a
-    ///    gate. It constrains nothing about *which* status may follow which (any
-    ///    may follow any, `task.rs`), only that a claim has something to be a
-    ///    claim about. A typo'd id would otherwise vanish into the log unread.
+    /// Not `async` and never touches `self.app`: task operations ask the app
+    /// for nothing. A failed append fails the op, because the store is the
+    /// deliverable.
     fn task(&self, from: PaneId, action: TaskAction) -> OpResult {
-        match action {
-            TaskAction::Post {
-                outcome,
-                technical,
-                semantic,
-                worker,
-                instructions,
-                parent,
-                converges_on,
-            } => {
-                let block = match TaskBlock::new(
-                    &outcome,
-                    &technical,
-                    &semantic,
-                    worker,
-                    instructions.as_deref(),
-                    parent.as_deref(),
-                    converges_on.as_deref(),
-                ) {
-                    Ok(block) => block,
-                    Err(message) => return OpResult::Error { message },
-                };
-                let task_id = ids::new_id("task");
-                match self.store.append_event(&block.into_event(&task_id, from)) {
-                    Ok(_) => OpResult::Recorded { record_id: task_id },
-                    Err(e) => OpResult::Error {
-                        message: format!("the board could not be written to, so nothing was posted: {e}"),
-                    },
-                }
-            }
-            TaskAction::Update { task, status, note } => {
-                let update = match TaskUpdate::new(&task, status, note.as_deref()) {
-                    Ok(update) => update,
-                    Err(message) => return OpResult::Error { message },
-                };
-                let tasks = match self.board() {
-                    Ok(tasks) => tasks,
-                    Err(e) => return e,
-                };
-                if !tasks.iter().any(|entry| entry.id == update.task) {
-                    return OpResult::Error {
-                        message: format!(
-                            "no task {:?} is on the board — `fleet task list` shows the ids",
-                            update.task
-                        ),
-                    };
-                }
-                let task_id = update.task.clone();
-                match self.store.append_event(&update.into_event(from)) {
-                    Ok(_) => OpResult::Recorded { record_id: task_id },
-                    Err(e) => OpResult::Error {
-                        message: format!("the board could not be written to, so nothing changed: {e}"),
-                    },
-                }
-            }
-            TaskAction::List => match self.board() {
-                Ok(tasks) => OpResult::Board { tasks },
-                Err(e) => e,
-            },
-        }
-    }
-
-    /// The board, folded out of the log. There is no cached copy and no second
-    /// table: two hubs over one store compute the same board, and a restart
-    /// forgets nothing.
-    fn board(&self) -> Result<Vec<fleetor_core::task::TaskEntry>, OpResult> {
-        match self.store.events_since(0) {
-            Ok(log) => Ok(task::board(log.iter().map(|(_, event)| event))),
-            Err(e) => Err(OpResult::Error { message: format!("the board could not be read: {e}") }),
+        let Some(side) = &self.tasks else {
+            return OpResult::Error { message: NO_TASK_STORE.to_string() };
+        };
+        match side.serve(from, action) {
+            Ok(result) => result,
+            Err(message) => OpResult::Error { message },
         }
     }
 
@@ -574,4 +529,78 @@ impl Hub {
             eprintln!("hub: could not append {}: {e}", event.kind());
         }
     }
+}
+
+impl TaskSide {
+    fn serve(&self, from: PaneId, action: TaskAction) -> Result<OpResult, String> {
+        match action {
+            TaskAction::Post {
+                goal,
+                outcome,
+                technical,
+                vision,
+                owner,
+                instructions,
+                parent,
+                converges_on,
+            } => {
+                let block = TaskBlock::new(
+                    if goal { Kind::Goal } else { Kind::Task },
+                    &outcome,
+                    &technical,
+                    &vision,
+                    owner,
+                    instructions.as_deref(),
+                    parent,
+                    converges_on,
+                )?;
+                task::may_open(from, &block)?;
+                let _writing = self.write.lock().unwrap_or_else(|e| e.into_inner());
+                let board = self.board()?;
+                if let Some(parent) = block.parent {
+                    if find(&board, parent)?.block.kind != Kind::Goal {
+                        return Err(format!(
+                            "#{parent} is a task, and --parent names the goal a task serves — \
+                             `fleet task list` shows the goals"
+                        ));
+                    }
+                }
+                let number = board.iter().map(|record| record.number).max().unwrap_or(0) + 1;
+                self.append(number, from, ChainEntry::Opened { block })
+            }
+            TaskAction::Update { task, status, note } => {
+                let _writing = self.write.lock().unwrap_or_else(|e| e.into_inner());
+                let board = self.board()?;
+                find(&board, task)?.may_set(from, &self.ctx.lineage, status)?;
+                self.append(task, from, ChainEntry::status(status, note.as_deref()))
+            }
+            TaskAction::Show { task } => {
+                let board = self.board()?;
+                Ok(OpResult::Board { tasks: vec![find(&board, task)?.clone()] })
+            }
+            TaskAction::List => Ok(OpResult::Board { tasks: self.board()? }),
+        }
+    }
+
+    fn board(&self) -> Result<Vec<TaskRecord>, String> {
+        let log = self
+            .store
+            .events_since(0)
+            .map_err(|e| format!("the task store could not be read: {e}"))?;
+        Ok(task::board(log.iter().map(|(_, event)| event)))
+    }
+
+    fn append(&self, number: u64, from: PaneId, entry: ChainEntry) -> Result<OpResult, String> {
+        let event = entry.into_event(number, from, &self.ctx.run, &self.ctx.lineage);
+        self.store
+            .append_event(&event)
+            .map(|_| OpResult::Recorded { record_id: number.to_string() })
+            .map_err(|e| format!("the task store could not be written to, so nothing was recorded: {e}"))
+    }
+}
+
+fn find(board: &[TaskRecord], number: u64) -> Result<&TaskRecord, String> {
+    board.iter().find(|record| record.number == number).ok_or_else(|| {
+        format!("there is no #{number} — `fleet task list` shows the numbers")
+    })
 }

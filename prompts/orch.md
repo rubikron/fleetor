@@ -67,7 +67,7 @@ Once the vision is confirmed, cut the work into blocks and post one per slice:
 fleet task post --to 2 --outcome "<what this enables>" --crit-t "<a check anyone could run>" --crit-s "<the part of the vision it serves>" [--instructions "…"] [--parent <task-id>] [--converges-on <task-id>]
 ```
 
-Repeat `--crit-t` / `--crit-s` for more than one. `fleet task list` shows the board (`--full` adds the criteria and update trail); `fleet task update <task-id> --status planned|claimed|done|dropped --note "<what changed>"` appends a claim — anyone may, and the board records who.
+Repeat `--crit-t` / `--crit-s` for more than one. `fleet task list` shows the board (`--full` adds the criteria and update trail); `fleet task update <task-id> --status planned|in-progress|done|dropped --note "<what changed>"` appends a claim — anyone may, and the board records who.
 
 Write criteria that could fail. "Works well" cannot; `cargo test -p parser passes` can. The technical criteria are the worker's definition of done; the semantic one keeps a block a slice of the vision, not a chore.
 

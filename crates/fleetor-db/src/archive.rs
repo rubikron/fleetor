@@ -21,7 +21,7 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 use fleetor_core::event::FleetEvent;
-use fleetor_core::task::TaskChange;
+use fleetor_core::legacy_task::TaskChange;
 use rusqlite::{Connection, OpenFlags};
 
 /// How much of a headline a suggested run label gets before it is cut.
@@ -238,7 +238,7 @@ mod tests {
     use crate::SqliteStore;
     use fleetor_core::event::NoticeLevel;
     use fleetor_core::pane::PaneId;
-    use fleetor_core::task::TaskBlock;
+    use fleetor_core::legacy_task::TaskBlock;
     use fleetor_core::Store;
 
     fn message(body: &str) -> FleetEvent {
@@ -316,6 +316,40 @@ mod tests {
         assert_eq!(d.tasks, 1);
         assert_eq!(d.headline.as_deref(), Some("logstat can report its own version"));
         assert!(d.first_ts.is_some() && d.last_ts.is_some());
+    }
+
+    /// D-100 moved tasks out of the run log. A `state.db` written before that
+    /// still digests and replays, from the payload bytes an old build wrote.
+    #[test]
+    fn a_run_log_with_old_shape_task_events_still_digests_and_replays() {
+        let dir = tempdir();
+        let db = dir.join("state.db");
+        write_log(&db, &[message("take the parser")]);
+        let old = [
+            r#"{"type":"task","task":"task-1730413200123-0","from":"orch","at":1730413200123,"change":{"change":"posted","block":{"outcome":"the parser accepts nested groups","technical":["cargo test -p parser"],"semantic":["one grammar"],"worker":"worker-2"}}}"#,
+            r#"{"type":"task","task":"task-1730413200123-0","from":"worker-2","at":1730413300000,"change":{"change":"updated","status":"claimed","note":"on it"}}"#,
+        ];
+        {
+            let conn = Connection::open(&db).unwrap();
+            for payload in old {
+                conn.execute(
+                    "INSERT INTO events (ts, kind, payload) VALUES (1730413200123, 'task', ?1)",
+                    [payload],
+                )
+                .unwrap();
+            }
+        }
+        freeze(&db).unwrap();
+
+        let digest = digest(&db).unwrap();
+        assert_eq!(digest.events, 3, "no row was skipped");
+        assert_eq!(digest.headline.as_deref(), Some("the parser accepts nested groups"));
+
+        let replayed = events(&db, 0).unwrap();
+        assert_eq!(replayed.len(), 3);
+        for ((_, event), payload) in replayed[1..].iter().zip(old) {
+            assert_eq!(serde_json::to_string(event).unwrap(), payload, "replayed as it was written");
+        }
     }
 
     #[test]

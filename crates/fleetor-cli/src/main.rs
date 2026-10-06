@@ -21,10 +21,10 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use fleetor_core::pane::{PaneEntry, PaneId};
-use fleetor_core::task::{TaskEntry, TaskStatus};
+use fleetor_core::task::{ChainEntry, Kind, TaskRecord, TaskStatus};
 use fleetor_core::wire::{Hello, Op, OpResult, TaskAction};
 use fleetor_ipc::{Client, UnixTransport};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -97,11 +97,9 @@ enum Command {
         #[arg(long, required = true)]
         why: String,
     },
-    /// The task board: post a block, update one, or read the board (WP-05).
+    /// Goals and tasks: open, list, show and update them (D-100).
     ///
-    /// One verb with three subcommands rather than three verbs, because the
-    /// requirements spend the verb budget once: `task` is one word both briefs
-    /// have to teach and one entry in `brief::VERBS`.
+    /// One verb with subcommands, so `task` is one entry in `brief::VERBS`.
     Task {
         #[command(subcommand)]
         action: TaskCmd,
@@ -154,61 +152,60 @@ enum Command {
     Whoami,
 }
 
-/// The three things `fleet task` does.
-///
-/// **Flat flags, never JSON.** A weak model emits `--outcome "…" --crit-t "…"`
-/// far more reliably than a nested document, and a malformed JSON block would
-/// cost a whole turn to diagnose from a parser error.
+/// What `fleet task` does. Flat flags, never JSON.
 #[derive(Subcommand)]
 enum TaskCmd {
-    /// Put a block on the board: what it enables, how to check it, and whose it is.
+    /// Open a goal (`--goal`) or a task under one (`--parent <goal number>`).
     ///
-    /// Posting assigns nobody — the board is the record. Send the worker its job
-    /// with `fleet send` afterwards; that is the assignment.
+    /// Opening a task assigns nobody — send the worker its job with `fleet send`.
     Post {
-        /// The pane whose job this is: `orch`, or a worker as `2` / `worker-2`.
+        /// Open a goal instead of a task. Takes no value.
+        #[arg(long, num_args = 0..=1, value_name = "")]
+        goal: Option<Option<String>>,
+        /// The task's owner: a worker as `2` / `worker-2`. Leave out for unowned.
         #[arg(long, value_name = "PANE")]
-        to: String,
-        /// What this execution enables when it is done.
+        to: Option<String>,
+        /// What this enables when it is done.
         #[arg(long, required = true)]
         outcome: String,
-        /// A checkable technical criterion, command-shaped where possible.
-        /// Repeat for more than one.
-        #[arg(long = "crit-t", required = true, action = clap::ArgAction::Append, value_name = "CHECK")]
+        /// A technical check anyone could run. Repeatable; a task needs one.
+        #[arg(long = "crit-t", action = clap::ArgAction::Append, value_name = "CHECK")]
         crit_t: Vec<String>,
-        /// Which part of the confirmed vision this block serves. Repeatable.
-        #[arg(long = "crit-s", required = true, action = clap::ArgAction::Append, value_name = "VISION")]
+        /// Which part of the vision this serves. Repeatable; required.
+        #[arg(long = "crit-s", action = clap::ArgAction::Append, value_name = "VISION")]
         crit_s: Vec<String>,
-        /// Detail the worker needs that does not fit in the outcome.
+        /// Detail the owner needs that does not fit in the outcome.
         #[arg(long)]
         instructions: Option<String>,
-        /// The block this one was cut out of, by id.
-        #[arg(long, value_name = "TASK-ID")]
+        /// The goal this task serves, by number.
+        #[arg(long, value_name = "NUMBER")]
         parent: Option<String>,
-        /// The block this stream of work comes back together in, by id.
-        #[arg(long = "converges-on", value_name = "TASK-ID")]
+        /// The task this stream of work comes back together in, by number.
+        #[arg(long = "converges-on", value_name = "NUMBER")]
         converges_on: Option<String>,
     },
-    /// Append a claim to a block: a status, a note, or both.
-    ///
-    /// Anyone may update any block — the log records who, and that is the whole
-    /// of the accountability. Nothing is enforced: any status may follow any
-    /// other, because a worker who finds a failing criterion after saying `done`
-    /// has to be able to say so.
+    /// Change a task's status. `in-progress` takes it up and makes you its owner;
+    /// only the owner may say `done`.
     Update {
-        /// The block, by id — `fleet task list` shows them.
-        #[arg(value_name = "TASK-ID")]
-        task: String,
-        /// One of `planned`, `claimed`, `done`, `dropped`.
-        #[arg(long)]
-        status: Option<String>,
-        /// What changed, and what you checked. Required if `--status` is absent.
+        /// The task's number — `14`, not `#14`.
+        #[arg(value_name = "NUMBER")]
+        task: Option<String>,
+        /// One of `planned`, `in-progress`, `done`, `dropped`.
+        #[arg(long, required = true)]
+        status: String,
+        /// Why, or what you checked.
         #[arg(long)]
         note: Option<String>,
     },
-    /// Read the board back: one line per block, newest streams last.
+    /// One goal or task with its criteria and its whole chain.
+    Show {
+        /// The task's number — `14`, not `#14`.
+        #[arg(value_name = "NUMBER")]
+        task: Option<String>,
+    },
+    /// Every goal and task, one line each, tasks indented under their goal.
     List {
-        /// Show each block's criteria, instructions and update trail too.
+        /// Show criteria, instructions and each chain too.
         #[arg(long)]
         full: bool,
     },
@@ -230,7 +227,10 @@ fn run() -> Result<ExitCode> {
     let cli = Cli::parse();
     // `task list --full` is a rendering choice, not something the hub is told:
     // the wire carries the board, this side decides how much of it to print.
-    let full = matches!(cli.command, Command::Task { action: TaskCmd::List { full: true } });
+    let full = matches!(
+        cli.command,
+        Command::Task { action: TaskCmd::List { full: true } | TaskCmd::Show { .. } }
+    );
 
     // `whoami` answers from the environment alone: it is the first thing a
     // confused pane tries, and it must work even when the hub is down.
@@ -274,32 +274,59 @@ fn run() -> Result<ExitCode> {
     Ok(if report(result, full) { ExitCode::SUCCESS } else { ExitCode::FAILURE })
 }
 
-/// The `fleet task` wire payload. Parsing happens here rather than at the hub
-/// for the reason `PaneId` does: a typo costs a local error the model reads on
-/// its own stderr, not a socket round trip. What the hub still checks is what
-/// only it can — that the block being updated is actually on the board.
+/// The `fleet task` wire payload. Parsed here so a typo costs a local error
+/// on the model's own stderr rather than a socket round trip.
 fn task_action(action: TaskCmd) -> Result<TaskAction> {
     Ok(match action {
-        TaskCmd::Post { to, outcome, crit_t, crit_s, instructions, parent, converges_on } => {
+        TaskCmd::Post { goal, to, outcome, crit_t, crit_s, instructions, parent, converges_on } => {
+            if let Some(Some(value)) = &goal {
+                let n = value.trim().trim_start_matches('#');
+                anyhow::bail!(
+                    "--goal takes no value, it opens a goal — to open a task under goal {n}, \
+                     use --parent {n}"
+                );
+            }
             TaskAction::Post {
-                worker: to.parse::<PaneId>().map_err(|e| anyhow::anyhow!("{e}"))?,
+                goal: goal.is_some(),
+                owner: to
+                    .map(|pane| pane.parse::<PaneId>().map_err(|e| anyhow::anyhow!("{e}")))
+                    .transpose()?,
                 outcome,
                 technical: crit_t,
-                semantic: crit_s,
+                vision: crit_s,
                 instructions,
-                parent,
-                converges_on,
+                parent: parent.map(|raw| number(&raw, "--parent")).transpose()?,
+                converges_on: converges_on.map(|raw| number(&raw, "--converges-on")).transpose()?,
             }
         }
         TaskCmd::Update { task, status, note } => TaskAction::Update {
-            task,
-            status: status
-                .map(|s| TaskStatus::parse(&s).map_err(|e| anyhow::anyhow!("{e}")))
-                .transpose()?,
+            task: task_number(task, "update")?,
+            status: TaskStatus::parse(&status).map_err(|e| anyhow::anyhow!("{e}"))?,
             note,
         },
+        TaskCmd::Show { task } => TaskAction::Show { task: task_number(task, "show")? },
         TaskCmd::List { .. } => TaskAction::List,
     })
+}
+
+/// A task number as a model types it: `14` or a quoted `#14`.
+fn number(raw: &str, what: &str) -> Result<u64> {
+    raw.trim().trim_start_matches('#').parse().map_err(|_| {
+        anyhow::anyhow!("{what} takes a task number like 14, not {raw:?} — `fleet task list` shows them")
+    })
+}
+
+/// The positional number. An unquoted `#14` never arrives: the shell reads `#`
+/// as the start of a comment, so a missing number says so.
+fn task_number(raw: Option<String>, sub: &str) -> Result<u64> {
+    let Some(raw) = raw else {
+        anyhow::bail!(
+            "`fleet task {sub}` needs a task number and none arrived. If you typed `#14`, the \
+             shell read `#` as the start of a comment and dropped it — type the bare number: \
+             `fleet task {sub} 14`"
+        );
+    };
+    number(&raw, &format!("`fleet task {sub}`"))
 }
 
 /// The `fleet handoff` wire payload (WP-13).
@@ -387,133 +414,88 @@ fn roster_lines(panes: &[PaneEntry]) -> Vec<String> {
         .collect()
 }
 
-/// The board as a compact tree: one line per block, indented under its parent,
-/// `--full` adding its criteria, instructions and update trail beneath it.
-///
-/// Compact by default because the reading model is a pane with finite context —
-/// the whole board has to be affordable to look at, or it stops being looked at.
-/// Pure and separate from `report` so the shape is testable without capturing
-/// stdout, exactly like `roster_lines`.
-fn board_lines(tasks: &[TaskEntry], full: bool) -> Vec<String> {
+/// One line per goal or task, tasks indented under their goal; `full` adds
+/// criteria, instructions and the chain. Pure, so the shape is testable.
+fn board_lines(tasks: &[TaskRecord], full: bool) -> Vec<String> {
     if tasks.is_empty() {
         return vec![
-            "the board is empty — `fleet task post --to <pane> --outcome \"…\" \
-             --crit-t \"…\" --crit-s \"…\"` puts the first block on it"
+            "there are no goals or tasks yet — `fleet task post --goal --outcome \"…\" \
+             --crit-s \"…\"` opens the first goal"
                 .to_string(),
         ];
     }
-    let (order, cyclic) = tree_order(tasks);
     let mut lines = Vec::new();
-    if cyclic {
-        // Tolerated, not rejected: a cycle in the links is somebody's note about
-        // how the work fits together, and validating it into a legal graph is the
-        // workflow engine this board is deliberately not.
-        lines.push(
-            "note: the parent links contain a cycle, so the board is listed flat. \
-             Nothing depends on the shape — fix it or leave it"
-                .to_string(),
-        );
-    }
-    for (index, depth) in order {
-        let entry = &tasks[index];
+    for (index, depth) in tree_order(tasks) {
+        let record = &tasks[index];
         let indent = "  ".repeat(depth);
-        lines.push(format!("{indent}{}", summary(entry)));
+        lines.push(format!("{indent}{}", summary(record)));
         if full {
-            lines.extend(details(entry).into_iter().map(|line| format!("{indent}    {line}")));
+            lines.extend(details(record).into_iter().map(|line| format!("{indent}    {line}")));
         }
     }
     lines
 }
 
-/// `task-… [claimed] worker-2 — the parser accepts nested groups`. The id comes
-/// first because it is the thing that gets typed back into `fleet task update`.
-fn summary(entry: &TaskEntry) -> String {
-    let converges = entry
+/// `#14 [in-progress] worker-2 — the parser accepts nested groups`.
+fn summary(record: &TaskRecord) -> String {
+    let n = record.number;
+    let who = match (&record.block.kind, &record.owner) {
+        (Kind::Goal, _) => return format!("#{n} goal [{}] — {}", record.status, record.block.outcome),
+        (Kind::Task, Some(owner)) => owner.pane.to_string(),
+        (Kind::Task, None) => "unowned".to_string(),
+    };
+    let converges = record
         .block
         .converges_on
-        .as_deref()
-        .map(|id| format!("  → converges on {id}"))
+        .map(|n| format!("  → converges on #{n}"))
         .unwrap_or_default();
-    format!(
-        "{} [{}] {} — {}{converges}",
-        entry.id, entry.status, entry.block.worker, entry.block.outcome
-    )
+    format!("#{n} [{}] {who} — {}{converges}", record.status, record.block.outcome)
 }
 
-/// What `--full` adds. Every claim is attributed, because who said a block was
-/// done is the part WP-06's review will need.
-fn details(entry: &TaskEntry) -> Vec<String> {
+fn details(record: &TaskRecord) -> Vec<String> {
     let mut lines: Vec<String> =
-        entry.block.technical.iter().map(|c| format!("technical: {c}")).collect();
-    lines.extend(entry.block.semantic.iter().map(|c| format!("vision: {c}")));
-    if let Some(instructions) = &entry.block.instructions {
+        record.block.technical.iter().map(|c| format!("technical: {c}")).collect();
+    lines.extend(record.block.vision.iter().map(|c| format!("vision: {c}")));
+    if let Some(instructions) = &record.block.instructions {
         lines.push(format!("instructions: {instructions}"));
     }
-    lines.push(format!("posted by {}", entry.posted_by));
-    lines.extend(entry.updates.iter().map(|update| {
-        let what = match (update.status, update.note.as_deref()) {
-            (Some(status), Some(note)) => format!("[{status}] {note}"),
-            (Some(status), None) => format!("[{status}]"),
-            (None, Some(note)) => note.to_string(),
-            // `TaskUpdate::new` refuses this; rendered rather than panicked on,
-            // because a log written by an older build must still print.
-            (None, None) => "—".to_string(),
+    lines.extend(record.chain.iter().map(|line| {
+        let with = |what: String, note: &Option<String>| match note {
+            Some(note) => format!("{what} — {note}"),
+            None => what,
         };
-        format!("{} — {what}", update.from)
+        let what = match &line.entry {
+            ChainEntry::Opened { .. } => "opened this".to_string(),
+            ChainEntry::TakenUp { note } => with("took this up".to_string(), note),
+            ChainEntry::Status { status, note } => with(format!("marked it {status}"), note),
+        };
+        format!("{}: {what}", line.from)
     }));
     lines
 }
 
-/// Depth-first over the parent links, returning `(index, depth)` in render order.
-/// A block whose parent id names nothing on the board is a root — a dangling link
-/// is data, not an error, and the board still has to print.
-fn tree_order(tasks: &[TaskEntry]) -> (Vec<(usize, usize)>, bool) {
-    let index: HashMap<&str, usize> =
-        tasks.iter().enumerate().map(|(i, task)| (task.id.as_str(), i)).collect();
-    let parents: Vec<Option<usize>> = tasks
-        .iter()
-        .map(|task| task.block.parent.as_deref().and_then(|id| index.get(id).copied()))
-        .collect();
-
-    if has_cycle(&parents) {
-        return ((0..tasks.len()).map(|i| (i, 0)).collect(), true);
-    }
-
-    let mut children: Vec<Vec<usize>> = vec![Vec::new(); tasks.len()];
-    let mut roots: Vec<usize> = Vec::new();
-    for (child, parent) in parents.iter().enumerate() {
-        match parent {
-            Some(parent) => children[*parent].push(child),
-            None => roots.push(child),
-        }
-    }
-
+/// `(index, depth)` in render order: each goal, then the tasks that name it.
+/// A task whose parent is not in the list renders at the top level.
+fn tree_order(tasks: &[TaskRecord]) -> Vec<(usize, usize)> {
+    let numbers: HashSet<u64> = tasks.iter().map(|record| record.number).collect();
+    let child_of = |record: &TaskRecord| {
+        record.block.parent.filter(|parent| numbers.contains(parent) && *parent != record.number)
+    };
     let mut out = Vec::new();
-    for root in roots {
-        walk(root, 0, &children, &mut out);
-    }
-    (out, false)
-}
-
-fn walk(node: usize, depth: usize, children: &[Vec<usize>], out: &mut Vec<(usize, usize)>) {
-    out.push((node, depth));
-    for child in &children[node] {
-        walk(*child, depth + 1, children, out);
-    }
-}
-
-fn has_cycle(parents: &[Option<usize>]) -> bool {
-    (0..parents.len()).any(|start| {
-        let mut seen = HashSet::new();
-        let mut node = Some(start);
-        while let Some(current) = node {
-            if !seen.insert(current) {
-                return true;
-            }
-            node = parents[current];
+    for (index, record) in tasks.iter().enumerate() {
+        if child_of(record).is_some() {
+            continue;
         }
-        false
-    })
+        out.push((index, 0));
+        out.extend(
+            tasks
+                .iter()
+                .enumerate()
+                .filter(|(_, child)| child_of(child) == Some(record.number))
+                .map(|(child, _)| (child, 1)),
+        );
+    }
+    out
 }
 
 /// Which pane is running this command. Refusing beats guessing: an unattributed
@@ -940,194 +922,146 @@ mod tests {
         assert!(lines[0].contains("50%"), "{}", lines[0]);
     }
 
-    // --- the task board (WP-05) -------------------------------------------------
+    // --- goals and tasks (D-100) -----------------------------------------------
 
-    use fleetor_core::task::{TaskBlock, TaskEntry, TaskNote};
+    use fleetor_core::task::{board, TaskBlock};
 
-    fn entry(id: &str, parent: Option<&str>, worker: u8) -> TaskEntry {
-        TaskEntry {
-            id: id.into(),
-            block: TaskBlock::new(
-                &format!("outcome of {id}"),
-                &["cargo test -p parser".to_string()],
-                &["one grammar".to_string()],
-                PaneId::Worker(worker),
-                Some("start from the tokenizer"),
-                parent,
-                None,
-            )
-            .unwrap(),
-            posted_by: PaneId::Orch,
-            posted_at: 1,
-            status: TaskStatus::Planned,
-            updates: Vec::new(),
-        }
-    }
-
-    /// Everything a block needs to be worth posting is `required` in clap, not
-    /// documented and hoped for — the same contract-on-the-sender argument that
-    /// made `fleet cmd --why` required (D-045). A block with an outcome and no
-    /// checkable criterion cannot be argued with, which is the whole point of one.
-    #[test]
-    fn a_block_without_criteria_or_an_owner_is_refused_by_the_parser() {
-        let complete = ["fleet", "task", "post", "--to", "2", "--outcome", "o", "--crit-t", "t", "--crit-s", "s"];
-        assert!(Cli::try_parse_from(complete).is_ok());
-
-        for dropped in ["--to", "--outcome", "--crit-t", "--crit-s"] {
-            let mut argv: Vec<&str> = Vec::new();
-            let mut skip = false;
-            for arg in complete {
-                if skip {
-                    skip = false;
-                    continue;
-                }
-                if arg == dropped {
-                    skip = true;
-                    continue;
-                }
-                argv.push(arg);
-            }
-            assert!(Cli::try_parse_from(&argv).is_err(), "{dropped} must be required: {argv:?}");
-        }
-    }
-
-    /// A slice of work usually has more than one way to check it, so both
-    /// criteria flags repeat rather than taking one string a model would have to
-    /// join by hand.
-    #[test]
-    fn the_criteria_flags_repeat_and_keep_their_order() {
-        let cli = Cli::try_parse_from([
-            "fleet", "task", "post", "--to", "worker-3", "--outcome", "the parser lands",
-            "--crit-t", "cargo test -p parser", "--crit-t", "fleet task list shows it",
-            "--crit-s", "one grammar", "--parent", "task-1-0", "--converges-on", "task-1-9",
-        ])
-        .expect("a complete block");
+    fn action(argv: &[&str]) -> Result<TaskAction> {
+        let cli = Cli::try_parse_from(argv).map_err(|e| anyhow::anyhow!("{e}"))?;
         let Command::Task { action } = cli.command else { panic!("expected task") };
-        let TaskAction::Post { worker, technical, semantic, parent, converges_on, .. } =
-            task_action(action).unwrap()
-        else {
-            panic!("expected post")
-        };
-        assert_eq!(worker, PaneId::Worker(3));
-        assert_eq!(technical, vec!["cargo test -p parser", "fleet task list shows it"]);
-        assert_eq!(semantic, vec!["one grammar"]);
-        assert_eq!(parent.as_deref(), Some("task-1-0"));
-        assert_eq!(converges_on.as_deref(), Some("task-1-9"));
+        task_action(action)
     }
 
-    /// A status is parsed here, where a typo costs a local error rather than a
-    /// socket round trip — and the refusal names the four words the board uses.
+    /// Goal #1 with tasks #2 (owned by worker-2, taken up) and #3 (unowned).
+    fn records() -> Vec<TaskRecord> {
+        let crit = |s: &str| vec![s.to_string()];
+        let goal = TaskBlock::new(Kind::Goal, "one grammar", &[], &crit("the parser is the product"), None, None, None, None).unwrap();
+        let task = |owner, outcome: &str| {
+            TaskBlock::new(Kind::Task, outcome, &crit("cargo test -p parser"), &crit("one grammar"), owner, Some("start from the tokenizer"), Some(1), None).unwrap()
+        };
+        let at = |n, from, entry: ChainEntry| entry.into_event(n, from, "run-1", "lin-1");
+        board(&[
+            at(1, PaneId::Operator, ChainEntry::Opened { block: goal }),
+            at(2, PaneId::Orch, ChainEntry::Opened { block: task(Some(PaneId::Worker(2)), "nested groups parse") }),
+            at(3, PaneId::Orch, ChainEntry::Opened { block: task(None, "errors name the token") }),
+            at(2, PaneId::Worker(2), ChainEntry::status(TaskStatus::InProgress, Some("starting"))),
+        ])
+    }
+
+    #[test]
+    fn goal_is_a_flag_and_a_task_names_its_goal_with_parent() {
+        let TaskAction::Post { goal, owner, parent, technical, .. } =
+            action(&["fleet", "task", "post", "--goal", "--outcome", "one grammar", "--crit-s", "v"]).unwrap()
+        else {
+            panic!("expected a post")
+        };
+        assert!(goal && owner.is_none() && parent.is_none() && technical.is_empty());
+
+        let TaskAction::Post { goal, owner, parent, technical, vision, converges_on, .. } = action(&[
+            "fleet", "task", "post", "--to", "worker-3", "--outcome", "the parser lands",
+            "--crit-t", "cargo test -p parser", "--crit-t", "fleet task show 14",
+            "--crit-s", "one grammar", "--parent", "11", "--converges-on", "#12",
+        ])
+        .unwrap() else {
+            panic!("expected a post")
+        };
+        assert!(!goal);
+        assert_eq!(owner, Some(PaneId::Worker(3)));
+        assert_eq!((parent, converges_on), (Some(11), Some(12)));
+        assert_eq!(technical, vec!["cargo test -p parser", "fleet task show 14"]);
+        assert_eq!(vision, vec!["one grammar"]);
+
+        let TaskAction::Post { owner, .. } =
+            action(&["fleet", "task", "post", "--outcome", "o", "--crit-t", "t", "--crit-s", "s"]).unwrap()
+        else {
+            panic!("expected a post")
+        };
+        assert_eq!(owner, None, "an owner is optional");
+    }
+
+    /// `--goal 11` is never read as opening a goal.
+    #[test]
+    fn goal_with_a_number_is_refused_and_points_at_parent() {
+        for value in ["11", "#11"] {
+            let why = action(&["fleet", "task", "post", "--goal", value, "--outcome", "o", "--crit-s", "s"])
+                .unwrap_err()
+                .to_string();
+            assert!(why.contains("to open a task under goal 11, use --parent 11"), "{why}");
+        }
+    }
+
+    #[test]
+    fn a_task_number_is_bare_or_a_quoted_hash() {
+        for raw in ["14", "#14"] {
+            assert_eq!(action(&["fleet", "task", "show", raw]).unwrap(), TaskAction::Show { task: 14 });
+        }
+        assert_eq!(
+            action(&["fleet", "task", "update", "14", "--status", "in-progress", "--note", "on it"]).unwrap(),
+            TaskAction::Update { task: 14, status: TaskStatus::InProgress, note: Some("on it".into()) },
+        );
+        let why = action(&["fleet", "task", "show", "task-1-0"]).unwrap_err().to_string();
+        assert!(why.contains("task number like 14"), "{why}");
+    }
+
+    /// An unquoted `#14` is eaten by the shell, so the subcommand sees nothing.
+    #[test]
+    fn a_missing_number_explains_the_shell_comment() {
+        for argv in [vec!["fleet", "task", "show"], vec!["fleet", "task", "update", "--status", "done"]] {
+            let why = action(&argv).unwrap_err().to_string();
+            assert!(why.contains("`#` as the start of a comment"), "{why}");
+            assert!(why.contains(&format!("`fleet task {} 14`", argv[2])), "{why}");
+        }
+    }
+
     #[test]
     fn a_status_is_parsed_before_the_wire_and_a_typo_names_the_four() {
-        let update = |argv: &[&str]| {
-            let cli = Cli::try_parse_from(argv).expect("parses");
-            let Command::Task { action } = cli.command else { panic!("expected task") };
-            task_action(action)
-        };
-        let TaskAction::Update { task, status, note } =
-            update(&["fleet", "task", "update", "task-1-0", "--status", "done"]).unwrap()
-        else {
-            panic!("expected update")
-        };
-        assert_eq!(task, "task-1-0");
-        assert_eq!(status, Some(TaskStatus::Done));
-        assert_eq!(note, None);
-
-        let why = update(&["fleet", "task", "update", "task-1-0", "--status", "in-progress"])
-            .expect_err("must be refused")
-            .to_string();
+        let why = action(&["fleet", "task", "update", "14", "--status", "claimed"]).unwrap_err().to_string();
         for status in fleetor_core::task::TASK_STATUSES {
             assert!(why.contains(status), "the refusal names {status}: {why}");
         }
-
-        // A note alone is a legitimate update: something on the record without a
-        // claim of progress that has not happened.
-        assert!(update(&["fleet", "task", "update", "task-1-0", "--note", "blocked"]).is_ok());
+        assert!(Cli::try_parse_from(["fleet", "task", "update", "14", "--note", "x"]).is_err(), "no status");
     }
 
-    /// The empty board says what to type next. A blank answer would read as a
-    /// broken command rather than an empty record.
     #[test]
-    fn an_empty_board_says_how_to_put_something_on_it() {
+    fn an_empty_list_says_how_to_open_the_first_goal() {
         let lines = board_lines(&[], false);
         assert_eq!(lines.len(), 1);
-        assert!(lines[0].contains("fleet task post"), "{}", lines[0]);
+        assert!(lines[0].contains("fleet task post --goal"), "{}", lines[0]);
     }
 
-    /// The compact form is one line per block: the id first (it is what gets
-    /// typed back), then the claimed status, the owner, and the outcome.
     #[test]
-    fn the_compact_board_is_one_line_per_block_with_the_id_first() {
-        let mut done = entry("task-1-1", None, 3);
-        done.status = TaskStatus::Done;
-        let lines = board_lines(&[entry("task-1-0", None, 2), done], false);
-        assert_eq!(lines.len(), 2, "one line each: {lines:#?}");
-        assert!(lines[0].starts_with("task-1-0 "), "{}", lines[0]);
-        assert!(lines[0].contains("[planned]") && lines[0].contains("worker-2"), "{}", lines[0]);
-        assert!(lines[1].contains("[done]") && lines[1].contains("worker-3"), "{}", lines[1]);
-        assert!(!lines[0].contains("cargo test"), "criteria are on demand: {}", lines[0]);
-    }
-
-    /// Children indent under their parent, and a `converges-on` link is a suffix
-    /// rather than a second tree — a stream of work has one place it was cut from
-    /// and may come back together anywhere.
-    #[test]
-    fn children_indent_under_their_parent_and_convergence_is_a_suffix() {
-        let mut child = entry("task-1-1", Some("task-1-0"), 3);
-        child.block.converges_on = Some("task-1-9".into());
-        let lines = board_lines(&[entry("task-1-0", None, 2), child], false);
-        assert!(!lines[0].starts_with(' '), "a root is flush left: {}", lines[0]);
-        assert!(lines[1].starts_with("  task-1-1"), "a child indents: {}", lines[1]);
-        assert!(lines[1].contains("→ converges on task-1-9"), "{}", lines[1]);
-    }
-
-    /// A parent id naming nothing on the board is data, not an error — the block
-    /// renders as a root and the board still prints.
-    #[test]
-    fn a_dangling_parent_link_renders_as_a_root() {
-        let lines = board_lines(&[entry("task-1-1", Some("task-nowhere"), 2)], false);
-        assert_eq!(lines.len(), 1);
-        assert!(lines[0].starts_with("task-1-1"), "{}", lines[0]);
-    }
-
-    /// Cycles are tolerated: rendered flat with a note, never validated into a
-    /// legal graph. A board that refused a cycle would be a workflow engine.
-    #[test]
-    fn a_cycle_renders_flat_with_a_note_rather_than_failing() {
-        let lines = board_lines(
-            &[entry("task-1-0", Some("task-1-1"), 2), entry("task-1-1", Some("task-1-0"), 3)],
-            false,
+    fn the_list_is_one_line_each_with_tasks_under_their_goal() {
+        assert_eq!(
+            board_lines(&records(), false),
+            vec![
+                "#1 goal [planned] — one grammar",
+                "  #2 [in-progress] worker-2 — nested groups parse",
+                "  #3 [planned] unowned — errors name the token",
+            ]
         );
-        assert!(lines[0].starts_with("note:") && lines[0].contains("cycle"), "{}", lines[0]);
-        assert_eq!(lines.len(), 3, "the note plus both blocks: {lines:#?}");
-        assert!(lines[1].starts_with("task-1-0") && lines[2].starts_with("task-1-1"), "{lines:#?}");
     }
 
-    /// `--full` is the criteria-on-demand switch: the definition of done, the
-    /// vision link, and every attributed claim made since.
     #[test]
-    fn full_shows_the_criteria_and_the_attributed_update_trail() {
-        let mut task = entry("task-1-0", None, 2);
-        task.updates = vec![
-            TaskNote { from: PaneId::Worker(2), at: 2, status: Some(TaskStatus::Claimed), note: Some("on it".into()) },
-            TaskNote { from: PaneId::Worker(4), at: 3, status: None, note: Some("crit 2 fails".into()) },
-        ];
-        let full = board_lines(&[task], true).join("\n");
+    fn a_task_whose_goal_is_not_listed_renders_at_the_top_level() {
+        let lines = board_lines(&records()[1..2], false);
+        assert_eq!(lines, vec!["#2 [in-progress] worker-2 — nested groups parse"]);
+    }
+
+    #[test]
+    fn full_shows_the_criteria_and_the_attributed_chain() {
+        let full = board_lines(&records()[1..2], true).join("\n");
         assert!(full.contains("technical: cargo test -p parser"), "{full}");
         assert!(full.contains("vision: one grammar"), "{full}");
         assert!(full.contains("instructions: start from the tokenizer"), "{full}");
-        assert!(full.contains("posted by orch"), "{full}");
-        assert!(full.contains("worker-2 — [claimed] on it"), "the trail is attributed: {full}");
-        assert!(full.contains("worker-4 — crit 2 fails"), "a peer may claim too: {full}");
+        assert!(full.contains("orch: opened this"), "{full}");
+        assert!(full.contains("worker-2: took this up — starting"), "{full}");
     }
 
-    /// A board answer is a successful op — it is a record being read, not a
-    /// delivery, so nothing about a pty is claimed either way.
     #[test]
-    fn a_recorded_claim_and_a_board_read_both_exit_zero() {
-        assert!(report(OpResult::Recorded { record_id: "task-1-0".into() }, false));
-        assert!(report(OpResult::Board { tasks: vec![entry("task-1-0", None, 2)] }, true));
-        assert!(report(OpResult::Board { tasks: vec![] }, false), "an empty board is not a failure");
+    fn a_recorded_entry_and_a_list_both_exit_zero() {
+        assert!(report(OpResult::Recorded { record_id: "14".into() }, false));
+        assert!(report(OpResult::Board { tasks: records() }, true));
+        assert!(report(OpResult::Board { tasks: vec![] }, false), "an empty list is not a failure");
     }
 
     // --- the receipt (WP-06) ----------------------------------------------------
