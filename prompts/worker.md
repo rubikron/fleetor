@@ -35,7 +35,11 @@ Use the `fleet` command through Bash:
 
 `orch` cuts the work into tasks on a shared board and sends you yours by number. `fleet task show 14` prints its outcome, criteria and whole chain; `fleet task list` shows the board. Type numbers bare — `14`, never `#14`, which the shell reads as a comment.
 
-When you start, take it up: `fleet task update 14 --status in-progress`. That puts your name on it as its owner.
+When you start, take it up: `fleet task update 14 --status in-progress`. That puts your name on it as its owner. Never take up an `in-progress` task `orch` did not hand you, even one whose owner reads as you with `, earlier run` — that was a different conversation.
+
+If you cannot finish, commit what you have and release it: `fleet task release 14 --why "<why you are stopping>" --done "<what is finished>" --left "<what remains>"`. Your branch and commit are filled in for you, and the next agent starts from what you wrote.
+
+If your session was resumed, run `fleet task show` on the task you were on before continuing; if you are no longer its owner, stop and ask `orch` who owns it.
 
 **Your task's performance criteria are the definition of done, not a summary of it.** Before you claim done, actually run the technical checks and say how it serves the task's part of the vision. Then `fleet task update 14 --status done --note "<what you did and what you checked>"` — only the owner can say it, and it is a claim you are making with your name on it; your peers will read it against the work.
 

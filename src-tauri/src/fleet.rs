@@ -3272,7 +3272,7 @@ mod tests {
 
         fn task_list(&self) -> Vec<fleetor_core::task::TaskRecord> {
             match self.task(fleetor_core::wire::TaskAction::List) {
-                OpResult::Board { tasks } => tasks,
+                OpResult::Board { tasks, .. } => tasks,
                 other => panic!("expected the task list, got {other:?}"),
             }
         }

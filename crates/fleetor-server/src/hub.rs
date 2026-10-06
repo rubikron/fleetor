@@ -608,10 +608,14 @@ impl TaskSide {
             }
             TaskAction::Show { task } => {
                 let board = self.board()?;
-                Ok(OpResult::Board { tasks: vec![find(&board, task)?.clone()] })
+                Ok(self.reply(vec![find(&board, task)?.clone()]))
             }
-            TaskAction::List => Ok(OpResult::Board { tasks: self.board()? }),
+            TaskAction::List => Ok(self.reply(self.board()?)),
         }
+    }
+
+    fn reply(&self, tasks: Vec<TaskRecord>) -> OpResult {
+        OpResult::Board { tasks, lineage: Some(self.ctx.lineage.clone()) }
     }
 
     fn board(&self) -> Result<Vec<TaskRecord>, String> {

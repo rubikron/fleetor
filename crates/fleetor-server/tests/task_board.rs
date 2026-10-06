@@ -156,7 +156,7 @@ fn refusal(result: OpResult) -> String {
 
 fn records(result: OpResult) -> Vec<TaskRecord> {
     match result {
-        OpResult::Board { tasks } => tasks,
+        OpResult::Board { tasks, .. } => tasks,
         other => panic!("expected records, got {other:?}"),
     }
 }
