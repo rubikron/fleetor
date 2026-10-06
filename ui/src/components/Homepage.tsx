@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from "react";
-import { pickTarget, setTarget } from "../fleet/api";
+import { useCallback, useState, useEffect, useRef } from "react";
+import { fetchNextConfig, pickTarget, setTarget } from "../fleet/api";
 import {
   DEFAULT_YOUR_LOGIN,
   ORCH,
@@ -14,7 +14,6 @@ import { SeatRow, CredentialSourcePicker } from "./StartGate";
 const DEBOUNCE_MS = 600;
 
 interface HomepageProps {
-  config: FleetConfig | null;
   runs: RunsView;
   /// A launch is in flight: New fleet and the session rows wait for it.
   launching: boolean;
@@ -22,25 +21,35 @@ interface HomepageProps {
   launchError: string | null;
   onStart: () => void;
   onOpen: (id: string) => void;
+  onShowFleet: () => void;
   onTargetChanged: () => void;
 }
 
 export function Homepage({
-  config,
   runs,
   launching,
   launchError,
   onStart,
   onOpen,
+  onShowFleet,
   onTargetChanged,
 }: HomepageProps) {
-  const [configExpanded, setConfigExpanded] = useState(false);
+  // The gate's own config: the next fleet's target, not the running fleet's.
+  const [config, setConfig] = useState<FleetConfig | null>(null);
+  const [configExpanded, setConfigExpanded] = useState(true);
   const [picking, setPicking] = useState(false);
   const [pickError, setPickError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [draft, setDraft] = useState<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pickers = useSeatPickers();
+
+  const loadConfig = useCallback(() => {
+    fetchNextConfig()
+      .then(setConfig)
+      .catch((e) => setPickError(String(e)));
+  }, []);
+  useEffect(loadConfig, [loadConfig]);
 
   const targetPath = config?.target_path ?? "";
   const shown = draft ?? targetPath;
@@ -53,6 +62,7 @@ export function Homepage({
     try {
       await setTarget(trimmed);
       setDraft(null);
+      loadConfig();
       onTargetChanged();
     } catch (e) {
       setPickError(String(e));
@@ -81,6 +91,7 @@ export function Homepage({
       const picked = await pickTarget();
       if (picked) {
         setDraft(null);
+        loadConfig();
         onTargetChanged();
       }
     } catch (e) {
@@ -115,7 +126,11 @@ export function Homepage({
                 <>
                   <span className="homepage__run-label">{run.label || run.id.slice(0, 8)}</span>
                   <span className="homepage__run-meta mono">
-                    {run.cannot_reopen
+                    {run.state === "running"
+                      ? "Running now"
+                      : run.state === "archiving"
+                        ? "Archiving…"
+                        : run.cannot_reopen
                       ? `can’t reopen — ${run.cannot_reopen}`
                       : `${run.messages} msgs · ${run.events} events${run.target ? ` · ${run.target}` : ""}`}
                   </span>
@@ -123,7 +138,11 @@ export function Homepage({
               );
               return (
                 <li key={run.id}>
-                  {run.cannot_reopen ? (
+                  {run.state === "running" ? (
+                    <button className="homepage__run" onClick={onShowFleet} title="Go to the running fleet">
+                      {body}
+                    </button>
+                  ) : run.state === "archiving" || run.cannot_reopen ? (
                     <div className="homepage__run homepage__run--closed">{body}</div>
                   ) : (
                     <button

@@ -175,3 +175,33 @@ fn when_nothing_opens_what_survives_is_said_once() {
         "each row still states its own cause:\n{list}"
     );
 }
+
+/// **One row per run, in the state it is in** (D-099, stories 19, 21, 22): the
+/// running row goes to the fleet rather than relaunching it, an archiving row
+/// offers nothing, and only an archived row reopens or has archive actions.
+#[test]
+fn a_row_offers_what_its_state_allows() {
+    let Some(all) = rendered() else { return };
+    let list = markup(&all, "states");
+    let rows = rows(&list);
+    assert_eq!(rows.len(), 3, "{list}");
+    let row = |label: &str| {
+        rows.iter().find(|r| r.contains(label)).unwrap_or_else(|| panic!("no row for {label}:\n{list}"))
+    };
+    let has_actions = |r: &str| r.contains(">Export<") || r.contains(">Rename<") || r.contains(">Delete<");
+
+    let running = row("live work");
+    assert!(running.contains("Running now"), "{running}");
+    assert!(running.contains("title=\"Go to the running fleet\""), "it navigates:\n{running}");
+    assert!(!running.contains("Open this session"), "and never reopens the run it is:\n{running}");
+    assert!(!has_actions(running), "there is no archive to act on yet:\n{running}");
+
+    let archiving = row("just left");
+    assert!(archiving.contains("Archiving…"), "{archiving}");
+    assert!(!archiving.contains("<button"), "an archiving row is inert:\n{archiving}");
+
+    let archived = row("parser rewrite");
+    assert!(archived.contains("Open this session"), "{archived}");
+    assert!(has_actions(archived), "{archived}");
+    assert!(!archived.contains("Running now") && !archived.contains("Archiving…"), "{archived}");
+}
