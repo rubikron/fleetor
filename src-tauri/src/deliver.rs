@@ -178,8 +178,8 @@ pub fn spawn_delivery(
 }
 
 /// One roster row, with its context gauge attached if one could be sampled
-/// (WP-04). An unsampled pane — the orchestrator, always; a worker with no
-/// completed turn yet — comes back unchanged, `context: None`.
+/// (WP-04). An unsampled pane — one with no completed turn yet — comes back
+/// unchanged, `context: None`.
 ///
 /// The one place a live sample can turn into a persisted event: on a pane's
 /// first crossing of [`context_gauge::NOTICE_THRESHOLD_PCT`] this session,
@@ -665,17 +665,6 @@ mod tests {
         assert_eq!(context.used_tokens, under);
         assert_eq!(context.pct, 5, "a twentieth of the worker window is 5%");
         assert!(notified.is_empty(), "well under the notice threshold");
-    }
-
-    /// The orchestrator is never recorded in `GaugeSources` at all (its
-    /// transcript is the operator's own — out of scope), so it must never
-    /// carry a context gauge no matter how the roster is asked.
-    #[test]
-    fn orch_never_carries_a_context_gauge() {
-        let entry = PaneEntry::new(PaneId::Orch, fleetor_core::pane::PaneState::Live);
-        let mut notified = HashSet::new();
-        let augmented = augment_with_gauge(entry, &gauges(), &store(), &mut notified);
-        assert_eq!(augmented.context, None);
     }
 
     /// The invariant guardrail with teeth: **at most one** Notice per pane per

@@ -384,9 +384,9 @@ fn placing_the_orchestrator_returns_the_notices_the_operator_should_read() {
     assert!(placed.notices[1].1.contains("Not logged in"));
     assert!(placed.notices[1].1.contains("/login"));
 
-    // `orch` is not on the live gauge — the Loadout counter is a per-run budget
-    // line for the panes doing the work, and the gauge samples worker transcripts.
-    assert!(placed.gauge.is_none(), "orch records no transcript source");
+    // `orch` is on the live gauge, read from the fleet's own config dir for it.
+    let gauge = placed.gauge.expect("orch records a transcript source");
+    assert_eq!(gauge.config_dir, config_dir);
 }
 
 /// **A machine with no `fleet` binary is warned about, once, loudly.**

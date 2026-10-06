@@ -449,11 +449,14 @@ fn checkpoint_11_the_window_the_pane_is_told_is_the_gauges_own_and_an_absent_rea
                 source.config_dir.display(),
             );
         }
+        let orch = pass.orch.gauge.as_ref().unwrap_or_else(|| {
+            panic!("{}: the attended seat records no gauge source", pass.spec.name)
+        });
         assert!(
-            pass.orch.gauge.is_none(),
-            "{}: the attended seat is the operator's own and sampling its transcript is an \
-             ownership call above this seam",
+            pass.is_contained(&orch.config_dir),
+            "{}: the attended seat's gauge reads from outside the layout: {}",
             pass.spec.name,
+            orch.config_dir.display(),
         );
 
         // Nothing has run yet, so there is nothing honest to report.

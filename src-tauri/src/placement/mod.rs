@@ -912,9 +912,20 @@ fn place_orch(
         &host.orch_path(),
     );
 
-    // `orch` is not on the live gauge: the Loadout counter is a per-run budget line
-    // for the panes doing the work, and the gauge samples worker transcripts.
-    //
+    // The orchestrator is on the live gauge like any worker: its config dir is the
+    // fleet's own (D-062), so this reads nothing of the operator's. No window is
+    // exported to it, so with no pick it runs the account's default model.
+    let gauge = TranscriptSource {
+        harness,
+        config_dir: config_dir.clone(),
+        cwd: target.to_path_buf(),
+        window_tokens: harness
+            .spec()
+            .gauge
+            .window_tokens
+            .map(|_| context_gauge::model_window_tokens(Some(model.unwrap_or("default")))),
+    };
+
     // **`model` is what the gate picked, and `None` is still the ordinary answer**
     // (M2, C56). The manifest keeps the absence rather than inventing a name: an
     // orchestrator on the sentinel runs the operator's login and whatever model that
@@ -922,7 +933,7 @@ fn place_orch(
     // with #35 is that the operator may now say otherwise, and when they do the
     // record says what they said.
     let model = model.map(str::to_string);
-    Ok(Placed { command, notices, gauge: None, harness: harness.spec(), model, scrubbed: &[] })
+    Ok(Placed { command, notices, gauge: Some(gauge), harness: harness.spec(), model, scrubbed: &[] })
 }
 
 /// One fenced worker: its own checkout of the target, its own `HOME`, the fleet's

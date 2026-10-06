@@ -10,7 +10,7 @@ import {
   type MessageEvent,
   type TaskEvent,
 } from "../fleet/types";
-import { OUT_OF_SCOPE, type ContextGaugeMap } from "../fleet/useContextGauge";
+import type { ContextGaugeMap } from "../fleet/useContextGauge";
 import type { Theme } from "../ui/useTheme";
 
 const ORCH_SCROLLBACK = 10000;
@@ -78,7 +78,7 @@ export function TerminalGrid({
               onStatus={onStatus}
               onRestart={() => onRestart(pane)}
               onFocusReady={(focus) => onRegisterFocus(pane, focus)}
-              gauge={pane === ORCH ? OUT_OF_SCOPE : gauges[pane]}
+              gauge={gauges[pane]}
             />
           </div>
         ))}

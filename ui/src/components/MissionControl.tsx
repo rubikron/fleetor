@@ -13,7 +13,7 @@ import { gaugeView } from "../lib/contextGaugeTone";
 import { PaneGauge } from "./PaneGauge";
 import { HarnessMark } from "./PaneHead";
 import { statusTone, STATUS_LABEL } from "../lib/statusTone";
-import { OUT_OF_SCOPE, type ContextGaugeMap } from "../fleet/useContextGauge";
+import type { ContextGaugeMap } from "../fleet/useContextGauge";
 
 const ALL_PANES: PaneId[] = [ORCH, ...WORKER_SLOTS.map(workerPane)];
 
@@ -99,7 +99,7 @@ export function MissionControl({
                 <span className="mc-card__model mono">{identity.model}</span>
               )}
               {pct === null && (
-                <PaneGauge reading={pane === ORCH ? OUT_OF_SCOPE : reading} block="mc-card__gauge" />
+                <PaneGauge reading={reading} block="mc-card__gauge" />
               )}
               {pct !== null && (
                 <div className="mc-card__context">
@@ -107,9 +107,9 @@ export function MissionControl({
                     className={`mc-card__bar mc-card__bar--${contextTone(pct)}`}
                     style={{ width: `${Math.min(pct, 100)}%` }}
                   />
-                  <span className="mc-card__pct">{gauge?.text}</span>
                 </div>
               )}
+              {pct !== null && <span className="mc-card__pct">{gauge?.text}</span>}
               {activeTasks.length > 0 && (
                 <span className="mc-card__task">
                   {activeTasks.length} task{activeTasks.length !== 1 ? "s" : ""}
