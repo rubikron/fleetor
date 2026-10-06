@@ -221,6 +221,26 @@ enum TaskCmd {
         #[arg(long = "crit-s", action = clap::ArgAction::Append, value_name = "VISION")]
         crit_s: Vec<String>,
     },
+    /// Hand on a task you cannot finish. It returns to planned with no owner,
+    /// and the next agent starts from these four fields.
+    Release {
+        /// The task's number — `14`, not `#14`.
+        #[arg(value_name = "NUMBER")]
+        task: Option<String>,
+        /// Why you are stopping.
+        #[arg(long)]
+        why: Option<String>,
+        /// What is finished.
+        #[arg(long)]
+        done: Option<String>,
+        /// What remains.
+        #[arg(long)]
+        left: Option<String>,
+        /// Branch and commit the work sits at. Filled from your checkout when
+        /// you are the owner; required otherwise.
+        #[arg(long = "where", value_name = "BRANCH @ COMMIT")]
+        place: Option<String>,
+    },
     /// One goal or task with its criteria and its whole chain.
     Show {
         /// The task's number — `14`, not `#14`.
@@ -362,6 +382,30 @@ fn task_action(action: TaskCmd) -> Result<TaskAction> {
                 );
             }
             TaskAction::Edit { task, outcome, technical: crit_t, vision: crit_s }
+        }
+        TaskCmd::Release { task, why, done, left, place } => {
+            let task = task_number(task, "release")?;
+            let missing: Vec<&str> = [("--why", &why), ("--done", &done), ("--left", &left)]
+                .iter()
+                .filter(|(_, text)| text.as_deref().is_none_or(|t| t.trim().is_empty()))
+                .map(|(flag, _)| *flag)
+                .collect();
+            if !missing.is_empty() {
+                anyhow::bail!(
+                    "`fleet task release {task}` needs {} — the next agent starts from what \
+                     you write. --why: why you are stopping; --done: what is finished; --left: \
+                     what remains",
+                    missing.join(", ")
+                );
+            }
+            TaskAction::Release {
+                task,
+                why: why.unwrap_or_default(),
+                done: done.unwrap_or_default(),
+                left: left.unwrap_or_default(),
+                place,
+                here: done::whereabouts(std::path::Path::new(".")),
+            }
         }
         TaskCmd::Show { task } => TaskAction::Show { task: task_number(task, "show")? },
         TaskCmd::List { .. } => TaskAction::List,
@@ -552,6 +596,10 @@ fn details(record: &TaskRecord) -> Vec<String> {
                 field.flag(),
                 old.join(" | "),
                 new.join(" | ")
+            ),
+            ChainEntry::Released { why, done, left, place, on_behalf_of } => format!(
+                "released this{} — why: {why} — done: {done} — left: {left} — where: {place}",
+                on_behalf_of.map(|owner| format!(" on behalf of {owner}")).unwrap_or_default()
             ),
         };
         format!("{}: {what}", line.from)
@@ -1112,6 +1160,28 @@ mod tests {
         }
         let why = action(&["fleet", "task", "update", "14", "--note", "x"]).unwrap_err().to_string();
         assert!(why.contains("--status") && why.contains("fleet task comment 14"), "{why}");
+    }
+
+    /// The three typed fields are checked before the socket; "where" is the
+    /// hub's to settle, because only it knows who the owner is.
+    #[test]
+    fn a_release_names_every_field_it_is_missing() {
+        let why = action(&["fleet", "task", "release", "14", "--why", "out of context"])
+            .unwrap_err()
+            .to_string();
+        assert!(why.contains("--done, --left") && !why.contains("needs --why"), "{why}");
+        let why = action(&["fleet", "task", "release", "--why", "x"]).unwrap_err().to_string();
+        assert!(why.contains("fleet task release"), "{why}");
+
+        let full = ["fleet", "task", "release", "14", "--why", "a", "--done", "b", "--left", "c"];
+        let TaskAction::Release { task: 14, place: None, .. } = action(&full).unwrap() else {
+            panic!("a release without --where leaves it to the hub")
+        };
+        let typed = [&full[..], &["--where", "fleet/worker-2 @ a1b2c3d"]].concat();
+        let TaskAction::Release { place: Some(place), .. } = action(&typed).unwrap() else {
+            panic!("--where travels as typed")
+        };
+        assert_eq!(place, "fleet/worker-2 @ a1b2c3d");
     }
 
     #[test]

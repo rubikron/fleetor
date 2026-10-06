@@ -150,6 +150,20 @@ pub enum TaskAction {
         #[serde(default)]
         vision: Vec<String>,
     },
+    /// Hand a task on: it returns to planned with no owner.
+    Release {
+        task: u64,
+        why: String,
+        done: String,
+        left: String,
+        /// `--where`, as typed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        place: Option<String>,
+        /// The sender's own checkout, read by the CLI. Used only when the
+        /// sender is the owner.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        here: Option<String>,
+    },
     /// One goal or task with its whole chain.
     Show { task: u64 },
     /// Every goal and task in the target's store.

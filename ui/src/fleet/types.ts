@@ -296,7 +296,15 @@ export type ChainEntry =
   | { entry: "taken-up"; note?: string | null }
   | { entry: "status"; status: TaskStatus; note?: string | null }
   | { entry: "commented"; text: string }
-  | { entry: "edited"; field: "outcome" | "technical" | "vision"; old: string[]; new: string[] };
+  | { entry: "edited"; field: "outcome" | "technical" | "vision"; old: string[]; new: string[] }
+  | {
+      entry: "released";
+      why: string;
+      done: string;
+      left: string;
+      where: string;
+      on_behalf_of?: PaneId | null;
+    };
 
 /// A chain entry as it arrives on `fleet://task`: who, when, and in which run
 /// and lineage. `seq` is the task store's own, not the run log's.
@@ -326,7 +334,8 @@ export type TaskAction =
     }
   | { action: "update"; task: number; status: TaskStatus; note?: string | null }
   | { action: "comment"; task: number; text: string }
-  | { action: "edit"; task: number; outcome?: string | null; technical: string[]; vision: string[] };
+  | { action: "edit"; task: number; outcome?: string | null; technical: string[]; vision: string[] }
+  | { action: "release"; task: number; why: string; done: string; left: string; place: string };
 
 /// The run-log task event as it was before D-100. Nothing writes it; a reopened
 /// old run still replays it.

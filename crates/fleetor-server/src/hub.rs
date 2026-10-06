@@ -590,6 +590,22 @@ impl TaskSide {
                 }
                 result
             }
+            TaskAction::Release { task, why, done, left, place, here } => {
+                let _writing = self.write.lock().unwrap_or_else(|e| e.into_inner());
+                let board = self.board()?;
+                let record = find(&board, task)?;
+                let on_behalf_of = record.release_for(from, &self.ctx.lineage)?;
+                let place = place.or(here.filter(|_| record.owned_by(from, &self.ctx.lineage)));
+                let Some(place) = place else {
+                    return Err(format!(
+                        "where #{task}'s work sits could not be worked out — you are not its \
+                         owner standing in its checkout. Add --where \"<branch> @ <commit>\" \
+                         (`fleet task show {task}` and `git branch -a` help find it)"
+                    ));
+                };
+                let entry = ChainEntry::release(&why, &done, &left, &place, on_behalf_of)?;
+                self.append(task, from, entry)
+            }
             TaskAction::Show { task } => {
                 let board = self.board()?;
                 Ok(OpResult::Board { tasks: vec![find(&board, task)?.clone()] })

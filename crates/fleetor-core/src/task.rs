@@ -165,6 +165,18 @@ pub enum ChainEntry {
         old: Vec<String>,
         new: Vec<String>,
     },
+    /// The owner's work handed on: the task returns to planned with no owner.
+    Released {
+        why: String,
+        done: String,
+        left: String,
+        /// Branch and commit the work sits at.
+        #[serde(rename = "where")]
+        place: String,
+        /// The owner, when someone else released for them.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        on_behalf_of: Option<PaneId>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -200,6 +212,29 @@ impl ChainEntry {
             return Err("a comment needs text — `fleet task comment 14 \"what you found\"`".into());
         }
         Ok(ChainEntry::Commented { text })
+    }
+
+    /// All four fields must say something.
+    pub fn release(
+        why: &str,
+        done: &str,
+        left: &str,
+        place: &str,
+        on_behalf_of: Option<PaneId>,
+    ) -> Result<Self, String> {
+        let fields = [("--why", plain(why)), ("--done", plain(done)), ("--left", plain(left)), ("--where", plain(place))];
+        let missing: Vec<&str> =
+            fields.iter().filter(|(_, text)| text.is_empty()).map(|(flag, _)| *flag).collect();
+        if !missing.is_empty() {
+            return Err(format!(
+                "a release needs {} — the next agent starts from what you write. --why: why \
+                 you are stopping; --done: what is finished; --left: what remains; --where: \
+                 the branch and commit the work sits at",
+                missing.join(", ")
+            ));
+        }
+        let [why, done, left, place] = fields.map(|(_, text)| text);
+        Ok(ChainEntry::Released { why, done, left, place, on_behalf_of })
     }
 
     pub fn into_event(self, task: u64, from: PaneId, run: &str, lineage: &str) -> FleetEvent {
@@ -296,6 +331,24 @@ impl TaskRecord {
             ));
         }
         Ok(entries)
+    }
+
+    /// Anyone may release a task. Returns the owner being released for, when
+    /// that is not `from` in this lineage.
+    pub fn release_for(&self, from: PaneId, lineage: &str) -> Result<Option<PaneId>, String> {
+        if self.block.kind == Kind::Goal {
+            return Err(format!(
+                "#{} is a goal, and a goal is not released — release the task you are on \
+                 (`fleet task list --mine`)",
+                self.number
+            ));
+        }
+        Ok(self.owner.as_ref().filter(|_| !self.owned_by(from, lineage)).map(|owner| owner.pane))
+    }
+
+    /// Whether `from`, speaking in `lineage`, is the owner.
+    pub fn owned_by(&self, from: PaneId, lineage: &str) -> bool {
+        self.owner.as_ref().is_some_and(|owner| owner.pane == from && owner.lineage == lineage)
     }
 
     /// Whether `from`, speaking in `lineage`, may set `status`.
@@ -398,6 +451,12 @@ pub fn board<'a>(events: impl IntoIterator<Item = &'a FleetEvent>) -> Vec<TaskRe
             }
             ChainEntry::Commented { .. } => {
                 let Some(record) = records.get_mut(task) else { continue };
+                record.chain.push(line);
+            }
+            ChainEntry::Released { .. } => {
+                let Some(record) = records.get_mut(task) else { continue };
+                record.status = TaskStatus::Planned;
+                record.owner = None;
                 record.chain.push(line);
             }
             ChainEntry::Edited { field, new, .. } => {

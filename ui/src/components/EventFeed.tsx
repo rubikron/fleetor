@@ -120,7 +120,11 @@ function renderTask(event: ChainEvent): Rendered {
           ? `marked #${event.task} ${entry.status}${note(entry.note)}`
           : entry.entry === "commented"
             ? `commented on #${event.task} — ${entry.text}`
-            : `edited #${event.task} · ${entry.field}`;
+            : entry.entry === "released"
+              ? `released #${event.task}${
+                  entry.on_behalf_of ? ` on behalf of ${entry.on_behalf_of}` : ""
+                } — left: ${entry.left}`
+              : `edited #${event.task} · ${entry.field}`;
   return { kind: "task", tone: "gold", text: `${event.from} ${what}`, rail: false };
 }
 

@@ -326,6 +326,8 @@ function summary(event: ChainEvent): string {
       return entry.text;
     case "edited":
       return `edited ${FIELD[entry.field]}`;
+    case "released":
+      return entry.on_behalf_of ? `released this on behalf of ${entry.on_behalf_of}` : "released this";
   }
 }
 
@@ -412,6 +414,18 @@ function Entry({ event }: { event: ChainEvent }) {
           <Criteria label="was" items={entry.old} />
           <Criteria label="now" items={entry.new} />
         </div>
+      )}
+      {entry.entry === "released" && (
+        <dl className="chain__release">
+          <dt>why</dt>
+          <dd>{entry.why}</dd>
+          <dt>done</dt>
+          <dd>{entry.done}</dd>
+          <dt>left</dt>
+          <dd>{entry.left}</dd>
+          <dt>where</dt>
+          <dd className="mono">{entry.where}</dd>
+        </dl>
       )}
     </li>
   );
