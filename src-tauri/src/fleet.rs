@@ -53,6 +53,8 @@ const EVENT_FLEET: &str = "fleet://event";
 /// A launch's verdict passed: the UI drops the old run's state on this, so a
 /// refused launch changes nothing on screen.
 const EVENT_LAUNCHING: &str = "fleet://launching";
+/// The run a launch left behind is in History: its row is no longer archiving.
+const EVENT_ARCHIVED: &str = "fleet://archived";
 /// Chain entries from the fleet target's task store (D-100).
 const EVENT_TASK: &str = "fleet://task";
 
@@ -1329,6 +1331,8 @@ enum Signal {
     /// The verdict passed and the old fleet is down; the new log is not open
     /// yet, so everything after this belongs to the new run.
     Launching,
+    /// The background finish of the run this launch staged is done.
+    Archived,
     Event(WireEvent),
     /// One chain entry from the task store, on its own pipe.
     Task(WireEvent),
@@ -1358,6 +1362,7 @@ pub fn fleet_launch(
 ) -> Result<BootSnapshot, LaunchFailure> {
     let emit: FeedEmit = Arc::new(move |signal| match signal {
         Signal::Launching => app.emit(EVENT_LAUNCHING, ()).is_ok(),
+        Signal::Archived => app.emit(EVENT_ARCHIVED, ()).is_ok(),
         Signal::Event(event) => app.emit(EVENT_FLEET, event).is_ok(),
         Signal::Task(event) => app.emit(EVENT_TASK, event).is_ok(),
     });
@@ -1391,11 +1396,42 @@ fn launch(
     // follow it.
     emit(Signal::Launching);
     let started_ms = fleetor_core::time::now_ms();
-    let archived = runs::rotate(&layout.shell(), &runs::runs_dir(layout.root()), started_ms);
-    let fleet = build(layout, registry, gate, plan, started_ms, archived, emit).map_err(failed)?;
-    let snap = snapshot(&fleet.store).map_err(failed)?;
+    let (shell, runs_dir) = (layout.shell(), runs::runs_dir(layout.root()));
+    let (staged, staging) = runs::stage(&shell, &runs_dir, started_ms);
+    let built = build(layout, registry, gate, plan, started_ms, staging, emit.clone())
+        .and_then(|fleet| snapshot(&fleet.store).map(|snap| (fleet, snap)));
+    let feed = built.as_ref().ok().map(|(fleet, _)| (fleet.rt.handle().clone(), fleet.store.clone()));
+    if let Some(id) = staged {
+        finish_in_background(shell, runs_dir, id, feed, emit);
+    }
+    let (fleet, snap) = built.map_err(failed)?;
     *slot = Some(fleet);
     Ok(snap)
+}
+
+/// Hand the staged run's finish to a thread, so its cost never delays the new
+/// fleet. Its notices go on the new fleet's feed through that fleet's own
+/// runtime, so nothing here can hold a store open past its teardown; a fleet
+/// already gone by then simply never hears them.
+fn finish_in_background(
+    shell: PathBuf,
+    runs_dir: PathBuf,
+    id: String,
+    feed: Option<(tokio::runtime::Handle, Arc<dyn Store>)>,
+    emit: FeedEmit,
+) {
+    let (done, finished) = tokio::sync::oneshot::channel::<Vec<(NoticeLevel, String)>>();
+    if let Some((rt, store)) = feed {
+        rt.spawn(async move {
+            for (level, text) in finished.await.unwrap_or_default() {
+                note(&store, level, &text);
+            }
+        });
+    }
+    std::thread::spawn(move || {
+        let _ = done.send(runs::finish(&shell, &runs_dir, &id));
+        emit(Signal::Archived);
+    });
 }
 
 /// **Whether this launch can start, decided before anything is torn down**
@@ -2400,10 +2436,20 @@ fn plan_offer() -> PlanOffer {
 // which is the case that matters, since the History view is most useful on the
 // start gate, deciding what to do next.
 
-/// Every archived run, newest first.
+/// History: the live run, every run still archiving, and the archived ones.
 #[tauri::command]
-pub fn runs_list() -> Result<Vec<runs::RunRecord>, String> {
-    Ok(runs::list(&runs::runs_dir(layout().root())))
+pub fn runs_list(state: State<'_, FleetState>) -> Result<Vec<runs::RunRecord>, String> {
+    Ok(history(&state, &layout()))
+}
+
+fn history(state: &FleetState, layout: &Layout) -> Vec<runs::RunRecord> {
+    // The Running now row counts its tasks from the live store (Coordination C).
+    let live_tasks = state.0.lock().ok().and_then(|slot| {
+        let fleet = slot.as_ref()?;
+        let events = fleet.tasks.as_ref().and_then(|tasks| tasks.events_since(0).ok()).unwrap_or_default();
+        Some(runs::tasks_touched(&events, &fleet.run_id))
+    });
+    runs::list_all(&layout.shell(), &runs::runs_dir(layout.root()), live_tasks)
 }
 
 /// Replay one archived run's log, for the read-only History views.
@@ -3032,6 +3078,8 @@ mod tests {
         gate: GateHold,
         /// How many launches told the webview their verdict passed.
         launchings: Arc<std::sync::atomic::AtomicUsize>,
+        /// How many background finishes told the webview they were done.
+        archiveds: Arc<std::sync::atomic::AtomicUsize>,
         /// Every chain entry the `fleet://task` pipe carried.
         task_events: Arc<Mutex<Vec<FleetEvent>>>,
     }
@@ -3047,6 +3095,7 @@ mod tests {
                 registry: Arc::new(PaneRegistry::new(Arc::new(|_, _| {}), root.join("panes.pids"))),
                 gate: GateHold::default(),
                 launchings: Arc::default(),
+                archiveds: Arc::default(),
                 task_events: Arc::default(),
                 root,
             };
@@ -3074,8 +3123,17 @@ mod tests {
             target
         }
 
+        /// A launch, with the run it left behind archived by the time it returns.
         fn launch(&self, source: LaunchSource) -> Result<BootSnapshot, LaunchFailure> {
+            let result = self.launch_unsettled(source);
+            runs::sweep(&self.layout.shell(), &self.runs_dir());
+            result
+        }
+
+        /// A launch as the app makes it: the old run's finish is still in flight.
+        fn launch_unsettled(&self, source: LaunchSource) -> Result<BootSnapshot, LaunchFailure> {
             let offer = PlanOffer::fleet_key();
+            let archiveds = self.archiveds.clone();
             let launchings = self.launchings.clone();
             let task_events = self.task_events.clone();
             let emit: FeedEmit = Arc::new(move |signal| {
@@ -3084,6 +3142,9 @@ mod tests {
                         launchings.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     }
                     Signal::Task(wire) => task_events.lock().unwrap().push(wire.event),
+                    Signal::Archived => {
+                        archiveds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
                     Signal::Event(_) => {}
                 }
                 true
@@ -3290,6 +3351,55 @@ mod tests {
         assert!(task_snapshot(&bench.state, &bench.layout).unwrap().events.is_empty());
         assert!(!bench.layout.target_dir(&repo_c).exists(), "reading never creates a store");
         assert!(bench.layout.task_store(&repo_b).is_file());
+    }
+
+    /// **One row, three states** (stories 18, 20, 22, 25): the run a launch
+    /// leaves is archiving while its finish is in flight and archived after,
+    /// under the id it ran as; the new fleet is the running row and hears about it.
+    #[test]
+    fn the_run_left_behind_is_archiving_until_its_background_finish_lands() {
+        let bench = Bench::new("rows");
+        bench.fresh();
+        let (first, _) = bench.ids();
+        let rows = || -> Vec<(String, runs::RunState)> {
+            history(&bench.state, &bench.layout).into_iter().map(|r| (r.id, r.state)).collect()
+        };
+        assert_eq!(rows(), vec![(first.clone(), runs::RunState::Running)], "the live run is a History row");
+
+        let held = runs::hold_finishes();
+        bench.launch_unsettled(LaunchSource::Fresh).expect("a second fleet");
+        let (second, _) = bench.ids();
+        assert_eq!(
+            rows(),
+            vec![(second.clone(), runs::RunState::Running), (first.clone(), runs::RunState::Archiving)],
+            "the launch returned with the old run still staged",
+        );
+        assert!(bench.archives().is_empty());
+        let refused = bench
+            .launch_unsettled(LaunchSource::Reopen { id: first.clone() })
+            .expect_err("a run mid-archive does not reopen");
+        assert!(!refused.torn_down, "and the refusal cost nothing: {}", refused.reason);
+        drop(held);
+
+        let told = || {
+            let slot = bench.state.0.lock().unwrap();
+            let log = slot.as_ref().unwrap().store.events_since(0).unwrap();
+            log.iter().any(|(_, e)| matches!(e, FleetEvent::Notice { text, .. } if text.contains("previous run archived")))
+        };
+        for _ in 0..500 {
+            if told() && bench.archiveds.load(std::sync::atomic::Ordering::SeqCst) == 1 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(told(), "the new fleet's feed says the old run is in History");
+        assert_eq!(bench.archiveds.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            rows(),
+            vec![(second, runs::RunState::Running), (first.clone(), runs::RunState::Archived)],
+            "the same row, now archived",
+        );
+        assert!(bench.runs_dir().join(&first).join("manifest.json").is_file());
     }
 
     /// **A refusal kills nothing** (stories 10, 27): the verdict runs before the

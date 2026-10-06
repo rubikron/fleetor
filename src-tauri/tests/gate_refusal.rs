@@ -188,12 +188,12 @@ fn the_gate_answers_without_a_fleet_because_that_is_when_it_runs() {
 /// Whether a launch settles its verdict before it tears down and archives (D-099).
 ///
 /// `None` when a step is missing, which is itself a failure: a launch that no
-/// longer refuses, tears down or rotates is not a launch this check understands.
+/// longer refuses, tears down or stages is not a launch this check understands.
 fn refusal_precedes_the_run_boundary(launch: &str) -> Option<bool> {
     let refuse = launch.find("verdict(")?;
     let teardown = launch.find("teardown(")?;
-    let rotate = launch.find("runs::rotate")?;
-    Some(refuse < teardown && teardown < rotate)
+    let stage = launch.find("runs::stage")?;
+    Some(refuse < teardown && teardown < stage)
 }
 
 /// **The fleet refuses to start, before it has touched anything** (story 11).
@@ -669,8 +669,8 @@ fn the_checks_fire_on_a_source_that_violates_them() {
         );
     }
 
-    // A launch that tears down and rotates before deciding whether to refuse.
-    let backwards = "teardown(&mut slot, registry);\nlet archived = runs::rotate(&dir);\n\
+    // A launch that tears down and stages before deciding whether to refuse.
+    let backwards = "teardown(&mut slot, registry);\nlet archived = runs::stage(&dir);\n\
                      let plan = verdict(&layout)?;";
     assert_eq!(
         refusal_precedes_the_run_boundary(backwards),
@@ -678,7 +678,7 @@ fn the_checks_fire_on_a_source_that_violates_them() {
         "the ordering check would not notice a refusal that comes after the run boundary",
     );
     assert_eq!(
-        refusal_precedes_the_run_boundary("teardown(&mut slot, registry);\nruns::rotate(&dir);"),
+        refusal_precedes_the_run_boundary("teardown(&mut slot, registry);\nruns::stage(&dir);"),
         None,
         "the ordering check claims an answer for a launch that no longer refuses at all",
     );

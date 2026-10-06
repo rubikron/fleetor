@@ -1,9 +1,11 @@
-// Your past sessions (WP-11, D-058): a list and three verbs. Reopening one is a
+// Your sessions (WP-11, D-058; D-099): the running one, those still archiving
+// and the archived ones — a list and three verbs. Reopening one is a
 // launch, which `App` owns (D-099) — the run's log becomes the live log, so
 // Messages, Tasks and Activity show it through `useFleet`.
 
 import { useCallback, useEffect, useState } from "react";
-import { deleteRun, exportRun, listRuns, renameRun } from "./api";
+import { deleteRun, exportRun, listRuns, onFleetArchived, renameRun } from "./api";
+import { stopListening } from "./listeners";
 import type { RunRecord } from "./types";
 
 export interface RunsView {
@@ -40,6 +42,23 @@ export function useRuns(): RunsView {
   }, [nonce]);
 
   const refresh = useCallback(() => setNonce((n) => n + 1), []);
+
+  // The run a launch left behind has finished archiving: its row changes
+  // state. (`App` refreshes when the launch itself settles.)
+  useEffect(() => {
+    let cancelled = false;
+    let stop: (() => void) | undefined;
+    void onFleetArchived(refresh)
+      .then((unlisten) => {
+        if (cancelled) stopListening(unlisten, "fleet archived");
+        else stop = unlisten;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      stopListening(stop, "fleet archived");
+    };
+  }, [refresh]);
 
   const rename = useCallback(
     async (id: string, label: string) => {

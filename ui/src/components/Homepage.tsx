@@ -21,6 +21,7 @@ interface HomepageProps {
   launchError: string | null;
   onStart: () => void;
   onOpen: (id: string) => void;
+  onShowFleet: () => void;
   onTargetChanged: () => void;
 }
 
@@ -30,6 +31,7 @@ export function Homepage({
   launchError,
   onStart,
   onOpen,
+  onShowFleet,
   onTargetChanged,
 }: HomepageProps) {
   // The gate's own config: the next fleet's target, not the running fleet's.
@@ -124,7 +126,11 @@ export function Homepage({
                 <>
                   <span className="homepage__run-label">{run.label || run.id.slice(0, 8)}</span>
                   <span className="homepage__run-meta mono">
-                    {run.cannot_reopen
+                    {run.state === "running"
+                      ? "Running now"
+                      : run.state === "archiving"
+                        ? "Archiving…"
+                        : run.cannot_reopen
                       ? `can’t reopen — ${run.cannot_reopen}`
                       : `${run.messages} msgs · ${run.events} events${run.target ? ` · ${run.target}` : ""}`}
                   </span>
@@ -132,7 +138,11 @@ export function Homepage({
               );
               return (
                 <li key={run.id}>
-                  {run.cannot_reopen ? (
+                  {run.state === "running" ? (
+                    <button className="homepage__run" onClick={onShowFleet} title="Go to the running fleet">
+                      {body}
+                    </button>
+                  ) : run.state === "archiving" || run.cannot_reopen ? (
                     <div className="homepage__run homepage__run--closed">{body}</div>
                   ) : (
                     <button

@@ -21,6 +21,7 @@ import {
 
 const FLEET_EVENT = "fleet://event";
 const FLEET_LAUNCHING = "fleet://launching";
+const FLEET_ARCHIVED = "fleet://archived";
 const FLEET_TASK = "fleet://task";
 
 /// What a launch brings up: a new fleet on the gate's picks, or a past run on
@@ -163,7 +164,8 @@ export function killPane(pane: PaneId): Promise<void> {
 // Read-or-relabel only. There is deliberately no "resume this run" call: the
 // panes that made it are gone and their context went with them.
 
-/// Every archived run, newest first. Works before the fleet is started.
+/// History, newest first: the live run, runs still archiving, and archived
+/// ones. Works before the fleet is started.
 export function listRuns(): Promise<RunRecord[]> {
   return invoke<RunRecord[]>("runs_list");
 }
@@ -213,6 +215,11 @@ export function fetchTasks(): Promise<TaskSnapshot> {
 /// the hub's refusal, which says what to do instead.
 export function taskOp(action: TaskAction): Promise<string> {
   return invoke<string>("fleet_task", { action });
+}
+
+/// Subscribe to "the run the last launch left is now in History".
+export function onFleetArchived(handler: () => void): Promise<UnlistenFn> {
+  return listen(FLEET_ARCHIVED, () => handler());
 }
 
 /// Subscribe to the live event stream. Returns an unlisten fn for cleanup.
