@@ -114,6 +114,8 @@ pub struct PaneContext {
     /// [`Harness::resume_args`](crate::placement::harness::Harness::resume_args),
     /// a seat without one through `command_args`, and a fresh run simply has none.
     pub resume: std::collections::BTreeMap<String, String>,
+    /// What orch is told about tasks an earlier session left in progress.
+    pub startup: fleetor_core::brief::Startup,
     /// Announcements for the Activity feed, in the order they happened. Carried
     /// rather than emitted so this module stays testable without a store.
     pub notices: Vec<(NoticeLevel, String)>,
@@ -131,6 +133,7 @@ impl PaneContext {
             sessions: crate::placement::SessionsId::new(crate::placement::UNASSIGNED_SESSIONS),
             branch_prefix: crate::placement::UNASSIGNED_BRANCH_PREFIX.to_string(),
             resume: std::collections::BTreeMap::new(),
+            startup: fleetor_core::brief::Startup::Ask,
             // A complaint here is a bug in what we shipped, not in what the
             // operator wrote, so it is an error rather than a warning.
             notices: complaints
@@ -160,6 +163,7 @@ impl PaneContext {
             sessions: baked.sessions,
             branch_prefix: baked.branch_prefix,
             resume: baked.resume,
+            startup: baked.startup,
             notices: baked
                 .notices
                 .into_iter()

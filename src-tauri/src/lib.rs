@@ -111,6 +111,8 @@ pub fn run() {
             fleet::fleet_send,
             fleet::fleet_tasks,
             fleet::fleet_task,
+            fleet::startup_tasks_get,
+            fleet::startup_tasks_set,
             fleet::runs_list,
             fleet::run_events,
             fleet::run_rename,

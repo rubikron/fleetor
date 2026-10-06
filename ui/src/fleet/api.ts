@@ -210,6 +210,16 @@ export function taskOp(action: TaskAction): Promise<string> {
   return invoke<string>("fleet_task", { action });
 }
 
+/// "Finish remaining tasks upon startup", as stored in `~/.fleetor/config.json`.
+export function getStartupTasks(): Promise<boolean> {
+  return invoke<boolean>("startup_tasks_get");
+}
+
+/// Resolves to what is now stored, which is what the switch should show.
+export function setStartupTasks(on: boolean): Promise<boolean> {
+  return invoke<boolean>("startup_tasks_set", { on });
+}
+
 /// Subscribe to the live event stream. Returns an unlisten fn for cleanup.
 export function onFleetEvent(handler: (event: FleetEvent) => void): Promise<UnlistenFn> {
   return listen<FleetEvent>(FLEET_EVENT, (e) => handler(e.payload));

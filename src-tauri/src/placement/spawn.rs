@@ -75,7 +75,7 @@
 
 use std::path::{Path, PathBuf};
 
-use fleetor_core::brief::{render_orch, render_worker};
+use fleetor_core::brief::{render_orch_at, render_worker};
 use fleetor_core::pane::{PaneId, WORKER_SLOTS};
 use portable_pty::CommandBuilder;
 
@@ -225,7 +225,7 @@ pub(super) fn orch_command_with(
     // `default (your login)` sentinel, and it is what every caller but the picker
     // passes.
     let brief =
-        render_orch(&ctx.orch_template, &roster(), &cwd.display().to_string(), &ctx.branch_prefix);
+        render_orch_at(&ctx.orch_template, &roster(), &cwd.display().to_string(), &ctx.branch_prefix, ctx.startup);
     let seat = Seat::new(&brief).for_the_operator();
     let seat = match model {
         Some(model) => seat.with_model(model),

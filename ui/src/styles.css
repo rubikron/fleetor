@@ -1804,6 +1804,8 @@ button.homepage__run:disabled { cursor: default; }
 .task-form__quiet.is-on { color: var(--fg); border-color: var(--gold); }
 .tasks__group { display: flex; flex-direction: column; gap: 0.25rem; }
 .tasks__no-goal { font-size: var(--t-label); letter-spacing: 0.06em; text-transform: uppercase; color: var(--fg-mute); }
+.tasks__carried { margin: 0.5rem 0.75rem 0; padding: 0.375rem 0.625rem; font-size: var(--t-small); color: var(--gold); border: 1px solid currentColor; border-radius: var(--radius-sm); }
+.tasks__carried strong { margin-right: 0.375rem; text-transform: uppercase; letter-spacing: 0.06em; font-size: var(--t-label); }
 .tasks__readonly { font-size: var(--t-label); color: var(--gold); border: 1px solid currentColor; border-radius: var(--radius-sm); padding: 0 0.3125rem; }
 .tasks__target { font-size: var(--t-label); margin-left: 0.5rem; }
 .task-row {

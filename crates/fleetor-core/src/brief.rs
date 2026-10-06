@@ -791,13 +791,6 @@ mod tests {
         }
         let without = DEFAULT_ORCH.replace("{startup_tasks}", "");
         validate_orch(&without).expect("a custom brief may drop {startup_tasks}");
-        println!(
-            "rendered characters: orch {} / {} / {}, worker {}",
-            ask.chars().count(),
-            resume.chars().count(),
-            reopened.chars().count(),
-            worker_brief(PaneId::Worker(2), &roster(), CWD, BRANCH).chars().count()
-        );
     }
 
     #[test]
