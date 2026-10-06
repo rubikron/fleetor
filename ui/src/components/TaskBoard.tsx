@@ -414,6 +414,8 @@ function summary(event: ChainEvent): string {
       return entry.text;
     case "edited":
       return `edited ${FIELD[entry.field]}`;
+    case "receipt":
+      return `ran a check · ${entry.status}`;
     case "released":
       return entry.on_behalf_of ? `released this on behalf of ${entry.on_behalf_of}` : "released this";
   }
@@ -504,6 +506,25 @@ function Entry({ event }: { event: ChainEvent }) {
           <Criteria label="was" items={entry.old} />
           <Criteria label="now" items={entry.new} />
         </div>
+      )}
+      {entry.entry === "receipt" && (
+        <dl className="chain__release">
+          <dt>check</dt>
+          <dd className="mono">{entry.check}</dd>
+          <dt>result</dt>
+          <dd className="mono">{entry.status}</dd>
+          <dt>where</dt>
+          <dd className="mono">
+            {entry.branch ?? "no branch"} @ {entry.commit ?? "no commit"}
+            {entry.uncommitted && " + uncommitted changes"}
+          </dd>
+          {!entry.accepted && (
+            <>
+              <dt>message</dt>
+              <dd>the receipt message was not delivered to orch</dd>
+            </>
+          )}
+        </dl>
       )}
       {entry.entry === "released" && (
         <dl className="chain__release">

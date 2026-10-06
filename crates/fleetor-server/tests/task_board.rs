@@ -513,6 +513,49 @@ async fn a_release_hands_the_task_on_with_all_four_fields() {
     assert_eq!(fleet.asks.load(Ordering::Relaxed), 0, "a release asks the app for nothing");
 }
 
+fn receipt(task: u64, commit: &str) -> Op {
+    Op::Task {
+        action: TaskAction::Receipt {
+            task,
+            check: "cargo test -p parser".into(),
+            status: "exit 0".into(),
+            branch: Some("fleet/worker-2".into()),
+            commit: Some(commit.into()),
+            uncommitted: false,
+            accepted: true,
+        },
+    }
+}
+
+/// A receipt is evidence on the task: it moves neither status nor owner, and
+/// the latest one tells a release by someone else where the work sits.
+#[tokio::test]
+async fn a_receipt_sits_on_the_chain_and_tells_a_later_release_where() {
+    let fleet = start_hub().await;
+    let mut orch = pane(&fleet, PaneId::Orch).await;
+    let mut worker = pane(&fleet, PaneId::Worker(2)).await;
+    let goal = number(orch.call(open_goal("one grammar")).await.unwrap());
+    let task = number(orch.call(open_task("nested groups parse", None, Some(goal))).await.unwrap());
+    worker.call(set(task, TaskStatus::InProgress)).await.unwrap();
+
+    let why = refusal(worker.call(receipt(goal, "a1b2c3d")).await.unwrap());
+    assert!(why.contains("is a goal"), "{why}");
+    worker.call(receipt(task, "a1b2c3d")).await.unwrap();
+    worker.call(receipt(task, "d4e5f6a")).await.unwrap();
+    let record = list(&mut orch).await.remove(1);
+    assert_eq!(record.status, TaskStatus::InProgress, "a receipt claims nothing");
+    assert_eq!(record.owner.as_ref().unwrap().pane, PaneId::Worker(2));
+    assert!(matches!(record.chain.last().unwrap().entry, ChainEntry::Receipt { accepted: true, .. }));
+
+    orch.call(release(task, "the parser", None, Some("master @ 0000000"))).await.unwrap();
+    let record = list(&mut orch).await.remove(1);
+    let ChainEntry::Released { place, on_behalf_of, .. } = &record.chain.last().unwrap().entry else {
+        panic!("the last entry is the release")
+    };
+    assert_eq!((place.as_str(), *on_behalf_of), ("fleet/worker-2 @ d4e5f6a", Some(PaneId::Worker(2))));
+    assert_eq!(fleet.asks.load(Ordering::Relaxed), 0);
+}
+
 /// The task store's own pipe: a follower from zero sees every chain entry once,
 /// in order, whether it was written before or after it subscribed.
 #[tokio::test]

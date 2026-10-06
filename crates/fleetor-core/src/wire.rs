@@ -164,6 +164,20 @@ pub enum TaskAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         here: Option<String>,
     },
+    /// Put a `fleet done` receipt on the task's chain. Sent after the receipt
+    /// message, in a call of its own.
+    Receipt {
+        task: u64,
+        check: String,
+        status: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        commit: Option<String>,
+        #[serde(default)]
+        uncommitted: bool,
+        accepted: bool,
+    },
     /// One goal or task with its whole chain.
     Show { task: u64 },
     /// Every goal and task in the target's store.

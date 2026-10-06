@@ -595,15 +595,26 @@ impl TaskSide {
                 let board = self.board()?;
                 let record = find(&board, task)?;
                 let on_behalf_of = record.release_for(from, &self.ctx.lineage)?;
-                let place = place.or(here.filter(|_| record.owned_by(from, &self.ctx.lineage)));
+                let place = place
+                    .or(here.filter(|_| record.owned_by(from, &self.ctx.lineage)))
+                    .or_else(|| record.receipt_place());
                 let Some(place) = place else {
                     return Err(format!(
                         "where #{task}'s work sits could not be worked out — you are not its \
-                         owner standing in its checkout. Add --where \"<branch> @ <commit>\" \
+                         owner standing in its checkout, and it has no receipt. Add --where \"<branch> @ <commit>\" \
                          (`fleet task show {task}` and `git branch -a` help find it)"
                     ));
                 };
                 let entry = ChainEntry::release(&why, &done, &left, &place, on_behalf_of)?;
+                self.append(task, from, entry)
+            }
+            TaskAction::Receipt { task, check, status, branch, commit, uncommitted, accepted } => {
+                if find(&self.board()?, task)?.block.kind == Kind::Goal {
+                    return Err(format!(
+                        "#{task} is a goal, and a receipt belongs on the task that was checked"
+                    ));
+                }
+                let entry = ChainEntry::Receipt { check, status, branch, commit, uncommitted, accepted };
                 self.append(task, from, entry)
             }
             TaskAction::Show { task } => {

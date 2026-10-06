@@ -337,3 +337,21 @@ fn an_earlier_runs_owner_is_named_counted_and_can_be_released_for() {
     let controls = offered.split("<div class=\"task-controls\">").nth(1).unwrap();
     assert!(!controls.contains(">Release<"), "an unowned task has nothing to release: {controls}");
 }
+
+/// A receipt shows what was run, how it exited and where, and says so when
+/// the work was uncommitted or the message never reached orch.
+#[test]
+fn a_receipt_shows_the_check_its_exit_and_where_it_ran() {
+    let Some(all) = rendered() else { return };
+    let page = markup(&all, "released");
+    let receipt = page.split("<li class=\"chain__entry chain__entry--receipt\"").nth(1).expect("a receipt entry");
+    let receipt = receipt.split("</li>").next().unwrap();
+    assert!(receipt.contains("ran a check · exit 101"), "{receipt}");
+    assert!(receipt.contains("cargo test -p parser"), "{receipt}");
+    assert!(receipt.contains("fleet/logstat/worker-1 @ d4e5f6a") && receipt.contains("+ uncommitted changes"), "{receipt}");
+    assert!(receipt.contains("was not delivered to orch"), "{receipt}");
+    assert!(!receipt.contains("✓") && !receipt.contains("passed"), "a receipt asserts nothing: {receipt}");
+
+    let feed = markup(&all, "released_activity");
+    assert!(feed.contains("ran `cargo test -p parser` for #5 · exit 101"), "{feed}");
+}

@@ -304,6 +304,16 @@ export type ChainEntry =
       left: string;
       where: string;
       on_behalf_of?: PaneId | null;
+    }
+  | {
+      entry: "receipt";
+      check: string;
+      /// `exit 0`, `exit 101`, `killed by a signal`.
+      status: string;
+      branch?: string | null;
+      commit?: string | null;
+      uncommitted?: boolean;
+      accepted: boolean;
     };
 
 /// A chain entry as it arrives on `fleet://task`: who, when, and in which run

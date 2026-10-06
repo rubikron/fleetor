@@ -65,6 +65,15 @@ const HANDED_ON: ChainEvent[] = [
     where: "fleet/logstat/worker-1 @ d4e5f6a",
     on_behalf_of: "worker-1",
   }),
+  at(5, "worker-1", {
+    entry: "receipt",
+    check: "cargo test -p parser",
+    status: "exit 101",
+    branch: "fleet/logstat/worker-1",
+    commit: "d4e5f6a",
+    uncommitted: true,
+    accepted: false,
+  }),
   at(6, "orch", { entry: "opened", block: task("errors carry a span", null, 1) }),
   at(6, "worker-4", { entry: "taken-up" }),
 ];
@@ -108,7 +117,7 @@ process.stdout.write(
       <TaskBoard chain={HANDED_ON} store={LIVE} ops={OPS} initialOpen={6} initialRelease />,
     ),
     released_activity: renderToStaticMarkup(
-      <EventFeed feed={[notice(1, "first")]} tasks={[{ event: HANDED_ON[13], after: 1 }]} />,
+      <EventFeed feed={[notice(1, "first")]} tasks={[{ event: HANDED_ON[13], after: 1 }, { event: HANDED_ON[14], after: 1 }]} />,
     ),
     empty: renderToStaticMarkup(<TaskBoard chain={[]} store={GATE} />),
   }),

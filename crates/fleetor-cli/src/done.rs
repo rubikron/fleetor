@@ -74,23 +74,27 @@ pub struct Place {
 /// Takes `me` rather than reading the environment so the whole verb is testable
 /// without a live pane.
 pub fn op(me: PaneId, task: &str, check_command: &str) -> Result<Op> {
+    Ok(checked(me, task, check_command)?.0)
+}
+
+/// [`op`], with the facts the receipt was built from so the caller can put
+/// them on the task's chain.
+pub fn checked(me: PaneId, task: &str, check_command: &str) -> Result<(Op, Place, Check)> {
     let task = task.trim();
     if task.is_empty() {
-        bail!("a receipt needs the block it is about — `fleet task list` shows the ids");
+        bail!("a receipt needs the task it is about — `fleet task list` shows the numbers");
     }
-    // `orch` is the one pane with nowhere to send a receipt, and the hub refuses a
-    // self-send. Say so here, before running anything, rather than letting the
-    // check burn a minute and then fail at the socket.
     if me == PaneId::Orch {
         bail!(
             "`fleet done` sends its receipt to `orch`, and you are `orch` — there is nobody \
-             to send it to. Run the check yourself, and put the result on the block with \
-             `fleet task update`"
+             to send it to. Run the check yourself, and put the result on the task with \
+             `fleet task comment`"
         );
     }
-
     let check = run(check_command)?;
-    Ok(Op::Send { to: PaneId::Orch, text: receipt(task, &here(Path::new(".")), &check) })
+    let place = here(Path::new("."));
+    let op = Op::Send { to: PaneId::Orch, text: receipt(task, &place, &check) };
+    Ok((op, place, check))
 }
 
 /// Run the check where this process is, and report what happened.
@@ -476,7 +480,7 @@ mod tests {
     fn orch_is_told_why_it_cannot_report_before_anything_is_run() {
         let why = op(PaneId::Orch, "task-1-0", "exit 1").expect_err("must be refused").to_string();
         assert!(why.contains("you are `orch`"), "{why}");
-        assert!(why.contains("fleet task update"), "the refusal says what to do instead: {why}");
+        assert!(why.contains("fleet task comment"), "the refusal says what to do instead: {why}");
     }
 
     /// A receipt with no block is a receipt about nothing.

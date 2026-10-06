@@ -113,3 +113,4 @@ Note: D-005 is referenced elsewhere in this file (e.g. D-009, D-011) but has no 
 | [D-104](D-104.md) | S1 | alive | S1 wiring: the store sits under `targets/<slug>/`, the UI reads it through one snapshot command, and the operator writes through the hub |
 | [D-105](D-105.md) | S2 | alive | a release is one chain entry with four required fields; the hub settles "where" and who it is on behalf of |
 | [D-106](D-106.md) | S2 | alive | the startup setting is one key in config.json, read through `{startup_tasks}`; an owner from another lineage reads as an earlier run |
+| [D-107](D-107.md) | S3 | alive | a receipt is a chain entry recorded after `fleet done` sends its message; the latest one tells a release where the work sits |

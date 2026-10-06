@@ -295,6 +295,8 @@ fn run() -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
+    // A receipt is recorded on its task after the message has gone.
+    let mut receipt = None;
     let op = match cli.command {
         Command::Send { pane, text } => Op::Send {
             to: pane.parse::<PaneId>().map_err(|e| anyhow::anyhow!("{e}"))?,
@@ -309,7 +311,11 @@ fn run() -> Result<ExitCode> {
         // The check runs *before* the connection is opened — a receipt describes
         // something that already happened, and a socket held open for the length
         // of a test suite is a connection doing nothing but waiting.
-        Command::Done { task, check } => done::op(me()?, &task, &join(check))?,
+        Command::Done { task, check } => {
+            let (op, place, check) = done::checked(me()?, &task, &join(check))?;
+            receipt = Some((task, place, check));
+            op
+        }
         Command::Handoff { built, evidence, open } => handoff_op(me()?, built, evidence, open)?,
         Command::Roster => Op::Roster,
         Command::Whoami => unreachable!("handled above"),
@@ -324,7 +330,21 @@ fn run() -> Result<ExitCode> {
     let result = runtime.block_on(async {
         let transport = UnixTransport::new(socket()?);
         let mut client = Client::connect(&transport, Hello::for_pane(me()?)).await?;
-        client.call(op).await
+        let result = client.call(op).await?;
+        // The exit code still means delivery only, so a failed record warns.
+        if let Some((task, place, check)) = receipt {
+            let accepted = matches!(result, OpResult::Delivered { accepted: true, .. });
+            match receipt_action(&task, place, check, accepted) {
+                Ok(action) => match client.call(Op::Task { action }).await {
+                    Ok(OpResult::Recorded { .. }) => {}
+                    Ok(OpResult::Error { message }) => eprintln!("fleet: warning — the receipt was sent but not recorded on the task: {message}"),
+                    Ok(_) => {}
+                    Err(e) => eprintln!("fleet: warning — the receipt was sent but not recorded on the task: {e:#}"),
+                },
+                Err(e) => eprintln!("fleet: warning — the receipt was sent but not recorded on a task: {e}"),
+            }
+        }
+        anyhow::Ok(result)
     })?;
 
     Ok(if report(filter.apply(result), full) { ExitCode::SUCCESS } else { ExitCode::FAILURE })
@@ -437,6 +457,19 @@ impl Filter {
 fn number(raw: &str, what: &str) -> Result<u64> {
     raw.trim().trim_start_matches('#').parse().map_err(|_| {
         anyhow::anyhow!("{what} takes a task number like 14, not {raw:?} — `fleet task list` shows them")
+    })
+}
+
+/// What `fleet done` puts on the task's chain once its message has gone.
+fn receipt_action(task: &str, place: done::Place, check: done::Check, accepted: bool) -> Result<TaskAction> {
+    Ok(TaskAction::Receipt {
+        task: number(task, "`fleet done`")?,
+        check: check.command,
+        status: check.status,
+        branch: place.branch,
+        commit: place.commit,
+        uncommitted: place.dirty,
+        accepted,
     })
 }
 
@@ -604,6 +637,13 @@ fn details(record: &TaskRecord) -> Vec<String> {
                 field.flag(),
                 old.join(" | "),
                 new.join(" | ")
+            ),
+            ChainEntry::Receipt { check, status, branch, commit, uncommitted, accepted } => format!(
+                "ran `{check}` — {status} — {} @ {}{}{}",
+                branch.as_deref().unwrap_or("no branch"),
+                commit.as_deref().unwrap_or("no commit"),
+                if *uncommitted { " + uncommitted changes" } else { "" },
+                if *accepted { "" } else { " — the receipt message was not delivered" }
             ),
             ChainEntry::Released { why, done, left, place, on_behalf_of } => format!(
                 "released this{} — why: {why} — done: {done} — left: {left} — where: {place}",
@@ -1168,6 +1208,21 @@ mod tests {
         }
         let why = action(&["fleet", "task", "update", "14", "--note", "x"]).unwrap_err().to_string();
         assert!(why.contains("--status") && why.contains("fleet task comment 14"), "{why}");
+    }
+
+    /// The receipt's facts go on the chain as they were sent; a task argument
+    /// that is not a number cannot be recorded, and says so.
+    #[test]
+    fn a_receipt_is_recorded_with_the_facts_it_was_sent_with() {
+        let (_, place, check) = done::checked(PaneId::Worker(2), "#14", "exit 9").expect("a receipt");
+        let TaskAction::Receipt { task: 14, check: command, status, accepted: false, .. } =
+            receipt_action("#14", place.clone(), check.clone(), false).unwrap()
+        else {
+            panic!("a receipt action for #14")
+        };
+        assert_eq!((command.as_str(), status.as_str()), ("exit 9", "exit 9"));
+        let why = receipt_action("the parser", place, check, true).unwrap_err().to_string();
+        assert!(why.contains("task number like 14"), "{why}");
     }
 
     /// The three typed fields are checked before the socket; "where" is the

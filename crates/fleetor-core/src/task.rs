@@ -177,6 +177,21 @@ pub enum ChainEntry {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         on_behalf_of: Option<PaneId>,
     },
+    /// What `fleet done` ran and where. Facts only: it claims nothing about
+    /// the criteria and changes neither status nor owner.
+    Receipt {
+        check: String,
+        /// `exit 0`, `exit 101`, `killed by a signal`.
+        status: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        commit: Option<String>,
+        #[serde(default)]
+        uncommitted: bool,
+        /// Whether orch's pane took the receipt message.
+        accepted: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -346,6 +361,16 @@ impl TaskRecord {
         Ok(self.owner.as_ref().filter(|_| !self.owned_by(from, lineage)).map(|owner| owner.pane))
     }
 
+    /// Where the latest receipt says the work sits.
+    pub fn receipt_place(&self) -> Option<String> {
+        self.chain.iter().rev().find_map(|line| match &line.entry {
+            ChainEntry::Receipt { branch: Some(branch), commit: Some(commit), .. } => {
+                Some(format!("{branch} @ {commit}"))
+            }
+            _ => None,
+        })
+    }
+
     /// Whether `from`, speaking in `lineage`, is the owner.
     pub fn owned_by(&self, from: PaneId, lineage: &str) -> bool {
         self.owner.as_ref().is_some_and(|owner| owner.pane == from && owner.lineage == lineage)
@@ -449,7 +474,7 @@ pub fn board<'a>(events: impl IntoIterator<Item = &'a FleetEvent>) -> Vec<TaskRe
                 record.status = *status;
                 record.chain.push(line);
             }
-            ChainEntry::Commented { .. } => {
+            ChainEntry::Commented { .. } | ChainEntry::Receipt { .. } => {
                 let Some(record) = records.get_mut(task) else { continue };
                 record.chain.push(line);
             }

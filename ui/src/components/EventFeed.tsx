@@ -120,7 +120,9 @@ function renderTask(event: ChainEvent): Rendered {
           ? `marked #${event.task} ${entry.status}${note(entry.note)}`
           : entry.entry === "commented"
             ? `commented on #${event.task} — ${entry.text}`
-            : entry.entry === "released"
+            : entry.entry === "receipt"
+              ? `ran \`${entry.check}\` for #${event.task} · ${entry.status}`
+              : entry.entry === "released"
               ? `released #${event.task}${
                   entry.on_behalf_of ? ` on behalf of ${entry.on_behalf_of}` : ""
                 } — left: ${entry.left}`
