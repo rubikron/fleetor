@@ -48,6 +48,10 @@ export function replayBoard(events: ChainEvent[]): TaskRecord[] {
       next.owner = owner(event.from);
     } else if (entry.entry === "status") {
       next.status = entry.status;
+    } else if (entry.entry === "reviewer-set") {
+      next.block = { ...record.block, reviewer: entry.new };
+    } else if (entry.entry === "handoff") {
+      next.status = "done";
     } else if (entry.entry === "released") {
       next.status = "planned";
       next.owner = null;

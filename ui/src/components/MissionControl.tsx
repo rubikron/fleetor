@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   ORCH,
   WORKER_SLOTS,
@@ -7,8 +7,12 @@ import {
   type PaneIdentityMap,
   type PaneStatus,
   type MessageEvent,
-  type TaskEvent,
+  type ChainEvent,
 } from "../fleet/types";
+import { replayBoard } from "../fleet/board";
+import { elapsed, monitorFlags } from "../fleet/flags";
+import type { TaskStoreInfo } from "../fleet/useFleet";
+import { summary, useNow } from "./TaskBoard";
 import { gaugeView } from "../lib/contextGaugeTone";
 import { PaneGauge } from "./PaneGauge";
 import { HarnessMark } from "./PaneHead";
@@ -30,8 +34,12 @@ interface MissionControlProps {
   panes: PaneIdentityMap;
   gauges: ContextGaugeMap;
   messages: MessageEvent[];
-  tasks: TaskEvent[];
+  /// The task store's chain, and which session is reading it.
+  chain: ChainEvent[];
+  taskStore: TaskStoreInfo | null;
   unreadPanes: Set<PaneId>;
+  /// The clock, fixed; the render probe passes one.
+  now?: number;
 }
 
 export function MissionControl({
@@ -41,10 +49,20 @@ export function MissionControl({
   panes,
   gauges,
   messages,
-  tasks,
+  chain,
+  taskStore,
   unreadPanes,
+  now: fixedNow,
 }: MissionControlProps) {
   const [detailPane, setDetailPane] = useState<PaneId | null>(null);
+  const now = useNow(fixedNow);
+  const board = useMemo(() => replayBoard(chain), [chain]);
+  // A pane's tasks are the ones it owns in this session; an earlier run's
+  // owner of the same name is somebody else.
+  const ownedBy = (pane: PaneId) =>
+    board.filter(
+      (r) => r.block.kind === "task" && r.owner?.pane === pane && r.owner.lineage === taskStore?.lineage,
+    );
 
   const handleSelect = (pane: PaneId) => {
     onSelect(pane);
@@ -54,9 +72,7 @@ export function MissionControl({
   const detailMessages = detailPane
     ? messages.filter((m: MessageEvent) => m.from === detailPane || m.to === detailPane).slice(-5)
     : [];
-  const detailTasks = detailPane
-    ? tasks.filter((t) => t.from === detailPane).slice(-5)
-    : [];
+  const detailTasks = detailPane ? ownedBy(detailPane).slice(-5) : [];
 
   return (
     <div className="mission-control">
@@ -68,8 +84,12 @@ export function MissionControl({
           const lastMsg = [...messages].reverse().find(
             (m: MessageEvent) => m.from === pane || m.to === pane,
           );
-          const activeTasks = tasks.filter(
-            (t) => t.from === pane && t.change.change === "posted",
+          const owned = ownedBy(pane);
+          const current = owned.filter((r) => r.status === "in-progress").pop();
+          const takenUp = current?.chain.filter((e) => e.entry.entry === "taken-up").pop();
+          const latest = current?.chain[current.chain.length - 1];
+          const flags = owned.flatMap((r) =>
+            monitorFlags(r, board, now).map((flag) => ({ ...flag, number: r.number })),
           );
           const reading = gauges[pane];
           const pct = reading?.kind === "sampled" ? reading.gauge.pct : null;
@@ -110,11 +130,22 @@ export function MissionControl({
                 </div>
               )}
               {pct !== null && <span className="mc-card__pct">{gauge?.text}</span>}
-              {activeTasks.length > 0 && (
+              {current && (
                 <span className="mc-card__task">
-                  {activeTasks.length} task{activeTasks.length !== 1 ? "s" : ""}
+                  <span className="mono">#{current.number}</span> {current.block.outcome}
+                  {takenUp && <span className="mc-card__held"> · held {elapsed(now - takenUp.at)}</span>}
                 </span>
               )}
+              {latest && (
+                <span className="mc-card__latest">
+                  <span className="mono">{latest.from}</span> {summary(latest)}
+                </span>
+              )}
+              {flags.map((flag) => (
+                <span key={`${flag.number}-${flag.kind}`} className="task-flag mc-card__flag">
+                  #{flag.number} {flag.text}
+                </span>
+              ))}
               {lastMsg && (
                 <p className="mc-card__msg">
                   {lastMsg.from === pane ? "→" : "←"} {lastMsg.body.slice(0, 60)}
@@ -153,8 +184,8 @@ export function MissionControl({
             <div className="mc-detail__section">
               <span className="mc-detail__label">Tasks</span>
               {detailTasks.map((t) => (
-                <p key={t.task} className="mc-detail__line">
-                  {t.change.change === "posted" ? t.change.block.outcome : t.change.change}
+                <p key={t.number} className="mc-detail__line">
+                  <span className="mono">#{t.number}</span> {t.status} · {t.block.outcome}
                 </p>
               ))}
             </div>

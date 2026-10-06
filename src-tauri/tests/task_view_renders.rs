@@ -219,6 +219,7 @@ fn the_operators_forms_carry_the_same_fields_an_agent_uses() {
             "instructions (optional)",
             "goal",
             "owner",
+            "reviewer",
         ],
     );
     assert!(task.contains(">No goal<") && task.contains("#1 one grammar"), "a goal is optional: {task}");
@@ -326,6 +327,7 @@ fn an_earlier_runs_owner_is_named_counted_and_can_be_released_for() {
     assert!(!markup(&all, "list").contains("Carried over"), "nothing open is carried in the first board");
 
     let form = view.split("task-form--release").nth(1).expect("the release form");
+    let form = form.split("</form>").next().unwrap();
     assert_eq!(
         fields(form),
         ["why it is being released", "done so far", "left to do", "where the work sits: branch @ commit"],
@@ -354,4 +356,102 @@ fn a_receipt_shows_the_check_its_exit_and_where_it_ran() {
 
     let feed = markup(&all, "released_activity");
     assert!(feed.contains("ran `cargo test -p parser` for #5 · exit 101"), "{feed}");
+}
+
+fn row<'a>(rows: &'a [String], number: &str) -> &'a str {
+    rows.iter().find(|row| row.contains(&format!(">#{number}<"))).unwrap_or_else(|| panic!("no row #{number}"))
+}
+
+/// Monitor flags are read off the chain: a closed goal with open tasks, a done
+/// with no receipt since its take-up, a done with no verdict from the named
+/// reviewer, and an assignment nobody took up, whose elapsed time turns coral
+/// at ten minutes.
+#[test]
+fn monitor_flags_show_what_the_chain_is_missing() {
+    let Some(all) = rendered() else { return };
+    let list = markup(&all, "monitor");
+    let rows = rows(&list);
+
+    assert!(row(&rows, "1").contains("task-flag\">closed with 2 open tasks<"), "{}", row(&rows, "1"));
+
+    let reviewed = row(&rows, "2");
+    assert!(reviewed.contains("done, no verdict from worker-3"), "an unrequested verdict is not the reviewer's: {reviewed}");
+    assert!(!reviewed.contains("done, no receipt"), "it has a receipt since its take-up: {reviewed}");
+    assert!(reviewed.contains("receipt exit 0") && reviewed.contains("reviewed (unrequested): met"), "{reviewed}");
+
+    assert!(row(&rows, "4").contains("done, no receipt"), "{}", row(&rows, "4"));
+    assert!(!row(&rows, "5").contains("task-flag"), "an in-progress task has nothing missing: {}", row(&rows, "5"));
+
+    let late = row(&rows, "3");
+    assert!(late.contains("task-row__waiting is-late") && late.contains("assigned 14m ago, not taken up"), "{late}");
+    let early_list = markup(&all, "early");
+    let early_rows = rows_of(&early_list);
+    let early = row(&early_rows, "3");
+    assert!(early.contains("assigned 4m ago, not taken up") && !early.contains("is-late"), "{early}");
+
+    let answered = markup(&all, "verdict");
+    let answered_rows = rows_of(&answered);
+    assert!(!row(&answered_rows, "2").contains("no verdict"), "the reviewer answered after the done");
+}
+
+fn rows_of(list: &str) -> Vec<String> {
+    rows(list)
+}
+
+/// The task page names the reviewer, shows receipts as evidence under the
+/// criteria, and renders verdicts and the goal's handoff as chain entries.
+#[test]
+fn the_page_shows_the_reviewer_the_evidence_verdicts_and_the_handoff() {
+    let Some(all) = rendered() else { return };
+    let page = markup(&all, "verdict");
+    let page = page.split("<article class=\"task-page\"").nth(1).expect("an open task page");
+    let head = page.split("</header>").next().unwrap();
+    assert!(head.contains("reviewer <span class=\"mono\">worker-3</span>"), "{head}");
+    assert!(page.contains(">evidence<") && page.contains("cargo test -p parser — exit 0 @ a1b2c3d"), "{page}");
+    assert!(!page.contains("✓"), "evidence, never a tick");
+
+    let verdicts: Vec<&str> = page.split("chain__entry--reviewed\"").skip(1).map(|e| e.split("</li>").next().unwrap()).collect();
+    assert_eq!(verdicts.len(), 2, "{page}");
+    assert!(verdicts[0].contains("worker-4") && verdicts[0].contains("reviewed it (unrequested): met"), "{}", verdicts[0]);
+    assert!(verdicts[1].contains("reviewed it: not met") && verdicts[1].contains("depth 3 still fails"), "{}", verdicts[1]);
+
+    // The reviewer control never offers the owner.
+    let control = page.split("task-form__reviewer").nth(1).expect("a reviewer control").split("</select>").next().unwrap();
+    assert!(control.contains(">worker-3<") && !control.contains(">worker-2<"), "{control}");
+
+    let goal = markup(&all, "handoff");
+    let handoff = goal.split("chain__entry--handoff\"").nth(1).expect("a handoff entry").split("</li>").next().unwrap();
+    assert!(handoff.contains("handed off this goal") && handoff.contains("the parser accepts nested groups"), "{handoff}");
+    assert!(handoff.contains("tasks still open") && handoff.contains("#3 #5"), "{handoff}");
+    assert!(goal.contains("task__status--done"), "the handoff closed the goal");
+
+    let form = markup(&all, "reviewerForm");
+    assert!(fields(&form).contains(&"reviewer".to_string()), "{:?}", fields(&form));
+}
+
+/// A worker's card shows the task it holds, for how long, its latest entry,
+/// and the flags on the tasks it owns.
+#[test]
+fn a_worker_card_shows_its_task_how_long_it_has_held_it_and_its_flags() {
+    let Some(all) = rendered() else { return };
+    let cards = markup(&all, "cards");
+    let card = |pane: &str| {
+        cards
+            .split("<button class=\"mc-card")
+            .skip(1)
+            .find(|card| card.contains(&format!("data-pane=\"{pane}\"")))
+            .unwrap_or_else(|| panic!("no card for {pane}"))
+            .to_string()
+    };
+    let one = card("worker-1");
+    assert!(one.contains("#5") && one.contains("errors carry a span"), "its current task: {one}");
+    assert!(one.contains("held 3m"), "{one}");
+    assert!(one.contains("named worker-2 reviewer"), "the task's latest entry: {one}");
+    assert!(one.contains("#3 assigned, never taken up"), "{one}");
+
+    let two = card("worker-2");
+    assert!(two.contains("#2 done, no verdict from worker-3"), "{two}");
+    assert!(!two.contains("mc-card__task"), "a done task is not held: {two}");
+    assert!(card("worker-4").contains("#4 done, no receipt"));
+    assert!(!card("worker-3").contains("task-flag"), "the reviewer's card carries no flag: {}", card("worker-3"));
 }

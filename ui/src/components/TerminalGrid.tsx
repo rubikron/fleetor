@@ -8,9 +8,10 @@ import {
   type PaneIdentityMap,
   type PaneStatus,
   type MessageEvent,
-  type TaskEvent,
+  type ChainEvent,
 } from "../fleet/types";
 import type { ContextGaugeMap } from "../fleet/useContextGauge";
+import type { TaskStoreInfo } from "../fleet/useFleet";
 import type { Theme } from "../ui/useTheme";
 
 const ORCH_SCROLLBACK = 10000;
@@ -39,7 +40,8 @@ interface TerminalGridProps {
   onRegisterFocus: (pane: PaneId, focus: () => void) => void;
   gauges: ContextGaugeMap;
   messages: MessageEvent[];
-  tasks: TaskEvent[];
+  chain: ChainEvent[];
+  taskStore: TaskStoreInfo | null;
 }
 
 export function TerminalGrid({
@@ -56,7 +58,8 @@ export function TerminalGrid({
   onRegisterFocus,
   gauges,
   messages,
-  tasks,
+  chain,
+  taskStore,
 }: TerminalGridProps) {
   return (
     <div className="fleet-layout">
@@ -91,7 +94,8 @@ export function TerminalGrid({
           panes={panes}
           gauges={gauges}
           messages={messages}
-          tasks={tasks}
+          chain={chain}
+          taskStore={taskStore}
           unreadPanes={unreadPanes}
         />
       </div>

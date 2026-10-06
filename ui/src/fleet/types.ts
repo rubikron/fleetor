@@ -288,6 +288,8 @@ export interface TaskBlock {
   /// The goal this task belongs to, by number.
   parent?: number | null;
   converges_on?: number | null;
+  /// Who is expected to review it. Shown, never acted on.
+  reviewer?: PaneId | null;
 }
 
 /// One thing that happened to a task (`fleetor_core::task::ChainEntry`).
@@ -314,7 +316,10 @@ export type ChainEntry =
       commit?: string | null;
       uncommitted?: boolean;
       accepted: boolean;
-    };
+    }
+  | { entry: "reviewer-set"; old?: PaneId | null; new: PaneId }
+  | { entry: "reviewed"; met: boolean; reason?: string | null; requested: boolean }
+  | { entry: "handoff"; built: string; evidence: string[]; open?: string[]; open_tasks?: number[] };
 
 /// A chain entry as it arrives on `fleet://task`: who, when, and in which run
 /// and lineage. `seq` is the task store's own, not the run log's.
@@ -341,10 +346,18 @@ export type TaskAction =
       owner?: PaneId | null;
       instructions?: string | null;
       parent?: number | null;
+      reviewer?: PaneId | null;
     }
   | { action: "update"; task: number; status: TaskStatus; note?: string | null }
   | { action: "comment"; task: number; text: string }
-  | { action: "edit"; task: number; outcome?: string | null; technical: string[]; vision: string[] }
+  | {
+      action: "edit";
+      task: number;
+      outcome?: string | null;
+      technical: string[];
+      vision: string[];
+      reviewer?: PaneId | null;
+    }
   | { action: "release"; task: number; why: string; done: string; left: string; place: string };
 
 /// The run-log task event as it was before D-100. Nothing writes it; a reopened

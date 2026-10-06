@@ -226,7 +226,8 @@ export function App() {
                 onRestart={restart}
                 gauges={gauges}
                 messages={fleet.messages}
-                tasks={fleet.tasks}
+                chain={fleet.chain}
+                taskStore={fleet.taskStore}
               />
             </div>
 

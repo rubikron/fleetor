@@ -4,8 +4,9 @@
 // what someone said, so nothing here renders a tick or a progress bar; a goal's
 // tasks are counted by status as text.
 
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { byGoal, replayBoard, type TaskRecord } from "../fleet/board";
+import { NEVER_TAKEN_UP_MS, assignedAt, elapsed, evidence, monitorFlags } from "../fleet/flags";
 import {
   WORKER_SLOTS,
   workerPane,
@@ -46,6 +47,17 @@ const ownerName = (record: TaskRecord, store: TaskStoreInfo | null): string =>
 
 const isOpen = (record: TaskRecord): boolean =>
   record.status === "planned" || record.status === "in-progress";
+
+/// The time, re-read often enough for a minutes-old figure to stay true.
+export function useNow(fixed?: number): number {
+  const [now, setNow] = useState(() => fixed ?? Date.now());
+  useEffect(() => {
+    if (fixed !== undefined) return;
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, [fixed]);
+  return fixed ?? now;
+}
 
 const lines = (text: string): string[] =>
   text
@@ -95,6 +107,7 @@ function NewForm({
   const [vision, setVision] = useState("");
   const [instructions, setInstructions] = useState("");
   const [owner, setOwner] = useState<PaneId | "">("");
+  const [reviewer, setReviewer] = useState<PaneId | "">("");
   const [parent, setParent] = useState<string>("");
   const [tell, setTell] = useState(false);
   const [error, busy, act] = useChange();
@@ -110,6 +123,7 @@ function NewForm({
         owner: owner || null,
         instructions: instructions.trim() || null,
         parent: parent ? Number(parent) : null,
+        reviewer: reviewer || null,
       });
       // Opening a task assigns nobody; telling the owner is a separate, chosen act.
       if (kind === "task" && owner && tell) {
@@ -164,6 +178,18 @@ function NewForm({
                   {pane}
                 </option>
               ))}
+            </select>
+          </Field>
+          <Field label="reviewer">
+            <select className="composer__target" value={reviewer} onChange={(e) => setReviewer(e.target.value as PaneId | "")}>
+              <option value="">no reviewer</option>
+              {WORKER_SLOTS.map(workerPane)
+                .filter((pane) => pane !== owner)
+                .map((pane) => (
+                  <option key={pane} value={pane}>
+                    {pane}
+                  </option>
+                ))}
             </select>
           </Field>
           <label className="task-form__check">
@@ -365,6 +391,32 @@ function Controls({
           )}
         </div>
       )}
+      {block.kind === "task" && (
+        <label className="task-form__reviewer">
+          <span className="composer__label">reviewer</span>
+          <select
+            className="composer__target"
+            value={block.reviewer ?? ""}
+            disabled={off}
+            title={why}
+            onChange={(e) =>
+              e.target.value &&
+              run({ action: "edit", task: record.number, technical: [], vision: [], reviewer: e.target.value as PaneId })
+            }
+          >
+            <option value="" disabled>
+              no reviewer
+            </option>
+            {WORKER_SLOTS.map(workerPane)
+              .filter((pane) => pane !== record.owner?.pane)
+              .map((pane) => (
+                <option key={pane} value={pane}>
+                  {pane}
+                </option>
+              ))}
+          </select>
+        </label>
+      )}
       <form
         className="task-form__comment"
         onSubmit={(e) => {
@@ -401,7 +453,7 @@ const FIELD: Record<string, string> = {
 };
 
 /// One chain entry in a sentence, for a row's "latest" column.
-function summary(event: ChainEvent): string {
+export function summary(event: ChainEvent): string {
   const { entry } = event;
   switch (entry.entry) {
     case "opened":
@@ -416,6 +468,12 @@ function summary(event: ChainEvent): string {
       return `edited ${FIELD[entry.field]}`;
     case "receipt":
       return `ran a check · ${entry.status}`;
+    case "reviewer-set":
+      return `named ${entry.new} reviewer`;
+    case "reviewed":
+      return `reviewed it${entry.requested ? "" : " (unrequested)"}: ${entry.met ? "met" : "not met"}`;
+    case "handoff":
+      return "handed off this goal";
     case "released":
       return entry.on_behalf_of ? `released this on behalf of ${entry.on_behalf_of}` : "released this";
   }
@@ -432,12 +490,16 @@ function counts(tasks: TaskRecord[]): string {
 function Row({
   record,
   store,
+  board,
+  now,
   tasks,
   open,
   onOpen,
 }: {
   record: TaskRecord;
   store: TaskStoreInfo | null;
+  board: TaskRecord[];
+  now: number;
   tasks?: TaskRecord[];
   open: boolean;
   onOpen: (number: number) => void;
@@ -445,6 +507,11 @@ function Row({
   const goal = record.block.kind === "goal";
   const latest = record.chain[record.chain.length - 1];
   const comments = record.chain.filter((e) => e.entry.entry === "commented").length;
+  const { receipt, verdict } = evidence(record);
+  const assigned = assignedAt(record);
+  const waited = assigned === null ? null : now - assigned;
+  // The elapsed time on the row is how "never taken up" shows.
+  const flags = monitorFlags(record, board, now).filter((flag) => flag.kind !== "never-taken-up");
   return (
     <button
       type="button"
@@ -469,6 +536,22 @@ function Row({
           {comments} comment{comments === 1 ? "" : "s"}
         </span>
       )}
+      {waited !== null && (
+        <span className={`task-row__waiting ${waited >= NEVER_TAKEN_UP_MS ? "is-late" : ""}`}>
+          assigned {elapsed(waited)} ago, not taken up
+        </span>
+      )}
+      {receipt && <span className="mono task-row__receipt">receipt {receipt.status}</span>}
+      {verdict && (
+        <span className="task-row__review">
+          reviewed{verdict.requested ? "" : " (unrequested)"}: {verdict.met ? "met" : "not met"}
+        </span>
+      )}
+      {flags.map((flag) => (
+        <span key={flag.kind} className="task-flag">
+          {flag.text}
+        </span>
+      ))}
     </button>
   );
 }
@@ -491,7 +574,12 @@ function Criteria({ label, items }: { label: string; items: string[] | undefined
 
 function Entry({ event }: { event: ChainEvent }) {
   const { entry } = event;
-  const note = entry.entry === "taken-up" || entry.entry === "status" ? entry.note : null;
+  const note =
+    entry.entry === "taken-up" || entry.entry === "status"
+      ? entry.note
+      : entry.entry === "reviewed"
+        ? entry.reason
+        : null;
   return (
     <li className={`chain__entry chain__entry--${entry.entry}`}>
       <span className="mono chain__from">{event.from}</span>
@@ -506,6 +594,26 @@ function Entry({ event }: { event: ChainEvent }) {
           <Criteria label="was" items={entry.old} />
           <Criteria label="now" items={entry.new} />
         </div>
+      )}
+      {entry.entry === "handoff" && (
+        <dl className="chain__release">
+          <dt>built</dt>
+          <dd>{entry.built}</dd>
+          <dt>evidence</dt>
+          <dd>{entry.evidence.join(" · ")}</dd>
+          {entry.open && entry.open.length > 0 && (
+            <>
+              <dt>open</dt>
+              <dd>{entry.open.join(" · ")}</dd>
+            </>
+          )}
+          {entry.open_tasks && entry.open_tasks.length > 0 && (
+            <>
+              <dt>tasks still open</dt>
+              <dd className="mono">{entry.open_tasks.map((n) => `#${n}`).join(" ")}</dd>
+            </>
+          )}
+        </dl>
       )}
       {entry.entry === "receipt" && (
         <dl className="chain__release">
@@ -545,6 +653,8 @@ function Entry({ event }: { event: ChainEvent }) {
 function TaskPage({
   record,
   store,
+  board,
+  now,
   goal,
   ops,
   writable,
@@ -552,6 +662,8 @@ function TaskPage({
 }: {
   record: TaskRecord;
   store: TaskStoreInfo | null;
+  board: TaskRecord[];
+  now: number;
   goal: TaskRecord | undefined;
   ops: TaskOps | null;
   writable: boolean;
@@ -569,13 +681,36 @@ function TaskPage({
             owner <span className="mono">{ownerName(record, store)}</span>
           </span>
         )}
+        {block.kind === "task" && (
+          <span className="task__posted">
+            reviewer <span className="mono">{block.reviewer ?? "none"}</span>
+          </span>
+        )}
         <span className="task__posted">
           opened by <span className="mono">{record.creator}</span>
         </span>
+        {monitorFlags(record, board, now).map((flag) => (
+          <span key={flag.kind} className="task-flag">
+            {flag.text}
+          </span>
+        ))}
       </header>
 
       <p className="task__outcome">{block.outcome}</p>
       <Criteria label="technical" items={block.technical} />
+      {/* Evidence, not a tick: what was run against the criteria, and how it exited. */}
+      {block.kind === "task" && (
+        <Criteria
+          label="evidence"
+          items={
+            evidence(record).receipts.length > 0
+              ? evidence(record).receipts.map(
+                  (r) => `${r.check} — ${r.status} @ ${r.commit ?? "no commit"}${r.uncommitted ? " + uncommitted changes" : ""}`,
+                )
+              : ["no receipt recorded"]
+          }
+        />
+      )}
       <Criteria label="vision" items={block.vision} />
       {block.instructions && <p className="task__instructions">{block.instructions}</p>}
       {goal && (
@@ -615,6 +750,7 @@ export function TaskBoard({
   initialEdit = false,
   initialRelease = false,
   initialFilter = "all",
+  now: fixedNow,
 }: {
   chain: ChainEvent[];
   store: TaskStoreInfo | null;
@@ -625,7 +761,10 @@ export function TaskBoard({
   initialEdit?: boolean;
   initialRelease?: boolean;
   initialFilter?: TaskFilter;
+  /// The clock, fixed; the render probe passes one.
+  now?: number;
 }) {
+  const now = useNow(fixedNow);
   const board = useMemo(() => replayBoard(chain), [chain]);
   const groups = useMemo(() => byGoal(board), [board]);
   const [open, setOpen] = useState<number | null>(initialOpen);
@@ -709,12 +848,12 @@ export function TaskBoard({
             {visible.map(({ goal, tasks, shown: matching }) => (
               <section key={goal?.number ?? "none"} className="tasks__group">
                 {goal ? (
-                  <Row record={goal} store={store} tasks={tasks} open={open === goal.number} onOpen={toggle} />
+                  <Row record={goal} store={store} board={board} now={now} tasks={tasks} open={open === goal.number} onOpen={toggle} />
                 ) : (
                   <div className="tasks__no-goal">No goal</div>
                 )}
                 {matching.map((task) => (
-                  <Row key={task.number} record={task} store={store} open={open === task.number} onOpen={toggle} />
+                  <Row key={task.number} record={task} store={store} board={board} now={now} open={open === task.number} onOpen={toggle} />
                 ))}
               </section>
             ))}
@@ -724,6 +863,8 @@ export function TaskBoard({
               key={shown.number}
               record={shown}
               store={store}
+              board={board}
+              now={now}
               ops={ops}
               writable={writable}
               start={initialEdit ? "edit" : initialRelease ? "release" : null}

@@ -6,6 +6,7 @@
 
 import { renderToStaticMarkup } from "react-dom/server";
 import { EventFeed } from "../../../ui/src/components/EventFeed";
+import { MissionControl } from "../../../ui/src/components/MissionControl";
 import { TaskBoard, type TaskOps } from "../../../ui/src/components/TaskBoard";
 import type { ChainEntry, ChainEvent, FleetEvent, PaneId, TaskBlock } from "../../../ui/src/fleet/types";
 import type { TaskStoreInfo } from "../../../ui/src/fleet/useFleet";
@@ -78,6 +79,47 @@ const HANDED_ON: ChainEvent[] = [
   at(6, "worker-4", { entry: "taken-up" }),
 ];
 
+// S3: every entry is this session's (run-2), so owners are the live panes.
+const now2 = (task: number, from: PaneId, entry: ChainEntry) => at(task, from, entry, "run-2");
+const ASSIGNED = now2(3, "orch", { entry: "opened", block: task("errors name the token", "worker-1", 1) });
+const REVIEWED: ChainEvent[] = [
+  now2(1, "operator", { entry: "opened", block: goal }),
+  now2(2, "orch", {
+    entry: "opened",
+    block: { ...task("nested groups parse", "worker-2", 1), reviewer: "worker-3" },
+  }),
+  ASSIGNED,
+  now2(4, "orch", { entry: "opened", block: task("spans survive a reparse", null, 1) }),
+  now2(5, "orch", { entry: "opened", block: task("errors carry a span", null, 1) }),
+  now2(2, "worker-2", { entry: "taken-up" }),
+  now2(2, "worker-2", {
+    entry: "receipt",
+    check: "cargo test -p parser",
+    status: "exit 0",
+    branch: "fleet/logstat/worker-2",
+    commit: "a1b2c3d",
+    accepted: true,
+  }),
+  now2(2, "worker-2", { entry: "status", status: "done" }),
+  now2(2, "worker-4", { entry: "reviewed", met: true, requested: false }),
+  now2(4, "worker-4", { entry: "taken-up" }),
+  now2(4, "worker-4", { entry: "status", status: "done" }),
+  now2(5, "worker-1", { entry: "taken-up" }),
+  now2(5, "operator", { entry: "reviewer-set", new: "worker-2" }),
+  now2(1, "orch", {
+    entry: "handoff",
+    built: "the parser accepts nested groups",
+    evidence: ["cargo test -p parser"],
+    open_tasks: [3, 5],
+  }),
+];
+const LATER = REVIEWED[REVIEWED.length - 1].at + 60_000;
+// The named reviewer's verdict after the done clears "no verdict".
+const ANSWERED: ChainEvent[] = [
+  ...REVIEWED,
+  now2(2, "worker-3", { entry: "reviewed", met: false, reason: "depth 3 still fails", requested: true }),
+];
+
 const LIVE: TaskStoreInfo = { live: true, target: "/work/logstat", run: "run-2", lineage: "lin-2" };
 const GATE: TaskStoreInfo = { live: false, target: "/work/logstat", run: null, lineage: null };
 
@@ -118,6 +160,33 @@ process.stdout.write(
     ),
     released_activity: renderToStaticMarkup(
       <EventFeed feed={[notice(1, "first")]} tasks={[{ event: HANDED_ON[13], after: 1 }, { event: HANDED_ON[14], after: 1 }]} />,
+    ),
+    monitor: renderToStaticMarkup(<TaskBoard chain={REVIEWED} store={LIVE} ops={OPS} now={LATER} />),
+    early: renderToStaticMarkup(
+      <TaskBoard chain={REVIEWED} store={LIVE} ops={OPS} now={ASSIGNED.at + 4 * 60_000} />,
+    ),
+    verdict: renderToStaticMarkup(
+      <TaskBoard chain={ANSWERED} store={LIVE} ops={OPS} now={LATER} initialOpen={2} />,
+    ),
+    handoff: renderToStaticMarkup(
+      <TaskBoard chain={REVIEWED} store={LIVE} ops={OPS} now={LATER} initialOpen={1} />,
+    ),
+    reviewerForm: renderToStaticMarkup(
+      <TaskBoard chain={REVIEWED} store={LIVE} ops={OPS} now={LATER} initialForm="task" />,
+    ),
+    cards: renderToStaticMarkup(
+      <MissionControl
+        selected="orch"
+        onSelect={() => {}}
+        statuses={{}}
+        panes={{}}
+        gauges={{}}
+        messages={[]}
+        chain={REVIEWED}
+        taskStore={LIVE}
+        unreadPanes={new Set()}
+        now={LATER}
+      />,
     ),
     empty: renderToStaticMarkup(<TaskBoard chain={[]} store={GATE} />),
   }),
