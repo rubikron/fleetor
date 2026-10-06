@@ -17,10 +17,23 @@ import {
 } from "./types";
 
 const FLEET_EVENT = "fleet://event";
+const FLEET_LAUNCHING = "fleet://launching";
 
-/// Start (idempotent) the embedded fleet: store, event bus, hub socket.
-export function bootstrap(): Promise<BootSnapshot> {
-  return invoke<BootSnapshot>("fleet_bootstrap");
+/// What a launch brings up: a new fleet on the gate's picks, or a past run on
+/// the seats and target it recorded (D-099).
+export type LaunchSource = { kind: "fresh" } | { kind: "reopen"; id: string };
+
+/// Why a launch brought no fleet up. `torn_down` is false when it was refused
+/// before anything was touched, so whatever was running still is.
+export interface LaunchFailure {
+  reason: string;
+  torn_down: boolean;
+}
+
+/// The one way a fleet comes up: the running fleet is torn down and archived,
+/// then the new one is built. Rejects with a `LaunchFailure`.
+export function launchFleet(source: LaunchSource): Promise<BootSnapshot> {
+  return invoke<BootSnapshot>("fleet_launch", { source });
 }
 
 /// The live fleet configuration — what a click will run, and where.
@@ -165,22 +178,17 @@ export function deleteRun(id: string): Promise<void> {
 /// Save a run's JSON export. Opens a native save dialog on the Rust side, so no
 /// dialog plugin is needed here. Resolves to `null` when the operator dismissed
 /// it — a cancel, not a failure, and it must not be shown as one.
-/// Reopen a past run: the fleet you have now is archived, and that run's five
-/// panes come back on their own recorded sessions (WP-27, R2, R5).
-///
-/// Resolves to the same `BootSnapshot` a fresh start does, because reopening *is*
-/// a start — one with a seeded log. Rejects with a sentence naming the seat or the
-/// harness when the run cannot be restored (R8), and rejects **before** anything is
-/// torn down, so a refusal leaves the live fleet running.
-export function reopenRun(id: string): Promise<BootSnapshot> {
-  return invoke<BootSnapshot>("run_reopen", { id });
-}
-
 export function exportRun(id: string): Promise<string | null> {
   return invoke<string | null>("run_export", { id });
 }
 
 // --- streams ------------------------------------------------------------------
+
+/// Subscribe to "a launch's verdict passed": the old fleet is down and every
+/// fleet event after this belongs to the new run. A refused launch never fires it.
+export function onFleetLaunching(handler: () => void): Promise<UnlistenFn> {
+  return listen(FLEET_LAUNCHING, () => handler());
+}
 
 /// Subscribe to the live event stream. Returns an unlisten fn for cleanup.
 export function onFleetEvent(handler: (event: FleetEvent) => void): Promise<UnlistenFn> {

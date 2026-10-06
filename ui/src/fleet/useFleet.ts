@@ -1,4 +1,4 @@
-// The single live-state hook: bootstrap the embedded fleet, then stream every
+// The single live-state hook: launch the embedded fleet, then stream every
 // appended event into two lists.
 //
 // **Two lists, not one, and that is the point.** `feed` is a scrolling activity
@@ -7,13 +7,20 @@
 // product's whole deliverable is that record, so silently discarding the oldest
 // message once 300 events have gone by would be a hole in the thing being sold.
 //
-// The listener is attached **before** `bootstrap()`. A Tauri `emit` with no
-// listener is a drop, and bootstrap's own first act is to append notices about
+// The listener is attached at mount, **before** any launch. A Tauri `emit` with
+// no listener is a drop, and a launch's own first act is to append notices about
 // the target — so subscribing afterwards loses exactly the events that explain
 // where the fleet is working.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { bootstrap, fetchConfig, onFleetEvent } from "./api";
+import {
+  fetchConfig,
+  launchFleet,
+  onFleetEvent,
+  onFleetLaunching,
+  type LaunchFailure,
+  type LaunchSource,
+} from "./api";
 import { stopListening } from "./listeners";
 import {
   isCommand,
@@ -44,7 +51,16 @@ export interface FleetView {
   /// already on the wire and already rendered in the feed.
   panes: PaneIdentityMap;
   refreshConfig: () => void;
-  start: () => Promise<void>;
+  /// Bring a fleet up (D-099). Feed, messages, pane identities and tasks reset
+  /// when the backend says the verdict passed, and `onVerdictPassed` runs with
+  /// them — so a refused launch resets nothing. Rejects with the backend's
+  /// `LaunchFailure`.
+  launch: (source: LaunchSource, onVerdictPassed: () => void) => Promise<void>;
+}
+
+function asFailure(e: unknown): LaunchFailure {
+  if (e && typeof e === "object" && "reason" in e) return e as LaunchFailure;
+  return { reason: String(e), torn_down: false };
 }
 
 const MAX_FEED = 300;
@@ -60,12 +76,57 @@ export function useFleet(): FleetView {
   const [panes, setPanes] = useState<PaneIdentityMap>({});
   const [configNonce, setConfigNonce] = useState(0);
   const listenerReady = useRef(false);
+  // The reset a launch in flight is owed, taken exactly once.
+  const owedReset = useRef<(() => void) | null>(null);
 
-  // Attach the event listener on mount — before any bootstrap, so events
-  // emitted during bootstrap are captured.
+  // Task state on a launch (D-099, Coordination A). Clears the list; the task
+  // PRD replaces the body with a replay of the fleet's task store.
+  const resetTasks = useCallback(() => setTasks([]), []);
+
+  // Drop the run being left. Fired by the backend's "verdict passed" event; the
+  // launch's own settle calls it too, so it happens once whichever lands first.
+  const reset = useCallback(() => {
+    const onVerdictPassed = owedReset.current;
+    if (!onVerdictPassed) return;
+    owedReset.current = null;
+    setReady(false);
+    setFeed([]);
+    setMessages([]);
+    setCommands([]);
+    setPanes({});
+    resetTasks();
+    onVerdictPassed();
+  }, [resetTasks]);
+
+  const launch = useCallback(
+    async (source: LaunchSource, onVerdictPassed: () => void) => {
+      owedReset.current = onVerdictPassed;
+      try {
+        await launchFleet(source);
+        reset();
+        setReady(true);
+      } catch (e) {
+        const failure = asFailure(e);
+        if (failure.torn_down) {
+          reset();
+          resetTasks();
+        }
+        // Refused at the verdict: the fleet that was running still is.
+        owedReset.current = null;
+        throw failure;
+      } finally {
+        setConfigNonce((n) => n + 1);
+      }
+    },
+    [reset, resetTasks],
+  );
+
+  // Attach the event listener on mount — before any launch, so events emitted
+  // during one are captured.
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
+    let unlistenLaunching: (() => void) | undefined;
 
     (async () => {
       try {
@@ -82,8 +143,10 @@ export function useFleet(): FleetView {
             setPanes((p) => ({ ...p, [pane]: { harness, mark, model } }));
           }
         });
+        unlistenLaunching = await onFleetLaunching(reset);
         if (cancelled) {
           stopListening(unlisten, "fleet events");
+          stopListening(unlistenLaunching, "fleet launching");
           return;
         }
         listenerReady.current = true;
@@ -95,11 +158,12 @@ export function useFleet(): FleetView {
     return () => {
       cancelled = true;
       stopListening(unlisten, "fleet events");
+      stopListening(unlistenLaunching, "fleet launching");
     };
-  }, []);
+  }, [reset]);
 
-  // Config works before bootstrap (fleet_config reads config.json directly
-  // when the fleet isn't bootstrapped yet), so the start gate can show what
+  // Config works before a launch (fleet_config reads config.json directly
+  // when no fleet is up), so the start gate can show what
   // a click will launch.
   useEffect(() => {
     let cancelled = false;
@@ -116,15 +180,6 @@ export function useFleet(): FleetView {
     };
   }, [ready, configNonce]);
 
-  const start = useCallback(async () => {
-    try {
-      await bootstrap();
-      setReady(true);
-    } catch (e) {
-      setError(String(e));
-    }
-  }, []);
-
   return {
     ready,
     error,
@@ -135,6 +190,6 @@ export function useFleet(): FleetView {
     config,
     panes,
     refreshConfig: () => setConfigNonce((n) => n + 1),
-    start,
+    launch,
   };
 }

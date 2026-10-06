@@ -135,6 +135,10 @@ pub struct RunRecord {
 /// an unknown target rather than a parsed guess.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct LiveMeta {
+    /// The id this run is archived under, claimed at launch ([`new_run_id`]).
+    /// `None` on a run begun before D-099, which is named by its start time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     started_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -234,11 +238,6 @@ fn live_meta(shell: &Path) -> PathBuf {
     shell.join("run.json")
 }
 
-/// The pending-reopen marker (WP-27, R2).
-fn reopen_request(shell: &Path) -> PathBuf {
-    shell.join("reopen.json")
-}
-
 // --- the live run -------------------------------------------------------------
 
 /// Record what the run that is starting now is pointed at, for the History list
@@ -247,10 +246,50 @@ fn reopen_request(shell: &Path) -> PathBuf {
 /// Best-effort on purpose: a failure here costs one row's target column, and is
 /// not worth failing a boot over.
 pub fn begin(shell: &Path, started_ms: i64, target: &Path, sessions: &SessionsId, parent: Option<&str>) {
+    begin_run(shell, None, started_ms, target, sessions, parent);
+}
+
+/// [`begin`] for a run whose id was claimed at launch, so the fleet and the
+/// archive name it the same thing.
+pub fn begin_as(
+    shell: &Path,
+    id: &str,
+    started_ms: i64,
+    target: &Path,
+    sessions: &SessionsId,
+    parent: Option<&str>,
+) {
+    begin_run(shell, Some(id), started_ms, target, sessions, parent);
+}
+
+/// An id for the run starting at `started_ms` that no archive and no seat
+/// directory already uses. Two launches in one second would otherwise share a
+/// seat directory, and the task store is keyed by it.
+pub fn new_run_id(shell: &Path, runs: &Path, started_ms: i64) -> String {
+    let base = timestamp_id_for(started_ms);
+    let taken = |id: &str| {
+        runs.join(id).exists()
+            || crate::placement::pane_config_run(shell, &SessionsId::new(id)).exists()
+    };
+    (1u32..)
+        .map(|n| if n == 1 { base.clone() } else { format!("{base}-{n}") })
+        .find(|id| !taken(id))
+        .expect("an unbounded search")
+}
+
+fn begin_run(
+    shell: &Path,
+    id: Option<&str>,
+    started_ms: i64,
+    target: &Path,
+    sessions: &SessionsId,
+    parent: Option<&str>,
+) {
     // The panes are empty here and are filled in one at a time by
     // [`record_pane`], because at bootstrap there are none: rotation has just run
     // and the first pane is several operator gestures away.
     let meta = LiveMeta {
+        id: id.map(str::to_string),
         started_ms: Some(started_ms),
         target: Some(target.display().to_string()),
         sessions: Some(sessions.to_string()),
@@ -310,41 +349,10 @@ pub fn record_pane(
 /// to discover it after five panes are gone: a reopen that killed the live fleet
 /// and then failed would be the worst version of this feature.
 pub fn reopen_blocker_for(runs: &Path, id: &str) -> Option<String> {
-    reopen_blocker(runs, id)
-}
-
-/// Gate, then tear down, then ask the next boot to reopen — **in that order, and
-/// the order is the whole function** (R8, R2).
-///
-/// `teardown` is the caller's: killing the panes and dropping the live fleet are
-/// Tauri state this module never holds. It runs only once the gate has passed, so
-/// a refused reopen leaves the live fleet exactly as it was and writes no request.
-/// One function rather than three lines in `run_reopen` so that the ordering is
-/// something a test can hold, not something a command happens to do.
-pub fn begin_reopen(
-    shell: &Path,
-    runs: &Path,
-    id: &str,
-    teardown: impl FnOnce() -> Result<(), String>,
-) -> Result<(), String> {
-    if let Some(why) = reopen_blocker(runs, id) {
-        return Err(format!("\u{201c}{id}\u{201d} can\u{2019}t be opened: {why}"));
+    if run_dir(runs, id).ok().and_then(|dir| manifest_of(&dir)).is_none() {
+        return Some("there is no such run in History".into());
     }
-    teardown()?;
-    request_reopen(shell, id)
-}
-
-/// Ask the next bootstrap to reopen run `id` instead of starting empty (R2).
-///
-/// **A request consumed by rotation rather than a second archive path.** R2 makes
-/// reopening *be* a rotation — teardown, archive what is live, then seed the slot
-/// — and the only difference from an ordinary boot is which database the slot
-/// starts from. Expressing that as a marker the existing path reads keeps one
-/// archive mechanism instead of two that can drift.
-pub fn request_reopen(shell: &Path, id: &str) -> Result<(), String> {
-    std::fs::create_dir_all(shell).map_err(|e| format!("create {}: {e}", shell.display()))?;
-    std::fs::write(reopen_request(shell), id)
-        .map_err(|e| format!("write {}: {e}", reopen_request(shell).display()))
+    reopen_blocker(runs, id)
 }
 
 /// **Each seat's resumable session id for a lineage** (WP-27, R6) — what the
@@ -364,11 +372,11 @@ pub fn lineage_session_ids(runs: &Path, id: &str) -> BTreeMap<String, String> {
     out
 }
 
-/// The run the next bootstrap has been asked to reopen, without consuming the
-/// request — [`apply_reopen`] does that.
-pub fn pending_reopen(shell: &Path) -> Option<String> {
-    let id = std::fs::read_to_string(reopen_request(shell)).ok()?;
-    Some(id.trim().to_string())
+/// The target run `id` recorded, which a reopen launches against whatever the
+/// gate holds (D-099). `None` for a run that recorded none.
+pub fn recorded_target(runs: &Path, id: &str) -> Option<PathBuf> {
+    let manifest = manifest_of(&run_dir(runs, id).ok()?)?;
+    Some(PathBuf::from(manifest.get("run")?.get("target")?.as_str()?))
 }
 
 /// What each seat of a lineage was placed as (D-095): the harness, model and
@@ -389,25 +397,17 @@ pub struct Reopened {
     pub parent: String,
 }
 
-/// Consume a pending reopen: copy the archived log into the live slot (R1).
+/// Copy run `id`'s archived log into the live slot (R1).
 ///
-/// Called from bootstrap **after [`rotate`] and before the store is opened**, which
-/// is the only window in which the slot is both empty and unopened. Returns `None`
-/// when no reopen was requested, which is every ordinary boot.
+/// Called by a reopen launch **after [`rotate`] and before the store is opened**,
+/// the only window in which the slot is both empty and unopened.
 ///
 /// **The parent is read, never written.** D-058's invariant is that a new run
 /// cannot be corrupted by an old one; copying satisfies it exactly, and the
 /// archive stays frozen (R1).
-pub fn apply_reopen(shell: &Path, runs: &Path) -> Result<Option<Reopened>, String> {
-    let marker = reopen_request(shell);
-    let Ok(id) = std::fs::read_to_string(&marker) else { return Ok(None) };
-    let id = id.trim().to_string();
-    // Consumed whatever happens next: a marker that survived a failure would
-    // reopen the same run on every subsequent boot.
-    let _ = std::fs::remove_file(&marker);
-
-    let dir = run_dir(runs, &id)?;
-    if let Some(why) = reopen_blocker(runs, &id) {
+pub fn seed_reopen(shell: &Path, runs: &Path, id: &str) -> Result<Reopened, String> {
+    let dir = run_dir(runs, id)?;
+    if let Some(why) = reopen_blocker(runs, id) {
         return Err(format!("cannot reopen {id}: {why}"));
     }
     let manifest = manifest_of(&dir).ok_or_else(|| format!("run {id} has no manifest"))?;
@@ -420,13 +420,15 @@ pub fn apply_reopen(shell: &Path, runs: &Path) -> Result<Option<Reopened>, Strin
 
     // The board and the message history come with the log, which is the whole
     // reason R1 copies it rather than starting empty.
-    std::fs::copy(dir.join("state.db"), live_db(shell))
-        .map_err(|e| format!("seed the live run from {id}: {e}"))?;
+    if let Err(e) = std::fs::copy(dir.join("state.db"), live_db(shell)) {
+        let _ = std::fs::remove_file(live_db(shell));
+        return Err(format!("seed the live run from {id}: {e}"));
+    }
     // A copied database must not inherit a stale journal from the live slot.
     for suffix in ["-wal", "-shm"] {
         let _ = std::fs::remove_file(with_suffix(&live_db(shell), suffix));
     }
-    Ok(Some(Reopened { sessions: SessionsId::new(sessions), parent: id }))
+    Ok(Reopened { sessions: SessionsId::new(sessions), parent: id.to_string() })
 }
 
 // --- rotation -----------------------------------------------------------------
@@ -443,7 +445,8 @@ pub fn rotate(shell: &Path, runs: &Path, now_ms: i64) -> Vec<(NoticeLevel, Strin
 
     let mut meta = read_live_meta(shell);
     let started = meta.started_ms.or_else(|| file_started_ms(&live)).unwrap_or(now_ms);
-    let dest = match reserve(runs, &timestamp_id_for(started)) {
+    let claimed = meta.id.clone().unwrap_or_else(|| timestamp_id_for(started));
+    let dest = match reserve(runs, &claimed) {
         Ok(dir) => dir,
         Err(e) => return vec![(NoticeLevel::Warn, format!("could not archive the previous run: {e}"))],
     };
@@ -479,6 +482,9 @@ pub fn rotate(shell: &Path, runs: &Path, now_ms: i64) -> Vec<(NoticeLevel, Strin
     }
 
     let id = dest.file_name().unwrap_or_default().to_string_lossy().to_string();
+    if let Some(target) = &meta.target {
+        archive_tasks(&dest, &id, Path::new(target));
+    }
     match record_for(&dest, &id, meta.target.as_deref()) {
         Ok(mut record) => {
             record.transcripts = transcripts;
@@ -505,6 +511,10 @@ pub fn rotate(shell: &Path, runs: &Path, now_ms: i64) -> Vec<(NoticeLevel, Strin
     }
     notices
 }
+
+/// Where an archived run's `tasks.json` is written (D-099, Coordination C).
+/// A no-op here; the task PRD fills it in.
+fn archive_tasks(_dest: &Path, _run_id: &str, _target: &Path) {}
 
 /// Freeze the live database and move it, leaving one self-contained file.
 ///
@@ -1582,34 +1592,7 @@ mod tests {
         let why = list(&runs)[0].cannot_reopen.clone().expect("a session gone from disk blocks the row");
         assert!(why.contains("orch") && why.contains("no longer on disk"), "{why}");
 
-        let mut torn_down = false;
-        let refused = begin_reopen(&shell, &runs, &id, || {
-            torn_down = true;
-            Ok(())
-        });
-        assert!(refused.is_err(), "the reopen must be refused");
-        assert!(!torn_down, "a refused reopen must not touch the live fleet");
-        assert!(!reopen_request(&shell).exists(), "and must leave no request for the next boot");
-    }
-
-    /// **An openable run is torn down first and only then requested** (R8, R2) —
-    /// the ordering `run_reopen` depends on, held by one function a test can call.
-    #[test]
-    fn an_openable_run_tears_the_live_fleet_down_before_it_requests_the_reopen() {
-        let root = scratch("ordered");
-        let shell = root.join("_shell");
-        let runs = runs_dir(&root);
-        let id = an_archived_one_seat_run(&shell, &runs);
-
-        let mut requested_during_teardown = None;
-        begin_reopen(&shell, &runs, &id, || {
-            requested_during_teardown = Some(reopen_request(&shell).exists());
-            Ok(())
-        })
-        .expect("an openable run reopens");
-
-        assert_eq!(requested_during_teardown, Some(false), "teardown ran, and before the request");
-        assert_eq!(std::fs::read_to_string(reopen_request(&shell)).unwrap(), id);
+        assert!(reopen_blocker_for(&runs, &id).is_some(), "and the launch's verdict is asked the same question");
     }
 
     /// **A seat on a harness this build does not have names the seat and the

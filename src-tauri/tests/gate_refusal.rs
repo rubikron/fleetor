@@ -153,7 +153,7 @@ fn requires_a_running_fleet(body: &str) -> bool {
     body.contains("no fleet is running")
 }
 
-/// **The gate answers before `fleet_bootstrap`, because that is when it runs.**
+/// **The gate answers before `fleet_launch`, because that is when it runs.**
 ///
 /// The one defect this ticket inherited, and the reason it is a test rather than a
 /// line in the commit message: #35 hung the gate's state on `Fleet`, so `fleet_gate`
@@ -185,33 +185,36 @@ fn the_gate_answers_without_a_fleet_because_that_is_when_it_runs() {
 
 // --- refuse to start (story 11) -----------------------------------------------
 
-/// Whether the start refusal is decided before the run boundary is cut.
+/// Whether a launch settles its verdict before it tears down and archives (D-099).
 ///
-/// `None` when one of the two is missing, which is itself a failure: a bootstrap
-/// that no longer refuses, or one that no longer rotates, is not a bootstrap this
-/// check understands.
-fn refusal_precedes_the_run_boundary(bootstrap: &str) -> Option<bool> {
-    let refuse = bootstrap.find("why_it_will_not_start")?;
-    let rotate = bootstrap.find("runs::rotate")?;
-    Some(refuse < rotate)
+/// `None` when a step is missing, which is itself a failure: a launch that no
+/// longer refuses, tears down or rotates is not a launch this check understands.
+fn refusal_precedes_the_run_boundary(launch: &str) -> Option<bool> {
+    let refuse = launch.find("verdict(")?;
+    let teardown = launch.find("teardown(")?;
+    let rotate = launch.find("runs::rotate")?;
+    Some(refuse < teardown && teardown < rotate)
 }
 
-/// **The fleet refuses to start, before it has started anything** (story 11).
+/// **The fleet refuses to start, before it has touched anything** (story 11).
 ///
 /// Two halves. It refuses *at all* — `spawn_pane` would refuse one pane at a time,
-/// after the operator has been told the fleet started, which is the failure #35's
-/// own doc comment names. And it refuses *first*: a refusal that has already
-/// archived the last run and opened an empty database is not a refusal, it is a
-/// start that failed and left a run behind.
+/// after the operator has been told the fleet started. And it refuses *first*: a
+/// refusal that has already killed the running fleet and archived its run is not a
+/// refusal, it is a launch that failed.
 #[test]
 fn the_fleet_refuses_before_it_cuts_the_run_boundary() {
-    let bootstrap = rust_fn(&read(BACKEND), "pub fn fleet_bootstrap(");
+    let backend = read(BACKEND);
+    let launch = rust_fn(&backend, "fn launch(");
     assert_eq!(
-        refusal_precedes_the_run_boundary(&bootstrap),
+        refusal_precedes_the_run_boundary(&launch),
         Some(true),
-        "`fleet_bootstrap` either stopped refusing a fleet that cannot log in, or it now cuts \
-         the run boundary first — which archives the previous run and opens an empty database \
-         on a start that is about to be refused:\n{bootstrap}",
+        "`launch` either lost a step or no longer settles its verdict before the teardown \
+         and the archive — which kills the running fleet for a launch about to be refused:\n{launch}",
+    );
+    assert!(
+        rust_fn(&backend, "fn verdict(").contains("why_it_will_not_start"),
+        "`verdict` no longer refuses a fleet that cannot log in",
     );
 }
 
@@ -525,12 +528,12 @@ fn the_stale_model_falls_back_before_the_selection_is_stored() {
         "the gate stores a selection before settling it against the live catalog, so a model \
          the vendor no longer lists reaches the cell `spawn_pane` places against:\n{answer}",
     );
-    let bootstrap = rust_fn(&backend, "pub fn fleet_bootstrap(");
+    let verdict = rust_fn(&backend, "fn verdict(");
     assert_eq!(
-        settles_before_it_stores(&bootstrap),
+        settles_before_it_stores(&verdict),
         Some(true),
-        "the start path no longer settles the seats before storing them, so a fleet reached \
-         without the gate can still spawn a retired model:\n{bootstrap}",
+        "the launch no longer settles the seats before storing them, so a fleet reached \
+         without the gate can still spawn a retired model:\n{verdict}",
     );
     let gate = production_text(&read(GATE));
     assert!(
@@ -666,23 +669,23 @@ fn the_checks_fire_on_a_source_that_violates_them() {
         );
     }
 
-    // A bootstrap that rotates the run before deciding whether to refuse it.
-    let backwards = "let rotation = runs::rotate(&dir);\nif let Some(why) = \
-                     verdict.why_it_will_not_start() { return Err(why); }";
+    // A launch that tears down and rotates before deciding whether to refuse.
+    let backwards = "teardown(&mut slot, registry);\nlet archived = runs::rotate(&dir);\n\
+                     let plan = verdict(&layout)?;";
     assert_eq!(
         refusal_precedes_the_run_boundary(backwards),
         Some(false),
         "the ordering check would not notice a refusal that comes after the run boundary",
     );
     assert_eq!(
-        refusal_precedes_the_run_boundary("let rotation = runs::rotate(&dir);"),
+        refusal_precedes_the_run_boundary("teardown(&mut slot, registry);\nruns::rotate(&dir);"),
         None,
-        "the ordering check claims an answer for a bootstrap that no longer refuses at all",
+        "the ordering check claims an answer for a launch that no longer refuses at all",
     );
     assert_eq!(
-        refusal_precedes_the_run_boundary(&rust_fn(&backend, "pub fn fleet_bootstrap(")),
+        refusal_precedes_the_run_boundary(&rust_fn(&backend, "fn launch(")),
         Some(true),
-        "the ordering check reports the real bootstrap",
+        "the ordering check reports the real launch",
     );
 
     // A Start button with nothing stopping it.
@@ -821,7 +824,8 @@ fn the_declarations_this_file_reads_still_exist() {
         "fn worker_cost(",
         "fn settle_models(",
         "fn answer(",
-        "pub fn fleet_bootstrap(",
+        "fn launch(",
+        "fn verdict(",
         "pub fn fleet_gate(",
         "pub fn fleet_set_seats(",
     ] {

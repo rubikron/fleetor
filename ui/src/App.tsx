@@ -30,7 +30,7 @@ import { useSidebarCollapse } from "./ui/useSidebarCollapse";
 import { usePaneJump } from "./ui/usePaneJump";
 import { useWindowState } from "./ui/useWindowState";
 import { useTheme } from "./ui/useTheme";
-import { killPane, setTerminalColors } from "./fleet/api";
+import { killPane, setTerminalColors, type LaunchFailure, type LaunchSource } from "./fleet/api";
 import { warmTheme, warmThemeLight } from "./theme";
 import { ORCH, type PaneId, type PaneStatus } from "./fleet/types";
 
@@ -39,6 +39,12 @@ export function App() {
   // open on nothing.
   const [view, setView] = useState<View>("home");
   const [started, setStarted] = useState(false);
+  // Bumped on every launch: the grid keys off it, because `TerminalPane` spawns
+  // from a mount effect and the old buffers belong to the run being left.
+  const [generation, setGeneration] = useState(0);
+  const [launching, setLaunching] = useState(false);
+  const [launchError, setLaunchError] = useState<string | null>(null);
+  const inFlight = useRef(false);
   const [statuses, setStatuses] = useState<Record<PaneId, PaneStatus>>({});
   const [selectedPane, setSelectedPane] = useState<PaneId>(ORCH);
   const [unreadPanes, setUnreadPanes] = useState<Set<PaneId>>(() => new Set());
@@ -137,13 +143,36 @@ export function App() {
     return () => window.clearTimeout(id);
   }, [view, selectedPane, sidebar.collapsed]);
 
-  // A reopen bootstraps the fleet itself, so from Home — before any fleet has
-  // started — `started` must flip here or the remounted panes never spawn.
-  const landInReopened = () => {
-    setStarted(true);
-    setView("fleet");
-    fleet.refreshConfig();
-  };
+  // The one way a fleet comes up, fresh or reopened (D-099). The view switches
+  // on the click; the grid remount and the resets wait for the backend's
+  // "verdict passed", so a refused launch changes nothing but the view.
+  const launchFleet = fleet.launch;
+  const launch = useCallback(
+    async (source: LaunchSource) => {
+      if (inFlight.current) return;
+      inFlight.current = true;
+      setLaunching(true);
+      setLaunchError(null);
+      setView("fleet");
+      try {
+        await launchFleet(source, () => {
+          setStarted(false);
+          setGeneration((g) => g + 1);
+          setStatuses({ [ORCH]: "idle" });
+          setUnreadPanes(new Set());
+        });
+        setStarted(true);
+      } catch (e) {
+        setLaunchError((e as LaunchFailure).reason);
+        setView("home");
+      } finally {
+        inFlight.current = false;
+        setLaunching(false);
+        refreshRuns();
+      }
+    },
+    [launchFleet, refreshRuns],
+  );
 
   const restart = useCallback((pane: PaneId) => {
     // Kill only. The pane's own spawn effect is keyed on `started`, so the tab
@@ -170,14 +199,10 @@ export function App() {
         <main className="workspace">
           <div className="workspace__stage">
             <div className={`stage-view ${view === "fleet" ? "" : "is-hidden"}`}>
-              {/* Keyed on the reopen generation (WP-27, R2): a reopen kills every
-                  pane and re-enters bootstrap, and `TerminalPane` spawns from a
-                  mount effect — so without a remount the operator lands on five
-                  dead terminals. This is the one place a stage-view is allowed to
-                  unmount (building.md §7.5's exception), because the buffers being
-                  discarded belong to the run that just ended. */}
+              {/* The one place a stage-view is allowed to unmount (building.md
+                  §7.5's exception): every launch remounts the grid. */}
               <TerminalGrid
-                key={`fleet-${runs.generation}`}
+                key={`fleet-${generation}`}
                 started={started}
                 selected={selectedPane}
                 onSelect={selectPane}
@@ -199,15 +224,10 @@ export function App() {
               <Homepage
                 config={fleet.config}
                 runs={runs}
-                onOpened={landInReopened}
-                onStart={() => {
-                  setStatuses({ [ORCH]: "idle" });
-                  setView("fleet");
-                  void fleet.start().then(() => {
-                    setStarted(true);
-                    runs.refresh();
-                  });
-                }}
+                launching={launching}
+                launchError={launchError}
+                onStart={() => void launch({ kind: "fresh" })}
+                onOpen={(id) => void launch({ kind: "reopen", id })}
                 onTargetChanged={fleet.refreshConfig}
               />
             </div>
@@ -225,7 +245,11 @@ export function App() {
             </div>
 
             <div className={`stage-view ${view === "history" ? "" : "is-hidden"}`}>
-              <RunHistory runs={runs} onOpened={landInReopened} />
+              <RunHistory
+                runs={runs}
+                launching={launching}
+                onOpen={(id) => void launch({ kind: "reopen", id })}
+              />
             </div>
 
             <div className={`stage-view ${view === "settings" ? "" : "is-hidden"}`}>

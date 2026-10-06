@@ -16,12 +16,24 @@ const DEBOUNCE_MS = 600;
 interface HomepageProps {
   config: FleetConfig | null;
   runs: RunsView;
+  /// A launch is in flight: New fleet and the session rows wait for it.
+  launching: boolean;
+  /// Why the last launch brought no fleet up, shown beside New fleet.
+  launchError: string | null;
   onStart: () => void;
-  onOpened: () => void;
+  onOpen: (id: string) => void;
   onTargetChanged: () => void;
 }
 
-export function Homepage({ config, runs, onStart, onOpened, onTargetChanged }: HomepageProps) {
+export function Homepage({
+  config,
+  runs,
+  launching,
+  launchError,
+  onStart,
+  onOpen,
+  onTargetChanged,
+}: HomepageProps) {
   const [configExpanded, setConfigExpanded] = useState(false);
   const [picking, setPicking] = useState(false);
   const [pickError, setPickError] = useState<string | null>(null);
@@ -103,11 +115,9 @@ export function Homepage({ config, runs, onStart, onOpened, onTargetChanged }: H
                 <>
                   <span className="homepage__run-label">{run.label || run.id.slice(0, 8)}</span>
                   <span className="homepage__run-meta mono">
-                    {runs.opening === run.id
-                      ? "opening — archiving the current session first…"
-                      : run.cannot_reopen
-                        ? `can’t reopen — ${run.cannot_reopen}`
-                        : `${run.messages} msgs · ${run.events} events${run.target ? ` · ${run.target}` : ""}`}
+                    {run.cannot_reopen
+                      ? `can’t reopen — ${run.cannot_reopen}`
+                      : `${run.messages} msgs · ${run.events} events${run.target ? ` · ${run.target}` : ""}`}
                   </span>
                 </>
               );
@@ -118,8 +128,8 @@ export function Homepage({ config, runs, onStart, onOpened, onTargetChanged }: H
                   ) : (
                     <button
                       className="homepage__run"
-                      onClick={() => void runs.reopen(run.id).then(onOpened).catch(() => {})}
-                      disabled={runs.opening !== null}
+                      onClick={() => onOpen(run.id)}
+                      disabled={launching}
                       title="Open this session — the fleet you have now is archived first"
                     >
                       {body}
@@ -217,11 +227,13 @@ export function Homepage({ config, runs, onStart, onOpened, onTargetChanged }: H
           </p>
         ))}
 
+        {launchError && <p className="homepage__error">{launchError}</p>}
+
         <div className="homepage__actions">
           <button
             className="homepage__start"
             onClick={onStart}
-            disabled={refusals.length > 0}
+            disabled={refusals.length > 0 || launching}
           >
             New fleet
           </button>
