@@ -145,6 +145,10 @@ enum Command {
         /// with no loose ends must not have to invent one.
         #[arg(long, action = clap::ArgAction::Append, value_name = "LOOSE-END")]
         open: Vec<String>,
+        /// The goal this closes, by number. Its chain gets the handoff and a
+        /// list of its tasks still open.
+        #[arg(long, value_name = "NUMBER")]
+        goal: Option<String>,
     },
     /// Who exists and whether they are live.
     Roster,
@@ -183,6 +187,9 @@ enum TaskCmd {
         /// The task this stream of work comes back together in, by number.
         #[arg(long = "converges-on", value_name = "NUMBER")]
         converges_on: Option<String>,
+        /// Who reviews it: a worker as `3` / `worker-3`. Never its owner.
+        #[arg(long, value_name = "PANE")]
+        reviewer: Option<String>,
     },
     /// Change a task's status. `in-progress` takes it up and makes you its owner;
     /// only the owner may say `done`.
@@ -220,6 +227,25 @@ enum TaskCmd {
         /// The full new list of vision criteria. Repeatable.
         #[arg(long = "crit-s", action = clap::ArgAction::Append, value_name = "VISION")]
         crit_s: Vec<String>,
+        /// Name the reviewer. orch and the operator only, on any task.
+        #[arg(long, value_name = "PANE")]
+        reviewer: Option<String>,
+    },
+    /// Put your verdict on a task's work. Not for the task's owner. It changes
+    /// neither status nor owner.
+    Review {
+        /// The task's number — `14`, not `#14`.
+        #[arg(value_name = "NUMBER")]
+        task: Option<String>,
+        /// The criteria are met. Takes no value.
+        #[arg(long)]
+        met: bool,
+        /// They are not, and why: which criterion, and what you saw.
+        #[arg(long = "not-met", value_name = "REASON")]
+        not_met: Option<String>,
+        /// What you checked, with `--met`.
+        #[arg(long)]
+        note: Option<String>,
     },
     /// Hand on a task you cannot finish. It returns to planned with no owner,
     /// and the next agent starts from these four fields.
@@ -316,7 +342,13 @@ fn run() -> Result<ExitCode> {
             receipt = Some((task, place, check));
             op
         }
-        Command::Handoff { built, evidence, open } => handoff_op(me()?, built, evidence, open)?,
+        Command::Handoff { built, evidence, open, goal } => {
+            let goal = goal.map(|raw| number(&raw, "--goal")).transpose()?;
+            let Op::Handoff { built, evidence, open, .. } = handoff_op(me()?, built, evidence, open)? else {
+                unreachable!("handoff_op builds a handoff")
+            };
+            Op::Handoff { built, evidence, open, goal }
+        }
         Command::Roster => Op::Roster,
         Command::Whoami => unreachable!("handled above"),
     };
@@ -354,7 +386,7 @@ fn run() -> Result<ExitCode> {
 /// on the model's own stderr rather than a socket round trip.
 fn task_action(action: TaskCmd) -> Result<TaskAction> {
     Ok(match action {
-        TaskCmd::Post { goal, to, outcome, crit_t, crit_s, instructions, parent, converges_on } => {
+        TaskCmd::Post { goal, to, outcome, crit_t, crit_s, instructions, parent, converges_on, reviewer } => {
             if let Some(Some(value)) = &goal {
                 let n = value.trim().trim_start_matches('#');
                 anyhow::bail!(
@@ -373,6 +405,7 @@ fn task_action(action: TaskCmd) -> Result<TaskAction> {
                 instructions,
                 parent: parent.map(|raw| number(&raw, "--parent")).transpose()?,
                 converges_on: converges_on.map(|raw| number(&raw, "--converges-on")).transpose()?,
+                reviewer: pane(reviewer)?,
             }
         }
         TaskCmd::Update { task, status, note } => {
@@ -393,15 +426,26 @@ fn task_action(action: TaskCmd) -> Result<TaskAction> {
         TaskCmd::Comment { task, text } => {
             TaskAction::Comment { task: task_number(task, "comment")?, text: join(text) }
         }
-        TaskCmd::Edit { task, outcome, crit_t, crit_s } => {
+        TaskCmd::Edit { task, outcome, crit_t, crit_s, reviewer } => {
             let task = task_number(task, "edit")?;
-            if outcome.is_none() && crit_t.is_empty() && crit_s.is_empty() {
+            if outcome.is_none() && crit_t.is_empty() && crit_s.is_empty() && reviewer.is_none() {
                 anyhow::bail!(
-                    "`fleet task edit {task}` needs what to replace: --outcome \"…\", or the \
-                     whole new list of --crit-t / --crit-s"
+                    "`fleet task edit {task}` needs what to replace: --outcome \"…\", the \
+                     whole new list of --crit-t / --crit-s, or --reviewer <pane>"
                 );
             }
-            TaskAction::Edit { task, outcome, technical: crit_t, vision: crit_s }
+            TaskAction::Edit { task, outcome, technical: crit_t, vision: crit_s, reviewer: pane(reviewer)? }
+        }
+        TaskCmd::Review { task, met, not_met, note } => {
+            let task = task_number(task, "review")?;
+            match (met, not_met) {
+                (true, None) => TaskAction::Review { task, met: true, reason: note },
+                (false, Some(reason)) => TaskAction::Review { task, met: false, reason: Some(reason) },
+                _ => anyhow::bail!(
+                    "`fleet task review {task}` needs exactly one verdict: --met, or --not-met \
+                     \"<which criterion, and what you saw>\""
+                ),
+            }
         }
         TaskCmd::Release { task, why, done, left, place } => {
             let task = task_number(task, "release")?;
@@ -460,6 +504,11 @@ fn number(raw: &str, what: &str) -> Result<u64> {
     })
 }
 
+/// An optional pane argument, as `3` or `worker-3`.
+fn pane(raw: Option<String>) -> Result<Option<PaneId>> {
+    raw.map(|pane| pane.parse::<PaneId>().map_err(|e| anyhow::anyhow!("{e}"))).transpose()
+}
+
 /// What `fleet done` puts on the task's chain once its message has gone.
 fn receipt_action(task: &str, place: done::Place, check: done::Check, accepted: bool) -> Result<TaskAction> {
     Ok(TaskAction::Receipt {
@@ -501,7 +550,7 @@ fn handoff_op(me: PaneId, built: String, evidence: Vec<String>, open: Vec<String
              are {me}. To close your own block, run `fleet done <task-id> \"<check>\"`"
         );
     }
-    Ok(Op::Handoff { built, evidence, open })
+    Ok(Op::Handoff { built, evidence, open, goal: None })
 }
 
 /// Turn the hub's answer into stdout/stderr, and say whether it succeeded. This
@@ -619,6 +668,9 @@ fn details(record: &TaskRecord) -> Vec<String> {
     let mut lines: Vec<String> =
         record.block.technical.iter().map(|c| format!("technical: {c}")).collect();
     lines.extend(record.block.vision.iter().map(|c| format!("vision: {c}")));
+    if let Some(reviewer) = record.block.reviewer {
+        lines.push(format!("reviewer: {reviewer}"));
+    }
     if let Some(instructions) = &record.block.instructions {
         lines.push(format!("instructions: {instructions}"));
     }
@@ -637,6 +689,31 @@ fn details(record: &TaskRecord) -> Vec<String> {
                 field.flag(),
                 old.join(" | "),
                 new.join(" | ")
+            ),
+            ChainEntry::ReviewerSet { old, new } => match old {
+                Some(old) => format!("named {new} reviewer — was {old}"),
+                None => format!("named {new} reviewer"),
+            },
+            ChainEntry::Reviewed { met, reason, requested } => with(
+                format!(
+                    "reviewed it{}: {}",
+                    if *requested { "" } else { " (unrequested)" },
+                    if *met { "met" } else { "not met" }
+                ),
+                reason,
+            ),
+            ChainEntry::Handoff { built, evidence, open, open_tasks } => format!(
+                "handed off — built: {built} — evidence: {}{}{}",
+                evidence.join(" | "),
+                if open.is_empty() { String::new() } else { format!(" — open: {}", open.join(" | ")) },
+                if open_tasks.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " — tasks still open: {}",
+                        open_tasks.iter().map(|n| format!("#{n}")).collect::<Vec<_>>().join(" ")
+                    )
+                }
             ),
             ChainEntry::Receipt { check, status, branch, commit, uncommitted, accepted } => format!(
                 "ran `{check}` — {status} — {} @ {}{}{}",
@@ -1210,6 +1287,36 @@ mod tests {
         assert!(why.contains("--status") && why.contains("fleet task comment 14"), "{why}");
     }
 
+    /// A verdict is exactly one of `--met` and `--not-met "<reason>"`, and the
+    /// reviewer is named on `post` and `edit` by pane.
+    #[test]
+    fn a_review_takes_one_verdict_and_the_reviewer_is_named_by_pane() {
+        for argv in [
+            vec!["fleet", "task", "review", "14"],
+            vec!["fleet", "task", "review", "14", "--met", "--not-met", "x"],
+        ] {
+            let why = action(&argv).unwrap_err().to_string();
+            assert!(why.contains("exactly one verdict"), "{argv:?}: {why}");
+        }
+        assert_eq!(
+            action(&["fleet", "task", "review", "14", "--met", "--note", "ran it"]).unwrap(),
+            TaskAction::Review { task: 14, met: true, reason: Some("ran it".into()) }
+        );
+        assert_eq!(
+            action(&["fleet", "task", "review", "14", "--not-met", "depth 3 fails"]).unwrap(),
+            TaskAction::Review { task: 14, met: false, reason: Some("depth 3 fails".into()) }
+        );
+        let TaskAction::Edit { reviewer: Some(PaneId::Worker(3)), outcome: None, .. } =
+            action(&["fleet", "task", "edit", "14", "--reviewer", "3"]).unwrap()
+        else {
+            panic!("an edit may name only the reviewer")
+        };
+        let post = ["fleet", "task", "post", "--parent", "1", "--outcome", "o", "--crit-t", "t", "--crit-s", "s", "--reviewer", "worker-3"];
+        let TaskAction::Post { reviewer: Some(PaneId::Worker(3)), .. } = action(&post).unwrap() else {
+            panic!("post names the reviewer")
+        };
+    }
+
     /// The receipt's facts go on the chain as they were sent; a task argument
     /// that is not a number cannot be recorded, and says so.
     #[test]
@@ -1260,7 +1367,7 @@ mod tests {
         }
         assert_eq!(
             action(&["fleet", "task", "edit", "#14", "--crit-t", "a", "--crit-t", "b"]).unwrap(),
-            TaskAction::Edit { task: 14, outcome: None, technical: vec!["a".into(), "b".into()], vision: vec![] },
+            TaskAction::Edit { task: 14, outcome: None, technical: vec!["a".into(), "b".into()], vision: vec![], reviewer: None },
         );
         let why = action(&["fleet", "task", "edit", "14"]).unwrap_err().to_string();
         assert!(why.contains("--outcome") && why.contains("whole new list"), "{why}");
@@ -1429,7 +1536,7 @@ mod tests {
             "--open", "the error messages are still the tokenizer's",
         ])
         .expect("a complete handoff");
-        let Command::Handoff { built, evidence, open } = cli.command else {
+        let Command::Handoff { built, evidence, open, .. } = cli.command else {
             panic!("expected handoff")
         };
         assert_eq!(built, "the parser accepts nested groups");

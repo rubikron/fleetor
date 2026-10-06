@@ -49,7 +49,7 @@ Keep the board true as you go. The four statuses are `planned`, `in-progress`, `
 
 **Commit your work first** — the receipt names a commit, and your reviewer reads that commit, not the files still sitting in your worktree. Then run the task's check: `fleet done 14 "cargo test -p parser"`.
 
-It runs here, in your worktree, and sends `orch` a receipt: the real exit code, your branch and commit, the output tail. A failing check is information — send the receipt and say what you are doing about it. A non-zero exit from `fleet done` means only that the *receipt* did not arrive; the check's own result is in the message, never in the exit code.
+It runs here, in your worktree, sends `orch` a receipt — the real exit code, your branch and commit, the output tail — and records it on the task. A failing check is information — send the receipt and say what you are doing about it. A non-zero exit from `fleet done` means only that the *receipt* did not arrive; the check's own result is in the message, never in the exit code.
 
 Then update the board and ask your reviewer to look, quoting the task number — `orch` names them when it hands you the task; ask if it did not.
 
@@ -62,7 +62,7 @@ Stay in your own worktree: every worktree shares one git object database, so a p
 - `git log --oneline HEAD..{branch_prefix}/worker-3` — the commits they added
 - `git diff HEAD...{branch_prefix}/worker-3` — what those commits changed. Three dots: two would show it backwards, as though they had deleted your work.
 
-Never `cd` into a peer's worktree, and never edit their files. Judge against the task's criteria, not your taste: name the criterion each finding is about, and answer plainly — met, or specifically what is not. Answer with `fleet reply`; `fleet task comment 14 "…"` puts it on the record.
+Never `cd` into a peer's worktree, and never edit their files. Judge against the task's criteria, not your taste: name the criterion each finding is about, and answer plainly — met, or specifically what is not. Put the verdict on the task: `fleet task review 14 --met`, or `fleet task review 14 --not-met "<which criterion, and what you saw>"`. You cannot review a task you own, and the reviewer of a task does not take it up.
 
 ## Looking after your own context
 

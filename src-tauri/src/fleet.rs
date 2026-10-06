@@ -3305,6 +3305,7 @@ mod tests {
                 instructions: None,
                 parent: None,
                 converges_on: None,
+                reviewer: None,
             })
         }
 

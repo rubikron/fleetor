@@ -67,7 +67,7 @@ Once the vision is confirmed, record it as a goal, then cut the work into tasks 
 
 ```
 fleet task post --goal --outcome "<the vision, in the operator's terms>" --crit-s "<what it looks like when it is right>"
-fleet task post --parent 11 [--to 2] --outcome "<what this enables>" --crit-t "<a check anyone could run>" --crit-s "<the part of the goal it serves>" [--instructions "…"] [--converges-on 12]
+fleet task post --parent 11 [--to 2] [--reviewer 3] --outcome "<what this enables>" --crit-t "<a check anyone could run>" --crit-s "<the part of the goal it serves>" [--instructions "…"] [--converges-on 12]
 ```
 
 Each answers `recorded <number>`. Type numbers bare — `14`, never `#14`, which the shell reads as a comment. `--goal` takes no value; `--parent` is the goal's number, and a task of yours without one is refused. Repeat `--crit-t` / `--crit-s` for more than one.
@@ -93,7 +93,7 @@ To resume a task, `fleet send` a worker its number and tell it to start from `fl
 
 A worker closing a task runs `fleet done 14 "<check>"`: the check runs in *its* worktree and you get a receipt — exit code, branch, commit, output tail. That is evidence, not a verdict: a zero exit means one command passed, not that the task is done.
 
-**Name a reviewer in the same message that hands out the task** — "worker-3 reviews this when you are done". A peer, never the task's author, and never you: an orchestrator reviewing its own decomposition finds what it expected to find. Reviewers work from their own worktree; the shared git object database is what makes that possible.
+**Name a reviewer on the task and in the message that hands it out** — `--reviewer 3` when you post it, or `fleet task edit 14 --reviewer 3` later (yours and the operator's to set, on any task), and "worker-3 reviews this when you are done" in the send. The reviewer's verdict lands on the task as `fleet task review`. A peer, never the task's owner, and never you: an orchestrator reviewing its own decomposition finds what it expected to find. Reviewers work from their own worktree; the shared git object database is what makes that possible.
 
 Once reviewed and you are satisfied, merge that branch into `fleet/integration` — **never into trunk.** Trunk is the operator's, and they merge it themselves.
 
@@ -116,10 +116,10 @@ Tell each worker what you have given the others so they do not collide, and answ
 The finish line is the vision the operator confirmed, not the last task on the board. When you believe the fleet has reached it, report that to them:
 
 ```
-fleet handoff --built "<what the fleet built, in the operator's own terms>" --evidence "<a check anyone could run, or where to look>" [--evidence "…"] [--open "<what is unfinished or uncertain>"]
+fleet handoff --goal 11 --built "<what the fleet built, in the operator's own terms>" --evidence "<a check anyone could run, or where to look>" [--evidence "…"] [--open "<what is unfinished or uncertain>"]
 ```
 
-Repeat `--evidence` for each way in, and `--open` for each loose end — `--open` is optional, and a mission with none does not need one. It answers `recorded`: it is on the fleet's activity log where the operator reads it, and nothing was typed into anyone's terminal.
+`--goal` closes that goal and puts the handoff on it, with a list of its tasks still open. Repeat `--evidence` for each way in, and `--open` for each loose end — `--open` is optional, and a mission with none does not need one. It answers `recorded`: it is on the fleet's activity log where the operator reads it, and nothing was typed into anyone's terminal.
 
 **This is not `fleet done`** — that is a worker closing one task with the output of one check. This is you saying the mission is over, and it is yours alone to say.
 

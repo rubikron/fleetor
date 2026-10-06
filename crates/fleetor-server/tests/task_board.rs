@@ -117,6 +117,7 @@ fn open_goal(outcome: &str) -> Op {
             instructions: None,
             parent: None,
             converges_on: None,
+            reviewer: None,
         },
     }
 }
@@ -132,6 +133,7 @@ fn open_task(outcome: &str, owner: Option<u8>, parent: Option<u64>) -> Op {
             instructions: None,
             parent,
             converges_on: None,
+            reviewer: None,
         },
     }
 }
@@ -329,7 +331,7 @@ fn comment(task: u64, text: &str) -> Op {
 
 fn edit_outcome(task: u64, outcome: &str) -> Op {
     Op::Task {
-        action: TaskAction::Edit { task, outcome: Some(outcome.into()), technical: vec![], vision: vec![] },
+        action: TaskAction::Edit { task, outcome: Some(outcome.into()), technical: vec![], vision: vec![], reviewer: None },
     }
 }
 
@@ -395,6 +397,7 @@ async fn an_edit_follows_the_creator_and_keeps_the_old_text() {
             outcome: Some("nested groups parse".into()),
             technical: vec!["cargo test -p parser".into(), "clippy is clean".into()],
             vision: vec!["one grammar, one parser".into()],
+            reviewer: None,
         },
     };
     orch.call(both).await.unwrap();
@@ -554,6 +557,160 @@ async fn a_receipt_sits_on_the_chain_and_tells_a_later_release_where() {
     };
     assert_eq!((place.as_str(), *on_behalf_of), ("fleet/worker-2 @ d4e5f6a", Some(PaneId::Worker(2))));
     assert_eq!(fleet.asks.load(Ordering::Relaxed), 0);
+}
+
+fn reviewed_task(owner: Option<u8>, reviewer: Option<u8>, parent: u64) -> Op {
+    Op::Task {
+        action: TaskAction::Post {
+            goal: false,
+            outcome: "nested groups parse".into(),
+            technical: vec!["cargo test -p parser".into()],
+            vision: vec!["one grammar".into()],
+            owner: owner.map(PaneId::Worker),
+            instructions: None,
+            parent: Some(parent),
+            converges_on: None,
+            reviewer: reviewer.map(PaneId::Worker),
+        },
+    }
+}
+
+fn name_reviewer(task: u64, reviewer: u8) -> Op {
+    Op::Task {
+        action: TaskAction::Edit {
+            task,
+            outcome: None,
+            technical: vec![],
+            vision: vec![],
+            reviewer: Some(PaneId::Worker(reviewer)),
+        },
+    }
+}
+
+fn review(task: u64, met: bool, reason: Option<&str>) -> Op {
+    Op::Task { action: TaskAction::Review { task, met, reason: reason.map(str::to_string) } }
+}
+
+/// The reviewer is named by orch and the operator on any task, is never the
+/// owner, and never takes the task up.
+#[tokio::test]
+async fn the_reviewer_is_named_by_orch_or_the_operator_and_is_never_the_owner() {
+    let fleet = start_hub().await;
+    let mut orch = pane(&fleet, PaneId::Orch).await;
+    let mut operator = pane(&fleet, PaneId::Operator).await;
+    let mut two = pane(&fleet, PaneId::Worker(2)).await;
+    let mut three = pane(&fleet, PaneId::Worker(3)).await;
+    let goal = number(orch.call(open_goal("one grammar")).await.unwrap());
+
+    let why = refusal(orch.call(reviewed_task(Some(2), Some(2), goal)).await.unwrap());
+    assert!(why.contains("cannot both own and review"), "{why}");
+    let why = refusal(two.call(reviewed_task(None, Some(3), goal)).await.unwrap());
+    assert!(why.contains("orch and the operator name"), "{why}");
+    let task = number(orch.call(reviewed_task(Some(2), Some(3), goal)).await.unwrap());
+    assert_eq!(list(&mut orch).await.remove(1).block.reviewer, Some(PaneId::Worker(3)));
+
+    let why = refusal(three.call(set(task, TaskStatus::InProgress)).await.unwrap());
+    assert!(why.contains("you are #2's reviewer"), "the named reviewer does not take it up: {why}");
+    let why = refusal(two.call(name_reviewer(task, 1)).await.unwrap());
+    assert!(why.contains("you are worker-2"), "{why}");
+    let why = refusal(orch.call(name_reviewer(task, 2)).await.unwrap());
+    assert!(why.contains("worker-2 owns #2"), "{why}");
+    let why = refusal(orch.call(name_reviewer(task, 3)).await.unwrap());
+    assert!(why.contains("already"), "{why}");
+    let why = refusal(orch.call(name_reviewer(goal, 3)).await.unwrap());
+    assert!(why.contains("is a goal"), "{why}");
+
+    // Its own rule, not the edit rule: orch names the reviewer on the operator's task.
+    let theirs = number(operator.call(reviewed_task(None, None, goal)).await.unwrap());
+    assert!(refusal(orch.call(edit_outcome(theirs, "something else")).await.unwrap()).contains("opened by operator"));
+    orch.call(name_reviewer(theirs, 3)).await.unwrap();
+    operator.call(name_reviewer(theirs, 1)).await.unwrap();
+    let record = list(&mut orch).await.remove(2);
+    assert_eq!(record.block.reviewer, Some(PaneId::Worker(1)));
+    assert_eq!(
+        record.chain.last().unwrap().entry,
+        ChainEntry::ReviewerSet { old: Some(PaneId::Worker(3)), new: PaneId::Worker(1) }
+    );
+}
+
+/// A verdict is anyone's but the owner's, says whether it was asked for, and
+/// moves neither status nor owner.
+#[tokio::test]
+async fn a_verdict_is_recorded_for_anyone_but_the_owner() {
+    let fleet = start_hub().await;
+    let mut orch = pane(&fleet, PaneId::Orch).await;
+    let mut two = pane(&fleet, PaneId::Worker(2)).await;
+    let mut three = pane(&fleet, PaneId::Worker(3)).await;
+    let mut four = pane(&fleet, PaneId::Worker(4)).await;
+    let goal = number(orch.call(open_goal("one grammar")).await.unwrap());
+    let task = number(orch.call(reviewed_task(None, Some(3), goal)).await.unwrap());
+    two.call(set(task, TaskStatus::InProgress)).await.unwrap();
+    two.call(set(task, TaskStatus::Done)).await.unwrap();
+    let before = chain_len(&fleet);
+
+    let why = refusal(two.call(review(task, true, None)).await.unwrap());
+    assert!(why.contains("nobody reviews their own work") && why.contains("worker-3"), "{why}");
+    let why = refusal(three.call(review(task, false, Some("  "))).await.unwrap());
+    assert!(why.contains("--not-met needs the reason"), "{why}");
+    let why = refusal(three.call(review(goal, true, None)).await.unwrap());
+    assert!(why.contains("is a goal"), "{why}");
+    assert_eq!(chain_len(&fleet), before);
+
+    three.call(review(task, false, Some("nested groups past depth 3 still fail"))).await.unwrap();
+    four.call(review(task, true, None)).await.unwrap();
+    let record = list(&mut orch).await.remove(1);
+    assert_eq!(record.status, TaskStatus::Done, "a verdict does not flip the status");
+    assert_eq!(record.owner.as_ref().unwrap().pane, PaneId::Worker(2));
+    let verdicts: Vec<_> = record.chain.iter().rev().take(2).map(|l| (l.from, l.entry.clone())).collect();
+    assert_eq!(
+        verdicts[1],
+        (
+            PaneId::Worker(3),
+            ChainEntry::Reviewed {
+                met: false,
+                reason: Some("nested groups past depth 3 still fail".into()),
+                requested: true
+            }
+        )
+    );
+    assert_eq!(verdicts[0], (PaneId::Worker(4), ChainEntry::Reviewed { met: true, reason: None, requested: false }));
+}
+
+/// A handoff that names its goal closes it, puts the handoff on its chain and
+/// lists the goal's tasks still open. The run log gets the handoff as before.
+#[tokio::test]
+async fn a_handoff_closes_its_goal_and_lists_the_open_tasks() {
+    let fleet = start_hub().await;
+    let mut orch = pane(&fleet, PaneId::Orch).await;
+    let mut two = pane(&fleet, PaneId::Worker(2)).await;
+    let goal = number(orch.call(open_goal("one grammar")).await.unwrap());
+    let finished = number(orch.call(open_task("nested groups parse", None, Some(goal))).await.unwrap());
+    let open = number(orch.call(open_task("errors name the token", None, Some(goal))).await.unwrap());
+    two.call(set(finished, TaskStatus::InProgress)).await.unwrap();
+    two.call(set(finished, TaskStatus::Done)).await.unwrap();
+    let handoff = |goal| Op::Handoff {
+        built: "the parser accepts nested groups".into(),
+        evidence: vec!["cargo test -p parser".into()],
+        open: vec![],
+        goal: Some(goal),
+    };
+    let run_log = |fleet: &Fleet| fleet.store.events_since(0).unwrap().len();
+    let (before, logged) = (chain_len(&fleet), run_log(&fleet));
+
+    let why = refusal(orch.call(handoff(finished)).await.unwrap());
+    assert!(why.contains("is a task"), "{why}");
+    let why = refusal(orch.call(handoff(99)).await.unwrap());
+    assert!(why.contains("there is no #99"), "{why}");
+    assert_eq!((chain_len(&fleet), run_log(&fleet)), (before, logged), "a refused handoff records nothing");
+
+    orch.call(handoff(goal)).await.unwrap();
+    assert_eq!((chain_len(&fleet), run_log(&fleet)), (before + 1, logged + 1));
+    let record = list(&mut orch).await.remove(0);
+    assert_eq!(record.status, TaskStatus::Done, "the goal is closed");
+    let ChainEntry::Handoff { open_tasks, built, .. } = &record.chain.last().unwrap().entry else {
+        panic!("the last entry is the handoff")
+    };
+    assert_eq!((open_tasks, built.as_str()), (&vec![open], "the parser accepts nested groups"));
 }
 
 /// The task store's own pipe: a follower from zero sees every chain entry once,

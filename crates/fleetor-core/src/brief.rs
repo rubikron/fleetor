@@ -807,6 +807,9 @@ mod tests {
             "`--goal` takes no value",
             "never on the operator's",
             "fleet task release 14 --why",
+            "[--reviewer 3]",
+            "fleet task edit 14 --reviewer 3",
+            "fleet handoff --goal 11",
             "worker-3, earlier run",
             "start from `fleet task show 14`",
         ] {
@@ -822,6 +825,8 @@ mod tests {
             "You cannot edit or drop a task you did not open",
             "fleet task release 14 --why",
             "Never take up an `in-progress` task `orch` did not hand you",
+            "fleet task review 14 --met",
+            "fleet task review 14 --not-met",
             "If your session was resumed, run `fleet task show`",
         ] {
             assert!(worker.contains(taught), "a worker is never taught `{taught}`");
@@ -931,8 +936,8 @@ mod tests {
     #[test]
     fn the_orch_brief_names_a_reviewer_who_is_neither_the_author_nor_itself() {
         let brief = orch_brief(&roster(), CWD, BRANCH);
-        assert!(brief.contains("Name a reviewer in the same message that hands out the task"));
-        assert!(brief.contains("never the task's author, and never you"));
+        assert!(brief.contains("Name a reviewer on the task and in the message that hands it out"));
+        assert!(brief.contains("never the task's owner, and never you"));
         assert!(
             brief.contains("finds what it expected to find"),
             "the reason has to travel with the rule",

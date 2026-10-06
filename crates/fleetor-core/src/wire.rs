@@ -99,7 +99,14 @@ pub enum Op {
     /// declaration about the mission, at a different altitude from the
     /// block-level `fleet done` and with fields of its own that a body of prose
     /// would flatten.
-    Handoff { built: String, evidence: Vec<String>, open: Vec<String> },
+    Handoff {
+        built: String,
+        evidence: Vec<String>,
+        open: Vec<String>,
+        /// The goal this closes, when orch names one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        goal: Option<u64>,
+    },
     /// `fleet roster` — every pane and its state. → [`OpResult::Roster`].
     Roster,
 }
@@ -129,6 +136,8 @@ pub enum TaskAction {
         parent: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         converges_on: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reviewer: Option<PaneId>,
     },
     /// Append a claim to a block already on the board. Anyone may; the `from` on
     /// the resulting event is the accountability.
@@ -149,6 +158,16 @@ pub enum TaskAction {
         technical: Vec<String>,
         #[serde(default)]
         vision: Vec<String>,
+        /// Name the reviewer. orch and the operator only, whoever opened it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reviewer: Option<PaneId>,
+    },
+    /// A verdict on a task's work. Anyone but its owner.
+    Review {
+        task: u64,
+        met: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
     /// Hand a task on: it returns to planned with no owner.
     Release {
@@ -312,6 +331,7 @@ mod tests {
                     instructions: Some("start from the tokenizer".into()),
                     parent: Some(11),
                     converges_on: None,
+                    reviewer: None,
                 },
             },
             Op::Task {
@@ -329,6 +349,7 @@ mod tests {
                     outcome: Some("nested groups parse".into()),
                     technical: vec![],
                     vision: vec!["one grammar".into()],
+                    reviewer: None,
                 },
             },
             Op::Task { action: TaskAction::List },
@@ -336,11 +357,13 @@ mod tests {
                 built: "the parser accepts nested groups".into(),
                 evidence: vec!["cargo test -p parser".into()],
                 open: vec!["the error messages are still the tokenizer's".into()],
+                goal: None,
             },
             Op::Handoff {
                 built: "the CLI ships".into(),
                 evidence: vec!["cargo test --workspace".into()],
                 open: vec![],
+                goal: None,
             },
             Op::Roster,
         ];
@@ -406,6 +429,7 @@ mod tests {
                 built: "it is done".into(),
                 evidence: vec!["cargo test".into()],
                 open: vec![],
+                goal: None,
             }),
             "handoff"
         );
