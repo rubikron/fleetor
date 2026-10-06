@@ -1113,7 +1113,13 @@ fn place_worker(
     Ok(Placed {
         command: worker.command,
         notices,
-        gauge: Some(TranscriptSource { harness, config_dir, cwd, window_tokens: Some(seat_window) }),
+        // A harness that publishes its own window is never divided by ours.
+        gauge: Some(TranscriptSource {
+            harness,
+            config_dir,
+            cwd,
+            window_tokens: harness.spec().gauge.window_tokens.map(|_| seat_window),
+        }),
         harness: harness.spec(),
         // **The model this worker was actually placed on** — the gate's pick where
         // there was one, the launch configuration's where there was not, resolved

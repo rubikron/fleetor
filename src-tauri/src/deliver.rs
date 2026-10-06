@@ -638,7 +638,7 @@ mod tests {
         // `crate::placement::spawn::project_key` canonicalizes the same way
         // `context_gauge::project_dir` does, so this mirrors a real spawn.
         let resolved = crate::placement::spawn::project_key(&cwd);
-        let slug: String = resolved.chars().map(|c| if c == '/' || c == '.' { '-' } else { c }).collect();
+        let slug: String = resolved.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
         let project_dir = config_dir.join("projects").join(slug);
         std::fs::create_dir_all(&project_dir).unwrap();
         // A twentieth of the window constant — derived, so 5% stays 5% if
@@ -688,7 +688,7 @@ mod tests {
         let cwd = temp_dir("hot-cwd");
         let config_dir = temp_dir("hot-cfg");
         let resolved = crate::placement::spawn::project_key(&cwd);
-        let slug: String = resolved.chars().map(|c| if c == '/' || c == '.' { '-' } else { c }).collect();
+        let slug: String = resolved.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
         let project_dir = config_dir.join("projects").join(slug);
         std::fs::create_dir_all(&project_dir).unwrap();
         // 85% of the window constant — derived, over the 80% threshold

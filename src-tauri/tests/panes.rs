@@ -578,7 +578,7 @@ fn a_roster_ask_surfaces_a_workers_sampled_context_gauge() {
     ));
     let _ = std::fs::remove_dir_all(&config_dir);
     let resolved = spawn::project_key(&cwd);
-    let slug: String = resolved.chars().map(|c| if c == '/' || c == '.' { '-' } else { c }).collect();
+    let slug: String = resolved.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
     let project_dir = config_dir.join("projects").join(slug);
     std::fs::create_dir_all(&project_dir).unwrap();
     // A fifth of the window constant — derived, so this stays 20% if D-054's
