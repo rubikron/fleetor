@@ -21,7 +21,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use fleetor_core::pane::{PaneEntry, PaneId};
-use fleetor_core::task::{ChainEntry, Kind, TaskRecord, TaskStatus};
+use fleetor_core::task::{ChainEntry, Kind, TaskRecord, TaskStatus, TASK_STATUSES};
 use fleetor_core::wire::{Hello, Op, OpResult, TaskAction};
 use fleetor_ipc::{Client, UnixTransport};
 use std::collections::HashSet;
@@ -191,11 +191,35 @@ enum TaskCmd {
         #[arg(value_name = "NUMBER")]
         task: Option<String>,
         /// One of `planned`, `in-progress`, `done`, `dropped`.
-        #[arg(long, required = true)]
-        status: String,
+        #[arg(long)]
+        status: Option<String>,
         /// Why, or what you checked.
         #[arg(long)]
         note: Option<String>,
+    },
+    /// Put a finding or progress on a task. Changes neither status nor owner.
+    Comment {
+        /// The task's number — `14`, not `#14`.
+        #[arg(value_name = "NUMBER")]
+        task: Option<String>,
+        #[arg(trailing_var_arg = true)]
+        text: Vec<String>,
+    },
+    /// Replace a task's outcome or criteria. Each flag replaces that whole
+    /// field, so restate every criterion you want kept. The old text stays in
+    /// the chain. Only the creator, orch (a worker's task) or the operator may.
+    Edit {
+        /// The task's number — `14`, not `#14`.
+        #[arg(value_name = "NUMBER")]
+        task: Option<String>,
+        #[arg(long)]
+        outcome: Option<String>,
+        /// The full new list of technical criteria. Repeatable.
+        #[arg(long = "crit-t", action = clap::ArgAction::Append, value_name = "CHECK")]
+        crit_t: Vec<String>,
+        /// The full new list of vision criteria. Repeatable.
+        #[arg(long = "crit-s", action = clap::ArgAction::Append, value_name = "VISION")]
+        crit_s: Vec<String>,
     },
     /// One goal or task with its criteria and its whole chain.
     Show {
@@ -208,6 +232,12 @@ enum TaskCmd {
         /// Show criteria, instructions and each chain too.
         #[arg(long)]
         full: bool,
+        /// Only `planned` and `in-progress`.
+        #[arg(long)]
+        open: bool,
+        /// Only the tasks you own.
+        #[arg(long)]
+        mine: bool,
     },
 }
 
@@ -229,8 +259,14 @@ fn run() -> Result<ExitCode> {
     // the wire carries the board, this side decides how much of it to print.
     let full = matches!(
         cli.command,
-        Command::Task { action: TaskCmd::List { full: true } | TaskCmd::Show { .. } }
+        Command::Task { action: TaskCmd::List { full: true, .. } | TaskCmd::Show { .. } }
     );
+    let filter = match cli.command {
+        Command::Task { action: TaskCmd::List { open, mine, .. } } => {
+            Filter { open, mine: if mine { Some(me()?) } else { None } }
+        }
+        _ => Filter::default(),
+    };
 
     // `whoami` answers from the environment alone: it is the first thing a
     // confused pane tries, and it must work even when the hub is down.
@@ -271,7 +307,7 @@ fn run() -> Result<ExitCode> {
         client.call(op).await
     })?;
 
-    Ok(if report(result, full) { ExitCode::SUCCESS } else { ExitCode::FAILURE })
+    Ok(if report(filter.apply(result), full) { ExitCode::SUCCESS } else { ExitCode::FAILURE })
 }
 
 /// The `fleet task` wire payload. Parsed here so a typo costs a local error
@@ -299,14 +335,56 @@ fn task_action(action: TaskCmd) -> Result<TaskAction> {
                 converges_on: converges_on.map(|raw| number(&raw, "--converges-on")).transpose()?,
             }
         }
-        TaskCmd::Update { task, status, note } => TaskAction::Update {
-            task: task_number(task, "update")?,
-            status: TaskStatus::parse(&status).map_err(|e| anyhow::anyhow!("{e}"))?,
-            note,
-        },
+        TaskCmd::Update { task, status, note } => {
+            let task = task_number(task, "update")?;
+            let Some(status) = status else {
+                anyhow::bail!(
+                    "`fleet task update` needs --status ({}). To put something on the record \
+                     without changing the status, use `fleet task comment {task} \"…\"`",
+                    TASK_STATUSES.join("|")
+                );
+            };
+            TaskAction::Update {
+                task,
+                status: TaskStatus::parse(&status).map_err(|e| anyhow::anyhow!("{e}"))?,
+                note,
+            }
+        }
+        TaskCmd::Comment { task, text } => {
+            TaskAction::Comment { task: task_number(task, "comment")?, text: join(text) }
+        }
+        TaskCmd::Edit { task, outcome, crit_t, crit_s } => {
+            let task = task_number(task, "edit")?;
+            if outcome.is_none() && crit_t.is_empty() && crit_s.is_empty() {
+                anyhow::bail!(
+                    "`fleet task edit {task}` needs what to replace: --outcome \"…\", or the \
+                     whole new list of --crit-t / --crit-s"
+                );
+            }
+            TaskAction::Edit { task, outcome, technical: crit_t, vision: crit_s }
+        }
         TaskCmd::Show { task } => TaskAction::Show { task: task_number(task, "show")? },
         TaskCmd::List { .. } => TaskAction::List,
     })
+}
+
+/// `fleet task list --open` / `--mine`: a rendering choice the hub is not told.
+#[derive(Default)]
+struct Filter {
+    open: bool,
+    mine: Option<PaneId>,
+}
+
+impl Filter {
+    fn apply(&self, result: OpResult) -> OpResult {
+        let OpResult::Board { tasks } = result else { return result };
+        let keep = |record: &TaskRecord| {
+            let open = matches!(record.status, TaskStatus::Planned | TaskStatus::InProgress);
+            let mine = self.mine.is_none() || record.owner.as_ref().map(|o| o.pane) == self.mine;
+            (open || !self.open) && mine
+        };
+        OpResult::Board { tasks: tasks.into_iter().filter(keep).collect() }
+    }
 }
 
 /// A task number as a model types it: `14` or a quoted `#14`.
@@ -468,6 +546,13 @@ fn details(record: &TaskRecord) -> Vec<String> {
             ChainEntry::Opened { .. } => "opened this".to_string(),
             ChainEntry::TakenUp { note } => with("took this up".to_string(), note),
             ChainEntry::Status { status, note } => with(format!("marked it {status}"), note),
+            ChainEntry::Commented { text } => format!("commented — {text}"),
+            ChainEntry::Edited { field, old, new } => format!(
+                "edited {} — was: {} — now: {}",
+                field.flag(),
+                old.join(" | "),
+                new.join(" | ")
+            ),
         };
         format!("{}: {what}", line.from)
     }));
@@ -945,6 +1030,12 @@ mod tests {
             at(2, PaneId::Orch, ChainEntry::Opened { block: task(Some(PaneId::Worker(2)), "nested groups parse") }),
             at(3, PaneId::Orch, ChainEntry::Opened { block: task(None, "errors name the token") }),
             at(2, PaneId::Worker(2), ChainEntry::status(TaskStatus::InProgress, Some("starting"))),
+            at(2, PaneId::Worker(3), ChainEntry::comment("the tokenizer leaks").unwrap()),
+            at(2, PaneId::Orch, ChainEntry::Edited {
+                field: fleetor_core::task::Field::Outcome,
+                old: crit("nested groups parse"),
+                new: crit("nested groups parse at any depth"),
+            }),
         ])
     }
 
@@ -1019,7 +1110,40 @@ mod tests {
         for status in fleetor_core::task::TASK_STATUSES {
             assert!(why.contains(status), "the refusal names {status}: {why}");
         }
-        assert!(Cli::try_parse_from(["fleet", "task", "update", "14", "--note", "x"]).is_err(), "no status");
+        let why = action(&["fleet", "task", "update", "14", "--note", "x"]).unwrap_err().to_string();
+        assert!(why.contains("--status") && why.contains("fleet task comment 14"), "{why}");
+    }
+
+    #[test]
+    fn a_comment_is_rejoined_and_an_edit_names_whole_fields() {
+        for argv in [
+            vec!["fleet", "task", "comment", "14", "the tokenizer leaks"],
+            vec!["fleet", "task", "comment", "14", "the", "tokenizer", "leaks"],
+        ] {
+            assert_eq!(
+                action(&argv).unwrap(),
+                TaskAction::Comment { task: 14, text: "the tokenizer leaks".into() }
+            );
+        }
+        assert_eq!(
+            action(&["fleet", "task", "edit", "#14", "--crit-t", "a", "--crit-t", "b"]).unwrap(),
+            TaskAction::Edit { task: 14, outcome: None, technical: vec!["a".into(), "b".into()], vision: vec![] },
+        );
+        let why = action(&["fleet", "task", "edit", "14"]).unwrap_err().to_string();
+        assert!(why.contains("--outcome") && why.contains("whole new list"), "{why}");
+        let why = action(&["fleet", "task", "comment"]).unwrap_err().to_string();
+        assert!(why.contains("`fleet task comment 14`"), "{why}");
+    }
+
+    #[test]
+    fn the_list_filters_to_open_and_to_mine() {
+        let numbers = |filter: Filter| match filter.apply(OpResult::Board { tasks: records() }) {
+            OpResult::Board { tasks } => tasks.iter().map(|r| r.number).collect::<Vec<_>>(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(numbers(Filter { open: true, mine: None }), vec![1, 2, 3]);
+        assert_eq!(numbers(Filter { open: false, mine: Some(PaneId::Worker(2)) }), vec![2]);
+        assert_eq!(numbers(Filter { open: true, mine: Some(PaneId::Worker(3)) }), Vec::<u64>::new());
     }
 
     #[test]
@@ -1035,7 +1159,7 @@ mod tests {
             board_lines(&records(), false),
             vec![
                 "#1 goal [planned] — one grammar",
-                "  #2 [in-progress] worker-2 — nested groups parse",
+                "  #2 [in-progress] worker-2 — nested groups parse at any depth",
                 "  #3 [planned] unowned — errors name the token",
             ]
         );
@@ -1044,7 +1168,7 @@ mod tests {
     #[test]
     fn a_task_whose_goal_is_not_listed_renders_at_the_top_level() {
         let lines = board_lines(&records()[1..2], false);
-        assert_eq!(lines, vec!["#2 [in-progress] worker-2 — nested groups parse"]);
+        assert_eq!(lines, vec!["#2 [in-progress] worker-2 — nested groups parse at any depth"]);
     }
 
     #[test]
@@ -1055,6 +1179,12 @@ mod tests {
         assert!(full.contains("instructions: start from the tokenizer"), "{full}");
         assert!(full.contains("orch: opened this"), "{full}");
         assert!(full.contains("worker-2: took this up — starting"), "{full}");
+        assert!(full.contains("worker-3: commented — the tokenizer leaks"), "{full}");
+        assert!(
+            full.contains("orch: edited --outcome — was: nested groups parse — now: nested groups parse at any depth"),
+            "{full}"
+        );
+        assert!(full.contains("worker-2 — nested groups parse at any depth"), "the summary is the new text: {full}");
     }
 
     #[test]

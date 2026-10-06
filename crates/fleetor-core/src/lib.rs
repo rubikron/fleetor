@@ -38,5 +38,5 @@ pub use handoff::Handoff;
 pub use message::{frame_broadcast_for_pane, frame_for_pane, Message};
 pub use pane::{ContextGauge, PaneEntry, PaneId, PaneState, ParsePaneIdError, WORKER_SLOTS};
 pub use store::Store;
-pub use task::{board, ChainEntry, Kind, TaskBlock, TaskRecord, TaskStatus, TASK_STATUSES};
+pub use task::{board, ChainEntry, Field, Kind, TaskBlock, TaskRecord, TaskStatus, TASK_STATUSES};
 pub use wire::{Hello, Op, OpResult, Request, Response, TaskAction, WIRE_VERSION};

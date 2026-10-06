@@ -138,6 +138,18 @@ pub enum TaskAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         note: Option<String>,
     },
+    /// Add a comment; status and owner stay as they are.
+    Comment { task: u64, text: String },
+    /// Replace whole fields. An empty list means that field is not edited.
+    Edit {
+        task: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outcome: Option<String>,
+        #[serde(default)]
+        technical: Vec<String>,
+        #[serde(default)]
+        vision: Vec<String>,
+    },
     /// One goal or task with its whole chain.
     Show { task: u64 },
     /// Every goal and task in the target's store.
@@ -276,6 +288,15 @@ mod tests {
                 },
             },
             Op::Task { action: TaskAction::Show { task: 14 } },
+            Op::Task { action: TaskAction::Comment { task: 14, text: "found a leak".into() } },
+            Op::Task {
+                action: TaskAction::Edit {
+                    task: 14,
+                    outcome: Some("nested groups parse".into()),
+                    technical: vec![],
+                    vision: vec!["one grammar".into()],
+                },
+            },
             Op::Task { action: TaskAction::List },
             Op::Handoff {
                 built: "the parser accepts nested groups".into(),

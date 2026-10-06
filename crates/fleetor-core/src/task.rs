@@ -154,6 +154,35 @@ pub enum ChainEntry {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         note: Option<String>,
     },
+    /// Leaves status and owner as they were.
+    Commented {
+        text: String,
+    },
+    /// One field replaced whole. `old` and `new` are the field's full value
+    /// before and after; the outcome is a one-item list.
+    Edited {
+        field: Field,
+        old: Vec<String>,
+        new: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Field {
+    Outcome,
+    Technical,
+    Vision,
+}
+
+impl Field {
+    pub fn flag(self) -> &'static str {
+        match self {
+            Field::Outcome => "--outcome",
+            Field::Technical => "--crit-t",
+            Field::Vision => "--crit-s",
+        }
+    }
 }
 
 impl ChainEntry {
@@ -163,6 +192,14 @@ impl ChainEntry {
             TaskStatus::InProgress => ChainEntry::TakenUp { note },
             status => ChainEntry::Status { status, note },
         }
+    }
+
+    pub fn comment(text: &str) -> Result<Self, String> {
+        let text = plain(text);
+        if text.is_empty() {
+            return Err("a comment needs text — `fleet task comment 14 \"what you found\"`".into());
+        }
+        Ok(ChainEntry::Commented { text })
     }
 
     pub fn into_event(self, task: u64, from: PaneId, run: &str, lineage: &str) -> FleetEvent {
@@ -215,6 +252,50 @@ impl TaskRecord {
         from == PaneId::Operator
             || from == self.creator
             || (from == PaneId::Orch && matches!(self.creator, PaneId::Worker(_)))
+    }
+
+    /// The entries a whole-field edit by `from` produces: one per field whose
+    /// value actually changes. An empty list means that field was not given.
+    pub fn edits(
+        &self,
+        from: PaneId,
+        outcome: Option<&str>,
+        technical: &[String],
+        vision: &[String],
+    ) -> Result<Vec<ChainEntry>, String> {
+        let n = self.number;
+        if !self.may_edit(from) {
+            return Err(format!(
+                "#{n} was opened by {}, and only its creator, orch (for a worker's task) or the \
+                 operator may edit it — you are {from}. Say what should change with `fleet task \
+                 comment {n} \"…\"`",
+                self.creator
+            ));
+        }
+        let given = [
+            (Field::Outcome, outcome.map(|text| vec![text.to_string()]), vec![self.block.outcome.clone()]),
+            (Field::Technical, (!technical.is_empty()).then(|| technical.to_vec()), self.block.technical.clone()),
+            (Field::Vision, (!vision.is_empty()).then(|| vision.to_vec()), self.block.vision.clone()),
+        ];
+        let mut entries = Vec::new();
+        for (field, new, old) in given {
+            let Some(new) = new else { continue };
+            let new = kept(&new);
+            if new.is_empty() {
+                return Err(format!("{} cannot be replaced with nothing — give its new text", field.flag()));
+            }
+            if new != old {
+                entries.push(ChainEntry::Edited { field, old, new });
+            }
+        }
+        if entries.is_empty() {
+            return Err(format!(
+                "that edit changes nothing — #{n} already reads that way. Pass the whole new \
+                 value of --outcome, --crit-t or --crit-s (`fleet task show {n}` prints the \
+                 current ones)"
+            ));
+        }
+        Ok(entries)
     }
 
     /// Whether `from`, speaking in `lineage`, may set `status`.
@@ -313,6 +394,19 @@ pub fn board<'a>(events: impl IntoIterator<Item = &'a FleetEvent>) -> Vec<TaskRe
             ChainEntry::Status { status, .. } => {
                 let Some(record) = records.get_mut(task) else { continue };
                 record.status = *status;
+                record.chain.push(line);
+            }
+            ChainEntry::Commented { .. } => {
+                let Some(record) = records.get_mut(task) else { continue };
+                record.chain.push(line);
+            }
+            ChainEntry::Edited { field, new, .. } => {
+                let Some(record) = records.get_mut(task) else { continue };
+                match field {
+                    Field::Outcome => record.block.outcome = new.join("\n"),
+                    Field::Technical => record.block.technical = new.clone(),
+                    Field::Vision => record.block.vision = new.clone(),
+                }
                 record.chain.push(line);
             }
         }
@@ -509,11 +603,60 @@ mod tests {
     }
 
     #[test]
+    fn a_comment_changes_neither_status_nor_owner() {
+        let log = vec![
+            opened(1, PaneId::Orch, goal()),
+            opened(2, PaneId::Orch, task(Some(PaneId::Worker(2)), Some(1))),
+            ChainEntry::comment(" the tokenizer leaks ").unwrap().into_event(2, PaneId::Worker(3), RUN, LINEAGE),
+        ];
+        let record = board(&log).remove(1);
+        assert_eq!(record.status, TaskStatus::Planned);
+        assert_eq!(record.owner.unwrap().pane, PaneId::Worker(2));
+        assert_eq!(record.chain[1].entry, ChainEntry::Commented { text: "the tokenizer leaks".into() });
+        assert!(ChainEntry::comment("  ").unwrap_err().contains("needs text"));
+    }
+
+    #[test]
+    fn an_edit_keeps_the_whole_old_and_new_value_and_refuses_a_no_op() {
+        let log = vec![opened(1, PaneId::Orch, goal()), opened(2, PaneId::Orch, task(None, Some(1)))];
+        let record = board(&log).remove(1);
+
+        let entries = record
+            .edits(PaneId::Orch, Some(&record.block.outcome), &crits(&["cargo test -p parser", "clippy is clean"]), &[])
+            .unwrap();
+        assert_eq!(
+            entries,
+            vec![ChainEntry::Edited {
+                field: Field::Technical,
+                old: crits(&["cargo test -p parser"]),
+                new: crits(&["cargo test -p parser", "clippy is clean"]),
+            }],
+            "the unchanged outcome produced no entry",
+        );
+        let edited = [log, vec![entries[0].clone().into_event(2, PaneId::Orch, RUN, LINEAGE)]].concat();
+        let after = board(&edited).remove(1);
+        assert_eq!(after.block.technical.len(), 2);
+        assert_eq!(after.chain.len(), 2);
+
+        let why = record.edits(PaneId::Orch, Some("the parser accepts nested groups"), &[], &[]).unwrap_err();
+        assert!(why.contains("changes nothing"), "{why}");
+        let why = record.edits(PaneId::Orch, None, &[], &[]).unwrap_err();
+        assert!(why.contains("changes nothing"), "{why}");
+        let why = record.edits(PaneId::Orch, None, &crits(&[" "]), &[]).unwrap_err();
+        assert!(why.contains("--crit-t cannot be replaced with nothing"), "{why}");
+        let why = record.edits(PaneId::Worker(2), Some("easier"), &[], &[]).unwrap_err();
+        assert!(why.contains("opened by orch") && why.contains("fleet task comment 2"), "{why}");
+    }
+
+    #[test]
     fn a_chain_event_round_trips_through_json() {
         for event in [
             opened(1, PaneId::Orch, goal()),
             opened(2, PaneId::Orch, task(Some(PaneId::Worker(2)), Some(1))),
             set(2, PaneId::Worker(2), TaskStatus::InProgress),
+            ChainEntry::comment("found a leak").unwrap().into_event(2, PaneId::Worker(3), RUN, LINEAGE),
+            ChainEntry::Edited { field: Field::Outcome, old: crits(&["a"]), new: crits(&["b"]) }
+                .into_event(2, PaneId::Orch, RUN, LINEAGE),
             ChainEntry::status(TaskStatus::Done, Some("cargo test passes")).into_event(2, PaneId::Worker(2), RUN, LINEAGE),
         ] {
             let line = serde_json::to_string(&event).unwrap();

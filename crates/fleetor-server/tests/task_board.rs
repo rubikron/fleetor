@@ -5,7 +5,7 @@
 
 use fleetor_core::event::FleetEvent;
 use fleetor_core::pane::{PaneEntry, PaneId, PaneState};
-use fleetor_core::task::{ChainEntry, Kind, TaskRecord, TaskStatus};
+use fleetor_core::task::{ChainEntry, Field, Kind, TaskRecord, TaskStatus};
 use fleetor_core::wire::{Hello, Op, OpResult, TaskAction};
 use fleetor_core::Store;
 use fleetor_db::SqliteStore;
@@ -321,6 +321,108 @@ async fn refusals_follow_who_is_asking_and_write_nothing() {
     peer.call(set(task, TaskStatus::Done)).await.unwrap();
     let why = refusal(owner.call(set(task, TaskStatus::Done)).await.unwrap());
     assert!(why.contains("owner is worker-3"), "taking it up moved the owner: {why}");
+}
+
+fn comment(task: u64, text: &str) -> Op {
+    Op::Task { action: TaskAction::Comment { task, text: text.into() } }
+}
+
+fn edit_outcome(task: u64, outcome: &str) -> Op {
+    Op::Task {
+        action: TaskAction::Edit { task, outcome: Some(outcome.into()), technical: vec![], vision: vec![] },
+    }
+}
+
+/// Anyone comments on any task, and a comment moves neither status nor owner.
+#[tokio::test]
+async fn anyone_may_comment_and_nothing_else_changes() {
+    let fleet = start_hub().await;
+    let mut orch = pane(&fleet, PaneId::Orch).await;
+    let mut peer = pane(&fleet, PaneId::Worker(3)).await;
+    let goal = number(orch.call(open_goal("one grammar")).await.unwrap());
+    let task = number(orch.call(open_task("nested groups parse", Some(2), Some(goal))).await.unwrap());
+
+    assert_eq!(number(peer.call(comment(task, "the tokenizer leaks")).await.unwrap()), task);
+    number(fleet.hub.handle(PaneId::Operator, comment(goal, "keep it small")).await);
+
+    let all = list(&mut orch).await;
+    assert_eq!(all[1].status, TaskStatus::Planned);
+    assert_eq!(all[1].owner.as_ref().unwrap().pane, PaneId::Worker(2));
+    let last = all[1].chain.last().unwrap();
+    assert_eq!((last.from, &last.entry), (PaneId::Worker(3), &ChainEntry::Commented { text: "the tokenizer leaks".into() }));
+    assert_eq!(all[0].chain.last().unwrap().from, PaneId::Operator);
+
+    let written = chain_len(&fleet);
+    assert!(refusal(peer.call(comment(task, "  ")).await.unwrap()).contains("needs text"));
+    assert!(refusal(peer.call(comment(99, "hello")).await.unwrap()).contains("there is no #99"));
+    assert_eq!(chain_len(&fleet), written);
+}
+
+/// Editing follows who created the task, keeps the whole old and new text in
+/// the chain, and refuses an edit that changes nothing.
+#[tokio::test]
+async fn an_edit_follows_the_creator_and_keeps_the_old_text() {
+    let fleet = start_hub().await;
+    let mut orch = pane(&fleet, PaneId::Orch).await;
+    let mut worker = pane(&fleet, PaneId::Worker(2)).await;
+    let mut peer = pane(&fleet, PaneId::Worker(3)).await;
+
+    let goal = number(orch.call(open_goal("one grammar")).await.unwrap());
+    let orchs = number(orch.call(open_task("nested groups parse", Some(2), Some(goal))).await.unwrap());
+    let workers = number(worker.call(open_task("the tokenizer leaks", None, None)).await.unwrap());
+    let operators = number(fleet.hub.handle(PaneId::Operator, open_task("ship the docs", None, None)).await);
+    let written = chain_len(&fleet);
+
+    let why = refusal(worker.call(edit_outcome(orchs, "an easier outcome")).await.unwrap());
+    assert!(why.contains("opened by orch") && why.contains(&format!("fleet task comment {orchs}")), "{why}");
+    let why = refusal(peer.call(edit_outcome(workers, "not mine")).await.unwrap());
+    assert!(why.contains("opened by worker-2"), "{why}");
+    let why = refusal(orch.call(edit_outcome(operators, "orch's wording")).await.unwrap());
+    assert!(why.contains("opened by operator"), "{why}");
+    let why = refusal(orch.call(edit_outcome(orchs, "nested groups parse")).await.unwrap());
+    assert!(why.contains("changes nothing"), "{why}");
+    let why = refusal(orch.call(edit_outcome(99, "x")).await.unwrap());
+    assert!(why.contains("there is no #99"), "{why}");
+    assert_eq!(chain_len(&fleet), written, "a refused edit writes nothing");
+
+    // The creator, orch on a worker's task, and the operator on any.
+    worker.call(edit_outcome(workers, "the tokenizer frees its buffer")).await.unwrap();
+    orch.call(edit_outcome(workers, "the tokenizer frees every buffer")).await.unwrap();
+    fleet.hub.handle(PaneId::Operator, edit_outcome(goal, "one grammar, one parser")).await;
+    let both = Op::Task {
+        action: TaskAction::Edit {
+            task: orchs,
+            outcome: Some("nested groups parse".into()),
+            technical: vec!["cargo test -p parser".into(), "clippy is clean".into()],
+            vision: vec!["one grammar, one parser".into()],
+        },
+    };
+    orch.call(both).await.unwrap();
+
+    let all = list(&mut orch).await;
+    assert_eq!(all[0].block.outcome, "one grammar, one parser");
+    assert_eq!(all[2].block.outcome, "the tokenizer frees every buffer");
+    assert_eq!(all[2].creator, PaneId::Worker(2), "an edit does not change who created it");
+
+    let record = &all[1];
+    assert_eq!(record.block.technical, vec!["cargo test -p parser", "clippy is clean"]);
+    let edits: Vec<&ChainEntry> = record.chain.iter().map(|l| &l.entry).skip(1).collect();
+    assert_eq!(
+        edits,
+        vec![
+            &ChainEntry::Edited {
+                field: Field::Technical,
+                old: vec!["cargo test -p parser".into()],
+                new: vec!["cargo test -p parser".into(), "clippy is clean".into()],
+            },
+            &ChainEntry::Edited {
+                field: Field::Vision,
+                old: vec!["one grammar".into()],
+                new: vec!["one grammar, one parser".into()],
+            },
+        ],
+        "one entry per field that changed; the restated outcome wrote none",
+    );
 }
 
 /// A second session over the same `tasks.db`: the same records, numbers that

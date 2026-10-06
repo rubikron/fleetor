@@ -574,6 +574,22 @@ impl TaskSide {
                 find(&board, task)?.may_set(from, &self.ctx.lineage, status)?;
                 self.append(task, from, ChainEntry::status(status, note.as_deref()))
             }
+            TaskAction::Comment { task, text } => {
+                let entry = ChainEntry::comment(&text)?;
+                find(&self.board()?, task)?;
+                self.append(task, from, entry)
+            }
+            TaskAction::Edit { task, outcome, technical, vision } => {
+                let _writing = self.write.lock().unwrap_or_else(|e| e.into_inner());
+                let board = self.board()?;
+                let entries =
+                    find(&board, task)?.edits(from, outcome.as_deref(), &technical, &vision)?;
+                let mut result = Err(String::new());
+                for entry in entries {
+                    result = Ok(self.append(task, from, entry)?);
+                }
+                result
+            }
             TaskAction::Show { task } => {
                 let board = self.board()?;
                 Ok(OpResult::Board { tasks: vec![find(&board, task)?.clone()] })
