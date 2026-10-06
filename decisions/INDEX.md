@@ -71,7 +71,7 @@ Note: D-005 is referenced elsewhere in this file (e.g. D-009, D-011) but has no 
 | [D-061](D-061.md) | WP-16 | reversed | WP-16: dev mode is a key in the operator's config, not a webview preference |
 | [D-062](D-062.md) | WP-14 | alive | WP-14: `orch` gets a config dir of its own, and D-059's named gap closes |
 | [D-063](D-063.md) | WP-12 | reversed | the answer key is absent, not unobtainable, and a frozen grader is not enough |
-| [D-064](D-064.md) | WP-13 | alive | WP-13: the done verb is spelled `handoff`, it answers `recorded`, and the orch cap moves to 3,800 |
+| [D-064](D-064.md) | WP-13 | amended by D-103 | WP-13: the done verb is spelled `handoff`, it answers `recorded`, and the orch cap moves to 3,800 |
 | [D-065](D-065.md) | WP-17 | alive | WP-17: the write guardrail is a `PreToolUse` hook, writes only, and its Bash half enforces stated intent |
 | [D-066](D-066.md) | WP-15 | reversed | WP-15: the evaluator is a `PaneId` in no enumeration, its wake is a bus subscriber, and it reads the live run in place |
 | [D-067](D-067.md) | meta | alive | worktrees namespaced by target repo |
