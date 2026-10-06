@@ -2270,7 +2270,8 @@ fn apply_target(state: &FleetState, target: &Path) {
 /// The guard is checked *before* the dialog opens: making the operator browse
 /// to a folder and only then telling them it cannot be used is a worse way to
 /// deliver the same refusal.
-#[tauri::command]
+// Off the main thread: a blocking dialog there hangs the app.
+#[tauri::command(async)]
 pub fn fleet_pick_target(
     app: AppHandle,
     state: State<'_, FleetState>,
@@ -2534,7 +2535,8 @@ pub fn run_delete(id: String) -> Result<(), String> {
 /// added for it — `fleet_pick_target` set the pattern. `Ok(None)` means the
 /// operator dismissed the dialog, which is not an error and must not be shown
 /// as one.
-#[tauri::command]
+// Off the main thread: a blocking dialog there hangs the app.
+#[tauri::command(async)]
 pub fn run_export(app: AppHandle, id: String) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
 
