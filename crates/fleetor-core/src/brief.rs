@@ -474,14 +474,14 @@ mod tests {
     /// The authority clause, pinned as a literal for the reason WP-02's is: a
     /// rewrite that softened "final" into "important input" would still render
     /// and still validate, and a worker would then weigh the human's answer
-    /// against its block's criteria instead of above them.
+    /// against its task's criteria instead of above them.
     #[test]
     fn the_worker_brief_gives_the_operators_word_final_authority() {
         let brief = worker_brief(PaneId::Worker(2), &roster(), CWD, BRANCH);
         assert!(brief.contains("[fleet · operator]"), "the framing they will actually see");
         assert!(brief.contains("**their word is final**"));
         assert!(
-            brief.contains("outranks `orch`, your block's criteria"),
+            brief.contains("outranks `orch`, your task's criteria"),
             "the rule needs what it outranks, or it is a compliment rather than an order",
         );
     }
@@ -662,7 +662,7 @@ mod tests {
     #[test]
     fn the_worker_brief_teaches_the_post_task_self_maintenance_move() {
         let brief = worker_brief(PaneId::Worker(2), &roster(), CWD, BRANCH);
-        assert!(brief.contains("When you finish a block of work, look at your own context"));
+        assert!(brief.contains("When you finish a task, look at your own context"));
         assert!(brief.contains("fleet cmd self"), "the worker points the verb at itself");
         assert!(brief.contains("never mid-task"), "the timing bound is not optional");
     }
@@ -684,14 +684,14 @@ mod tests {
 
     /// The sentence the whole package rests on. The board is a record; the
     /// **send** is the assignment. Pinned as a literal because a rewrite that
-    /// softened it — "post the block and the worker picks it up" — would still
+    /// softened it — "post the task and the worker picks it up" — would still
     /// render, still validate, and would teach the fleet to wait on a board that
     /// nothing dispatches from. That is the ticket system growing back in prose
     /// instead of code.
     #[test]
     fn the_orch_brief_says_the_send_is_the_assignment_and_the_board_is_the_record() {
         let brief = orch_brief(&roster(), CWD, BRANCH);
-        assert!(brief.contains("Posting a block assigns nobody"));
+        assert!(brief.contains("Posting a task assigns nobody"));
         assert!(brief.contains("nothing reads it, nothing runs from it"));
         assert!(brief.contains("The send is the assignment"));
         assert!(
@@ -701,11 +701,11 @@ mod tests {
     }
 
     /// Decomposition happens *after* the vision is confirmed (WP-02's clause),
-    /// and the criteria have to be falsifiable or the block cannot be argued with.
+    /// and the criteria have to be falsifiable or the task cannot be argued with.
     #[test]
     fn the_orch_brief_decomposes_only_after_the_vision_and_demands_real_criteria() {
         let brief = orch_brief(&roster(), CWD, BRANCH);
-        assert!(brief.contains("Once the vision is confirmed, cut the work into blocks"));
+        assert!(brief.contains("Once the vision is confirmed, record it as a goal, then cut the work into tasks under it"));
         assert!(brief.contains("Write criteria that could fail"));
         assert!(brief.contains("\"Works well\" cannot"), "the counter-example is the teaching");
     }
@@ -725,8 +725,47 @@ mod tests {
         assert!(brief.contains("fleet task update"), "the worker knows how to say it");
     }
 
-    /// Both briefs name the four statuses, because a model that invents
-    /// `in-progress` gets a refusal instead of an update.
+    /// Each role is taught the task subcommands it uses and no others (D-100):
+    /// orch opens goals and tasks and edits them, a worker shows, takes up,
+    /// finishes and comments.
+    #[test]
+    fn each_brief_teaches_its_own_task_subcommands() {
+        let orch = orch_brief(&roster(), CWD, BRANCH);
+        for taught in [
+            "fleet task post --goal",
+            "fleet task post --parent 11",
+            "fleet task list",
+            "fleet task show 14",
+            "fleet task update 14 --status",
+            "fleet task edit 14",
+            "fleet task comment 14",
+            "`--goal` takes no value",
+            "never on the operator's",
+        ] {
+            assert!(orch.contains(taught), "orch is never taught `{taught}`");
+        }
+        let worker = worker_brief(PaneId::Worker(2), &roster(), CWD, BRANCH);
+        for taught in [
+            "fleet task show 14",
+            "fleet task update 14 --status in-progress",
+            "fleet task update 14 --status done",
+            "fleet task comment 14",
+            "only the owner can say it",
+            "You cannot edit or drop a task you did not open",
+        ] {
+            assert!(worker.contains(taught), "a worker is never taught `{taught}`");
+        }
+        for orchs in ["fleet task post", "fleet task edit", "--parent"] {
+            assert!(!worker.contains(orchs), "a worker's brief spends context on `{orchs}`");
+        }
+        for brief in [&orch, &worker] {
+            assert!(brief.contains("never `#14`"), "the shell-comment trap is named");
+            assert!(!brief.contains("task-id") && !brief.contains("claimed"), "the old spelling survived");
+        }
+    }
+
+    /// Both briefs name the four statuses, because a model that types
+    /// `claimed` gets a refusal instead of an update.
     #[test]
     fn both_briefs_name_every_status_the_board_accepts() {
         for brief in [orch_brief(&roster(), CWD, BRANCH), worker_brief(PaneId::Worker(1), &roster(), CWD, BRANCH)] {
@@ -789,7 +828,7 @@ mod tests {
         assert!(brief.contains("Never `cd` into a peer's worktree"), "Tier 1.7");
     }
 
-    /// A review answers the block's criteria. Without this the verb produces
+    /// A review answers the task's criteria. Without this the verb produces
     /// taste, and taste from a peer is the thing the criteria were written to
     /// replace.
     #[test]
@@ -815,14 +854,14 @@ mod tests {
     }
 
     /// The reviewer is named at assignment time, by orch, in the message that is
-    /// already the assignment — **not** by a field on the task block (D-049). The
+    /// already the assignment — **not** by a field on the task task (D-049). The
     /// brief is therefore the only place the duty is created, so this is the test
     /// that says it exists at all.
     #[test]
     fn the_orch_brief_names_a_reviewer_who_is_neither_the_author_nor_itself() {
         let brief = orch_brief(&roster(), CWD, BRANCH);
-        assert!(brief.contains("Name a reviewer in the same message that hands out the block"));
-        assert!(brief.contains("never the block's author, and never you"));
+        assert!(brief.contains("Name a reviewer in the same message that hands out the task"));
+        assert!(brief.contains("never the task's author, and never you"));
         assert!(
             brief.contains("finds what it expected to find"),
             "the reason has to travel with the rule",
@@ -830,13 +869,13 @@ mod tests {
     }
 
     /// A receipt is evidence, and orch must not read a zero exit as a finished
-    /// block — that would put the verification back in the machine, which is
+    /// task — that would put the verification back in the machine, which is
     /// exactly what "no hub-side verification" rules out.
     #[test]
     fn the_orch_brief_treats_a_receipt_as_evidence_rather_than_a_verdict() {
         let brief = orch_brief(&roster(), CWD, BRANCH);
         assert!(brief.contains("evidence, not a verdict"));
-        assert!(brief.contains("not that the block is done"));
+        assert!(brief.contains("not that the task is done"));
         assert!(
             brief.contains("Nothing in the code checks any of this"),
             "the merge rule is a prompt rule, and has to say so",
@@ -848,7 +887,7 @@ mod tests {
     /// The sentence the whole package rests on: the finish line is the confirmed
     /// vision, and saying it has been reached is `orch`'s own act. Pinned as a
     /// literal for the reason the board's "the send is the assignment" is — a
-    /// rewrite that softened it into "when the blocks are done, wrap up" would
+    /// rewrite that softened it into "when the tasks are done, wrap up" would
     /// still render and still validate, and would teach the orchestrator to read
     /// a full board as a met goal.
     #[test]
@@ -857,7 +896,7 @@ mod tests {
         assert!(brief.contains("fleet handoff"), "the verb itself");
         assert!(brief.contains("The finish line is the vision the operator confirmed"));
         assert!(
-            brief.contains("not the last block on the board"),
+            brief.contains("not the last task on the board"),
             "the counter-example is the teaching",
         );
         assert!(brief.contains("Claim only what you verified"));

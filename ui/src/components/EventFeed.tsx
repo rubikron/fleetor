@@ -12,7 +12,8 @@
 // activity needs to see a worker's context being cleared, and an operator reading
 // the record needs it in the timeline next to what was said around it.
 
-import { isMessage, type FleetEvent } from "../fleet/types";
+import { isMessage, type ChainEvent, type FleetEvent } from "../fleet/types";
+import type { TaskFeedEntry } from "../fleet/useFleet";
 
 interface Rendered {
   kind: string;
@@ -106,30 +107,68 @@ function render(event: FleetEvent): Rendered {
   }
 }
 
-export function EventFeed({ feed }: { feed: FleetEvent[] }) {
-  const rows = feed.filter((event) => !isMessage(event));
+/// One chain entry as a feed line (D-100): who did what to which task.
+function renderTask(event: ChainEvent): Rendered {
+  const { entry } = event;
+  const note = (text?: string | null) => (text ? ` — ${text}` : "");
+  const what =
+    entry.entry === "opened"
+      ? `opened ${entry.block.kind} #${event.task} · ${entry.block.outcome}`
+      : entry.entry === "taken-up"
+        ? `took up #${event.task}${note(entry.note)}`
+        : entry.entry === "status"
+          ? `marked #${event.task} ${entry.status}${note(entry.note)}`
+          : entry.entry === "commented"
+            ? `commented on #${event.task} — ${entry.text}`
+            : `edited #${event.task} · ${entry.field}`;
+  return { kind: "task", tone: "gold", text: `${event.from} ${what}`, rail: false };
+}
+
+interface Row {
+  key: string;
+  label: string;
+  rendered: Rendered;
+  /// Run-log seq, or the seq a task entry arrived after; then the entry's own.
+  order: [number, number];
+}
+
+export function EventFeed({ feed, tasks = [] }: { feed: FleetEvent[]; tasks?: TaskFeedEntry[] }) {
+  const rows: Row[] = [
+    ...feed
+      .filter((event) => !isMessage(event))
+      .map((event) => ({
+        key: `e${event.seq}`,
+        label: String(event.seq),
+        rendered: render(event),
+        order: [event.seq, 0] as [number, number],
+      })),
+    ...tasks.map(({ event, after }) => ({
+      key: `t${event.seq}`,
+      label: `#${event.task}`,
+      rendered: renderTask(event),
+      order: [after, event.seq] as [number, number],
+    })),
+  ].sort((a, b) => b.order[0] - a.order[0] || b.order[1] - a.order[1]);
+  const latest = rows.find((row) => row.order[1] === 0);
   return (
     <div className="events-view">
       <div className="events-view__head">
         <h3>Activity</h3>
         <span className="label">append-only · newest first</span>
         <span className="grow" style={{ flex: "1 1 auto" }} />
-        {rows.length > 0 && <span className="mono text-mute">seq {rows[0].seq}</span>}
+        {latest && <span className="mono text-mute">seq {latest.label}</span>}
       </div>
       {rows.length === 0 ? (
         <div className="feed feed--empty">Nothing yet.</div>
       ) : (
         <div className="feed">
-          {rows.map((event) => {
-            const r = render(event);
-            return (
-              <div key={event.seq} className={`line line--${r.tone} ${r.rail ? "line--rail" : ""}`}>
-                <span className="mono line__seq">{event.seq}</span>
-                <span className={`mono line__kind line__kind--${r.tone}`}>{r.kind}</span>
-                <span className="line__text">{r.text}</span>
-              </div>
-            );
-          })}
+          {rows.map(({ key, label, rendered: r }) => (
+            <div key={key} className={`line line--${r.tone} ${r.rail ? "line--rail" : ""}`}>
+              <span className="mono line__seq">{label}</span>
+              <span className={`mono line__kind line__kind--${r.tone}`}>{r.kind}</span>
+              <span className="line__text">{r.text}</span>
+            </div>
+          ))}
         </div>
       )}
     </div>

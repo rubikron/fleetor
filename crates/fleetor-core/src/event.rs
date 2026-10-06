@@ -21,7 +21,8 @@
 //! log, and no delivery, spawn or verb behaves differently once one exists.
 
 use crate::pane::{PaneId, PaneState};
-use crate::task::TaskChange;
+use crate::legacy_task::TaskChange;
+use crate::task::ChainEntry;
 use serde::{Deserialize, Serialize};
 
 /// One entry in the append-only event log. `#[serde(tag = "type")]` gives each
@@ -76,6 +77,9 @@ pub enum FleetEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         detail: Option<String>,
     },
+    /// **Legacy, read-only (D-100).** The pre-D-100 run-log task event; nothing
+    /// writes it, and it stays so archived runs decode.
+    ///
     /// One claim about a task block — the blackboard's whole storage (WP-05).
     ///
     /// `task` is the block's id; a post and every later update share it, which is
@@ -92,6 +96,9 @@ pub enum FleetEvent {
     /// ticket system D-030 deleted — see `task.rs`'s module doc for the full
     /// tripwire list.
     Task { task: String, from: PaneId, at: i64, change: TaskChange },
+    /// One entry in a task's chain (D-100). Lives in the target's task store,
+    /// never in a run log. `task` is the per-target number.
+    Chain { task: u64, from: PaneId, at: i64, run: String, lineage: String, entry: ChainEntry },
     /// `orch` declaring the whole goal met (WP-13) — what the fleet built, how
     /// anyone could check it, and what is still open.
     ///
@@ -175,6 +182,7 @@ impl FleetEvent {
             FleetEvent::Message { .. } => "message",
             FleetEvent::Command { .. } => "command",
             FleetEvent::Task { .. } => "task",
+            FleetEvent::Chain { .. } => "chain",
             FleetEvent::Handoff { .. } => "handoff",
             FleetEvent::PaneState { .. } => "pane-state",
             FleetEvent::Notice { .. } => "notice",
@@ -213,11 +221,13 @@ mod tests {
                 task: "task-1-0".into(),
                 from: PaneId::Orch,
                 at: 1_730_413_200_123,
-                change: crate::task::TaskChange::Updated {
-                    status: Some(crate::task::TaskStatus::Claimed),
+                change: crate::legacy_task::TaskChange::Updated {
+                    status: Some(crate::legacy_task::TaskStatus::Claimed),
                     note: Some("starting now".into()),
                 },
             },
+            crate::task::ChainEntry::status(crate::task::TaskStatus::Done, None)
+                .into_event(14, PaneId::Worker(2), "run-1", "lin-1"),
             FleetEvent::Handoff {
                 id: "handoff-1".into(),
                 from: PaneId::Orch,

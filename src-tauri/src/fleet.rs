@@ -31,11 +31,11 @@ use std::sync::{Arc, Mutex};
 
 use fleetor_core::event::{FleetEvent, NoticeLevel};
 use fleetor_core::pane::{PaneEntry, PaneId, PaneState};
-use fleetor_core::wire::{Op, OpResult};
+use fleetor_core::wire::{Op, OpResult, TaskAction};
 use fleetor_core::Store;
 use fleetor_db::SqliteStore;
 use fleetor_ipc::UnixTransport;
-use fleetor_server::{AppCommand, BroadcastStore, Hub};
+use fleetor_server::{AppCommand, BroadcastStore, Hub, TaskContext};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use tokio::runtime::Runtime;
@@ -53,6 +53,8 @@ const EVENT_FLEET: &str = "fleet://event";
 /// A launch's verdict passed: the UI drops the old run's state on this, so a
 /// refused launch changes nothing on screen.
 const EVENT_LAUNCHING: &str = "fleet://launching";
+/// Chain entries from the fleet target's task store (D-100).
+const EVENT_TASK: &str = "fleet://task";
 
 /// One event as the webview sees it: the `seq` cursor plus the flattened
 /// [`FleetEvent`] (its `#[serde(tag = "type")]` discriminator carries through, so
@@ -1145,6 +1147,8 @@ impl HarnessOffer {
 struct Fleet {
     rt: Runtime,
     store: Arc<dyn Store>,
+    /// The fleet target's task store (D-100); `None` if it would not open.
+    tasks: Option<Arc<dyn Store>>,
     /// Fired on window close so the hub stops serving and unlinks its socket.
     shutdown: Arc<Notify>,
     config: FleetConfig,
@@ -1337,6 +1341,8 @@ enum Signal {
     /// yet, so everything after this belongs to the new run.
     Launching,
     Event(WireEvent),
+    /// One chain entry from the task store, on its own pipe.
+    Task(WireEvent),
 }
 
 /// How a [`Signal`] reaches the webview; `false` once nobody is listening. A
@@ -1364,6 +1370,7 @@ pub fn fleet_launch(
     let emit: FeedEmit = Arc::new(move |signal| match signal {
         Signal::Launching => app.emit(EVENT_LAUNCHING, ()).is_ok(),
         Signal::Event(event) => app.emit(EVENT_FLEET, event).is_ok(),
+        Signal::Task(event) => app.emit(EVENT_TASK, event).is_ok(),
     });
     launch(&state, &registry, &gate, Layout::for_operator(), &plan_offer(), source, emit)
 }
@@ -1511,7 +1518,7 @@ fn build(
     )));
     let store: Arc<dyn Store> = bcast.clone();
 
-    spawn_follower(&rt, bcast.clone(), emit);
+    spawn_follower(&rt, bcast.clone(), emit.clone(), Signal::Event);
 
     for (level, text) in &archived {
         note(&store, *level, text);
@@ -1588,7 +1595,14 @@ fn build(
     deliver::spawn_delivery(&rt, registry.clone(), app_rx, store.clone(), gauges.clone());
     // The hub takes its own clone; `fleet_roster` sends into the original (see the
     // `Fleet::app` doc).
-    let (hub, shutdown) = spawn_hub(&rt, store.clone(), app_tx.clone(), layout.socket());
+    // The fleet target's task store, never the gate's (D-099, Coordination B).
+    let tasks: Option<Arc<dyn Store>> = open_task_store(&layout, &target, &store).map(|tasks| {
+        spawn_follower(&rt, tasks.clone(), emit, Signal::Task);
+        tasks as Arc<dyn Store>
+    });
+    let ctx = TaskContext { run: run_id.clone(), lineage: sessions.to_string() };
+    let (hub, shutdown) =
+        spawn_hub(&rt, store.clone(), tasks.clone().map(|t| (t, ctx)), app_tx.clone(), layout.socket());
 
     // The write guardrail's own feed (WP-17), started with the run and emptied by it.
     spawn_guardrail_feed(&rt, store.clone(), &dir);
@@ -1596,6 +1610,7 @@ fn build(
     Ok(Fleet {
         rt,
         store,
+        tasks,
         shutdown,
         config,
         target: Target::new(target),
@@ -1850,9 +1865,27 @@ fn fall_back_to_testbed(
     Ok(testbed)
 }
 
-/// Pump every appended event to the webview, oldest-first then live, for the
-/// fleet's lifetime.
-fn spawn_follower(rt: &Runtime, bcast: Arc<BroadcastStore>, emit: FeedEmit) {
+/// Open the target's `tasks.db` and note the target's path beside it, so a
+/// moved repo can be re-linked. A store that will not open is reported and the
+/// fleet comes up without one: `fleet task` then refuses and says why.
+fn open_task_store(layout: &Layout, target: &Path, feed: &Arc<dyn Store>) -> Option<Arc<BroadcastStore>> {
+    let path = layout.task_store(target);
+    match SqliteStore::open(&path) {
+        Ok(store) => {
+            let canonical = target.canonicalize().unwrap_or_else(|_| target.to_path_buf());
+            let _ = std::fs::write(layout.target_dir(target).join("target.txt"), canonical.to_string_lossy().as_bytes());
+            Some(Arc::new(BroadcastStore::new(Arc::new(store))))
+        }
+        Err(e) => {
+            note(feed, NoticeLevel::Error, &format!("the task store at {} would not open, so goals and tasks are unavailable this session: {e}", path.display()));
+            None
+        }
+    }
+}
+
+/// Pump every appended event of one store to the webview, oldest-first then
+/// live, for the fleet's lifetime.
+fn spawn_follower(rt: &Runtime, bcast: Arc<BroadcastStore>, emit: FeedEmit, signal: fn(WireEvent) -> Signal) {
     rt.spawn(async move {
         let mut follower = match bcast.follow(0) {
             Ok(f) => f,
@@ -1862,7 +1895,7 @@ fn spawn_follower(rt: &Runtime, bcast: Arc<BroadcastStore>, emit: FeedEmit) {
             }
         };
         while let Ok(Some((seq, event))) = follower.next().await {
-            if !emit(Signal::Event(WireEvent { seq, event })) {
+            if !emit(signal(WireEvent { seq, event })) {
                 break; // webview gone
             }
         }
@@ -1882,6 +1915,7 @@ fn spawn_follower(rt: &Runtime, bcast: Arc<BroadcastStore>, emit: FeedEmit) {
 fn spawn_hub(
     rt: &Runtime,
     store: Arc<dyn Store>,
+    tasks: Option<(Arc<dyn Store>, TaskContext)>,
     app: mpsc::UnboundedSender<AppCommand>,
     sock: PathBuf,
 ) -> (Arc<Hub>, Arc<Notify>) {
@@ -1891,7 +1925,10 @@ fn spawn_hub(
     let shutdown = Arc::new(Notify::new());
     let gate = shutdown.clone();
     let for_note = store.clone();
-    let hub = Hub::new(store, app);
+    let hub = match tasks {
+        Some((tasks, ctx)) => Hub::with_tasks(store, app, tasks, ctx),
+        None => Hub::new(store, app),
+    };
     let serving = hub.clone();
     rt.spawn(async move {
         let hub = serving;
@@ -1931,6 +1968,78 @@ pub fn fleet_config(state: State<'_, FleetState>) -> Result<FleetConfig, String>
     let layout = layout();
     let target = configured_target(&layout)?.unwrap_or_else(|| layout.testbed());
     Ok(fleet_config_for(&target))
+}
+
+/// One task operation by the operator, through the hub as `operator` — the
+/// path the composer's messages take. The UI never writes the store itself.
+/// Resolves to the task's number; rejects with the hub's refusal.
+#[tauri::command]
+pub fn fleet_task(state: State<'_, FleetState>, action: TaskAction) -> Result<String, String> {
+    let (hub, handle) = {
+        let guard = state.0.lock().map_err(|e| e.to_string())?;
+        let fleet = guard.as_ref().ok_or("start a fleet to change tasks")?;
+        (fleet.hub.clone(), fleet.rt.handle().clone())
+    };
+    match handle.block_on(hub.handle(PaneId::Operator, Op::Task { action })) {
+        OpResult::Recorded { record_id } => Ok(record_id),
+        OpResult::Error { message } => Err(message),
+        other => Err(format!("the hub answered a task change with something else: {other:?}")),
+    }
+}
+
+/// Every chain entry for the Tasks view, and whether it can be written to.
+#[derive(Clone, Serialize)]
+pub struct TaskSnapshot {
+    /// A fleet is running, so the operator's controls work.
+    live: bool,
+    /// The repo these tasks belong to.
+    target: String,
+    /// This run and its lineage, for "earlier run"; `None` with no fleet.
+    run: Option<String>,
+    lineage: Option<String>,
+    events: Vec<WireEvent>,
+}
+
+/// The task store the Tasks view shows: the live fleet's, else the gate
+/// target's opened read-only and never created (D-100).
+#[tauri::command]
+pub fn fleet_tasks(state: State<'_, FleetState>) -> Result<TaskSnapshot, String> {
+    task_snapshot(&state, &layout())
+}
+
+fn task_snapshot(state: &FleetState, layout: &Layout) -> Result<TaskSnapshot, String> {
+    let wire = |events: Vec<(i64, FleetEvent)>| {
+        events.into_iter().map(|(seq, event)| WireEvent { seq, event }).collect()
+    };
+    let guard = state.0.lock().map_err(|e| e.to_string())?;
+    if let Some(fleet) = guard.as_ref() {
+        let events = match &fleet.tasks {
+            Some(tasks) => tasks.events_since(0).map_err(|e| e.to_string())?,
+            None => Vec::new(),
+        };
+        return Ok(TaskSnapshot {
+            live: true,
+            target: fleet.target.get().to_string_lossy().into_owned(),
+            run: Some(fleet.run_id.clone()),
+            lineage: Some(fleet.sessions.to_string()),
+            events: wire(events),
+        });
+    }
+    drop(guard);
+    let target = configured_target(layout)?.unwrap_or_else(|| layout.testbed());
+    let path = layout.task_store(&target);
+    let events = if path.is_file() {
+        fleetor_db::archive::events(&path, 0).map_err(|e| e.to_string())?
+    } else {
+        Vec::new()
+    };
+    Ok(TaskSnapshot {
+        live: false,
+        target: target.to_string_lossy().into_owned(),
+        run: None,
+        lineage: None,
+        events: wire(events),
+    })
 }
 
 /// The full path of the repo the running fleet is working in.
@@ -2743,7 +2852,7 @@ mod tests {
         let (app_tx, app_rx) = mpsc::unbounded_channel();
         let registry = Arc::new(PaneRegistry::new(Arc::new(|_, _| {}), dir.join("panes.pids")));
         deliver::spawn_delivery(&rt, registry, app_rx, store.clone(), Arc::new(GaugeSources::default()));
-        let (_hub, shutdown) = spawn_hub(&rt, store.clone(), app_tx, sock.clone());
+        let (_hub, shutdown) = spawn_hub(&rt, store.clone(), None, app_tx, sock.clone());
 
         let result = rt.block_on(async {
             let transport = UnixTransport::new(&sock);
@@ -3049,6 +3158,8 @@ mod tests {
         gate: GateHold,
         /// How many launches told the webview their verdict passed.
         launchings: Arc<std::sync::atomic::AtomicUsize>,
+        /// Every chain entry the `fleet://task` pipe carried.
+        task_events: Arc<Mutex<Vec<FleetEvent>>>,
     }
 
     impl Bench {
@@ -3062,6 +3173,7 @@ mod tests {
                 registry: Arc::new(PaneRegistry::new(Arc::new(|_, _| {}), root.join("panes.pids"))),
                 gate: GateHold::default(),
                 launchings: Arc::default(),
+                task_events: Arc::default(),
                 root,
             };
             *bench.gate.harnesses.held() = Some(vec![logged_in("claude-code", AccountShape::ApiKey)]);
@@ -3091,9 +3203,14 @@ mod tests {
         fn launch(&self, source: LaunchSource) -> Result<BootSnapshot, LaunchFailure> {
             let offer = PlanOffer::fleet_key();
             let launchings = self.launchings.clone();
+            let task_events = self.task_events.clone();
             let emit: FeedEmit = Arc::new(move |signal| {
-                if matches!(signal, Signal::Launching) {
-                    launchings.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                match signal {
+                    Signal::Launching => {
+                        launchings.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    Signal::Task(wire) => task_events.lock().unwrap().push(wire.event),
+                    Signal::Event(_) => {}
                 }
                 true
             });
@@ -3131,6 +3248,33 @@ mod tests {
 
         fn runs_dir(&self) -> PathBuf {
             runs::runs_dir(self.layout.root())
+        }
+
+        /// One task operation as the operator, through the live fleet's hub.
+        fn task(&self, action: fleetor_core::wire::TaskAction) -> OpResult {
+            let slot = self.state.0.lock().unwrap();
+            let fleet = slot.as_ref().expect("a live fleet");
+            fleet.rt.block_on(fleet.hub.handle(PaneId::Operator, Op::Task { action }))
+        }
+
+        fn open_goal(&self, outcome: &str) -> OpResult {
+            self.task(fleetor_core::wire::TaskAction::Post {
+                goal: true,
+                outcome: outcome.into(),
+                technical: vec![],
+                vision: vec!["it reads as one thing".into()],
+                owner: None,
+                instructions: None,
+                parent: None,
+                converges_on: None,
+            })
+        }
+
+        fn task_list(&self) -> Vec<fleetor_core::task::TaskRecord> {
+            match self.task(fleetor_core::wire::TaskAction::List) {
+                OpResult::Board { tasks } => tasks,
+                other => panic!("expected the task list, got {other:?}"),
+            }
         }
 
         fn launchings(&self) -> usize {
@@ -3189,6 +3333,89 @@ mod tests {
         assert_eq!((orch, workers.as_deref()), (None, Some("gate")), "the new fleet is the gate's");
         assert!(!bench.registry.any_pane(), "the reopened run's pane is gone");
         assert_eq!(bench.archives().len(), 3, "the first run, the empty second, and the reopened sitting");
+    }
+
+    /// **Goals and tasks belong to the target and outlive the run** (D-100): a
+    /// relaunch reads them back, another target has its own, the entries ride
+    /// their own pipe, and none of them enters the run log.
+    #[test]
+    fn goals_and_tasks_follow_the_fleets_target_across_launches() {
+        let bench = Bench::new("tasks");
+        let repo_a = bench.root.join("repo-a");
+        bench.fresh();
+        let (first_run, _) = bench.ids();
+
+        assert_eq!(bench.open_goal("one grammar"), OpResult::Recorded { record_id: "1".into() });
+        assert!(bench.layout.task_store(&repo_a).is_file(), "the store is the target's");
+        assert!(
+            !bench.layout.task_store(&repo_a).starts_with(bench.layout.shell()),
+            "and outside the shell the panes may write to",
+        );
+        let noted = std::fs::read_to_string(bench.layout.target_dir(&repo_a).join("target.txt")).unwrap();
+        assert_eq!(PathBuf::from(noted), repo_a.canonicalize().unwrap());
+
+        let piped = || bench.task_events.lock().unwrap().len();
+        for _ in 0..200 {
+            if piped() > 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(piped(), 1, "the entry reached the task pipe");
+        {
+            let slot = bench.state.0.lock().unwrap();
+            let log = slot.as_ref().unwrap().store.events_since(0).unwrap();
+            assert!(
+                !log.iter().any(|(_, e)| matches!(e, FleetEvent::Chain { .. } | FleetEvent::Task { .. })),
+                "no task entry is in the run log",
+            );
+        }
+
+        bench.fresh();
+        let (second_run, _) = bench.ids();
+        assert_ne!(first_run, second_run);
+        assert_eq!(bench.open_goal("one parser"), OpResult::Recorded { record_id: "2".into() });
+        let list = bench.task_list();
+        assert_eq!(list.len(), 2, "the first session's goal is still there");
+        assert_eq!(list[0].chain[0].run, first_run);
+        assert_eq!(list[1].chain[0].run, second_run);
+
+        // The first run is archived by now, with the one goal it touched.
+        let tasks_json = |run: &str| -> serde_json::Value {
+            let text = std::fs::read_to_string(bench.runs_dir().join(run).join("tasks.json")).unwrap();
+            serde_json::from_str(&text).unwrap()
+        };
+        let archived = tasks_json(&first_run);
+        assert_eq!(archived["run"], first_run.as_str());
+        assert_eq!(archived["tasks"].as_array().unwrap().len(), 1);
+        assert_eq!(archived["tasks"][0]["number"], 1);
+        assert_eq!(archived["tasks"][0]["chain"][0]["entry"], "opened");
+        let history = runs::list(&bench.runs_dir());
+        assert_eq!(history.iter().find(|r| r.id == first_run).unwrap().tasks, 1, "History counts from tasks.json");
+
+        let live = task_snapshot(&bench.state, &bench.layout).unwrap();
+        assert!(live.live);
+        assert_eq!((live.events.len(), live.run.as_deref()), (2, Some(second_run.as_str())));
+
+        // The gate moves to another repo; the next fleet's tasks are that repo's.
+        let repo_b = bench.point_at("repo-b");
+        bench.fresh();
+        assert!(bench.task_list().is_empty(), "another target has its own store");
+        let second = tasks_json(&second_run);
+        let numbers: Vec<_> = second["tasks"].as_array().unwrap().iter().map(|t| t["number"].clone()).collect();
+        assert_eq!(numbers, vec![serde_json::json!(2)], "only what that run touched, not the whole store");
+
+        // With no fleet, the gate target's store is shown read-only and a
+        // target that never had one is not given one.
+        teardown(&mut bench.state.0.lock().unwrap(), &bench.registry);
+        bench.point_at("repo-a");
+        let gate = task_snapshot(&bench.state, &bench.layout).unwrap();
+        assert!(!gate.live && gate.run.is_none());
+        assert_eq!(gate.events.len(), 2, "repo-a's two goals, read without a fleet");
+        let repo_c = bench.point_at("repo-c");
+        assert!(task_snapshot(&bench.state, &bench.layout).unwrap().events.is_empty());
+        assert!(!bench.layout.target_dir(&repo_c).exists(), "reading never creates a store");
+        assert!(bench.layout.task_store(&repo_b).is_file());
     }
 
     /// **A refusal kills nothing** (stories 10, 27): the verdict runs before the

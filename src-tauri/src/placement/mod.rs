@@ -171,6 +171,17 @@ impl Layout {
         self.shell().join("fleet.sock")
     }
 
+    /// One target's directory: a sibling of the shell and the runs archive, so
+    /// it outlives both and sits outside every pane's write-guardrail roots.
+    pub fn target_dir(&self, target: &Path) -> PathBuf {
+        self.root.join("targets").join(target_slug(target))
+    }
+
+    /// The target's task store (D-100).
+    pub fn task_store(&self, target: &Path) -> PathBuf {
+        self.target_dir(target).join("tasks.db")
+    }
+
     /// One pane's `CLAUDE_CONFIG_DIR`, by run and pane name.
     ///
     /// Deliberately *not* the Phase-2 `cc-config/worker-*` dirs: those were built

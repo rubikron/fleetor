@@ -7,6 +7,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   paneKey,
   type BootSnapshot,
+  type ChainEvent,
   type FleetConfig,
   type FleetEvent,
   type FleetSeats,
@@ -14,10 +15,13 @@ import {
   type PaneEntry,
   type PaneId,
   type RunRecord,
+  type TaskAction,
+  type TaskSnapshot,
 } from "./types";
 
 const FLEET_EVENT = "fleet://event";
 const FLEET_LAUNCHING = "fleet://launching";
+const FLEET_TASK = "fleet://task";
 
 /// What a launch brings up: a new fleet on the gate's picks, or a past run on
 /// the seats and target it recorded (D-099).
@@ -188,6 +192,22 @@ export function exportRun(id: string): Promise<string | null> {
 /// fleet event after this belongs to the new run. A refused launch never fires it.
 export function onFleetLaunching(handler: () => void): Promise<UnlistenFn> {
   return listen(FLEET_LAUNCHING, () => handler());
+}
+
+/// Subscribe to the fleet target's task store: one chain entry per event.
+export function onTaskEvent(handler: (event: ChainEvent) => void): Promise<UnlistenFn> {
+  return listen<ChainEvent>(FLEET_TASK, (e) => handler(e.payload));
+}
+
+/// The whole task store: the live fleet's, or the gate target's read-only.
+export function fetchTasks(): Promise<TaskSnapshot> {
+  return invoke<TaskSnapshot>("fleet_tasks");
+}
+
+/// One task change as `operator`. Resolves to the task's number; rejects with
+/// the hub's refusal, which says what to do instead.
+export function taskOp(action: TaskAction): Promise<string> {
+  return invoke<string>("fleet_task", { action });
 }
 
 /// Subscribe to the live event stream. Returns an unlisten fn for cleanup.

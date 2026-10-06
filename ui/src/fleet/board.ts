@@ -1,82 +1,79 @@
-// The board, replayed from the task events — the UI's mirror of
-// `fleetor_core::task::board`.
-//
-// **Rust is the authority.** `fleet task list` and this file must agree, and
-// when they do not it is this one that is wrong: the CLI's answer is computed by
-// the hub over the same log. The fold is duplicated rather than fetched because
-// the events already arrive here on the live bus, and a Tauri command that
-// re-asked the backend for something the UI has already received would be a
-// second source of truth for a screen that is meant to be a mirror.
-//
-// The rules, all three from `task.rs`: entries come back in the order they were
-// posted; a later `posted` for an id already on the board replaces it; an
-// `updated` for an id that was never posted is skipped, because there is no
-// block for it to be a claim about.
-//
-// Nothing here validates the tree links. A block may name a parent that is not
-// on the board, and two blocks may name each other — the view renders the links
-// as written (see TaskBoard.tsx), because the shape is somebody's note about how
-// the work fits together, not a workflow anything executes.
+// Goals and tasks, folded out of chain entries (D-100). Mirrors
+// `fleetor_core::task::board`; Rust is the authority when they disagree.
 
-import type { PaneId, TaskBlock, TaskEvent, TaskStatus } from "./types";
+import type { ChainEvent, PaneId, TaskBlock, TaskStatus } from "./types";
 
-/// One claim appended after the block went up. Kept in full: a status with no
-/// reasoning is an effect whose cause was thrown away.
-export interface TaskNote {
-  from: PaneId;
-  at: number;
-  status?: TaskStatus | null;
-  note?: string | null;
+export interface Owner {
+  pane: PaneId;
+  run: string;
+  lineage: string;
 }
 
-/// One block as the board currently reads.
-export interface BoardEntry {
-  id: string;
+/// A goal or task as it currently reads, with its whole chain oldest first.
+export interface TaskRecord {
+  number: number;
   block: TaskBlock;
-  postedBy: PaneId;
-  postedAt: number;
-  /// The most recent status *claimed* — `planned` until somebody says otherwise,
-  /// never inferred from anything the fleet did.
+  creator: PaneId;
   status: TaskStatus;
-  updates: TaskNote[];
+  owner: Owner | null;
+  chain: ChainEvent[];
 }
 
-export function replayBoard(events: TaskEvent[]): BoardEntry[] {
-  // `useFleet` keeps its lists newest-first; a fold has to run the other way.
+export function replayBoard(events: ChainEvent[]): TaskRecord[] {
   const oldestFirst = [...events].sort((a, b) => a.seq - b.seq);
-  const order: string[] = [];
-  const entries = new Map<string, BoardEntry>();
+  const order: number[] = [];
+  const records = new Map<number, TaskRecord>();
 
   for (const event of oldestFirst) {
-    if (event.change.change === "posted") {
-      if (!entries.has(event.task)) order.push(event.task);
-      entries.set(event.task, {
-        id: event.task,
-        block: event.change.block,
-        postedBy: event.from,
-        postedAt: event.at,
+    const { entry } = event;
+    const owner = (pane: PaneId): Owner => ({ pane, run: event.run, lineage: event.lineage });
+    if (entry.entry === "opened") {
+      if (records.has(event.task)) continue;
+      order.push(event.task);
+      records.set(event.task, {
+        number: event.task,
+        block: entry.block,
+        creator: event.from,
         status: "planned",
-        updates: [],
+        owner: entry.block.owner ? owner(entry.block.owner) : null,
+        chain: [event],
       });
       continue;
     }
-    const existing = entries.get(event.task);
-    if (!existing) continue;
-    const note: TaskNote = {
-      from: event.from,
-      at: event.at,
-      status: event.change.status,
-      note: event.change.note,
-    };
-    entries.set(event.task, {
-      ...existing,
-      status: note.status ?? existing.status,
-      updates: [...existing.updates, note],
-    });
+    const record = records.get(event.task);
+    if (!record) continue;
+    const next: TaskRecord = { ...record, chain: [...record.chain, event] };
+    if (entry.entry === "taken-up") {
+      next.status = "in-progress";
+      next.owner = owner(event.from);
+    } else if (entry.entry === "status") {
+      next.status = entry.status;
+    } else if (entry.entry === "edited") {
+      next.block =
+        entry.field === "outcome"
+          ? { ...record.block, outcome: entry.new.join("\n") }
+          : { ...record.block, [entry.field]: entry.new };
+    }
+    records.set(event.task, next);
   }
 
-  return order.flatMap((id) => {
-    const entry = entries.get(id);
-    return entry ? [entry] : [];
+  return order.flatMap((number) => {
+    const record = records.get(number);
+    return record ? [record] : [];
   });
+}
+
+/// Goals in the order they were opened, each with the tasks that name it, then
+/// the tasks that name no goal on the board.
+export function byGoal(board: TaskRecord[]): { goal: TaskRecord | null; tasks: TaskRecord[] }[] {
+  const goals = board.filter((r) => r.block.kind === "goal");
+  const numbers = new Set(goals.map((g) => g.number));
+  const groups = goals.map((goal) => ({
+    goal: goal as TaskRecord | null,
+    tasks: board.filter((r) => r.block.kind === "task" && r.block.parent === goal.number),
+  }));
+  const stray = board.filter(
+    (r) => r.block.kind === "task" && (r.block.parent == null || !numbers.has(r.block.parent)),
+  );
+  return stray.length > 0 ? [...groups, { goal: null, tasks: stray }] : groups;
 }
