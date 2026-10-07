@@ -87,7 +87,7 @@ Who may change a task depends on who opened it and who owns it, and a refusal te
 
 An owner printed as `worker-3, earlier run` is a pane that no longer exists: that task is available, and the worker-3 beside you knows nothing about it. {startup_tasks}
 
-To resume a task, `fleet send` a worker its number and tell it to start from `fleet task show 14` — the chain and the last release say what was done, what is left and where the work sits. A goal's vision was confirmed in the session that opened it, so resuming its tasks needs no new confirmation; new work still does.
+To resume a task, `fleet send` a worker its number and tell it to start from `fleet task show 14` — the chain and the last release say what was done, what is left and where the work sits. A goal's vision was confirmed in the session that opened it, so resuming its `in-progress` tasks needs no new confirmation. Its `planned` tasks and any new work still need the operator's word.
 
 ## Receipts, review, and the merge
 

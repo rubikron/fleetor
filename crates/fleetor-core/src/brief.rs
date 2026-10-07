@@ -144,7 +144,8 @@ impl Startup {
                 "The operator turned on \"finish remaining tasks upon startup\". Before anything \
                  else this session, run `fleet task list --open`, resume every `in-progress` task \
                  an earlier run left without asking, and tell the operator which ones you are \
-                 resuming. `planned` tasks stay parked. A task whose goal is closed is not \
+                 resuming. Hand out no `planned` task at startup, even under a goal you are \
+                 resuming: list them and ask the operator. A task whose goal is closed is not \
                  resumed: ask the operator about it."
             }
             Startup::ReopenedAsk => {
@@ -158,8 +159,9 @@ impl Startup {
                  and the operator turned on \"finish remaining tasks upon startup\". Before \
                  anything else, run `fleet task list --open`, tell each owner to continue its \
                  `in-progress` task without asking, and tell the operator which ones are \
-                 continuing. Reassign nothing an owner still holds; `planned` tasks stay parked, \
-                 and ask the operator about a task whose goal is closed."
+                 continuing. Reassign nothing an owner still holds. Hand out no `planned` task at \
+                 startup: list them and ask the operator, as you do for a task whose goal is \
+                 closed."
             }
         }
     }
@@ -799,13 +801,14 @@ mod tests {
         assert_eq!(ask, orch_brief(&roster(), CWD, BRANCH), "asking first is the default");
         assert!(ask.contains("ask the operator whether to resume"), "{ask}");
         assert!(resume.contains("without asking") && resume.contains("which ones you are resuming"));
-        assert!(resume.contains("`planned` tasks stay parked") && resume.contains("goal is closed"));
+        assert!(resume.contains("Hand out no `planned` task at startup") && resume.contains("goal is closed"));
 
         // A reopen follows the same setting; its owners are still there.
         let (asks, continues) = (at(Startup::ReopenedAsk), at(Startup::ReopenedResume));
         assert!(asks.contains("ask the operator which") && asks.contains("Tell no worker to continue"));
         assert!(continues.contains("tell each owner to continue") && continues.contains("without asking"));
         assert!(continues.contains("Reassign nothing an owner still holds"));
+        assert!(continues.contains("Hand out no `planned` task at startup"));
         for brief in [&ask, &resume, &asks, &continues] {
             assert!(!brief.contains("{startup_tasks}"));
             assert!(brief.contains("Before anything else"), "it acts on its first message, not at launch");
