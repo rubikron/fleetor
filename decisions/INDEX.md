@@ -112,4 +112,6 @@ Note: D-005 is referenced elsewhere in this file (e.g. D-009, D-011) but has no 
 | [D-103](D-103.md) | S1 | alive | an edit replaces a whole field and keeps both texts; a comment changes nothing else; the briefs say task, not block |
 | [D-104](D-104.md) | S1 | alive | S1 wiring: the store sits under `targets/<slug>/`, the UI reads it through one snapshot command, and the operator writes through the hub |
 | [D-105](D-105.md) | S2 | alive | a release is one chain entry with four required fields; the hub settles "where" and who it is on behalf of |
-| [D-106](D-106.md) | S2 | alive | the startup setting is one key in config.json, read through `{startup_tasks}`; an owner from another lineage reads as an earlier run |
+| [D-106](D-106.md) | S2 | amended by D-109 | the startup setting is one key in config.json, read through `{startup_tasks}`; an owner from another lineage reads as an earlier run |
+| [D-109](D-109.md) | S2 | alive | a reopen follows the startup setting: its owners are told to continue, or the operator is asked first |
+| [D-110](D-110.md) | meta | alive | STANDING RULE: nothing starts an agent at launch — an agent acts only after a message someone sent it |
