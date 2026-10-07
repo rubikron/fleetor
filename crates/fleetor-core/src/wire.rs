@@ -150,6 +150,20 @@ pub enum TaskAction {
         #[serde(default)]
         vision: Vec<String>,
     },
+    /// Hand a task on: it returns to planned with no owner.
+    Release {
+        task: u64,
+        why: String,
+        done: String,
+        left: String,
+        /// `--where`, as typed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        place: Option<String>,
+        /// The sender's own checkout, read by the CLI. Used only when the
+        /// sender is the owner.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        here: Option<String>,
+    },
     /// One goal or task with its whole chain.
     Show { task: u64 },
     /// Every goal and task in the target's store.
@@ -207,7 +221,13 @@ pub enum OpResult {
         record_id: String,
     },
     /// The board, replayed from the event log (`task list`).
-    Board { tasks: Vec<TaskRecord> },
+    Board {
+        tasks: Vec<TaskRecord>,
+        /// The session answering, so a reader can tell an owner from an
+        /// earlier run from one beside it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lineage: Option<String>,
+    },
     /// Every pane and its state (`Roster`).
     Roster { panes: Vec<PaneEntry> },
     /// The op could not be served (unknown pane, nothing to reply to, no app).
@@ -331,8 +351,8 @@ mod tests {
             },
             OpResult::Recorded { record_id: "task-1-0".into() },
             OpResult::Recorded { record_id: "msg-1".into() },
-            OpResult::Board { tasks: vec![sample_record()] },
-            OpResult::Board { tasks: vec![] },
+            OpResult::Board { tasks: vec![sample_record()], lineage: Some("lin-1".into()) },
+            OpResult::Board { tasks: vec![], lineage: None },
             OpResult::Roster {
                 panes: vec![PaneEntry::new(PaneId::Operator, PaneState::Present)],
             },

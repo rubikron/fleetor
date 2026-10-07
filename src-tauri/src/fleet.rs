@@ -29,6 +29,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use fleetor_core::brief::Startup;
 use fleetor_core::event::{FleetEvent, NoticeLevel};
 use fleetor_core::pane::{PaneEntry, PaneId, PaneState};
 use fleetor_core::wire::{Op, OpResult, TaskAction};
@@ -1597,6 +1598,12 @@ fn build(
         Some(r) => runs::lineage_session_ids(&runs_dir, &r.parent),
         None => Default::default(),
     };
+    // Read at each launch, so the toggle takes effect at the next session start.
+    context.startup = match &reopened {
+        Some(_) => Startup::Reopened,
+        None if startup_tasks_at(&layout.config_file()) => Startup::Resume,
+        None => Startup::Ask,
+    };
     if let Some(r) = &reopened {
         note(
             &store,
@@ -2510,6 +2517,35 @@ fn expand_home(input: &str) -> Result<PathBuf, String> {
     Ok(if input == "~" { home } else { home.join(&input[2..]) })
 }
 
+/// The config key behind "finish remaining tasks upon startup".
+const STARTUP_TASKS_KEY: &str = "startup_tasks";
+
+/// Whether the setting is on. Only a JSON `true` is; a missing or unreadable
+/// config is off, which is the state where orch asks first.
+fn startup_tasks_at(file: &Path) -> bool {
+    std::fs::read_to_string(file)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|config| config.get(STARTUP_TASKS_KEY).and_then(|v| v.as_bool()))
+        .unwrap_or(false)
+}
+
+/// Set it and return what is now stored, which is what the switch renders.
+fn set_startup_tasks_at(file: &Path, on: bool) -> Result<bool, String> {
+    write_config_key_at(file, STARTUP_TASKS_KEY, on.into())?;
+    Ok(startup_tasks_at(file))
+}
+
+#[tauri::command]
+pub fn startup_tasks_get() -> bool {
+    startup_tasks_at(&layout().config_file())
+}
+
+#[tauri::command]
+pub fn startup_tasks_set(on: bool) -> Result<bool, String> {
+    set_startup_tasks_at(&layout().config_file(), on)
+}
+
 /// Set one key in a config file, leaving every other key alone.
 ///
 /// The one writer of that file, so a second setting cannot grow a second spelling
@@ -3207,7 +3243,7 @@ mod tests {
 
         fn task_list(&self) -> Vec<fleetor_core::task::TaskRecord> {
             match self.task(fleetor_core::wire::TaskAction::List) {
-                OpResult::Board { tasks } => tasks,
+                OpResult::Board { tasks, .. } => tasks,
                 other => panic!("expected the task list, got {other:?}"),
             }
         }
@@ -3268,6 +3304,31 @@ mod tests {
         assert_eq!((orch, workers.as_deref()), (None, Some("gate")), "the new fleet is the gate's");
         assert!(!bench.registry.any_pane(), "the reopened run's pane is gone");
         assert_eq!(bench.archives().len(), 3, "the first run, the empty second, and the reopened sitting");
+    }
+
+    /// The startup setting is one key in `config.json`, read at each launch;
+    /// a reopen never triages.
+    #[test]
+    fn the_startup_setting_is_read_at_each_launch_and_a_reopen_ignores_it() {
+        let bench = Bench::new("startup");
+        let config = bench.layout.config_file();
+        let startup = || bench.state.0.lock().unwrap().as_ref().unwrap().context.startup;
+
+        bench.fresh();
+        assert_eq!(startup(), Startup::Ask, "off by default");
+        bench.bring_up_orch("recorded");
+        let (first, _) = bench.ids();
+
+        assert_eq!(set_startup_tasks_at(&config, true), Ok(true));
+        assert!(configured_target(&bench.layout).unwrap().is_some(), "the target key survives");
+        bench.fresh();
+        assert_eq!(startup(), Startup::Resume);
+
+        bench.reopen(&first).expect("the first run reopens");
+        assert_eq!(startup(), Startup::Reopened);
+
+        std::fs::write(&config, r#"{"startup_tasks":"true"}"#).unwrap();
+        assert!(!startup_tasks_at(&config), "only a JSON true is on");
     }
 
     /// **Goals and tasks belong to the target and outlive the run** (D-100): a

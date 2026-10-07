@@ -3,6 +3,8 @@
 // existing .settings-group, or a new group entirely — see styles.css's
 // .settings-view rules for the shell this reuses from the activity log.
 
+import { useEffect, useState } from "react";
+import { getStartupTasks, setStartupTasks } from "../fleet/api";
 import type { Theme } from "../ui/useTheme";
 
 interface SettingsPanelProps {
@@ -12,6 +14,11 @@ interface SettingsPanelProps {
 
 export function SettingsPanel({ theme, onToggleTheme }: SettingsPanelProps) {
   const isLight = theme === "light";
+  // A view of the stored key: the switch moves only once the write has landed.
+  const [startup, setStartup] = useState(false);
+  useEffect(() => {
+    getStartupTasks().then(setStartup).catch(() => {});
+  }, []);
   return (
     <div className="settings-view">
       <div className="settings-view__head">
@@ -35,6 +42,29 @@ export function SettingsPanel({ theme, onToggleTheme }: SettingsPanelProps) {
             aria-label="Light mode"
             className={`switch ${isLight ? "switch--on" : ""}`}
             onClick={onToggleTheme}
+          >
+            <span className="switch__thumb" />
+          </button>
+        </div>
+      </div>
+
+      <div className="settings-group">
+        <h4 className="settings-group__title">Tasks</h4>
+        <div className="setting-row">
+          <div className="setting-row__text">
+            <span className="setting-row__label">Finish remaining tasks upon startup</span>
+            <span className="setting-row__desc">
+              On: the orchestrator resumes in-progress tasks from earlier sessions and tells you
+              which. Off: it asks you first. Takes effect at the next new fleet.
+            </span>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={startup}
+            aria-label="Finish remaining tasks upon startup"
+            className={`switch ${startup ? "switch--on" : ""}`}
+            onClick={() => void setStartupTasks(!startup).then(setStartup).catch(() => {})}
           >
             <span className="switch__thumb" />
           </button>

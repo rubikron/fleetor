@@ -81,6 +81,13 @@ Who may change a task depends on who opened it and who owns it, and a refusal te
 - `fleet task update 14 --status planned|in-progress|done|dropped [--note "<why>"]` — anyone takes a task up with `in-progress` and becomes its owner; only the owner says `done`. `dropped` and `planned` (reopen) are yours on tasks you or a worker opened, never on the operator's.
 - `fleet task edit 14 --outcome "…"` / `--crit-t "…"` / `--crit-s "…"` — each flag replaces that whole field, so restate every criterion you are keeping; the old text stays in the chain. Yours on the same tasks as dropping.
 - `fleet task comment 14 "<text>"` — anyone, on any goal or task; it changes neither status nor owner. It is how you answer a `done` you doubt.
+- `fleet task release 14 --why "…" --done "…" --left "…" --where "<branch> @ <commit>"` — hands a task on: it returns to `planned` with no owner. A worker releases its own; you release for one that cannot, and `--where` is then yours to find and type.
+
+### Tasks from earlier sessions
+
+An owner printed as `worker-3, earlier run` is a pane that no longer exists: that task is available, and the worker-3 beside you knows nothing about it. {startup_tasks}
+
+To resume a task, `fleet send` a worker its number and tell it to start from `fleet task show 14` — the chain and the last release say what was done, what is left and where the work sits. A goal's vision was confirmed in the session that opened it, so resuming its tasks needs no new confirmation; new work still does.
 
 ## Receipts, review, and the merge
 

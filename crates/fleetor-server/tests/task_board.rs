@@ -156,7 +156,7 @@ fn refusal(result: OpResult) -> String {
 
 fn records(result: OpResult) -> Vec<TaskRecord> {
     match result {
-        OpResult::Board { tasks } => tasks,
+        OpResult::Board { tasks, .. } => tasks,
         other => panic!("expected records, got {other:?}"),
     }
 }
@@ -456,6 +456,61 @@ async fn a_new_session_over_the_same_store_reads_the_same_records() {
     let runs: Vec<&str> = record.chain.iter().map(|l| l.run.as_str()).collect();
     assert_eq!(runs, vec!["run-1", "run-1", "run-2", "run-2"], "the chain shows where one run ended");
     assert_eq!(record.owner.unwrap().lineage, "lin-2");
+}
+
+fn release(task: u64, left: &str, place: Option<&str>, here: Option<&str>) -> Op {
+    Op::Task {
+        action: TaskAction::Release {
+            task,
+            why: "out of context".into(),
+            done: "the tokenizer".into(),
+            left: left.into(),
+            place: place.map(str::to_string),
+            here: here.map(str::to_string),
+        },
+    }
+}
+
+/// A release is one entry that hands the task on: planned, no owner, four
+/// fields. "Where" comes from the owner's checkout, or is typed.
+#[tokio::test]
+async fn a_release_hands_the_task_on_with_all_four_fields() {
+    let fleet = start_hub().await;
+    let mut orch = pane(&fleet, PaneId::Orch).await;
+    let mut worker = pane(&fleet, PaneId::Worker(2)).await;
+    let goal = number(orch.call(open_goal("one grammar")).await.unwrap());
+    let task = number(orch.call(open_task("nested groups parse", None, Some(goal))).await.unwrap());
+    worker.call(set(task, TaskStatus::InProgress)).await.unwrap();
+    let before = chain_len(&fleet);
+
+    let why = refusal(worker.call(release(task, "  ", None, Some("fleet/worker-2 @ a1b2c3d"))).await.unwrap());
+    assert!(why.contains("--left") && !why.contains("needs --why"), "{why}");
+    let why = refusal(orch.call(release(task, "the parser", None, Some("master @ 0000000"))).await.unwrap());
+    assert!(why.contains("--where"), "someone else's checkout says nothing about this task: {why}");
+    let why = refusal(orch.call(release(goal, "the parser", Some("x"), None)).await.unwrap());
+    assert!(why.contains("is a goal"), "{why}");
+    assert_eq!(chain_len(&fleet), before, "a refused release writes nothing");
+
+    worker.call(release(task, "the parser", None, Some("fleet/worker-2 @ a1b2c3d"))).await.unwrap();
+    let record = list(&mut orch).await.remove(1);
+    assert_eq!((record.status, record.owner.clone()), (TaskStatus::Planned, None));
+    assert_eq!(chain_len(&fleet), before + 1, "one entry, not a release plus a status change");
+    let ChainEntry::Released { place, on_behalf_of, .. } = &record.chain.last().unwrap().entry else {
+        panic!("the last entry is the release")
+    };
+    assert_eq!((place.as_str(), *on_behalf_of), ("fleet/worker-2 @ a1b2c3d", None));
+
+    // orch releases for a worker who cannot: named, with a typed "where".
+    worker.call(set(task, TaskStatus::InProgress)).await.unwrap();
+    orch.call(release(task, "the parser", Some("fleet/worker-2 @ a1b2c3d"), Some("master @ 0000000")))
+        .await
+        .unwrap();
+    let record = list(&mut orch).await.remove(1);
+    let ChainEntry::Released { place, on_behalf_of, .. } = &record.chain.last().unwrap().entry else {
+        panic!("the last entry is the release")
+    };
+    assert_eq!((place.as_str(), *on_behalf_of), ("fleet/worker-2 @ a1b2c3d", Some(PaneId::Worker(2))));
+    assert_eq!(fleet.asks.load(Ordering::Relaxed), 0, "a release asks the app for nothing");
 }
 
 /// The task store's own pipe: a follower from zero sees every chain entry once,

@@ -217,6 +217,16 @@ export function taskOp(action: TaskAction): Promise<string> {
   return invoke<string>("fleet_task", { action });
 }
 
+/// "Finish remaining tasks upon startup", as stored in `~/.fleetor/config.json`.
+export function getStartupTasks(): Promise<boolean> {
+  return invoke<boolean>("startup_tasks_get");
+}
+
+/// Resolves to what is now stored, which is what the switch should show.
+export function setStartupTasks(on: boolean): Promise<boolean> {
+  return invoke<boolean>("startup_tasks_set", { on });
+}
+
 /// Subscribe to "the run the last launch left is now in History".
 export function onFleetArchived(handler: () => void): Promise<UnlistenFn> {
   return listen(FLEET_ARCHIVED, () => handler());

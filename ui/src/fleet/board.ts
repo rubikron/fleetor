@@ -48,6 +48,9 @@ export function replayBoard(events: ChainEvent[]): TaskRecord[] {
       next.owner = owner(event.from);
     } else if (entry.entry === "status") {
       next.status = entry.status;
+    } else if (entry.entry === "released") {
+      next.status = "planned";
+      next.owner = null;
     } else if (entry.entry === "edited") {
       next.block =
         entry.field === "outcome"

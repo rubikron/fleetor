@@ -888,11 +888,12 @@ fn place_orch(
     // whose brief carrier is a config key writes it into the configuration
     // directory in the same pass that writes the rest of the seed (#27, C3). A
     // harness that carries it in argv ignores the field.
-    let rendered = fleetor_core::brief::render_orch(
+    let rendered = fleetor_core::brief::render_orch_at(
         &context.orch_template,
         &fleetor_core::pane::PaneId::roster(&fleetor_core::pane::WORKER_SLOTS),
         &target.display().to_string(),
         &worker_branch_prefix(target, &context.sessions),
+        context.startup,
     );
 
     let config_dir = layout.pane_config(&context.sessions, pane);

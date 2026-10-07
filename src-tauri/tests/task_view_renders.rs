@@ -289,3 +289,51 @@ fn task_entries_join_the_activity_feed_in_arrival_order() {
     );
     assert!(feed.contains(">seq 3<"), "the head still names the latest run-log seq: {feed}");
 }
+
+/// A release is one chain entry showing all four fields and who it was for,
+/// and it leaves the task planned and unowned.
+#[test]
+fn a_release_shows_its_four_fields_and_returns_the_task_to_planned() {
+    let Some(all) = rendered() else { return };
+    let page = markup(&all, "released");
+    let page = page.split("<article class=\"task-page\"").nth(1).expect("an open task page");
+    let head = page.split("</header>").next().unwrap();
+    assert!(head.contains("task__status--planned") && head.contains("unowned"), "{head}");
+
+    let releases: Vec<&str> = page.split("<li class=\"chain__entry chain__entry--released\"").skip(1).collect();
+    assert_eq!(releases.len(), 2, "{page}");
+    for label in ["why", "done", "left", "where"] {
+        assert!(releases[0].contains(&format!("<dt>{label}</dt>")), "{label}: {}", releases[0]);
+    }
+    assert!(releases[0].contains("out of context") && releases[0].contains("fleet/logstat/worker-3 @ a1b2c3d"));
+    assert!(releases[0].contains(">released this<"), "the owner's own release: {}", releases[0]);
+    assert!(releases[1].contains("released this on behalf of worker-1"), "{}", releases[1]);
+
+    let feed = markup(&all, "released_activity");
+    assert!(feed.contains("released #5 on behalf of worker-1 — left: the parser"), "{feed}");
+}
+
+/// An owner from another session reads as an earlier run, is counted in the
+/// "Carried over" banner while its task is open, and can be released for.
+#[test]
+fn an_earlier_runs_owner_is_named_counted_and_can_be_released_for() {
+    let Some(all) = rendered() else { return };
+    let view = markup(&all, "releasing");
+    let rows = rows(&view);
+    let held = rows.iter().find(|row| row.contains("#6")).expect("task #6");
+    assert!(held.contains("worker-4, earlier run"), "{held}");
+    assert!(view.contains("<strong>Carried over</strong> 1 open task owned by an"), "{view}");
+    assert!(!markup(&all, "list").contains("Carried over"), "nothing open is carried in the first board");
+
+    let form = view.split("task-form--release").nth(1).expect("the release form");
+    assert_eq!(
+        fields(form),
+        ["why it is being released", "done so far", "left to do", "where the work sits: branch @ commit"],
+    );
+    let submit = form.split("<button type=\"submit\"").nth(1).unwrap().split('>').next().unwrap();
+    assert!(submit.contains("disabled") && submit.contains("all four fields are required"), "{submit}");
+
+    let offered = markup(&all, "released");
+    let controls = offered.split("<div class=\"task-controls\">").nth(1).unwrap();
+    assert!(!controls.contains(">Release<"), "an unowned task has nothing to release: {controls}");
+}

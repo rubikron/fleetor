@@ -112,6 +112,52 @@ pub fn worker_brief(me: PaneId, roster: &[PaneId], cwd: &str, branch_prefix: &st
 /// The orchestrator brief from an arbitrary template — the seam the operator's own
 /// `orch.md` comes in through. Validate it first; this renders whatever it is given.
 pub fn render_orch(template: &str, roster: &[PaneId], cwd: &str, branch_prefix: &str) -> String {
+    render_orch_at(template, roster, cwd, branch_prefix, Startup::Ask)
+}
+
+/// What orch does about tasks an earlier session left in progress. It fills
+/// the optional `{startup_tasks}` placeholder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Startup {
+    /// A fresh launch: go through them with the operator first.
+    Ask,
+    /// A fresh launch with "finish remaining tasks upon startup" on.
+    Resume,
+    /// A reopen continues its lineage, so there is nothing to triage.
+    Reopened,
+}
+
+impl Startup {
+    fn text(self) -> &'static str {
+        match self {
+            Startup::Ask => {
+                "Before anything else this session, run `fleet task list --open`. For each \
+                 `in-progress` task an earlier run left, ask the operator whether to resume, \
+                 release or drop it, and restart none of them before they answer."
+            }
+            Startup::Resume => {
+                "The operator turned on \"finish remaining tasks upon startup\". Before anything \
+                 else this session, run `fleet task list --open`, resume every `in-progress` task \
+                 an earlier run left without asking, and tell the operator which ones you are \
+                 resuming. `planned` tasks stay parked. A task whose goal is closed is not \
+                 resumed: ask the operator about it."
+            }
+            Startup::Reopened => {
+                "This session was reopened, so you and your workers still own the tasks you had. \
+                 There is nothing to triage: carry on from `fleet task list --open`."
+            }
+        }
+    }
+}
+
+/// [`render_orch`] with the startup rule chosen.
+pub fn render_orch_at(
+    template: &str,
+    roster: &[PaneId],
+    cwd: &str,
+    branch_prefix: &str,
+    startup: Startup,
+) -> String {
     let workers = peer_list(roster, PaneId::Orch);
     render(
         template,
@@ -122,6 +168,7 @@ pub fn render_orch(template: &str, roster: &[PaneId], cwd: &str, branch_prefix: 
             ("delivery_contract", DELIVERY_CONTRACT.trim_end()),
             ("scaffolding", SCAFFOLDING.trim_end()),
             ("vision_tenets", VISION_TENETS.trim_end()),
+            ("startup_tasks", startup.text()),
         ],
     )
 }
@@ -728,6 +775,24 @@ mod tests {
     /// Each role is taught the task subcommands it uses and no others (D-100):
     /// orch opens goals and tasks and edits them, a worker shows, takes up,
     /// finishes and comments.
+    /// `{startup_tasks}` says one of three things, and a custom brief may
+    /// leave it out.
+    #[test]
+    fn the_startup_rule_renders_each_way_and_is_optional() {
+        let at = |startup| render_orch_at(DEFAULT_ORCH, &roster(), CWD, BRANCH, startup);
+        let (ask, resume, reopened) = (at(Startup::Ask), at(Startup::Resume), at(Startup::Reopened));
+        assert_eq!(ask, orch_brief(&roster(), CWD, BRANCH), "asking first is the default");
+        assert!(ask.contains("ask the operator whether to resume"), "{ask}");
+        assert!(resume.contains("without asking") && resume.contains("which ones you are resuming"));
+        assert!(resume.contains("`planned` tasks stay parked") && resume.contains("goal is closed"));
+        assert!(reopened.contains("nothing to triage"));
+        for brief in [&ask, &resume, &reopened] {
+            assert!(!brief.contains("{startup_tasks}"));
+        }
+        let without = DEFAULT_ORCH.replace("{startup_tasks}", "");
+        validate_orch(&without).expect("a custom brief may drop {startup_tasks}");
+    }
+
     #[test]
     fn each_brief_teaches_its_own_task_subcommands() {
         let orch = orch_brief(&roster(), CWD, BRANCH);
@@ -741,6 +806,9 @@ mod tests {
             "fleet task comment 14",
             "`--goal` takes no value",
             "never on the operator's",
+            "fleet task release 14 --why",
+            "worker-3, earlier run",
+            "start from `fleet task show 14`",
         ] {
             assert!(orch.contains(taught), "orch is never taught `{taught}`");
         }
@@ -752,6 +820,9 @@ mod tests {
             "fleet task comment 14",
             "only the owner can say it",
             "You cannot edit or drop a task you did not open",
+            "fleet task release 14 --why",
+            "Never take up an `in-progress` task `orch` did not hand you",
+            "If your session was resumed, run `fleet task show`",
         ] {
             assert!(worker.contains(taught), "a worker is never taught `{taught}`");
         }

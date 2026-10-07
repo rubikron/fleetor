@@ -36,6 +36,17 @@ const FILTERS: [TaskFilter, string][] = [
   ["done", "Done"],
 ];
 
+/// An owner from another lineage is a pane that no longer exists. With no
+/// fleet running, that is every owner.
+const earlier = (record: TaskRecord, store: TaskStoreInfo | null): boolean =>
+  !!record.owner && !!store && record.owner.lineage !== store.lineage;
+
+const ownerName = (record: TaskRecord, store: TaskStoreInfo | null): string =>
+  !record.owner ? "unowned" : earlier(record, store) ? `${record.owner.pane}, earlier run` : record.owner.pane;
+
+const isOpen = (record: TaskRecord): boolean =>
+  record.status === "planned" || record.status === "in-progress";
+
 const lines = (text: string): string[] =>
   text
     .split("\n")
@@ -174,21 +185,85 @@ function NewForm({
   );
 }
 
-/// The operator's controls on one record: comment, edit, close and reopen.
+/// Which form the controls show in place of their buttons.
+type Mode = "edit" | "release" | null;
+
+/// The release form: the same four fields `fleet task release` requires. The
+/// operator stands in no checkout, so "where" is typed.
+function ReleaseForm({
+  record,
+  off,
+  why: title,
+  onRelease,
+  onCancel,
+}: {
+  record: TaskRecord;
+  off: boolean;
+  why: string | undefined;
+  onRelease: (action: TaskAction) => void;
+  onCancel: () => void;
+}) {
+  const [why, setWhy] = useState("");
+  const [done, setDone] = useState("");
+  const [left, setLeft] = useState("");
+  const [place, setPlace] = useState("");
+  const missing = [why, done, left, place].some((text) => text.trim() === "");
+  return (
+    <form
+      className="task-form task-form--release"
+      onSubmit={(e) => {
+        e.preventDefault();
+        onRelease({ action: "release", task: record.number, why, done, left, place });
+      }}
+    >
+      <h4 className="task-form__title">Release #{record.number}</h4>
+      <Field label="why it is being released">
+        <input className="composer__input" value={why} onChange={(e) => setWhy(e.target.value)} />
+      </Field>
+      <Field label="done so far">
+        <textarea className="composer__input" rows={2} value={done} onChange={(e) => setDone(e.target.value)} />
+      </Field>
+      <Field label="left to do">
+        <textarea className="composer__input" rows={2} value={left} onChange={(e) => setLeft(e.target.value)} />
+      </Field>
+      <Field label="where the work sits: branch @ commit">
+        <input className="composer__input" value={place} onChange={(e) => setPlace(e.target.value)} />
+      </Field>
+      <div className="task-form__actions">
+        <button
+          type="submit"
+          className="composer__send"
+          disabled={off || missing}
+          title={title ?? (missing ? "all four fields are required" : undefined)}
+        >
+          Release
+        </button>
+        <button type="button" className="task-form__quiet" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
+
+/// The operator's controls on one record: comment, edit, release, close and
+/// reopen.
 function Controls({
   record,
   ops,
   writable,
-  startEditing,
+  start,
 }: {
   record: TaskRecord;
   ops: TaskOps | null;
   writable: boolean;
-  startEditing: boolean;
+  start: Mode;
 }) {
   const { block } = record;
   const [comment, setComment] = useState("");
-  const [editing, setEditing] = useState(startEditing);
+  const [mode, setMode] = useState<Mode>(start);
+  const editing = mode === "edit";
+  const setEditing = (on: boolean) => setMode(on ? "edit" : null);
   const [outcome, setOutcome] = useState(block.outcome);
   const [technical, setTechnical] = useState((block.technical ?? []).join("\n"));
   const [vision, setVision] = useState(block.vision.join("\n"));
@@ -248,11 +323,24 @@ function Controls({
             </button>
           </div>
         </form>
+      ) : mode === "release" ? (
+        <ReleaseForm
+          record={record}
+          off={off}
+          why={why}
+          onRelease={(action) => run(action, () => setMode(null))}
+          onCancel={() => setMode(null)}
+        />
       ) : (
         <div className="task-form__actions">
           <button type="button" className="task-form__quiet" disabled={off} title={why} onClick={() => setEditing(true)}>
             Edit
           </button>
+          {block.kind === "task" && record.owner && isOpen(record) && (
+            <button type="button" className="task-form__quiet" disabled={off} title={why} onClick={() => setMode("release")}>
+              Release
+            </button>
+          )}
           {record.status !== "dropped" && (
             <button
               type="button"
@@ -326,6 +414,8 @@ function summary(event: ChainEvent): string {
       return entry.text;
     case "edited":
       return `edited ${FIELD[entry.field]}`;
+    case "released":
+      return entry.on_behalf_of ? `released this on behalf of ${entry.on_behalf_of}` : "released this";
   }
 }
 
@@ -339,11 +429,13 @@ function counts(tasks: TaskRecord[]): string {
 
 function Row({
   record,
+  store,
   tasks,
   open,
   onOpen,
 }: {
   record: TaskRecord;
+  store: TaskStoreInfo | null;
   tasks?: TaskRecord[];
   open: boolean;
   onOpen: (number: number) => void;
@@ -363,7 +455,7 @@ function Row({
       {goal ? (
         <span className="task-row__kind">goal</span>
       ) : (
-        <span className="mono task-row__owner">{record.owner?.pane ?? "unowned"}</span>
+        <span className="mono task-row__owner">{ownerName(record, store)}</span>
       )}
       <span className="task-row__outcome">{record.block.outcome}</span>
       {tasks && <span className="task-row__counts">{counts(tasks)}</span>}
@@ -413,22 +505,36 @@ function Entry({ event }: { event: ChainEvent }) {
           <Criteria label="now" items={entry.new} />
         </div>
       )}
+      {entry.entry === "released" && (
+        <dl className="chain__release">
+          <dt>why</dt>
+          <dd>{entry.why}</dd>
+          <dt>done</dt>
+          <dd>{entry.done}</dd>
+          <dt>left</dt>
+          <dd>{entry.left}</dd>
+          <dt>where</dt>
+          <dd className="mono">{entry.where}</dd>
+        </dl>
+      )}
     </li>
   );
 }
 
 function TaskPage({
   record,
+  store,
   goal,
   ops,
   writable,
-  startEditing,
+  start,
 }: {
   record: TaskRecord;
+  store: TaskStoreInfo | null;
   goal: TaskRecord | undefined;
   ops: TaskOps | null;
   writable: boolean;
-  startEditing: boolean;
+  start: Mode;
 }) {
   const { block } = record;
   return (
@@ -439,7 +545,7 @@ function TaskPage({
         <Status status={record.status} />
         {block.kind === "task" && (
           <span className="task__posted">
-            owner <span className="mono">{record.owner?.pane ?? "unowned"}</span>
+            owner <span className="mono">{ownerName(record, store)}</span>
           </span>
         )}
         <span className="task__posted">
@@ -474,7 +580,7 @@ function TaskPage({
           );
         })}
       </ol>
-      <Controls record={record} ops={ops} writable={writable} startEditing={startEditing} />
+      <Controls record={record} ops={ops} writable={writable} start={start} />
     </article>
   );
 }
@@ -486,6 +592,7 @@ export function TaskBoard({
   initialOpen = null,
   initialForm = null,
   initialEdit = false,
+  initialRelease = false,
   initialFilter = "all",
 }: {
   chain: ChainEvent[];
@@ -495,6 +602,7 @@ export function TaskBoard({
   initialOpen?: number | null;
   initialForm?: "goal" | "task" | null;
   initialEdit?: boolean;
+  initialRelease?: boolean;
   initialFilter?: TaskFilter;
 }) {
   const board = useMemo(() => replayBoard(chain), [chain]);
@@ -516,6 +624,7 @@ export function TaskBoard({
   const writable = !!store?.live && !!ops;
   const why = writable ? undefined : NEEDS_FLEET;
   const goals = board.filter((r) => r.block.kind === "goal");
+  const carried = board.filter((r) => isOpen(r) && earlier(r, store)).length;
 
   return (
     <div className="events-view">
@@ -534,6 +643,12 @@ export function TaskBoard({
           New task
         </button>
       </div>
+      {carried > 0 && (
+        <div className="tasks__carried">
+          <strong>Carried over</strong> {carried} open task{carried === 1 ? "" : "s"} owned by an
+          earlier run. Their owners are gone, so they are available to take up.
+        </div>
+      )}
       {form && ops && writable && (
         <NewForm
           key={form}
@@ -573,12 +688,12 @@ export function TaskBoard({
             {visible.map(({ goal, tasks, shown: matching }) => (
               <section key={goal?.number ?? "none"} className="tasks__group">
                 {goal ? (
-                  <Row record={goal} tasks={tasks} open={open === goal.number} onOpen={toggle} />
+                  <Row record={goal} store={store} tasks={tasks} open={open === goal.number} onOpen={toggle} />
                 ) : (
                   <div className="tasks__no-goal">No goal</div>
                 )}
                 {matching.map((task) => (
-                  <Row key={task.number} record={task} open={open === task.number} onOpen={toggle} />
+                  <Row key={task.number} record={task} store={store} open={open === task.number} onOpen={toggle} />
                 ))}
               </section>
             ))}
@@ -587,9 +702,10 @@ export function TaskBoard({
             <TaskPage
               key={shown.number}
               record={shown}
+              store={store}
               ops={ops}
               writable={writable}
-              startEditing={initialEdit}
+              start={initialEdit ? "edit" : initialRelease ? "release" : null}
               goal={board.find((r) => r.number === shown.block.parent && r.block.kind === "goal")}
             />
           )}

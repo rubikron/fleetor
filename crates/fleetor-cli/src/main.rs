@@ -221,6 +221,26 @@ enum TaskCmd {
         #[arg(long = "crit-s", action = clap::ArgAction::Append, value_name = "VISION")]
         crit_s: Vec<String>,
     },
+    /// Hand on a task you cannot finish. It returns to planned with no owner,
+    /// and the next agent starts from these four fields.
+    Release {
+        /// The task's number — `14`, not `#14`.
+        #[arg(value_name = "NUMBER")]
+        task: Option<String>,
+        /// Why you are stopping.
+        #[arg(long)]
+        why: Option<String>,
+        /// What is finished.
+        #[arg(long)]
+        done: Option<String>,
+        /// What remains.
+        #[arg(long)]
+        left: Option<String>,
+        /// Branch and commit the work sits at. Filled from your checkout when
+        /// you are the owner; required otherwise.
+        #[arg(long = "where", value_name = "BRANCH @ COMMIT")]
+        place: Option<String>,
+    },
     /// One goal or task with its criteria and its whole chain.
     Show {
         /// The task's number — `14`, not `#14`.
@@ -363,6 +383,30 @@ fn task_action(action: TaskCmd) -> Result<TaskAction> {
             }
             TaskAction::Edit { task, outcome, technical: crit_t, vision: crit_s }
         }
+        TaskCmd::Release { task, why, done, left, place } => {
+            let task = task_number(task, "release")?;
+            let missing: Vec<&str> = [("--why", &why), ("--done", &done), ("--left", &left)]
+                .iter()
+                .filter(|(_, text)| text.as_deref().is_none_or(|t| t.trim().is_empty()))
+                .map(|(flag, _)| *flag)
+                .collect();
+            if !missing.is_empty() {
+                anyhow::bail!(
+                    "`fleet task release {task}` needs {} — the next agent starts from what \
+                     you write. --why: why you are stopping; --done: what is finished; --left: \
+                     what remains",
+                    missing.join(", ")
+                );
+            }
+            TaskAction::Release {
+                task,
+                why: why.unwrap_or_default(),
+                done: done.unwrap_or_default(),
+                left: left.unwrap_or_default(),
+                place,
+                here: done::whereabouts(std::path::Path::new(".")),
+            }
+        }
         TaskCmd::Show { task } => TaskAction::Show { task: task_number(task, "show")? },
         TaskCmd::List { .. } => TaskAction::List,
     })
@@ -377,13 +421,15 @@ struct Filter {
 
 impl Filter {
     fn apply(&self, result: OpResult) -> OpResult {
-        let OpResult::Board { tasks } = result else { return result };
+        let OpResult::Board { tasks, lineage } = result else { return result };
         let keep = |record: &TaskRecord| {
             let open = matches!(record.status, TaskStatus::Planned | TaskStatus::InProgress);
-            let mine = self.mine.is_none() || record.owner.as_ref().map(|o| o.pane) == self.mine;
+            let mine = self.mine.is_none_or(|me| {
+                record.owner.as_ref().is_some_and(|o| o.pane == me && !earlier(o, lineage.as_deref()))
+            });
             (open || !self.open) && mine
         };
-        OpResult::Board { tasks: tasks.into_iter().filter(keep).collect() }
+        OpResult::Board { tasks: tasks.into_iter().filter(keep).collect(), lineage }
     }
 }
 
@@ -458,8 +504,8 @@ fn report(result: OpResult, full: bool) -> bool {
             println!("recorded {record_id}");
             true
         }
-        OpResult::Board { tasks } => {
-            for line in board_lines(&tasks, full) {
+        OpResult::Board { tasks, lineage } => {
+            for line in board_lines(&tasks, lineage.as_deref(), full) {
                 println!("{line}");
             }
             true
@@ -494,7 +540,7 @@ fn roster_lines(panes: &[PaneEntry]) -> Vec<String> {
 
 /// One line per goal or task, tasks indented under their goal; `full` adds
 /// criteria, instructions and the chain. Pure, so the shape is testable.
-fn board_lines(tasks: &[TaskRecord], full: bool) -> Vec<String> {
+fn board_lines(tasks: &[TaskRecord], lineage: Option<&str>, full: bool) -> Vec<String> {
     if tasks.is_empty() {
         return vec![
             "there are no goals or tasks yet — `fleet task post --goal --outcome \"…\" \
@@ -506,7 +552,7 @@ fn board_lines(tasks: &[TaskRecord], full: bool) -> Vec<String> {
     for (index, depth) in tree_order(tasks) {
         let record = &tasks[index];
         let indent = "  ".repeat(depth);
-        lines.push(format!("{indent}{}", summary(record)));
+        lines.push(format!("{indent}{}", summary(record, lineage)));
         if full {
             lines.extend(details(record).into_iter().map(|line| format!("{indent}    {line}")));
         }
@@ -514,11 +560,17 @@ fn board_lines(tasks: &[TaskRecord], full: bool) -> Vec<String> {
     lines
 }
 
+/// An owner from another lineage is a pane that no longer exists.
+fn earlier(owner: &fleetor_core::task::Owner, lineage: Option<&str>) -> bool {
+    lineage.is_some_and(|lineage| owner.lineage != lineage)
+}
+
 /// `#14 [in-progress] worker-2 — the parser accepts nested groups`.
-fn summary(record: &TaskRecord) -> String {
+fn summary(record: &TaskRecord, lineage: Option<&str>) -> String {
     let n = record.number;
     let who = match (&record.block.kind, &record.owner) {
         (Kind::Goal, _) => return format!("#{n} goal [{}] — {}", record.status, record.block.outcome),
+        (Kind::Task, Some(owner)) if earlier(owner, lineage) => format!("{}, earlier run", owner.pane),
         (Kind::Task, Some(owner)) => owner.pane.to_string(),
         (Kind::Task, None) => "unowned".to_string(),
     };
@@ -552,6 +604,10 @@ fn details(record: &TaskRecord) -> Vec<String> {
                 field.flag(),
                 old.join(" | "),
                 new.join(" | ")
+            ),
+            ChainEntry::Released { why, done, left, place, on_behalf_of } => format!(
+                "released this{} — why: {why} — done: {done} — left: {left} — where: {place}",
+                on_behalf_of.map(|owner| format!(" on behalf of {owner}")).unwrap_or_default()
             ),
         };
         format!("{}: {what}", line.from)
@@ -1114,6 +1170,28 @@ mod tests {
         assert!(why.contains("--status") && why.contains("fleet task comment 14"), "{why}");
     }
 
+    /// The three typed fields are checked before the socket; "where" is the
+    /// hub's to settle, because only it knows who the owner is.
+    #[test]
+    fn a_release_names_every_field_it_is_missing() {
+        let why = action(&["fleet", "task", "release", "14", "--why", "out of context"])
+            .unwrap_err()
+            .to_string();
+        assert!(why.contains("--done, --left") && !why.contains("needs --why"), "{why}");
+        let why = action(&["fleet", "task", "release", "--why", "x"]).unwrap_err().to_string();
+        assert!(why.contains("fleet task release"), "{why}");
+
+        let full = ["fleet", "task", "release", "14", "--why", "a", "--done", "b", "--left", "c"];
+        let TaskAction::Release { task: 14, place: None, .. } = action(&full).unwrap() else {
+            panic!("a release without --where leaves it to the hub")
+        };
+        let typed = [&full[..], &["--where", "fleet/worker-2 @ a1b2c3d"]].concat();
+        let TaskAction::Release { place: Some(place), .. } = action(&typed).unwrap() else {
+            panic!("--where travels as typed")
+        };
+        assert_eq!(place, "fleet/worker-2 @ a1b2c3d");
+    }
+
     #[test]
     fn a_comment_is_rejoined_and_an_edit_names_whole_fields() {
         for argv in [
@@ -1137,8 +1215,8 @@ mod tests {
 
     #[test]
     fn the_list_filters_to_open_and_to_mine() {
-        let numbers = |filter: Filter| match filter.apply(OpResult::Board { tasks: records() }) {
-            OpResult::Board { tasks } => tasks.iter().map(|r| r.number).collect::<Vec<_>>(),
+        let numbers = |filter: Filter| match filter.apply(OpResult::Board { tasks: records(), lineage: None }) {
+            OpResult::Board { tasks, .. } => tasks.iter().map(|r| r.number).collect::<Vec<_>>(),
             other => panic!("{other:?}"),
         };
         assert_eq!(numbers(Filter { open: true, mine: None }), vec![1, 2, 3]);
@@ -1148,7 +1226,7 @@ mod tests {
 
     #[test]
     fn an_empty_list_says_how_to_open_the_first_goal() {
-        let lines = board_lines(&[], false);
+        let lines = board_lines(&[], None, false);
         assert_eq!(lines.len(), 1);
         assert!(lines[0].contains("fleet task post --goal"), "{}", lines[0]);
     }
@@ -1156,7 +1234,7 @@ mod tests {
     #[test]
     fn the_list_is_one_line_each_with_tasks_under_their_goal() {
         assert_eq!(
-            board_lines(&records(), false),
+            board_lines(&records(), None, false),
             vec![
                 "#1 goal [planned] — one grammar",
                 "  #2 [in-progress] worker-2 — nested groups parse at any depth",
@@ -1165,15 +1243,32 @@ mod tests {
         );
     }
 
+    /// An owner from another session is a pane that no longer exists, so it
+    /// reads as available and is not `--mine`.
+    #[test]
+    fn an_owner_from_another_session_reads_as_an_earlier_run() {
+        let lines = board_lines(&records(), Some("another-lineage"), false);
+        assert_eq!(lines[1], "  #2 [in-progress] worker-2, earlier run — nested groups parse at any depth");
+        let mine = Filter { open: false, mine: Some(PaneId::Worker(2)) };
+        let kept = |lineage: &str| {
+            match mine.apply(OpResult::Board { tasks: records(), lineage: Some(lineage.into()) }) {
+                OpResult::Board { tasks, .. } => tasks.len(),
+                other => panic!("{other:?}"),
+            }
+        };
+        let own = records()[1].owner.clone().unwrap().lineage;
+        assert_eq!((kept(&own), kept("another-lineage")), (1, 0));
+    }
+
     #[test]
     fn a_task_whose_goal_is_not_listed_renders_at_the_top_level() {
-        let lines = board_lines(&records()[1..2], false);
+        let lines = board_lines(&records()[1..2], None, false);
         assert_eq!(lines, vec!["#2 [in-progress] worker-2 — nested groups parse at any depth"]);
     }
 
     #[test]
     fn full_shows_the_criteria_and_the_attributed_chain() {
-        let full = board_lines(&records()[1..2], true).join("\n");
+        let full = board_lines(&records()[1..2], None, true).join("\n");
         assert!(full.contains("technical: cargo test -p parser"), "{full}");
         assert!(full.contains("vision: one grammar"), "{full}");
         assert!(full.contains("instructions: start from the tokenizer"), "{full}");
@@ -1190,8 +1285,8 @@ mod tests {
     #[test]
     fn a_recorded_entry_and_a_list_both_exit_zero() {
         assert!(report(OpResult::Recorded { record_id: "14".into() }, false));
-        assert!(report(OpResult::Board { tasks: records() }, true));
-        assert!(report(OpResult::Board { tasks: vec![] }, false), "an empty list is not a failure");
+        assert!(report(OpResult::Board { tasks: records(), lineage: None }, true));
+        assert!(report(OpResult::Board { tasks: vec![], lineage: None }, false), "an empty list is not a failure");
     }
 
     // --- the receipt (WP-06) ----------------------------------------------------

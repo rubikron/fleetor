@@ -50,6 +50,25 @@ const CHAIN: ChainEvent[] = [
   at(3, "orch", { entry: "status", status: "dropped" }),
 ];
 
+// S2: #5 released by its owner then released again by orch for worker-1;
+// #6 still held by a pane from the earlier session.
+const RELEASE = { why: "out of context", done: "the tokenizer", left: "the parser" };
+const HANDED_ON: ChainEvent[] = [
+  ...CHAIN,
+  at(5, "orch", { entry: "opened", block: task("spans survive a reparse", "worker-3", 1) }),
+  at(5, "worker-3", { entry: "taken-up" }),
+  at(5, "worker-3", { entry: "released", ...RELEASE, where: "fleet/logstat/worker-3 @ a1b2c3d" }),
+  at(5, "worker-1", { entry: "taken-up" }),
+  at(5, "orch", {
+    entry: "released",
+    ...RELEASE,
+    where: "fleet/logstat/worker-1 @ d4e5f6a",
+    on_behalf_of: "worker-1",
+  }),
+  at(6, "orch", { entry: "opened", block: task("errors carry a span", null, 1) }),
+  at(6, "worker-4", { entry: "taken-up" }),
+];
+
 const LIVE: TaskStoreInfo = { live: true, target: "/work/logstat", run: "run-2", lineage: "lin-2" };
 const GATE: TaskStoreInfo = { live: false, target: "/work/logstat", run: null, lineage: null };
 
@@ -82,6 +101,15 @@ process.stdout.write(
       />,
     ),
     dropped: renderToStaticMarkup(<TaskBoard chain={CHAIN} store={LIVE} ops={OPS} initialOpen={3} />),
+    released: renderToStaticMarkup(
+      <TaskBoard chain={HANDED_ON} store={LIVE} ops={OPS} initialOpen={5} />,
+    ),
+    releasing: renderToStaticMarkup(
+      <TaskBoard chain={HANDED_ON} store={LIVE} ops={OPS} initialOpen={6} initialRelease />,
+    ),
+    released_activity: renderToStaticMarkup(
+      <EventFeed feed={[notice(1, "first")]} tasks={[{ event: HANDED_ON[13], after: 1 }]} />,
+    ),
     empty: renderToStaticMarkup(<TaskBoard chain={[]} store={GATE} />),
   }),
 );

@@ -1804,6 +1804,8 @@ button.homepage__run:disabled { cursor: default; }
 .task-form__quiet.is-on { color: var(--fg); border-color: var(--gold); }
 .tasks__group { display: flex; flex-direction: column; gap: 0.25rem; }
 .tasks__no-goal { font-size: var(--t-label); letter-spacing: 0.06em; text-transform: uppercase; color: var(--fg-mute); }
+.tasks__carried { margin: 0.5rem 0.75rem 0; padding: 0.375rem 0.625rem; font-size: var(--t-small); color: var(--gold); border: 1px solid currentColor; border-radius: var(--radius-sm); }
+.tasks__carried strong { margin-right: 0.375rem; text-transform: uppercase; letter-spacing: 0.06em; font-size: var(--t-label); }
 .tasks__readonly { font-size: var(--t-label); color: var(--gold); border: 1px solid currentColor; border-radius: var(--radius-sm); padding: 0 0.3125rem; }
 .tasks__target { font-size: var(--t-label); margin-left: 0.5rem; }
 .task-row {
@@ -1828,6 +1830,9 @@ button.homepage__run:disabled { cursor: default; }
 .chain__at { color: var(--fg-mute); margin-left: auto; }
 .chain__text { flex: 1 1 100%; margin: 0; font-family: var(--sans); font-size: var(--t-small); line-height: 1.5; color: var(--fg); white-space: pre-wrap; word-break: break-word; }
 .chain__edit { flex: 1 1 100%; }
+.chain__release { flex: 1 1 100%; margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 0.125rem 0.625rem; font-size: var(--t-small); line-height: 1.5; }
+.chain__release dt { color: var(--fg-mute); font-size: var(--t-label); letter-spacing: 0.06em; text-transform: uppercase; }
+.chain__release dd { margin: 0; color: var(--fg); white-space: pre-wrap; word-break: break-word; }
 .chain__run { font-size: var(--t-label); letter-spacing: 0.06em; text-transform: uppercase; color: var(--fg-mute); border-top: 1px dashed var(--border-soft); padding-top: 0.25rem; }
 
 /* the operator's task forms: stacked fields, reusing the composer's inputs. */

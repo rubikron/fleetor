@@ -147,6 +147,13 @@ fn here(dir: &Path) -> Place {
     }
 }
 
+/// The branch and commit of the checkout at `dir`, as a release records
+/// them. `None` outside a git checkout.
+pub fn whereabouts(dir: &Path) -> Option<String> {
+    let place = here(dir);
+    (place.branch.is_some() || place.commit.is_some()).then(|| describe(&place))
+}
+
 /// One git fact, or `None` if git could not answer. Empty output is `None` too —
 /// a blank branch name on a receipt reads as a branch called nothing.
 fn git(dir: &Path, args: &[&str]) -> Option<String> {
