@@ -54,8 +54,9 @@ export function SettingsPanel({ theme, onToggleTheme }: SettingsPanelProps) {
           <div className="setting-row__text">
             <span className="setting-row__label">Finish remaining tasks upon startup</span>
             <span className="setting-row__desc">
-              On: the orchestrator resumes in-progress tasks from earlier sessions and tells you
-              which. Off: it asks you first. Takes effect at the next new fleet.
+              On: the orchestrator resumes in-progress tasks and tells you which. Off: it asks
+              you first. Applies to the next new fleet or reopened run, once you send the
+              orchestrator its first message.
             </span>
           </div>
           <button

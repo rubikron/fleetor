@@ -231,7 +231,7 @@ Refusals are written for a model to correct itself from, as every `fleet` refusa
 - **A. Tasks are reloaded, not cleared.** The launch PRD's `launch()` calls a `resetTasks()` hook. This PRD replaces its body with a clear plus a replay of the fleet's task store.
 - **B. The fleet's target is the task target.** The gate's target can differ from the live fleet's and stays editable while a fleet runs. The store, the `fleet://task` follower and the Tasks view all follow the fleet's fixed target.
 - **C. `tasks.json` at stage.** This PRD fills in the stage hook the launch PRD leaves as a no-op. The run-log digest stops counting tasks.
-- **D. A reopen continues its lineage.** A reopen is a new run id with the same `sessions` id. Owners keep their tasks across it, the chain still draws a run boundary, and the startup triage and `{startup_tasks}` apply to fresh launches only. The store stays the truth when an older lineage is reopened after another session moved its tasks on: the owner-only rule refuses a stale `done`, and the worker brief's reopen rule sends the worker to check first.
+- **D. A reopen continues its lineage.** A reopen is a new run id with the same `sessions` id. Owners keep their tasks across it, the chain still draws a run boundary, and the startup triage and `{startup_tasks}` apply to fresh launches only (**amended by D-109, 2026-10-07:** a reopen follows the setting too; its owners are told to continue rather than being replaced). The store stays the truth when an older lineage is reopened after another session moved its tasks on: the owner-only rule refuses a stale `done`, and the worker brief's reopen rule sends the worker to check first.
 - **Slice placement of the additions.** The read-only Tasks view and the Running now count ship with S1's wiring; the "Carried over" banner and the reopen rule ship with S2.
 
 ### Recorded decisions this amends
@@ -271,7 +271,7 @@ Each slice ships its feature end to end: store, hub, CLI, brief lines, the agent
 - Syncing with real GitHub Issues.
 - Viewing tasks across targets.
 - Labels, milestones and per-criterion checkboxes.
-- Anything that reads tasks to route, assign, wake, block or rate-limit an agent, including an app-driven wake at startup.
+- Anything that reads tasks to route, assign, wake, block or rate-limit an agent, including an app-driven wake at startup (**made a standing rule by D-110**).
 - Notifying the operator outside the app.
 - Judging the quality of release, comment or review text beyond requiring it to be non-empty.
 - Importing tasks from existing run logs.
