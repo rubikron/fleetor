@@ -568,7 +568,12 @@ export interface RunRecord {
   /// Why this run cannot be reopened, if it cannot (R8, R10) — a sentence naming
   /// the seat or the harness responsible. Absent means it opens.
   cannot_reopen?: string;
+  /// Where the run is on its way into History (D-099). One row keeps its id
+  /// through all three.
+  state: RunState;
 }
+
+export type RunState = "running" | "archiving" | "archived";
 
 /// The live fleet configuration: what a click will actually run, and where.
 export interface FleetConfig {

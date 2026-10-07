@@ -64,6 +64,7 @@ function RunRow({
   busy,
   intactSaidAbove,
   onOpen,
+  onShowFleet,
   onRename,
   onDelete,
   onSave,
@@ -73,7 +74,10 @@ function RunRow({
   busy: boolean;
   /// The note above the list already said what survives, for every row at once.
   intactSaidAbove: boolean;
+  /// Reopen an archived run.
   onOpen: () => void;
+  /// Go to the fleet that is running.
+  onShowFleet: () => void;
   onRename: (label: string) => void;
   onDelete: () => void;
   onSave: () => void;
@@ -82,6 +86,7 @@ function RunRow({
   const [confirming, setConfirming] = useState(false);
   const span = duration(run);
   const blocked = run.cannot_reopen;
+  const archived = run.state === "archived";
 
   const commit = () => {
     const next = (draft ?? "").trim();
@@ -90,10 +95,15 @@ function RunRow({
   };
 
   return (
-    <li className={`run ${blocked ? "run--closed" : ""}`}>
+    <li className={`run ${blocked || run.state === "archiving" ? "run--closed" : ""}`}>
       <div className="run__main">
         {draft === null ? (
-          blocked ? (
+          run.state === "running" ? (
+            // The run you are in: the row goes to it, never relaunches it.
+            <button className="run__label" onClick={onShowFleet} title="Go to the running fleet">
+              {run.label}
+            </button>
+          ) : run.state === "archiving" || blocked ? (
             // Not a button. A row that cannot be opened offers nothing to click,
             // rather than a control that explains itself only after it fails.
             <span className="run__label run__label--closed">{run.label}</span>
@@ -121,6 +131,12 @@ function RunRow({
           />
         )}
         <div className="run__meta">
+          {run.state === "running" && <span className="run__chip run__chip--gold">Running now</span>}
+          {run.state === "archiving" && (
+            <span className="run__chip" title="Being saved into History; it opens when this finishes">
+              Archiving…
+            </span>
+          )}
           <span className="run__when">{when(run.started_ms)}</span>
           {span && <span className="run__chip">{span}</span>}
           <span className="run__chip">{run.messages} msg</span>
@@ -155,8 +171,9 @@ function RunRow({
         )}
       </div>
 
+      {/* Rename, delete and export act on an archive, so they wait for one. */}
       <div className="run__actions">
-        {confirming ? (
+        {!archived ? null : confirming ? (
           <>
             {/* A row is a lineage, so Delete can take more than one archive.
                 Saying the number is the difference between an informed
@@ -195,11 +212,13 @@ export function RunHistory({
   runs,
   launching,
   onOpen,
+  onShowFleet,
 }: {
   runs: RunsView;
   launching: boolean;
   /// Reopen this run: a launch, which lands the operator in its panes (D-099).
   onOpen: (id: string) => void;
+  onShowFleet: () => void;
 }) {
   const nothingOpens = runs.runs.length > 0 && runs.runs.every((r) => r.cannot_reopen);
 
@@ -207,7 +226,7 @@ export function RunHistory({
     <div className="events-view">
       <div className="events-view__head">
         <h3>History</h3>
-        <span className="label">your past sessions · newest first</span>
+        <span className="label">your sessions · newest first</span>
         <span style={{ flex: "1 1 auto" }} />
         <span className="label">
           {runs.runs.length} session{runs.runs.length === 1 ? "" : "s"}
@@ -246,6 +265,7 @@ export function RunHistory({
               busy={launching}
               intactSaidAbove={nothingOpens}
               onOpen={() => onOpen(run.id)}
+              onShowFleet={onShowFleet}
               onRename={(label) => void runs.rename(run.id, label)}
               onDelete={() => void runs.remove(run.id)}
               onSave={() => void runs.save(run.id)}

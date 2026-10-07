@@ -103,6 +103,7 @@ pub fn run() {
             fleet::fleet_launch,
             fleet::fleet_config,
             fleet::fleet_target,
+            fleet::fleet_next_config,
             fleet::fleet_pick_target,
             fleet::fleet_set_target,
             fleet::fleet_gate,

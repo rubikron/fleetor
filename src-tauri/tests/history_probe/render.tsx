@@ -28,7 +28,12 @@ const OPENS: RunRecord = {
   transcripts: 5,
   sessions: "2026-09-10T10-00-00Z-aaaa",
   reopened: 0,
+  state: "archived",
 };
+
+/// The fleet that is up, and the run the last launch left behind (D-099).
+const RUNNING: RunRecord = { ...OPENS, id: "2026-09-10T12-00-00Z-dddd", label: "live work", state: "running" };
+const ARCHIVING: RunRecord = { ...OPENS, id: "2026-09-10T11-30-00Z-eeee", label: "just left", state: "archiving" };
 
 /// A session one seat of which has lost its transcript since (R19).
 const BLOCKED: RunRecord = {
@@ -62,10 +67,16 @@ const noop = () => {};
 process.stdout.write(
   JSON.stringify({
     // One row that opens beside one that cannot.
-    mixed: renderToStaticMarkup(<RunHistory runs={view([OPENS, BLOCKED])} launching={false} onOpen={noop} />),
+    mixed: renderToStaticMarkup(
+      <RunHistory runs={view([OPENS, BLOCKED])} launching={false} onOpen={noop} onShowFleet={noop} />,
+    ),
+    // One row in each state.
+    states: renderToStaticMarkup(
+      <RunHistory runs={view([RUNNING, ARCHIVING, OPENS])} launching={false} onOpen={noop} onShowFleet={noop} />,
+    ),
     // Every row blocked, for different causes.
     nothing_opens: renderToStaticMarkup(
-      <RunHistory runs={view([BLOCKED, LEGACY])} launching={false} onOpen={noop} />,
+      <RunHistory runs={view([BLOCKED, LEGACY])} launching={false} onOpen={noop} onShowFleet={noop} />,
     ),
   }),
 );

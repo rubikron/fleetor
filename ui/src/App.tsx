@@ -233,12 +233,12 @@ export function App() {
 
             <div className={`stage-view ${view === "home" ? "" : "is-hidden"}`}>
               <Homepage
-                config={fleet.config}
                 runs={runs}
                 launching={launching}
                 launchError={launchError}
                 onStart={() => void launch({ kind: "fresh" })}
                 onOpen={(id) => void launch({ kind: "reopen", id })}
+                onShowFleet={() => setView("fleet")}
                 onTargetChanged={fleet.refreshConfig}
               />
             </div>
@@ -261,6 +261,7 @@ export function App() {
                 runs={runs}
                 launching={launching}
                 onOpen={(id) => void launch({ kind: "reopen", id })}
+                onShowFleet={() => setView("fleet")}
               />
             </div>
 

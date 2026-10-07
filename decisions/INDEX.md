@@ -78,7 +78,7 @@ Note: D-005 is referenced elsewhere in this file (e.g. D-009, D-011) but has no 
 | [D-068](D-068.md) | meta | alive | orch answers with `fleet reply`, including to names it does not know |
 | [D-069](D-069.md) | meta | alive | the Fence learns about rustup: both toolchain homes are the fleet's own |
 | [D-070](D-070.md) | meta | alive | an improve run targets a clone, never the live checkout |
-| [D-071](D-071.md) | meta | alive | the target is fixed once a pane exists, and the backend is what says so |
+| [D-071](D-071.md) | meta | amended by D-099 | the target is fixed once a pane exists, and the backend is what says so |
 | [D-072](D-072.md) | meta | alive | the layout and the host: a pane's bring-up is a function of values, not of the operator's machine |
 | [D-073](D-073.md) | meta | alive | the evaluator is a view in the rail, not a second window (supersedes the window half of D-066) |
 | [D-074](D-074.md) | meta | alive | the evaluator is placed, dev mode is read through the layout, and the target is one cell |

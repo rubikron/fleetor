@@ -54,6 +54,8 @@ const EVENT_FLEET: &str = "fleet://event";
 /// A launch's verdict passed: the UI drops the old run's state on this, so a
 /// refused launch changes nothing on screen.
 const EVENT_LAUNCHING: &str = "fleet://launching";
+/// The run a launch left behind is in History: its row is no longer archiving.
+const EVENT_ARCHIVED: &str = "fleet://archived";
 /// Chain entries from the fleet target's task store (D-100).
 const EVENT_TASK: &str = "fleet://task";
 
@@ -1153,12 +1155,8 @@ struct Fleet {
     /// Fired on window close so the hub stops serving and unlinks its socket.
     shutdown: Arc<Notify>,
     config: FleetConfig,
-    /// Resolved at bootstrap, updated in place by `fleet_set_target` /
-    /// `fleet_pick_target`. Panes spawn against *this*, not a re-read of
-    /// config.json. Safe to update before panes exist (the start gate); once any
-    /// pane exists both commands refuse (see [`ensure_target_settable`]). The UI
-    /// also stops offering the control at that point, which is now belt and
-    /// braces rather than the only guard (D-071).
+    /// Fixed at launch (D-099): the gate's target for a fresh fleet, the
+    /// recorded one for a reopen. Editing the gate's target never moves it.
     ///
     /// **The handoff watch holds a clone of this same cell, not a copy of its
     /// value** (D14) — see [`Target`] for what that fixed.
@@ -1219,12 +1217,11 @@ pub struct FleetState(Mutex<Option<Fleet>>);
 /// The repo the fleet works on — **one value, shared by everything that reads it**
 /// (WP-21, D14).
 ///
-/// [`apply_target`] rewrites it and [`spawn_pane`] reads it, through one cell
-/// rather than two copies.
+/// [`build`] sets it once and [`spawn_pane`] reads it, through one cell rather
+/// than two copies.
 ///
-/// A `Mutex` rather than an `RwLock` because there is one writer, at most a
-/// handful of times, before any pane exists; a poisoned lock hands back the value
-/// anyway, since a target nobody can read is a fleet that cannot spawn.
+/// A poisoned lock hands back the value anyway, since a target nobody can read
+/// is a fleet that cannot spawn.
 #[derive(Clone)]
 struct Target(Arc<Mutex<PathBuf>>);
 
@@ -1236,12 +1233,6 @@ impl Target {
     /// What the fleet is pointed at right now.
     fn get(&self) -> PathBuf {
         self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
-    }
-
-    /// Point it somewhere else. Only ever reached through [`adopt_target`], which
-    /// refuses once a pane exists (D-071).
-    fn set(&self, path: &Path) {
-        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = path.to_path_buf();
     }
 }
 
@@ -1341,6 +1332,8 @@ enum Signal {
     /// The verdict passed and the old fleet is down; the new log is not open
     /// yet, so everything after this belongs to the new run.
     Launching,
+    /// The background finish of the run this launch staged is done.
+    Archived,
     Event(WireEvent),
     /// One chain entry from the task store, on its own pipe.
     Task(WireEvent),
@@ -1370,6 +1363,7 @@ pub fn fleet_launch(
 ) -> Result<BootSnapshot, LaunchFailure> {
     let emit: FeedEmit = Arc::new(move |signal| match signal {
         Signal::Launching => app.emit(EVENT_LAUNCHING, ()).is_ok(),
+        Signal::Archived => app.emit(EVENT_ARCHIVED, ()).is_ok(),
         Signal::Event(event) => app.emit(EVENT_FLEET, event).is_ok(),
         Signal::Task(event) => app.emit(EVENT_TASK, event).is_ok(),
     });
@@ -1403,11 +1397,42 @@ fn launch(
     // follow it.
     emit(Signal::Launching);
     let started_ms = fleetor_core::time::now_ms();
-    let archived = runs::rotate(&layout.shell(), &runs::runs_dir(layout.root()), started_ms);
-    let fleet = build(layout, registry, gate, plan, started_ms, archived, emit).map_err(failed)?;
-    let snap = snapshot(&fleet.store).map_err(failed)?;
+    let (shell, runs_dir) = (layout.shell(), runs::runs_dir(layout.root()));
+    let (staged, staging) = runs::stage(&shell, &runs_dir, started_ms);
+    let built = build(layout, registry, gate, plan, started_ms, staging, emit.clone())
+        .and_then(|fleet| snapshot(&fleet.store).map(|snap| (fleet, snap)));
+    let feed = built.as_ref().ok().map(|(fleet, _)| (fleet.rt.handle().clone(), fleet.store.clone()));
+    if let Some(id) = staged {
+        finish_in_background(shell, runs_dir, id, feed, emit);
+    }
+    let (fleet, snap) = built.map_err(failed)?;
     *slot = Some(fleet);
     Ok(snap)
+}
+
+/// Hand the staged run's finish to a thread, so its cost never delays the new
+/// fleet. Its notices go on the new fleet's feed through that fleet's own
+/// runtime, so nothing here can hold a store open past its teardown; a fleet
+/// already gone by then simply never hears them.
+fn finish_in_background(
+    shell: PathBuf,
+    runs_dir: PathBuf,
+    id: String,
+    feed: Option<(tokio::runtime::Handle, Arc<dyn Store>)>,
+    emit: FeedEmit,
+) {
+    let (done, finished) = tokio::sync::oneshot::channel::<Vec<(NoticeLevel, String)>>();
+    if let Some((rt, store)) = feed {
+        rt.spawn(async move {
+            for (level, text) in finished.await.unwrap_or_default() {
+                note(&store, level, &text);
+            }
+        });
+    }
+    std::thread::spawn(move || {
+        let _ = done.send(runs::finish(&shell, &runs_dir, &id));
+        emit(Signal::Archived);
+    });
 }
 
 /// **Whether this launch can start, decided before anything is torn down**
@@ -1965,6 +1990,13 @@ pub fn fleet_config(state: State<'_, FleetState>) -> Result<FleetConfig, String>
         return Ok(fleet.config.clone());
     }
     drop(guard);
+    fleet_next_config()
+}
+
+/// What the next fresh launch will run on: the gate's target, whatever fleet
+/// is running (D-099).
+#[tauri::command]
+pub fn fleet_next_config() -> Result<FleetConfig, String> {
     // The same layout, the same accessor, the same question the bootstrap path
     // asks — one spelling of "what is the target", not a third (D-075). This path
     // still *propagates* a broken `target` where `resolve_target` falls back to the
@@ -2179,108 +2211,23 @@ fn operator_result(result: OpResult) -> Result<OperatorSend, String> {
     }
 }
 
-/// What the operator is told when they try to move the target under a fleet
-/// that is already up.
+/// Record `target` as the gate's: the next fresh launch runs there (D-099,
+/// amending D-071). A running fleet keeps the target it launched with.
 ///
-/// A constant rather than an inline literal because the test asserts on the
-/// remedy, and a refusal whose remedy drifts out of the sentence is a refusal
-/// the operator cannot act on.
-const TARGET_FIXED: &str = "the target is fixed for a running fleet — every pane was configured \
-                            against the current one when it spawned. Stop the fleet (close the \
-                            window) and set the target again at the start gate.";
-
-/// The rule: the target may be set until the first pane exists, and not after.
-///
-/// It was already written down and already true in practice — the start gate is
-/// the only screen that offers the control, and it is gone the moment the fleet
-/// starts. But it lived entirely in the interface, and the two commands behind
-/// it were exposed unconditionally, so the thing that owns the state did not
-/// enforce the one rule about changing it. Half a fleet in one repository and
-/// half in another is incoherent, which is the same reasoning that makes the
-/// target resolved once at bootstrap rather than re-read.
-fn ensure_target_settable(registry: &PaneRegistry) -> Result<(), String> {
-    if registry.any_pane() {
-        return Err(TARGET_FIXED.into());
-    }
-    Ok(())
-}
-
-/// Record `target` as the fleet's, or refuse because a pane already exists.
-///
-/// **The one funnel both target-setting commands pass through.** Writing the
-/// guard twice would make the picker and the typed box two independent chances
-/// to get it right, and a rule enforced in two places is a rule that will
-/// eventually hold in one of them. The refusal comes before [`write_target`] on
-/// purpose: a config file recording a target no pane will ever be spawned
-/// against is worse than no change at all.
-fn adopt_target(
-    registry: &PaneRegistry,
-    state: &FleetState,
-    gate: &GateHold,
-    target: &Path,
-) -> Result<(), String> {
-    ensure_target_settable(registry)?;
-    write_target(target)?;
-    // **The harness reading is about a machine *in a directory*** (C34): codex
-    // resolves trust and project identity against one, so a reading taken somewhere
-    // else describes a state this machine is no longer in. Forgotten here rather
-    // than inside `apply_target`'s `if let Some(fleet)`, because the target is
-    // retyped almost exclusively at the start gate — where there is no fleet, and
-    // where the reading that would go stale is the one the pickers are rendering.
+/// The harness reading is forgotten because it is about a machine *in a
+/// directory* (C34): codex resolves trust and project identity against one.
+fn adopt_target(layout: &Layout, gate: &GateHold, target: &Path) -> Result<(), String> {
+    write_config_key_at(&layout.config_file(), "target", target.to_string_lossy().into_owned().into())?;
     gate.harnesses.invalidate();
-    apply_target(state, target);
     Ok(())
 }
 
-fn apply_target(state: &FleetState, target: &Path) {
-    let is_git = placement::git(target, &["rev-parse", "--git-dir"]);
-    if let Ok(mut guard) = state.0.lock() {
-        if let Some(fleet) = guard.as_mut() {
-            // The one write. Everything that reads the target — the spawn path
-            // and the handoff watch alike — reads this cell (D14).
-            fleet.target.set(target);
-            fleet.config = fleet_config_for(target);
-            note(
-                &fleet.store,
-                NoticeLevel::Info,
-                &format!("target set to {}", target.display()),
-            );
-            if !is_git {
-                note(
-                    &fleet.store,
-                    NoticeLevel::Warn,
-                    &format!(
-                        "{} is not a git repository — starting the fleet will `git init` \
-                         it and commit what is there, so each worker gets its own worktree.",
-                        target.display()
-                    ),
-                );
-            }
-        }
-    }
-}
-
-/// Ask the operator for a repo and record it in `~/.fleetor/config.json`.
-///
-/// Updates `Fleet.target` and `Fleet.config` in place so the change takes
-/// effect immediately — the start gate is the only caller, and no panes exist
-/// yet. Refused by [`adopt_target`] once one does. Returns `Ok(None)` when the
-/// picker was dismissed.
-///
-/// The guard is checked *before* the dialog opens: making the operator browse
-/// to a folder and only then telling them it cannot be used is a worse way to
-/// deliver the same refusal.
+/// Ask the operator for a repo and record it as the gate's target. Returns
+/// `Ok(None)` when the picker was dismissed.
 // Off the main thread: a blocking dialog there hangs the app.
 #[tauri::command(async)]
-pub fn fleet_pick_target(
-    app: AppHandle,
-    state: State<'_, FleetState>,
-    registry: State<'_, Arc<PaneRegistry>>,
-    gate: State<'_, Arc<GateHold>>,
-) -> Result<Option<String>, String> {
+pub fn fleet_pick_target(app: AppHandle, gate: State<'_, Arc<GateHold>>) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
-
-    ensure_target_settable(&registry)?;
 
     let Some(picked) = app.dialog().file().blocking_pick_folder() else { return Ok(None) };
     let path = picked
@@ -2290,14 +2237,13 @@ pub fn fleet_pick_target(
         return Err(format!("{} is not a directory", path.display()));
     }
 
-    adopt_target(&registry, &state, &gate, &path)?;
+    adopt_target(&layout(), &gate, &path)?;
     Ok(Some(path.to_string_lossy().into_owned()))
 }
 
 /// Record a target the operator **typed** rather than picked.
 ///
-/// Same contract as `fleet_pick_target`: writes the config and updates
-/// `Fleet.target` in place so the change takes effect immediately.
+/// Same contract as `fleet_pick_target`.
 ///
 /// A typed path is untrusted in a way a picked one is not — the folder picker
 /// can only hand back a directory that exists, whereas this accepts whatever
@@ -2306,12 +2252,7 @@ pub fn fleet_pick_target(
 /// matters: the operator should see what was actually recorded, not the
 /// shorthand they typed, or they cannot tell a typo from a working path.
 #[tauri::command]
-pub fn fleet_set_target(
-    path: String,
-    state: State<'_, FleetState>,
-    registry: State<'_, Arc<PaneRegistry>>,
-    gate: State<'_, Arc<GateHold>>,
-) -> Result<String, String> {
+pub fn fleet_set_target(path: String, gate: State<'_, Arc<GateHold>>) -> Result<String, String> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
         return Err("enter a folder path".into());
@@ -2329,7 +2270,7 @@ pub fn fleet_set_target(
         .canonicalize()
         .map_err(|e| format!("resolve {}: {e}", expanded.display()))?;
 
-    adopt_target(&registry, &state, &gate, &canonical)?;
+    adopt_target(&layout(), &gate, &canonical)?;
     Ok(canonical.to_string_lossy().into_owned())
 }
 
@@ -2502,10 +2443,20 @@ fn plan_offer() -> PlanOffer {
 // which is the case that matters, since the History view is most useful on the
 // start gate, deciding what to do next.
 
-/// Every archived run, newest first.
+/// History: the live run, every run still archiving, and the archived ones.
 #[tauri::command]
-pub fn runs_list() -> Result<Vec<runs::RunRecord>, String> {
-    Ok(runs::list(&runs::runs_dir(layout().root())))
+pub fn runs_list(state: State<'_, FleetState>) -> Result<Vec<runs::RunRecord>, String> {
+    Ok(history(&state, &layout()))
+}
+
+fn history(state: &FleetState, layout: &Layout) -> Vec<runs::RunRecord> {
+    // The Running now row counts its tasks from the live store (Coordination C).
+    let live_tasks = state.0.lock().ok().and_then(|slot| {
+        let fleet = slot.as_ref()?;
+        let events = fleet.tasks.as_ref().and_then(|tasks| tasks.events_since(0).ok()).unwrap_or_default();
+        Some(runs::tasks_touched(&events, &fleet.run_id))
+    });
+    runs::list_all(&layout.shell(), &runs::runs_dir(layout.root()), live_tasks)
 }
 
 /// Replay one archived run's log, for the read-only History views.
@@ -2566,12 +2517,6 @@ fn expand_home(input: &str) -> Result<PathBuf, String> {
     Ok(if input == "~" { home } else { home.join(&input[2..]) })
 }
 
-/// Set `target` in the config without disturbing anything else the operator has
-/// put there. Merge-not-clobber for the same reason the config seed is.
-fn write_target(target: &Path) -> Result<(), String> {
-    write_config_key("target", target.to_string_lossy().into_owned().into())
-}
-
 /// The config key behind "finish remaining tasks upon startup".
 const STARTUP_TASKS_KEY: &str = "startup_tasks";
 
@@ -2601,16 +2546,10 @@ pub fn startup_tasks_set(on: bool) -> Result<bool, String> {
     set_startup_tasks_at(&layout().config_file(), on)
 }
 
-/// Set one key in `~/.fleetor/config.json`, leaving every other key alone.
+/// Set one key in a config file, leaving every other key alone.
 ///
 /// The one writer of that file, so a second setting cannot grow a second spelling
 /// of "merge, don't clobber" that drops the first one.
-pub(crate) fn write_config_key(key: &str, value: serde_json::Value) -> Result<(), String> {
-    write_config_key_at(&layout().config_file(), key, value)
-}
-
-/// [`write_config_key`] against a named file, so the read-write round trip is
-/// exercisable in a temp directory instead of in the operator's real home.
 pub(crate) fn write_config_key_at(
     file: &Path,
     key: &str,
@@ -2922,55 +2861,34 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Both sides of the one rule the target has (D-071): settable until a pane
-    /// exists, refused after — and refused with a sentence naming the remedy,
-    /// because a refusal an operator cannot act on is a dead end rather than a
-    /// guard.
-    ///
-    /// Driven against a **real** [`PaneRegistry`] with a **real** pty on the far
-    /// end, for the same reason `tests/panes.rs` does: the guard's whole job is
-    /// to read the registry's actual state, so a stub of that state would only
-    /// prove the stub. `sleep` stands in for `claude` — this asks whether a pane
-    /// exists, and nothing about what it is.
+    /// **The gate's target is the next fleet's, never the running one's**
+    /// (D-099 amending D-071): editing it under a live pane is accepted, moves
+    /// neither the fleet nor its task store, and is what the next fresh launch
+    /// runs on.
     #[test]
-    fn the_target_is_settable_until_a_pane_exists() {
-        let dir = std::env::temp_dir().join(format!("fleetor-target-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let registry = PaneRegistry::new(Arc::new(|_, _| {}), dir.join("panes.pids"));
+    fn a_target_edited_under_a_running_fleet_applies_to_the_next_launch() {
+        let bench = Bench::new("retarget");
+        let repo_a = bench.root.join("repo-a");
+        bench.fresh();
+        bench.bring_up_orch("sonnet");
 
-        // Before the first spawn — the start gate. Unchanged behaviour.
-        assert!(
-            ensure_target_settable(&registry).is_ok(),
-            "an empty registry is the start gate, where setting the target is the whole point"
-        );
+        let repo_b = bench.root.join("repo-b");
+        std::fs::create_dir_all(&repo_b).unwrap();
+        adopt_target(&bench.layout, &bench.gate, &repo_b).expect("accepted with a pane up");
 
-        let mut cmd = portable_pty::CommandBuilder::new("sleep");
-        cmd.arg("30");
-        registry.spawn(PaneId::Orch, cmd, crate::placement::harness::claude_code().spec(), 24, 80)
-            .expect("a pty for sleep");
+        assert_eq!(configured_target(&bench.layout).unwrap(), Some(repo_b.clone()), "the gate moved");
+        assert_eq!(bench.placing().unwrap().2, repo_a, "the running fleet did not");
+        assert!(bench.registry.any_pane(), "and its pane is still up");
+        assert!(bench.gate.harnesses.held().is_none(), "the reading was about repo-a");
 
-        // After it. One pane is enough — the fleet is now committed to a repo.
-        let refusal = ensure_target_settable(&registry)
-            .expect_err("a running fleet must not have its target moved under it");
-        assert!(
-            refusal.contains("fixed for a running fleet"),
-            "the refusal has to say the target is fixed, not merely fail: {refusal}"
-        );
-        assert!(
-            refusal.contains("Stop the fleet"),
-            "and it has to name the remedy, or the operator is stuck: {refusal}"
-        );
+        assert_eq!(bench.open_goal("one grammar"), OpResult::Recorded { record_id: "1".into() });
+        assert!(bench.layout.task_store(&repo_a).is_file(), "the task store stayed with the fleet's target");
+        assert!(!bench.layout.task_store(&repo_b).exists());
 
-        // Killing the last pane puts the operator back at the start gate: nothing
-        // is holding the old target any more, so nothing has a claim on it.
-        registry.kill_all();
-        assert!(
-            ensure_target_settable(&registry).is_ok(),
-            "with every pane reaped the refusal has nothing left to protect"
-        );
-
-        let _ = std::fs::remove_dir_all(&dir);
+        *bench.gate.harnesses.held() = Some(vec![logged_in("claude-code", AccountShape::ApiKey)]);
+        bench.fresh();
+        assert_eq!(bench.placing().unwrap().2, repo_b, "the next fleet runs where the gate points");
+        assert!(bench.task_list().is_empty(), "on repo-b's own task store");
     }
 
     /// Every pane's config dir hangs off one root under `_shell`, `orch`
@@ -3196,6 +3114,8 @@ mod tests {
         gate: GateHold,
         /// How many launches told the webview their verdict passed.
         launchings: Arc<std::sync::atomic::AtomicUsize>,
+        /// How many background finishes told the webview they were done.
+        archiveds: Arc<std::sync::atomic::AtomicUsize>,
         /// Every chain entry the `fleet://task` pipe carried.
         task_events: Arc<Mutex<Vec<FleetEvent>>>,
     }
@@ -3211,6 +3131,7 @@ mod tests {
                 registry: Arc::new(PaneRegistry::new(Arc::new(|_, _| {}), root.join("panes.pids"))),
                 gate: GateHold::default(),
                 launchings: Arc::default(),
+                archiveds: Arc::default(),
                 task_events: Arc::default(),
                 root,
             };
@@ -3238,8 +3159,17 @@ mod tests {
             target
         }
 
+        /// A launch, with the run it left behind archived by the time it returns.
         fn launch(&self, source: LaunchSource) -> Result<BootSnapshot, LaunchFailure> {
+            let result = self.launch_unsettled(source);
+            runs::sweep(&self.layout.shell(), &self.runs_dir());
+            result
+        }
+
+        /// A launch as the app makes it: the old run's finish is still in flight.
+        fn launch_unsettled(&self, source: LaunchSource) -> Result<BootSnapshot, LaunchFailure> {
             let offer = PlanOffer::fleet_key();
+            let archiveds = self.archiveds.clone();
             let launchings = self.launchings.clone();
             let task_events = self.task_events.clone();
             let emit: FeedEmit = Arc::new(move |signal| {
@@ -3248,6 +3178,9 @@ mod tests {
                         launchings.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     }
                     Signal::Task(wire) => task_events.lock().unwrap().push(wire.event),
+                    Signal::Archived => {
+                        archiveds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
                     Signal::Event(_) => {}
                 }
                 true
@@ -3480,6 +3413,55 @@ mod tests {
         assert!(task_snapshot(&bench.state, &bench.layout).unwrap().events.is_empty());
         assert!(!bench.layout.target_dir(&repo_c).exists(), "reading never creates a store");
         assert!(bench.layout.task_store(&repo_b).is_file());
+    }
+
+    /// **One row, three states** (stories 18, 20, 22, 25): the run a launch
+    /// leaves is archiving while its finish is in flight and archived after,
+    /// under the id it ran as; the new fleet is the running row and hears about it.
+    #[test]
+    fn the_run_left_behind_is_archiving_until_its_background_finish_lands() {
+        let bench = Bench::new("rows");
+        bench.fresh();
+        let (first, _) = bench.ids();
+        let rows = || -> Vec<(String, runs::RunState)> {
+            history(&bench.state, &bench.layout).into_iter().map(|r| (r.id, r.state)).collect()
+        };
+        assert_eq!(rows(), vec![(first.clone(), runs::RunState::Running)], "the live run is a History row");
+
+        let held = runs::hold_finishes();
+        bench.launch_unsettled(LaunchSource::Fresh).expect("a second fleet");
+        let (second, _) = bench.ids();
+        assert_eq!(
+            rows(),
+            vec![(second.clone(), runs::RunState::Running), (first.clone(), runs::RunState::Archiving)],
+            "the launch returned with the old run still staged",
+        );
+        assert!(bench.archives().is_empty());
+        let refused = bench
+            .launch_unsettled(LaunchSource::Reopen { id: first.clone() })
+            .expect_err("a run mid-archive does not reopen");
+        assert!(!refused.torn_down, "and the refusal cost nothing: {}", refused.reason);
+        drop(held);
+
+        let told = || {
+            let slot = bench.state.0.lock().unwrap();
+            let log = slot.as_ref().unwrap().store.events_since(0).unwrap();
+            log.iter().any(|(_, e)| matches!(e, FleetEvent::Notice { text, .. } if text.contains("previous run archived")))
+        };
+        for _ in 0..500 {
+            if told() && bench.archiveds.load(std::sync::atomic::Ordering::SeqCst) == 1 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(told(), "the new fleet's feed says the old run is in History");
+        assert_eq!(bench.archiveds.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            rows(),
+            vec![(second, runs::RunState::Running), (first.clone(), runs::RunState::Archived)],
+            "the same row, now archived",
+        );
+        assert!(bench.runs_dir().join(&first).join("manifest.json").is_file());
     }
 
     /// **A refusal kills nothing** (stories 10, 27): the verdict runs before the
