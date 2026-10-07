@@ -115,16 +115,21 @@ pub fn render_orch(template: &str, roster: &[PaneId], cwd: &str, branch_prefix: 
     render_orch_at(template, roster, cwd, branch_prefix, Startup::Ask)
 }
 
-/// What orch does about tasks an earlier session left in progress. It fills
-/// the optional `{startup_tasks}` placeholder.
+/// What orch does about tasks left in progress when its session starts. It
+/// fills the optional `{startup_tasks}` placeholder.
+///
+/// Every variant waits for orch's first message: nothing starts an agent at
+/// launch (D-110).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Startup {
     /// A fresh launch: go through them with the operator first.
     Ask,
     /// A fresh launch with "finish remaining tasks upon startup" on.
     Resume,
-    /// A reopen continues its lineage, so there is nothing to triage.
-    Reopened,
+    /// A reopen: the owners are still here, so ask which should continue.
+    ReopenedAsk,
+    /// A reopen with the setting on: tell each owner to continue.
+    ReopenedResume,
 }
 
 impl Startup {
@@ -142,9 +147,19 @@ impl Startup {
                  resuming. `planned` tasks stay parked. A task whose goal is closed is not \
                  resumed: ask the operator about it."
             }
-            Startup::Reopened => {
+            Startup::ReopenedAsk => {
                 "This session was reopened, so you and your workers still own the tasks you had. \
-                 There is nothing to triage: carry on from `fleet task list --open`."
+                 Before anything else, run `fleet task list --open` and ask the operator which \
+                 `in-progress` tasks should continue. Tell no worker to continue before they \
+                 answer."
+            }
+            Startup::ReopenedResume => {
+                "This session was reopened, so you and your workers still own the tasks you had, \
+                 and the operator turned on \"finish remaining tasks upon startup\". Before \
+                 anything else, run `fleet task list --open`, tell each owner to continue its \
+                 `in-progress` task without asking, and tell the operator which ones are \
+                 continuing. Reassign nothing an owner still holds; `planned` tasks stay parked, \
+                 and ask the operator about a task whose goal is closed."
             }
         }
     }
@@ -780,14 +795,20 @@ mod tests {
     #[test]
     fn the_startup_rule_renders_each_way_and_is_optional() {
         let at = |startup| render_orch_at(DEFAULT_ORCH, &roster(), CWD, BRANCH, startup);
-        let (ask, resume, reopened) = (at(Startup::Ask), at(Startup::Resume), at(Startup::Reopened));
+        let (ask, resume) = (at(Startup::Ask), at(Startup::Resume));
         assert_eq!(ask, orch_brief(&roster(), CWD, BRANCH), "asking first is the default");
         assert!(ask.contains("ask the operator whether to resume"), "{ask}");
         assert!(resume.contains("without asking") && resume.contains("which ones you are resuming"));
         assert!(resume.contains("`planned` tasks stay parked") && resume.contains("goal is closed"));
-        assert!(reopened.contains("nothing to triage"));
-        for brief in [&ask, &resume, &reopened] {
+
+        // A reopen follows the same setting; its owners are still there.
+        let (asks, continues) = (at(Startup::ReopenedAsk), at(Startup::ReopenedResume));
+        assert!(asks.contains("ask the operator which") && asks.contains("Tell no worker to continue"));
+        assert!(continues.contains("tell each owner to continue") && continues.contains("without asking"));
+        assert!(continues.contains("Reassign nothing an owner still holds"));
+        for brief in [&ask, &resume, &asks, &continues] {
             assert!(!brief.contains("{startup_tasks}"));
+            assert!(brief.contains("Before anything else"), "it acts on its first message, not at launch");
         }
         let without = DEFAULT_ORCH.replace("{startup_tasks}", "");
         validate_orch(&without).expect("a custom brief may drop {startup_tasks}");

@@ -1599,10 +1599,12 @@ fn build(
         None => Default::default(),
     };
     // Read at each launch, so the toggle takes effect at the next session start.
-    context.startup = match &reopened {
-        Some(_) => Startup::Reopened,
-        None if startup_tasks_at(&layout.config_file()) => Startup::Resume,
-        None => Startup::Ask,
+    // A reopen follows the setting too (D-109).
+    context.startup = match (reopened.is_some(), startup_tasks_at(&layout.config_file())) {
+        (false, false) => Startup::Ask,
+        (false, true) => Startup::Resume,
+        (true, false) => Startup::ReopenedAsk,
+        (true, true) => Startup::ReopenedResume,
     };
     if let Some(r) = &reopened {
         note(
@@ -3307,10 +3309,10 @@ mod tests {
         assert_eq!(bench.archives().len(), 3, "the first run, the empty second, and the reopened sitting");
     }
 
-    /// The startup setting is one key in `config.json`, read at each launch;
-    /// a reopen never triages.
+    /// The startup setting is one key in `config.json`, read at each launch,
+    /// and a reopen follows it too (D-109).
     #[test]
-    fn the_startup_setting_is_read_at_each_launch_and_a_reopen_ignores_it() {
+    fn the_startup_setting_is_read_at_each_launch_and_a_reopen_follows_it() {
         let bench = Bench::new("startup");
         let config = bench.layout.config_file();
         let startup = || bench.state.0.lock().unwrap().as_ref().unwrap().context.startup;
@@ -3326,7 +3328,10 @@ mod tests {
         assert_eq!(startup(), Startup::Resume);
 
         bench.reopen(&first).expect("the first run reopens");
-        assert_eq!(startup(), Startup::Reopened);
+        assert_eq!(startup(), Startup::ReopenedResume, "a reopen follows the setting");
+        assert_eq!(set_startup_tasks_at(&config, false), Ok(false));
+        bench.reopen(&first).expect("the first run reopens again");
+        assert_eq!(startup(), Startup::ReopenedAsk);
 
         std::fs::write(&config, r#"{"startup_tasks":"true"}"#).unwrap();
         assert!(!startup_tasks_at(&config), "only a JSON true is on");

@@ -115,3 +115,6 @@ Note: D-005 is referenced elsewhere in this file (e.g. D-009, D-011) but has no 
 | [D-106](D-106.md) | S2 | alive | the startup setting is one key in config.json, read through `{startup_tasks}`; an owner from another lineage reads as an earlier run |
 | [D-107](D-107.md) | S3 | alive | a receipt is a chain entry recorded after `fleet done` sends its message; the latest one tells a release where the work sits |
 | [D-108](D-108.md) | S3 | alive | the reviewer has its own rule, a verdict and a goal handoff are chain entries, and monitor flags are read off the chain in the UI |
+| [D-106](D-106.md) | S2 | amended by D-109 | the startup setting is one key in config.json, read through `{startup_tasks}`; an owner from another lineage reads as an earlier run |
+| [D-109](D-109.md) | S2 | alive | a reopen follows the startup setting: its owners are told to continue, or the operator is asked first |
+| [D-110](D-110.md) | meta | alive | STANDING RULE: nothing starts an agent at launch — an agent acts only after a message someone sent it |

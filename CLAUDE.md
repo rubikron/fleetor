@@ -101,6 +101,13 @@ only those files.
 - **When a decision is reversed or superseded:** update its `status` field in
   the frontmatter and in the INDEX row. Don't delete the file.
 
+## Standing rules
+
+These bind all future work. Read the decision before designing anything near them.
+
+- **D-110: nothing starts an agent at launch.** The app never prompts or wakes an
+  agent by itself; an agent acts only after a message someone sent it.
+
 ## Coding Style
 
 - be direct and concise
