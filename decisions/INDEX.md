@@ -117,3 +117,4 @@ Note: D-005 is referenced elsewhere in this file (e.g. D-009, D-011) but has no 
 | [D-106](D-106.md) | S2 | amended by D-109 | the startup setting is one key in config.json, read through `{startup_tasks}`; an owner from another lineage reads as an earlier run |
 | [D-109](D-109.md) | S2 | alive | a reopen follows the startup setting: its owners are told to continue, or the operator is asked first |
 | [D-110](D-110.md) | meta | alive | STANDING RULE: nothing starts an agent at launch — an agent acts only after a message someone sent it |
+| [D-111](D-111.md) | S2 | alive | a reopened pane is given this launch's brief again; WP-27's rule R13 is reversed for the brief |

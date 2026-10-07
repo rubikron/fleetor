@@ -887,9 +887,10 @@ impl Harness for CodexCli {
     /// and the pane would hang. `current` rather than `session` because the fleet
     /// decides where a pane works; the recorded directory may have moved.
     ///
-    /// No brief rides along, for [`ClaudeCode::resume_args`]'s reason (R13) — and
-    /// here the brief would land on `codex resume`'s own `[PROMPT]` positional,
-    /// which is a second reason for the same rule.
+    /// No brief rides in argv: it would land on `codex resume`'s own `[PROMPT]`
+    /// positional. This launch's brief reaches a reopened pane through the
+    /// config key instead, because placement re-seeds `config.toml` on every
+    /// launch.
     ///
     /// **The seat's posture rides along, because a reopened pane is the pane it
     /// was** (WP-29 gap 1). This method ignored its `Seat` until then, so a
@@ -4726,11 +4727,10 @@ args = ["--root", "~/notes"]
             argv.iter().any(|a| a == BYPASS_HOOK_TRUST),
             "a fenced seat's guardrail survives the reopen: {argv:?}",
         );
-        // R13, and codex's own second reason: a brief here would land on
-        // `codex resume`'s `[PROMPT]` positional.
+        // A brief here would land on `codex resume`'s `[PROMPT]` positional.
         assert!(
             !argv.iter().any(|a| a.contains("BRIEF")),
-            "no brief on a reopen: {argv:?}",
+            "no brief in a reopen's argv: {argv:?}",
         );
     }
 

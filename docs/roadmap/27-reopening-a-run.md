@@ -2,7 +2,7 @@
 
 status: not-started size: L
 depends-on: — blocks: —
-brief-cost: 0 — R13 injects nothing into any pane and re-passes no brief, so no file under `prompts/` changes. If that reverses, this number does too.
+brief-cost: 0 — R13 injects nothing into any pane, so no file under `prompts/` changes. The brief itself is passed again on a reopen (see `ClaudeCode::resume_args`), which reverses R13's "re-passes no brief".
 
 **Visual guide: https://claude.ai/code/artifact/5b6ff072-faeb-49cf-9372-73bd41f0776c**
 
@@ -109,7 +109,7 @@ The capability is a harness answer, not a Claude Code feature. A fifteenth check
 
 **Out:**
 - **A read-only vendor-rendered view of a past run.** Explicitly rejected (R5). There is no way to look at a past run without reopening it; the Critic and evaluator still read archives directly and are untouched.
-- **Anything injected into a resumed pane** — no brief, no time-gap line, no worktree warning (R13).
+- **Anything injected into a resumed pane** — no time-gap line, no worktree warning (R13). The brief is the exception: a reopen passes this launch's brief again.
 - **Restoring worktree state.** A resumed worker gets its worktree as it stands (R7).
 - **Per-seat degradation.** All five or none (R8).
 - **Going back to an earlier point in a lineage.** The sessions moved on; only the newest is reopenable (R12).

@@ -963,6 +963,7 @@ fn a_reopened_seat_is_placed_with_its_own_recorded_session() {
 
     let mut reopening = PaneContext::baked();
     reopening.resume.insert("orch".to_string(), "SESSION-ORCH".to_string());
+    reopening.startup = fleetor_core::brief::Startup::ReopenedAsk;
     let placed = placement::place(
         PaneSpec::orch(claude_code()),
         &scratch.layout,
@@ -981,11 +982,19 @@ fn a_reopened_seat_is_placed_with_its_own_recorded_session() {
         argv.iter().any(|a| a == "SESSION-ORCH"),
         "the recorded session id never reached the argv: {argv:?}",
     );
-    // R13: the session already holds the brief it was started with, and a second
-    // copy would leave the pane reconciling two versions of its instructions.
+    let flag = claude_code().spec().brief.argv_flag.expect("Claude Code carries its brief in argv");
+    let brief = argv
+        .windows(2)
+        .find(|w| w[0] == flag)
+        .map(|w| w[1].clone())
+        .unwrap_or_else(|| panic!("a reopened pane was handed no brief: {argv:?}"));
     assert!(
-        !argv.iter().any(|a| a.contains("orchestrator")),
-        "a reopened pane must not be handed a second brief: {argv:?}",
+        brief.contains("This session was reopened"),
+        "the brief on a reopen is the one rendered for this launch: {brief}",
+    );
+    assert!(
+        argv.windows(2).any(|w| w[0] == "--system-prompt-snapshot" && w[1] == "off"),
+        "without recording off the vendor ignores a brief passed on resume: {argv:?}",
     );
 
     // The other branch, so a partially recorded lineage cannot silently hand a
@@ -1003,5 +1012,37 @@ fn a_reopened_seat_is_placed_with_its_own_recorded_session() {
     assert!(
         !argv.iter().any(|a| a == "--resume"),
         "a seat with no recorded session must come up fresh: {argv:?}",
+    );
+}
+
+/// A reopened codex pane runs under this launch's brief: its carrier is a config
+/// key, and placement re-seeds the pane's `config.toml` on a reopen too.
+#[test]
+fn a_reopened_codex_seat_is_seeded_with_this_launchs_brief() {
+    use fleetor_core::brief::Startup;
+    use fleetor_shell::placement::codex::codex;
+
+    let scratch = Scratch::new("reopen-codex-brief");
+    let host = host_with_fleet_bin(&scratch.root.join("fleet"));
+    let seeded_brief = |context: &PaneContext| {
+        placement::place(PaneSpec::orch(codex()), &scratch.layout, &host, &scratch.target, context)
+            .expect("the orchestrator is placed");
+        let config = scratch.layout.pane_config(&context.sessions, PaneId::Orch);
+        let doc: toml_edit::DocumentMut =
+            std::fs::read_to_string(config.join("config.toml")).unwrap().parse().unwrap();
+        let key = codex().spec().brief.config_key.expect("codex carries its brief in a config key");
+        std::fs::read_to_string(doc[key].as_str().expect("the key names a file")).unwrap()
+    };
+
+    let mut first = PaneContext::baked();
+    first.startup = Startup::Ask;
+    assert!(!seeded_brief(&first).contains("This session was reopened"));
+
+    let mut reopening = PaneContext::baked();
+    reopening.resume.insert("orch".to_string(), "SESSION-ORCH".to_string());
+    reopening.startup = Startup::ReopenedAsk;
+    assert!(
+        seeded_brief(&reopening).contains("This session was reopened"),
+        "the reopen left the first launch's brief in codex's config",
     );
 }

@@ -1130,13 +1130,23 @@ fn checkpoint_15_a_harness_that_claims_it_resumes_can_build_the_argv_that_does_i
                  resumes the wrong session or none, and both look like a working pane",
                 pass.spec.name,
             );
-            assert!(
-                !argv.iter().any(|arg| arg.contains("BRIEF")),
-                "{}: a reopened pane must not be handed a brief ({argv:?}) — the session already \
-                 holds the one it was started with, and a second copy leaves the pane \
-                 reconciling two versions of its own instructions (R13)",
-                pass.spec.name,
-            );
+            // A harness whose brief travels in argv passes it again on a reopen,
+            // behind the same flag; one whose carrier is a config key never does.
+            match pass.spec.brief.argv_flag {
+                Some(flag) => assert!(
+                    argv.windows(2).any(|w| w[0] == flag && w[1] == "BRIEF"),
+                    "{}: a reopened pane was not handed this launch's brief behind {flag} \
+                     ({argv:?}) — a session with no turns has no recorded prompt, and one \
+                     with history keeps its old brief",
+                    pass.spec.name,
+                ),
+                None => assert!(
+                    !argv.iter().any(|arg| arg.contains("BRIEF")),
+                    "{}: the brief travels in a config key, so it must not reach the argv \
+                     ({argv:?})",
+                    pass.spec.name,
+                ),
+            }
         }
 
         if let fleetor_shell::placement::harness::Resume::NotSupported { why } = pass.spec.resume {
@@ -1152,7 +1162,7 @@ fn checkpoint_15_a_harness_that_claims_it_resumes_can_build_the_argv_that_does_i
 }
 
 /// **Checkpoint 15's other half — a reopened pane is the pane it was** (WP-29,
-/// gap 1; R13).
+/// gap 1).
 ///
 /// The test above proves a harness can build *an* argv. It does not prove the
 /// argv is as strong as the one a fresh launch gets, and that gap hid a real
@@ -1160,14 +1170,13 @@ fn checkpoint_15_a_harness_that_claims_it_resumes_can_build_the_argv_that_does_i
 /// `_seat` and threw it away, so a reopened codex worker came back on the
 /// operator's default model and without `--dangerously-bypass-hook-trust` — the
 /// argument that makes the fleet's own `PreToolUse` hook run at all. A pane
-/// whose write guardrail is silently absent is exactly what R13 guarantees
-/// nobody in the pane will tell you about.
+/// whose write guardrail is silently absent is a failure nobody in the pane
+/// will tell you about.
 ///
-/// **The brief is the one thing a resume must drop**, so it and its flag are
-/// excluded; everything else a fresh launch carries must survive. Asserted as
-/// containment rather than equality, because a resume argv legitimately holds
-/// things a fresh one does not — a subcommand, a session id, a vendor's own
-/// defence against its picker.
+/// **Everything a fresh launch carries must survive, the brief included.**
+/// Asserted as containment rather than equality, because a resume argv
+/// legitimately holds things a fresh one does not — a subcommand, a session id,
+/// a vendor's own defence against its picker.
 #[test]
 fn checkpoint_15_a_reopened_pane_keeps_every_posture_argument_a_fresh_one_gets() {
     let seen = for_each_registered("cp15-posture", |pass| {
@@ -1187,22 +1196,12 @@ fn checkpoint_15_a_reopened_pane_keeps_every_posture_argument_a_fresh_one_gets()
             .resume_args(&seat, "SESSION-XYZ")
             .expect("a harness claiming resume support builds an argv");
 
-        let brief_flag = pass.spec.brief.argv_flag;
-        let mut carrying_the_brief = false;
         for arg in &fresh {
-            if carrying_the_brief {
-                carrying_the_brief = false;
-                continue;
-            }
-            if Some(arg.as_str()) == brief_flag {
-                carrying_the_brief = true;
-                continue;
-            }
             assert!(
                 resumed.contains(arg),
                 "{}: a fresh launch carries {arg:?} and a reopen does not ({resumed:?}) — a \
                  reopened pane must come back as the pane it was, and a posture argument \
-                 dropped here fails silently inside a pane R13 forbids telling",
+                 dropped here fails silently",
                 pass.spec.name,
             );
         }
