@@ -43,6 +43,7 @@ const MS_PER_DAY: i64 = 86_400_000;
 /// The agent-facing export, written into every run at archive time.
 const EVENTS_JSON: &str = "events.json";
 const TASKS_JSON: &str = "tasks.json";
+const RUN_JSON: &str = "run.json";
 /// What the run is and what else is in its directory, for a reader arriving cold.
 const MANIFEST_JSON: &str = "manifest.json";
 
@@ -125,6 +126,22 @@ pub struct RunRecord {
     /// it on the row is what keeps History from offering a click that fails.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cannot_reopen: Option<String>,
+    /// Where the run is on its way into History (D-099). Derived at
+    /// [`list_all`] time from where its folder is, never trusted from the index.
+    #[serde(default)]
+    pub state: RunState,
+}
+
+/// One row, three states: the run id is the same through all of them.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RunState {
+    /// The fleet that is up.
+    Running,
+    /// Staged under `_shell/archiving/`, its archive not finished.
+    Archiving,
+    #[default]
+    Archived,
 }
 
 /// What the live run knows about itself before it has a log worth reading:
@@ -236,7 +253,13 @@ fn live_db(shell: &Path) -> PathBuf {
 }
 
 fn live_meta(shell: &Path) -> PathBuf {
-    shell.join("run.json")
+    shell.join(RUN_JSON)
+}
+
+/// Where a run torn down by a launch waits for its archive to be finished,
+/// one folder per run id (D-099).
+fn staging_dir(shell: &Path) -> PathBuf {
+    shell.join("archiving")
 }
 
 // --- the live run -------------------------------------------------------------
@@ -270,6 +293,7 @@ pub fn new_run_id(shell: &Path, runs: &Path, started_ms: i64) -> String {
     let base = timestamp_id_for(started_ms);
     let taken = |id: &str| {
         runs.join(id).exists()
+            || staging_dir(shell).join(id).exists()
             || crate::placement::pane_config_run(shell, &SessionsId::new(id)).exists()
     };
     (1u32..)
@@ -434,91 +458,192 @@ pub fn seed_reopen(shell: &Path, runs: &Path, id: &str) -> Result<Reopened, Stri
 
 // --- rotation -----------------------------------------------------------------
 
-/// Archive the previous run, if there is one, and leave `_shell` ready for a
-/// fresh database. Returns the notices the caller should put on the feed.
+/// Archive whatever is not archived yet and leave `_shell` ready for a fresh
+/// database: every staged run, then the live slot. Returns the notices the
+/// caller should put on the feed.
 ///
-/// Called before the store is opened. Never returns `Err`: see the module doc.
+/// The synchronous form of the one archive path, for app open and quit. A
+/// launch calls [`stage`] itself and hands [`finish`] to the background.
+/// Never returns `Err`: see the module doc.
 pub fn rotate(shell: &Path, runs: &Path, now_ms: i64) -> Vec<(NoticeLevel, String)> {
+    let mut notices = sweep(shell, runs);
+    let (staged, staging) = stage(shell, runs, now_ms);
+    notices.extend(staging);
+    if let Some(id) = staged {
+        notices.extend(finish(shell, runs, &id));
+    }
+    notices
+}
+
+/// **Stage the live run: the fast, foreground half of archiving** (D-099).
+///
+/// Moves the log and the run's identity into `_shell/archiving/<id>/`, with
+/// its session ids, transcripts and `tasks.json` — everything that must be read
+/// before the next fleet's panes exist, because a reopen shares its lineage's
+/// seat directories. Answers the staged run's id, or `None` with no live run.
+///
+/// The log moves last: a folder without one was interrupted before anything
+/// left the live slot, and [`sweep`] discards it.
+pub fn stage(shell: &Path, runs: &Path, now_ms: i64) -> (Option<String>, Vec<(NoticeLevel, String)>) {
     let live = live_db(shell);
     if !live.is_file() {
-        return Vec::new(); // first run on this machine — nothing to archive
+        return (None, Vec::new()); // first run on this machine — nothing to archive
     }
+    let left_in_place = |e: String| {
+        (
+            None,
+            vec![(
+                NoticeLevel::Warn,
+                format!(
+                    "the previous run was left in place, not archived ({e}). \
+                     Its log is still at {} and the fleet is starting on top of it.",
+                    live.display()
+                ),
+            )],
+        )
+    };
 
     let mut meta = read_live_meta(shell);
     let started = meta.started_ms.or_else(|| file_started_ms(&live)).unwrap_or(now_ms);
     let claimed = meta.id.clone().unwrap_or_else(|| timestamp_id_for(started));
-    let dest = match reserve(runs, &claimed) {
+    let dir = match reserve(shell, runs, &claimed) {
         Ok(dir) => dir,
-        Err(e) => return vec![(NoticeLevel::Warn, format!("could not archive the previous run: {e}"))],
+        Err(e) => return left_in_place(e.to_string()),
     };
+    let id = dir.file_name().unwrap_or_default().to_string_lossy().to_string();
 
+    // **Which directory this run's seats were in** (R4). A run begun before
+    // WP-27 has no answer and gets none invented: its `session_id`s stay `None`
+    // and R8 refuses to reopen it.
+    let sessions = meta.sessions.clone().map(SessionsId::new);
+    if let Some(sessions) = &sessions {
+        // Checkpoint 15's reader (R6): the run is over, so the id is settled.
+        capture_session_ids(shell, sessions, &mut meta.panes);
+        walk_transcripts(shell, sessions, &dir);
+    }
+    meta.id = Some(id.clone());
     let mut notices = Vec::new();
-    if let Err(e) = archive_files(&live, &dest) {
-        let _ = std::fs::remove_dir(&dest);
-        return vec![(
-            NoticeLevel::Warn,
-            format!(
-                "the previous run was left in place, not archived ({e}). \
-                 Its log is still at {} and the fleet is starting on top of it.",
-                live.display()
-            ),
-        )];
+    notices.extend(stage_tasks(shell, &dir, &id, meta.target.as_deref()));
+
+    let staged = serde_json::to_string_pretty(&meta)
+        .map_err(|e| e.to_string())
+        .and_then(|text| std::fs::write(dir.join(RUN_JSON), text).map_err(|e| e.to_string()))
+        .and_then(|()| std::fs::rename(&live, dir.join("state.db")).map_err(|e| e.to_string()));
+    if let Err(e) = staged {
+        let _ = std::fs::remove_dir_all(&dir);
+        return left_in_place(e);
+    }
+    for suffix in ["-wal", "-shm"] {
+        let from = with_suffix(&live, suffix);
+        if from.is_file() {
+            let _ = std::fs::rename(&from, dir.join(format!("state.db{suffix}")));
+        }
     }
     let _ = std::fs::remove_file(live_meta(shell));
+    (Some(id), notices)
+}
 
-    // **Which directory this run's seats were in** (R4). A run archived before
-    // WP-27 has no answer and gets none invented: its transcripts are wherever the
-    // old flat layout left them, its `session_id`s stay `None`, and R8 refuses to
-    // reopen it — which the History row says out loud rather than offering a click
-    // that fails.
-    let sessions = meta.sessions.clone().map(SessionsId::new);
-    let transcripts = match &sessions {
-        Some(id) => walk_transcripts(shell, id, &dest),
-        None => 0,
-    };
-    // **Checkpoint 15's reader runs here and only here** (R6): the run is over, so
-    // the id is settled, and nothing polled a live pane to get it (Tier 1.4).
-    if let Some(id) = &sessions {
-        capture_session_ids(shell, id, &mut meta.panes);
+/// One finish at a time: the background finish a launch handed off, the sweep
+/// and a quit can all reach the same staged folder.
+static FINISHING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Keep every finish waiting, so a test can look at a run mid-archive.
+#[cfg(test)]
+pub(crate) fn hold_finishes() -> std::sync::MutexGuard<'static, ()> {
+    FINISHING.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// **Finish a staged run: the slow half of archiving** (D-099).
+///
+/// Freezes the log to one file, writes the readable export and the manifest,
+/// then moves the whole folder into `runs/` in one rename — so History never
+/// holds half an archive, and an interrupted finish is simply run again.
+/// A run that is not staged (already finished, or never was) is a no-op.
+pub fn finish(shell: &Path, runs: &Path, id: &str) -> Vec<(NoticeLevel, String)> {
+    let _one = FINISHING.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = staging_dir(shell).join(id);
+    let db = dir.join("state.db");
+    if !db.is_file() {
+        let _ = std::fs::remove_dir_all(&dir);
+        return Vec::new();
     }
+    let meta = read_meta(&dir.join(RUN_JSON));
+    let mut notices = Vec::new();
 
-    let id = dest.file_name().unwrap_or_default().to_string_lossy().to_string();
-    match &meta.target {
-        Some(target) => {
-            if let Err(e) = archive_tasks(shell, &dest, &id, Path::new(target)) {
-                notices.push((NoticeLevel::Warn, format!("archived run {id}, but its tasks.json did not write: {e}")));
-            }
+    // A log that will not freeze — corrupt, or held open — is archived as the
+    // three files it is: those are the runs whose evidence is worth keeping.
+    if archive::freeze(&db).is_ok() {
+        for suffix in ["-wal", "-shm"] {
+            let _ = std::fs::remove_file(with_suffix(&db, suffix));
         }
-        None => notices.push((
-            NoticeLevel::Info,
-            format!("run {id} recorded no target, so its archive has no tasks.json"),
-        )),
     }
-    match record_for(&dest, &id, meta.target.as_deref()) {
+    if !dir.join(TASKS_JSON).is_file() {
+        notices.extend(stage_tasks(shell, &dir, id, meta.target.as_deref()));
+    }
+
+    let dest = match free_archive(runs, id) {
+        Ok(dest) => dest,
+        Err(e) => return vec![(NoticeLevel::Warn, format!("could not archive run {id}: {e}"))],
+    };
+    let id = dest.file_name().unwrap_or_default().to_string_lossy().to_string();
+    let record = match record_for(&dir, &id, meta.target.as_deref()) {
         Ok(mut record) => {
-            record.transcripts = transcripts;
-            // The two identity fields a reopen is gated on (R4, R1). They come off
-            // the live meta rather than the log, because neither is derivable from
-            // what the panes said — the same reason `target` is carried here.
+            // The two identity fields a reopen is gated on (R4, R1), off the
+            // run's own meta because neither is derivable from the log.
             record.sessions = meta.sessions.clone();
             record.parent = meta.parent.clone();
-            if let Err(e) = write_agent_view(&dest, &record, &meta.panes) {
+            if let Err(e) = write_agent_view(&dir, &record, &meta.panes) {
                 notices.push((
                     NoticeLevel::Warn,
                     format!("archived run {id}, but its JSON export did not write: {e}"),
                 ));
             }
-            let label = record.label.clone();
-            if let Err(e) = upsert(runs, record) {
-                notices.push((NoticeLevel::Warn, format!("archived run {id}, but its index entry did not save: {e}")));
-            } else {
-                notices.push((NoticeLevel::Info, format!("previous run archived as “{label}” — see History")));
-            }
+            Some(record)
         }
-        Err(e) => notices
-            .push((NoticeLevel::Warn, format!("archived run {id}, but could not read it back: {e}"))),
+        Err(e) => {
+            notices.push((NoticeLevel::Warn, format!("archived run {id}, but could not read it back: {e}")));
+            None
+        }
+    };
+
+    if let Err(e) = std::fs::rename(&dir, &dest) {
+        notices.push((
+            NoticeLevel::Warn,
+            format!("run {id} is staged at {} and could not be moved into History: {e}", dir.display()),
+        ));
+        return notices;
+    }
+    let _ = std::fs::remove_file(dest.join(RUN_JSON));
+    if let Some(mut record) = record {
+        record.bytes = dir_bytes(&dest);
+        let label = record.label.clone();
+        if let Err(e) = upsert(runs, record) {
+            notices.push((NoticeLevel::Warn, format!("archived run {id}, but its index entry did not save: {e}")));
+        } else {
+            notices.push((NoticeLevel::Info, format!("previous run archived as “{label}” — see History")));
+        }
     }
     notices
+}
+
+/// Finish every run a crash, a quit or a launch left staged.
+pub fn sweep(shell: &Path, runs: &Path) -> Vec<(NoticeLevel, String)> {
+    let Ok(staged) = std::fs::read_dir(staging_dir(shell)) else { return Vec::new() };
+    let mut ids: Vec<String> =
+        staged.flatten().map(|entry| entry.file_name().to_string_lossy().to_string()).collect();
+    ids.sort();
+    ids.iter().flat_map(|id| finish(shell, runs, id)).collect()
+}
+
+/// The `tasks.json` hook (D-099, Coordination C): written at stage, and by a
+/// finish for a staged folder that lacks it.
+fn stage_tasks(shell: &Path, dir: &Path, id: &str, target: Option<&str>) -> Option<(NoticeLevel, String)> {
+    match target {
+        Some(target) => archive_tasks(shell, dir, id, Path::new(target))
+            .err()
+            .map(|e| (NoticeLevel::Warn, format!("archived run {id}, but its tasks.json did not write: {e}"))),
+        None => Some((NoticeLevel::Info, format!("run {id} recorded no target, so its archive has no tasks.json"))),
+    }
 }
 
 /// Write the archived run's `tasks.json`: the goals and tasks this run
@@ -548,32 +673,6 @@ fn archived_task_count(dir: &Path) -> Option<i64> {
     let json: serde_json::Value = serde_json::from_str(&text).ok()?;
     Some(json.get("tasks")?.as_array()?.len() as i64)
 }
-
-/// Freeze the live database and move it, leaving one self-contained file.
-///
-/// The fallback is not decoration. Freezing opens the database, and a database
-/// that cannot be opened — corrupt, or held by something that outlived its
-/// process — must still be archivable, because those are exactly the runs whose
-/// evidence is worth keeping. Moving all three files preserves it byte for byte
-/// (`docs/notes/run-rotation-notes.md`, strategy C).
-fn archive_files(live: &Path, dest: &Path) -> std::io::Result<()> {
-    if archive::freeze(live).is_ok() {
-        std::fs::rename(live, dest.join("state.db"))?;
-        for suffix in ["-wal", "-shm"] {
-            let _ = std::fs::remove_file(with_suffix(live, suffix));
-        }
-        return Ok(());
-    }
-    std::fs::rename(live, dest.join("state.db"))?;
-    for suffix in ["-wal", "-shm"] {
-        let from = with_suffix(live, suffix);
-        if from.is_file() {
-            std::fs::rename(&from, dest.join(format!("state.db{suffix}")))?;
-        }
-    }
-    Ok(())
-}
-
 
 /// Take one transcript into the archive the way its harness says it may be taken,
 /// and answer whether it arrived.
@@ -786,21 +885,36 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     path.with_file_name(name)
 }
 
-/// Claim an unused directory for `id`, disambiguating rather than overwriting.
-/// Two runs can share a start second — a fast restart, or a clock that did not
-/// move — and silently merging them would lose one.
-fn reserve(runs: &Path, id: &str) -> std::io::Result<PathBuf> {
-    std::fs::create_dir_all(runs)?;
-    for attempt in 0..100 {
-        let name = if attempt == 0 { id.to_string() } else { format!("{id}-{}", attempt + 1) };
-        let dir = runs.join(&name);
-        match std::fs::create_dir(&dir) {
-            Ok(()) => return Ok(dir),
+/// Claim an unused staging folder for `id`, disambiguating rather than
+/// overwriting. Two runs can share a start second — a fast restart, or a clock
+/// that did not move — and silently merging them would lose one.
+fn reserve(shell: &Path, runs: &Path, id: &str) -> std::io::Result<PathBuf> {
+    let staging = staging_dir(shell);
+    std::fs::create_dir_all(&staging)?;
+    for name in variants(id) {
+        if runs.join(&name).exists() {
+            continue;
+        }
+        match std::fs::create_dir(staging.join(&name)) {
+            Ok(()) => return Ok(staging.join(&name)),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(e),
         }
     }
     Err(std::io::Error::other(format!("{id} and 99 variants of it are all taken")))
+}
+
+/// Where a staged run lands in `runs/`: its own id, which [`reserve`] kept free.
+fn free_archive(runs: &Path, id: &str) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(runs)?;
+    variants(id)
+        .map(|name| runs.join(name))
+        .find(|dir| !dir.exists())
+        .ok_or_else(|| std::io::Error::other(format!("{id} and 99 variants of it are all taken")))
+}
+
+fn variants(id: &str) -> impl Iterator<Item = String> + '_ {
+    (1..=100).map(move |n| if n == 1 { id.to_string() } else { format!("{id}-{n}") })
 }
 
 // --- the index ----------------------------------------------------------------
@@ -811,6 +925,32 @@ fn reserve(runs: &Path, id: &str) -> std::io::Result<PathBuf> {
 /// dropped, and a directory the index has never heard of is read and added. So
 /// deleting `index.json` costs labels and nothing else.
 pub fn list(runs: &Path) -> Vec<RunRecord> {
+    ordered(archived(runs))
+}
+
+/// **History as the operator sees it** (D-099): the archived runs, every run
+/// still staged, and the live one when a fleet is up — `live_tasks` is its
+/// count from the live task store. One row per lineage, newest first.
+pub fn list_all(shell: &Path, runs: &Path, live_tasks: Option<i64>) -> Vec<RunRecord> {
+    // Staged before archived: a finish that lands between the two reads shows
+    // the run twice here, never zero times, and the archived copy wins.
+    let mut rows = staged(shell);
+    if let Some(tasks) = live_tasks {
+        rows.extend(running(shell, tasks));
+    }
+    let done = archived(runs);
+    rows.retain(|row| !done.iter().any(|r| r.id == row.id));
+    rows.extend(done);
+    ordered(rows)
+}
+
+fn ordered(rows: Vec<RunRecord>) -> Vec<RunRecord> {
+    let mut out = collapse_lineages(rows);
+    out.sort_by(|a, b| b.started_ms.cmp(&a.started_ms).then_with(|| b.id.cmp(&a.id)));
+    out
+}
+
+fn archived(runs: &Path) -> Vec<RunRecord> {
     let mut indexed = read_index(runs);
     let mut out = Vec::new();
     let Ok(entries) = std::fs::read_dir(runs) else { return out };
@@ -843,15 +983,79 @@ pub fn list(runs: &Path) -> Vec<RunRecord> {
             .as_ref()
             .and_then(|m| m.get("run")?.get("parent")?.as_str().map(str::to_string));
         record.cannot_reopen = reopen_blocker(runs, &id);
+        record.state = RunState::Archived;
         out.push(record);
     }
 
-    out = collapse_lineages(out);
-    out.sort_by(|a, b| b.started_ms.cmp(&a.started_ms).then_with(|| b.id.cmp(&a.id)));
     if healed || !indexed.is_empty() {
         let _ = write_index(runs, &out);
     }
     out
+}
+
+/// Every run in `_shell/archiving/`. One whose log cannot be read right now —
+/// a finish may be freezing it — still gets its row, without counts.
+fn staged(shell: &Path) -> Vec<RunRecord> {
+    let Ok(entries) = std::fs::read_dir(staging_dir(shell)) else { return Vec::new() };
+    entries
+        .flatten()
+        .filter(|entry| entry.path().join("state.db").is_file())
+        .map(|entry| {
+            let dir = entry.path();
+            let id = entry.file_name().to_string_lossy().to_string();
+            let meta = read_meta(&dir.join(RUN_JSON));
+            let mut record = record_for(&dir, &id, meta.target.as_deref())
+                .unwrap_or_else(|_| bare_record(&id, &meta));
+            record.sessions = meta.sessions;
+            record.parent = meta.parent;
+            record.state = RunState::Archiving;
+            record
+        })
+        .collect()
+}
+
+/// The live run, read from the live slot. `None` for a run begun before runs
+/// claimed their id at launch, which has no row identity to keep.
+fn running(shell: &Path, tasks: i64) -> Option<RunRecord> {
+    let meta = read_live_meta(shell);
+    let id = meta.id.clone()?;
+    let db = live_db(shell);
+    let mut record = digest_record(&db, &id, meta.target.as_deref()).unwrap_or_else(|_| bare_record(&id, &meta));
+    record.tasks = tasks;
+    record.bytes = std::fs::metadata(&db).map(|m| m.len()).unwrap_or(0);
+    record.sessions = meta.sessions;
+    record.parent = meta.parent;
+    record.state = RunState::Running;
+    Some(record)
+}
+
+fn bare_record(id: &str, meta: &LiveMeta) -> RunRecord {
+    RunRecord {
+        id: id.to_string(),
+        label: suggest_label(meta.target.as_deref(), None),
+        target: meta.target.clone(),
+        started_ms: meta.started_ms,
+        ended_ms: None,
+        events: 0,
+        messages: 0,
+        tasks: 0,
+        bytes: 0,
+        transcripts: 0,
+        sessions: None,
+        parent: None,
+        reopened: 0,
+        cannot_reopen: None,
+        state: RunState::Archived,
+    }
+}
+
+/// How many goals and tasks `run_id` touched, from a task store's events — the
+/// same rule [`archive_tasks`] writes `tasks.json` by.
+pub fn tasks_touched(events: &[(i64, FleetEvent)], run_id: &str) -> i64 {
+    fleetor_core::task::board(events.iter().map(|(_, event)| event))
+        .into_iter()
+        .filter(|record| record.chain.iter().any(|line| line.run == run_id))
+        .count() as i64
 }
 
 /// Give a run a new label. The only mutable thing about an archive.
@@ -911,7 +1115,16 @@ fn run_dir(runs: &Path, id: &str) -> Result<PathBuf, String> {
 }
 
 fn record_for(dir: &Path, id: &str, target: Option<&str>) -> Result<RunRecord, String> {
-    let digest = archive::digest(&dir.join("state.db")).map_err(|e| e.to_string())?;
+    let mut record = digest_record(&dir.join("state.db"), id, target)?;
+    record.tasks = archived_task_count(dir).unwrap_or(record.tasks);
+    record.bytes = dir_bytes(dir);
+    record.transcripts = count_transcripts(dir);
+    Ok(record)
+}
+
+/// What a log says about its run, and nothing its folder would add.
+fn digest_record(db: &Path, id: &str, target: Option<&str>) -> Result<RunRecord, String> {
+    let digest = archive::digest(db).map_err(|e| e.to_string())?;
     Ok(RunRecord {
         label: suggest_label(target, digest.headline.as_deref()),
         id: id.to_string(),
@@ -920,13 +1133,14 @@ fn record_for(dir: &Path, id: &str, target: Option<&str>) -> Result<RunRecord, S
         ended_ms: digest.last_ts,
         events: digest.events,
         messages: digest.messages,
-        tasks: archived_task_count(dir).unwrap_or(digest.tasks),
-        bytes: dir_bytes(dir),
-        transcripts: count_transcripts(dir),
+        tasks: digest.tasks,
+        bytes: 0,
+        transcripts: 0,
         sessions: None,
         parent: None,
         reopened: 0,
         cannot_reopen: None,
+        state: RunState::Archived,
     })
 }
 
@@ -1178,7 +1392,11 @@ pub fn export(runs: &Path, id: &str, to: &Path) -> Result<(), String> {
 }
 
 fn read_live_meta(shell: &Path) -> LiveMeta {
-    std::fs::read_to_string(live_meta(shell))
+    read_meta(&live_meta(shell))
+}
+
+fn read_meta(file: &Path) -> LiveMeta {
+    std::fs::read_to_string(file)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default()
@@ -2044,9 +2262,103 @@ mod tests {
     fn two_runs_that_start_in_the_same_second_do_not_overwrite_each_other() {
         let root = scratch("collide");
         let runs = runs_dir(&root);
-        let a = reserve(&runs, "2026-08-07T10-31-30Z").unwrap();
-        let b = reserve(&runs, "2026-08-07T10-31-30Z").unwrap();
+        let shell = root.join("_shell");
+        let a = reserve(&shell, &runs, "2026-08-07T10-31-30Z").unwrap();
+        let b = reserve(&shell, &runs, "2026-08-07T10-31-30Z").unwrap();
         assert_ne!(a, b);
         assert!(b.file_name().unwrap().to_string_lossy().ends_with("-2"));
+        // An id already in History is not handed out again either.
+        std::fs::create_dir_all(runs.join("2026-08-07T10-31-30Z-3")).unwrap();
+        let c = reserve(&shell, &runs, "2026-08-07T10-31-30Z").unwrap();
+        assert!(c.file_name().unwrap().to_string_lossy().ends_with("-4"));
+    }
+
+    /// **A run staged and then abandoned — a crash, a quit — is finished by the
+    /// next sweep** (story 34), and shows as archiving until it is.
+    #[test]
+    fn a_staged_run_left_by_a_crash_is_finished_by_the_sweep() {
+        let root = scratch("staged-crash");
+        let (shell, runs) = (root.join("_shell"), runs_dir(&root));
+        write_live(&shell, &["one", "two"]);
+
+        let (staged, _) = stage(&shell, &runs, 0);
+        let id = staged.expect("a live run to stage");
+        assert!(!shell.join("state.db").exists(), "the live slot is free for the next fleet");
+        assert!(list(&runs).is_empty(), "nothing is in History yet");
+        let rows = list_all(&shell, &runs, None);
+        assert_eq!((rows.len(), rows[0].id.as_str(), rows[0].state), (1, id.as_str(), RunState::Archiving));
+
+        let notices = sweep(&shell, &runs);
+        assert!(notices.iter().any(|(_, text)| text.contains("archived as")), "{notices:?}");
+        let rows = list_all(&shell, &runs, None);
+        assert_eq!((rows.len(), rows[0].id.as_str(), rows[0].state), (1, id.as_str(), RunState::Archived));
+        assert!(!staging_dir(&shell).join(&id).exists());
+        assert!(sweep(&shell, &runs).is_empty(), "and a second sweep finds nothing");
+    }
+
+    /// A stage interrupted before the log moved left the live slot whole, so
+    /// its half-made folder is discarded rather than archived.
+    #[test]
+    fn a_staging_folder_with_no_log_is_discarded() {
+        let root = scratch("staged-empty");
+        let (shell, runs) = (root.join("_shell"), runs_dir(&root));
+        let half = staging_dir(&shell).join("2026-08-07T10-31-30Z");
+        std::fs::create_dir_all(half.join("transcripts")).unwrap();
+
+        assert!(sweep(&shell, &runs).is_empty());
+        assert!(!half.exists());
+        assert!(list_all(&shell, &runs, None).is_empty());
+    }
+
+    /// **Finish leaves one self-contained log** (story 40): no journal beside it
+    /// in History, and none left behind in the shell.
+    #[test]
+    fn a_finished_archive_is_a_single_file_database() {
+        let root = scratch("single-file");
+        let (shell, runs) = (root.join("_shell"), runs_dir(&root));
+        // A log abandoned mid-write: its rows are still in the journal.
+        let held = a_live_thread_store(&shell.join("state.db"), "kept");
+        assert!(shell.join("state.db-wal").is_file(), "the fixture is a database with a live journal");
+
+        let (staged, _) = stage(&shell, &runs, 0);
+        let id = staged.unwrap();
+        let staged_dir = staging_dir(&shell).join(&id);
+        assert!(staged_dir.join("state.db-wal").is_file(), "the journal is staged with its database");
+        drop(held);
+        finish(&shell, &runs, &id);
+
+        let dest = runs.join(&id);
+        assert!(holds(&dest.join("state.db"), "kept"), "the journal's rows are in the one file");
+        for suffix in ["-wal", "-shm"] {
+            assert!(!dest.join(format!("state.db{suffix}")).exists(), "no state.db{suffix} in the archive");
+            assert!(!shell.join(format!("state.db{suffix}")).exists());
+        }
+    }
+
+    /// **What a pane writes after staging is the next run's** (story 39): a
+    /// reopen shares its lineage's seat directory, so the archive holds only
+    /// what was there when the run was staged.
+    #[test]
+    fn a_transcript_written_after_staging_is_not_in_the_archive() {
+        let root = scratch("staged-transcripts");
+        let (shell, runs) = (root.join("_shell"), runs_dir(&root));
+        write_live(&shell, &["one"]);
+        let sessions = SessionsId::new("lineage");
+        begin(&shell, 0, Path::new("/work/repo"), &sessions, None);
+        let projects = crate::placement::pane_config_run(&shell, &sessions).join("orch/projects/p");
+        std::fs::create_dir_all(&projects).unwrap();
+        std::fs::write(projects.join("before.jsonl"), "{}").unwrap();
+
+        let (staged, _) = stage(&shell, &runs, 0);
+        let id = staged.unwrap();
+        // The resumed pane of the next run, writing into the same directory.
+        std::fs::write(projects.join("after.jsonl"), "{}").unwrap();
+        std::fs::write(projects.join("before.jsonl"), "{}\n{}").unwrap();
+        finish(&shell, &runs, &id);
+
+        let archived = runs.join(&id).join("transcripts/orch");
+        assert_eq!(std::fs::read_to_string(archived.join("before.jsonl")).unwrap(), "{}");
+        assert!(!archived.join("after.jsonl").exists());
+        assert_eq!(list(&runs)[0].transcripts, 1);
     }
 }

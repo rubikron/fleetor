@@ -761,17 +761,14 @@ impl PaneRegistry {
     /// silent, because there is nowhere left to report to.
     pub fn kill_all(&self) {
         let Ok(mut panes) = self.panes.lock() else { return };
-        for (_, mut entry) in panes.drain() {
-            terminate(&mut entry);
-        }
+        let mut going: Vec<Pane> = panes.drain().map(|(_, pane)| pane).collect();
         // Panes still coming up are reaped here too. A window closed during a
         // bring-up would otherwise leave the one thing this module's `kill_all`
         // exists to prevent: a live agent process with nobody watching it.
         if let Ok(mut waking) = self.waking.lock() {
-            for (_, mut entry) in waking.drain() {
-                terminate(&mut entry);
-            }
+            going.extend(waking.drain().map(|(_, pane)| pane));
         }
+        terminate_all(&mut going);
         crate::orphans::write_registry(&self.registry_path, &[]);
     }
 
@@ -1146,28 +1143,38 @@ fn record_live_pids(
 /// alone leaves them running with no terminal and nobody watching — which for an
 /// Opus session is a bill that keeps growing after the window is closed.
 fn terminate(pane: &mut Pane) {
-    pane.state.store(DEAD, Ordering::Relaxed);
-    let pid = pane.child.process_id();
+    terminate_all(std::slice::from_mut(pane));
+}
 
-    #[cfg(unix)]
-    if let Some(pid) = pid {
-        unsafe { libc::killpg(pid as i32, libc::SIGTERM) };
+/// [`terminate`] for several panes at once: every group is signalled first and
+/// they share one grace period, so a teardown waits once, not once per pane.
+fn terminate_all(panes: &mut [Pane]) {
+    for pane in panes.iter_mut() {
+        pane.state.store(DEAD, Ordering::Relaxed);
+        #[cfg(unix)]
+        if let Some(pid) = pane.child.process_id() {
+            unsafe { libc::killpg(pid as i32, libc::SIGTERM) };
+        }
     }
 
+    let mut left: Vec<&mut Pane> = panes.iter_mut().collect();
     let deadline = Instant::now() + TERM_GRACE;
-    while Instant::now() < deadline {
-        if matches!(pane.child.try_wait(), Ok(Some(_))) {
-            return;
+    loop {
+        left.retain_mut(|pane| !matches!(pane.child.try_wait(), Ok(Some(_))));
+        if left.is_empty() || Instant::now() >= deadline {
+            break;
         }
         std::thread::sleep(TERM_POLL);
     }
 
-    #[cfg(unix)]
-    if let Some(pid) = pid {
-        unsafe { libc::killpg(pid as i32, libc::SIGKILL) };
+    for pane in left {
+        #[cfg(unix)]
+        if let Some(pid) = pane.child.process_id() {
+            unsafe { libc::killpg(pid as i32, libc::SIGKILL) };
+        }
+        let _ = pane.child.kill();
+        let _ = pane.child.wait();
     }
-    let _ = pane.child.kill();
-    let _ = pane.child.wait();
 }
 
 // --- Tauri commands (thin wrappers) -------------------------------------------

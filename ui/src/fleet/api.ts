@@ -21,6 +21,7 @@ import {
 
 const FLEET_EVENT = "fleet://event";
 const FLEET_LAUNCHING = "fleet://launching";
+const FLEET_ARCHIVED = "fleet://archived";
 const FLEET_TASK = "fleet://task";
 
 /// What a launch brings up: a new fleet on the gate's picks, or a past run on
@@ -45,7 +46,12 @@ export function fetchConfig(): Promise<FleetConfig> {
   return invoke<FleetConfig>("fleet_config");
 }
 
-/// Ask the operator for a repo to point the fleet at. Resolves to `null` if the
+/// What the next new fleet will run on: the gate's target, whatever is running.
+export function fetchNextConfig(): Promise<FleetConfig> {
+  return invoke<FleetConfig>("fleet_next_config");
+}
+
+/// Ask the operator for a repo to point the next fleet at. Resolves to `null` if the
 /// picker was dismissed.
 export function pickTarget(): Promise<string | null> {
   return invoke<string | null>("fleet_pick_target");
@@ -158,7 +164,8 @@ export function killPane(pane: PaneId): Promise<void> {
 // Read-or-relabel only. There is deliberately no "resume this run" call: the
 // panes that made it are gone and their context went with them.
 
-/// Every archived run, newest first. Works before the fleet is started.
+/// History, newest first: the live run, runs still archiving, and archived
+/// ones. Works before the fleet is started.
 export function listRuns(): Promise<RunRecord[]> {
   return invoke<RunRecord[]>("runs_list");
 }
@@ -218,6 +225,11 @@ export function getStartupTasks(): Promise<boolean> {
 /// Resolves to what is now stored, which is what the switch should show.
 export function setStartupTasks(on: boolean): Promise<boolean> {
   return invoke<boolean>("startup_tasks_set", { on });
+}
+
+/// Subscribe to "the run the last launch left is now in History".
+export function onFleetArchived(handler: () => void): Promise<UnlistenFn> {
+  return listen(FLEET_ARCHIVED, () => handler());
 }
 
 /// Subscribe to the live event stream. Returns an unlisten fn for cleanup.
