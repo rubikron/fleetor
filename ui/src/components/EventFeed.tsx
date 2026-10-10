@@ -120,11 +120,25 @@ function renderTask(event: ChainEvent): Rendered {
           ? `marked #${event.task} ${entry.status}${note(entry.note)}`
           : entry.entry === "commented"
             ? `commented on #${event.task} — ${entry.text}`
-            : entry.entry === "released"
+            : entry.entry === "receipt"
+              ? `ran \`${entry.check}\` for #${event.task} · ${entry.status}`
+              : entry.entry === "released"
               ? `released #${event.task}${
                   entry.on_behalf_of ? ` on behalf of ${entry.on_behalf_of}` : ""
                 } — left: ${entry.left}`
-              : `edited #${event.task} · ${entry.field}`;
+              : entry.entry === "reviewer-set"
+                ? `named ${entry.new} reviewer of #${event.task}`
+                : entry.entry === "reviewed"
+                  ? `reviewed #${event.task}${entry.requested ? "" : " (unrequested)"}: ${
+                      entry.met ? "met" : "not met"
+                    }${note(entry.reason)}`
+                  : entry.entry === "handoff"
+                    ? `handed off goal #${event.task} · ${entry.built}${
+                        entry.open_tasks?.length
+                          ? ` — tasks still open: ${entry.open_tasks.map((n) => `#${n}`).join(" ")}`
+                          : ""
+                      }`
+                    : `edited #${event.task} · ${entry.field}`;
   return { kind: "task", tone: "gold", text: `${event.from} ${what}`, rail: false };
 }
 

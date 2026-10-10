@@ -78,9 +78,29 @@ pub struct TaskBlock {
     pub parent: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub converges_on: Option<u64>,
+    /// Who is expected to review it. Shown, never acted on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewer: Option<PaneId>,
 }
 
 impl TaskBlock {
+    /// Name the reviewer. Who may is [`may_open`]'s to say.
+    pub fn with_reviewer(mut self, reviewer: Option<PaneId>) -> Result<Self, String> {
+        if let Some(reviewer) = reviewer {
+            if self.kind == Kind::Goal {
+                return Err("a goal has no reviewer — drop --reviewer; its tasks are what get reviewed".into());
+            }
+            if self.owner == Some(reviewer) {
+                return Err(format!(
+                    "{reviewer} cannot both own and review this task — name a different pane \
+                     with --reviewer"
+                ));
+            }
+        }
+        self.reviewer = reviewer;
+        Ok(self)
+    }
+
     /// Checks the text only. Who may open it is [`may_open`]; whether the
     /// parent exists is the hub's to answer.
     #[allow(clippy::too_many_arguments)]
@@ -133,6 +153,7 @@ impl TaskBlock {
             instructions: instructions.map(plain).filter(|text| !text.is_empty()),
             parent,
             converges_on,
+            reviewer: None,
         })
     }
 }
@@ -177,6 +198,45 @@ pub enum ChainEntry {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         on_behalf_of: Option<PaneId>,
     },
+    /// The task's named reviewer changed.
+    ReviewerSet {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        old: Option<PaneId>,
+        new: PaneId,
+    },
+    /// A verdict on the work. It changes neither status nor owner.
+    Reviewed {
+        met: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        /// Whether the author was the task's named reviewer.
+        requested: bool,
+    },
+    /// orch's handoff, on the goal it closes.
+    Handoff {
+        built: String,
+        evidence: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        open: Vec<String>,
+        /// The goal's tasks still planned or in progress when it closed.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        open_tasks: Vec<u64>,
+    },
+    /// What `fleet done` ran and where. Facts only: it claims nothing about
+    /// the criteria and changes neither status nor owner.
+    Receipt {
+        check: String,
+        /// `exit 0`, `exit 101`, `killed by a signal`.
+        status: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        commit: Option<String>,
+        #[serde(default)]
+        uncommitted: bool,
+        /// Whether orch's pane took the receipt message.
+        accepted: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -212,6 +272,15 @@ impl ChainEntry {
             return Err("a comment needs text — `fleet task comment 14 \"what you found\"`".into());
         }
         Ok(ChainEntry::Commented { text })
+    }
+
+    /// `--not-met` needs a reason; `--met` may carry one.
+    pub fn review(met: bool, reason: Option<&str>, requested: bool) -> Result<Self, String> {
+        let reason = reason.map(plain).filter(|text| !text.is_empty());
+        if !met && reason.is_none() {
+            return Err("--not-met needs the reason — say which criterion is not met and what you saw".into());
+        }
+        Ok(ChainEntry::Reviewed { met, reason, requested })
     }
 
     /// All four fields must say something.
@@ -346,6 +415,52 @@ impl TaskRecord {
         Ok(self.owner.as_ref().filter(|_| !self.owned_by(from, lineage)).map(|owner| owner.pane))
     }
 
+    /// Anyone but the owner may review a task. Returns whether `from` is its
+    /// named reviewer.
+    pub fn may_review(&self, from: PaneId, lineage: &str) -> Result<bool, String> {
+        let n = self.number;
+        if self.block.kind == Kind::Goal {
+            return Err(format!("#{n} is a goal, and a verdict belongs on one of its tasks (`fleet task list`)"));
+        }
+        if self.owned_by(from, lineage) {
+            return Err(format!(
+                "you own #{n}, and nobody reviews their own work — ask its reviewer{} to look",
+                self.block.reviewer.map(|r| format!(", {r},")).unwrap_or_default()
+            ));
+        }
+        Ok(self.block.reviewer == Some(from))
+    }
+
+    /// orch and the operator name the reviewer, on any task.
+    pub fn set_reviewer(&self, from: PaneId, lineage: &str, new: PaneId) -> Result<ChainEntry, String> {
+        let n = self.number;
+        if !matches!(from, PaneId::Orch | PaneId::Operator) {
+            return Err(format!(
+                "orch and the operator name a task's reviewer, and you are {from} — ask orch"
+            ));
+        }
+        if self.block.kind == Kind::Goal {
+            return Err(format!("#{n} is a goal, and a goal has no reviewer — name one on its tasks"));
+        }
+        if self.owned_by(new, lineage) {
+            return Err(format!("{new} owns #{n}, and nobody reviews their own work — name a different pane"));
+        }
+        if self.block.reviewer == Some(new) {
+            return Err(format!("{new} is already #{n}'s reviewer — nothing changed"));
+        }
+        Ok(ChainEntry::ReviewerSet { old: self.block.reviewer, new })
+    }
+
+    /// Where the latest receipt says the work sits.
+    pub fn receipt_place(&self) -> Option<String> {
+        self.chain.iter().rev().find_map(|line| match &line.entry {
+            ChainEntry::Receipt { branch: Some(branch), commit: Some(commit), .. } => {
+                Some(format!("{branch} @ {commit}"))
+            }
+            _ => None,
+        })
+    }
+
     /// Whether `from`, speaking in `lineage`, is the owner.
     pub fn owned_by(&self, from: PaneId, lineage: &str) -> bool {
         self.owner.as_ref().is_some_and(|owner| owner.pane == from && owner.lineage == lineage)
@@ -358,6 +473,10 @@ impl TaskRecord {
             TaskStatus::InProgress | TaskStatus::Done if self.block.kind == Kind::Goal => Err(format!(
                 "#{n} is a goal, and a goal is not taken up or marked done — take up one of its \
                  tasks (`fleet task list`)"
+            )),
+            TaskStatus::InProgress if self.block.reviewer == Some(from) => Err(format!(
+                "you are #{n}'s reviewer, and nobody reviews their own work — ask orch to name \
+                 another reviewer first (`fleet task edit {n} --reviewer <pane>`)"
             )),
             TaskStatus::InProgress => Ok(()),
             TaskStatus::Done => match &self.owner {
@@ -393,6 +512,10 @@ pub fn may_open(from: PaneId, block: &TaskBlock) -> Result<(), String> {
         )),
         (PaneId::Worker(_), Kind::Task) if block.owner.is_some() => Err(
             "a task you open starts unowned — drop --to, then message the peer or orch about it"
+                .to_string(),
+        ),
+        (PaneId::Worker(_), Kind::Task) if block.reviewer.is_some() => Err(
+            "orch and the operator name a task's reviewer — drop --reviewer and ask orch"
                 .to_string(),
         ),
         (PaneId::Orch, Kind::Task) if block.parent.is_none() => Err(
@@ -449,8 +572,18 @@ pub fn board<'a>(events: impl IntoIterator<Item = &'a FleetEvent>) -> Vec<TaskRe
                 record.status = *status;
                 record.chain.push(line);
             }
-            ChainEntry::Commented { .. } => {
+            ChainEntry::Commented { .. } | ChainEntry::Receipt { .. } | ChainEntry::Reviewed { .. } => {
                 let Some(record) = records.get_mut(task) else { continue };
+                record.chain.push(line);
+            }
+            ChainEntry::ReviewerSet { new, .. } => {
+                let Some(record) = records.get_mut(task) else { continue };
+                record.block.reviewer = Some(*new);
+                record.chain.push(line);
+            }
+            ChainEntry::Handoff { .. } => {
+                let Some(record) = records.get_mut(task) else { continue };
+                record.status = TaskStatus::Done;
                 record.chain.push(line);
             }
             ChainEntry::Released { .. } => {

@@ -93,6 +93,7 @@ fn handoff() -> Op {
         built: "the parser accepts nested groups end to end".into(),
         evidence: vec!["cargo test -p parser".into(), "fleet/integration @ a1b2c3d".into()],
         open: vec!["the error messages are still the tokenizer's".into()],
+        goal: None,
     }
 }
 
@@ -196,7 +197,7 @@ async fn a_handoff_with_no_evidence_is_refused_and_nothing_is_logged() {
     let mut orch = pane(&transport, PaneId::Orch).await;
 
     let result = orch
-        .call(Op::Handoff { built: "we finished".into(), evidence: vec![], open: vec![] })
+        .call(Op::Handoff { built: "we finished".into(), evidence: vec![], open: vec![], goal: None })
         .await
         .unwrap();
     let OpResult::Error { message } = result else { panic!("expected a refusal: {result:?}") };

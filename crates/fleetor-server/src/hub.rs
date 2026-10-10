@@ -34,7 +34,7 @@ use fleetor_core::event::FleetEvent;
 use fleetor_core::handoff::Handoff;
 use fleetor_core::message::Message;
 use fleetor_core::pane::{PaneEntry, PaneId, PaneState};
-use fleetor_core::task::{self, ChainEntry, Kind, TaskBlock, TaskRecord};
+use fleetor_core::task::{self, ChainEntry, Kind, TaskBlock, TaskRecord, TaskStatus};
 use fleetor_core::wire::{Hello, Op, OpResult, Request, Response, TaskAction};
 use fleetor_core::{ids, Store};
 use fleetor_ipc::{Conn, Transport};
@@ -206,7 +206,7 @@ impl Hub {
             Op::Reply { text } => self.reply(from, text).await,
             Op::Cmd { to, command, why } => self.cmd(from, to, command, why).await,
             Op::Task { action } => self.task(from, action),
-            Op::Handoff { built, evidence, open } => self.handoff(from, built, evidence, open),
+            Op::Handoff { built, evidence, open, goal } => self.handoff(from, built, evidence, open, goal),
             Op::Roster => self.roster().await,
         }
     }
@@ -229,14 +229,28 @@ impl Hub {
         built: String,
         evidence: Vec<String>,
         open: Vec<String>,
+        goal: Option<u64>,
     ) -> OpResult {
         let handoff = match Handoff::new(&built, &evidence, &open) {
             Ok(handoff) => handoff,
             Err(message) => return OpResult::Error { message },
         };
+        // Settled before anything is written, so a handoff naming a goal that
+        // cannot be closed records nothing.
+        let closing = match goal.map(|goal| self.closing(goal, &handoff)).transpose() {
+            Ok(closing) => closing,
+            Err(message) => return OpResult::Error { message },
+        };
         let record_id = ids::new_id("handoff");
         match self.store.append_event(&handoff.into_event(&record_id, from)) {
-            Ok(_) => OpResult::Recorded { record_id },
+            Ok(_) => {
+                if let (Some((goal, entry)), Some(side)) = (closing, &self.tasks) {
+                    if let Err(message) = side.append(goal, from, entry) {
+                        return OpResult::Error { message };
+                    }
+                }
+                OpResult::Recorded { record_id }
+            }
             Err(e) => OpResult::Error {
                 message: format!(
                     "the log could not be written to, and the log is the only place a \
@@ -244,6 +258,32 @@ impl Hub {
                 ),
             },
         }
+    }
+
+    /// The chain entry a handoff puts on the goal it closes, listing that
+    /// goal's tasks still open.
+    fn closing(&self, goal: u64, handoff: &Handoff) -> Result<(u64, ChainEntry), String> {
+        let side = self.tasks.as_ref().ok_or_else(|| NO_TASK_STORE.to_string())?;
+        let board = side.board()?;
+        if find(&board, goal)?.block.kind != Kind::Goal {
+            return Err(format!(
+                "#{goal} is a task, and --goal names the goal this handoff closes — `fleet \
+                 task list` shows the goals"
+            ));
+        }
+        let open_tasks = board
+            .iter()
+            .filter(|r| r.block.parent == Some(goal))
+            .filter(|r| matches!(r.status, TaskStatus::Planned | TaskStatus::InProgress))
+            .map(|r| r.number)
+            .collect();
+        let entry = ChainEntry::Handoff {
+            built: handoff.built.clone(),
+            evidence: handoff.evidence.clone(),
+            open: handoff.open.clone(),
+            open_tasks,
+        };
+        Ok((goal, entry))
     }
 
     /// `fleet task …` — goals and tasks in the target's task store (D-100).
@@ -543,6 +583,7 @@ impl TaskSide {
                 instructions,
                 parent,
                 converges_on,
+                reviewer,
             } => {
                 let block = TaskBlock::new(
                     if goal { Kind::Goal } else { Kind::Task },
@@ -553,7 +594,8 @@ impl TaskSide {
                     instructions.as_deref(),
                     parent,
                     converges_on,
-                )?;
+                )?
+                .with_reviewer(reviewer)?;
                 task::may_open(from, &block)?;
                 let _writing = self.write.lock().unwrap_or_else(|e| e.into_inner());
                 let board = self.board()?;
@@ -579,11 +621,18 @@ impl TaskSide {
                 find(&self.board()?, task)?;
                 self.append(task, from, entry)
             }
-            TaskAction::Edit { task, outcome, technical, vision } => {
+            TaskAction::Edit { task, outcome, technical, vision, reviewer } => {
                 let _writing = self.write.lock().unwrap_or_else(|e| e.into_inner());
                 let board = self.board()?;
-                let entries =
-                    find(&board, task)?.edits(from, outcome.as_deref(), &technical, &vision)?;
+                let record = find(&board, task)?;
+                // The reviewer has its own rule, so it is settled apart from the text.
+                let mut entries = Vec::new();
+                if outcome.is_some() || !technical.is_empty() || !vision.is_empty() || reviewer.is_none() {
+                    entries = record.edits(from, outcome.as_deref(), &technical, &vision)?;
+                }
+                if let Some(reviewer) = reviewer {
+                    entries.push(record.set_reviewer(from, &self.ctx.lineage, reviewer)?);
+                }
                 let mut result = Err(String::new());
                 for entry in entries {
                     result = Ok(self.append(task, from, entry)?);
@@ -595,15 +644,30 @@ impl TaskSide {
                 let board = self.board()?;
                 let record = find(&board, task)?;
                 let on_behalf_of = record.release_for(from, &self.ctx.lineage)?;
-                let place = place.or(here.filter(|_| record.owned_by(from, &self.ctx.lineage)));
+                let place = place
+                    .or(here.filter(|_| record.owned_by(from, &self.ctx.lineage)))
+                    .or_else(|| record.receipt_place());
                 let Some(place) = place else {
                     return Err(format!(
                         "where #{task}'s work sits could not be worked out — you are not its \
-                         owner standing in its checkout. Add --where \"<branch> @ <commit>\" \
+                         owner standing in its checkout, and it has no receipt. Add --where \"<branch> @ <commit>\" \
                          (`fleet task show {task}` and `git branch -a` help find it)"
                     ));
                 };
                 let entry = ChainEntry::release(&why, &done, &left, &place, on_behalf_of)?;
+                self.append(task, from, entry)
+            }
+            TaskAction::Review { task, met, reason } => {
+                let requested = find(&self.board()?, task)?.may_review(from, &self.ctx.lineage)?;
+                self.append(task, from, ChainEntry::review(met, reason.as_deref(), requested)?)
+            }
+            TaskAction::Receipt { task, check, status, branch, commit, uncommitted, accepted } => {
+                if find(&self.board()?, task)?.block.kind == Kind::Goal {
+                    return Err(format!(
+                        "#{task} is a goal, and a receipt belongs on the task that was checked"
+                    ));
+                }
+                let entry = ChainEntry::Receipt { check, status, branch, commit, uncommitted, accepted };
                 self.append(task, from, entry)
             }
             TaskAction::Show { task } => {

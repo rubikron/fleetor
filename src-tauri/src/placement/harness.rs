@@ -1799,11 +1799,12 @@ impl Harness for ClaudeCode {
     /// session id directly with no picker (verified from `--help` and driven under
     /// a pty, `docs/notes/reopen-spike-notes.md` §1).
     ///
-    /// **No brief is passed, and that is R13 rather than an oversight.** The
-    /// session already holds the brief it was started with; handing it another
-    /// through `--system-prompt` would give the pane two versions of its own
-    /// instructions with no ordering signal. The seat's *posture* still rides
-    /// along, so a reopened pane is the pane it was.
+    /// **This launch's brief is passed again, with prompt recording off.** Claude
+    /// Code records the system prompt on a conversation's first request and
+    /// reuses that record on every resume. A pane with no turns has no record,
+    /// so without the flag it comes up on the vendor's own prompt; a pane with
+    /// history would keep its old brief. `--system-prompt-snapshot` needs
+    /// Claude Code 2.1.257 or later and is passed unconditionally.
     ///
     /// **No `--fork-session`.** Measured: a plain resume appends to the same
     /// `.jsonl` under the same `sessionId` rather than forking, which is exactly
@@ -1819,6 +1820,12 @@ impl Harness for ClaudeCode {
             args.push(flag.to_string());
             args.push(mode.to_string());
         }
+        if let Some(flag) = spec.brief.argv_flag {
+            args.push(flag.to_string());
+            args.push(seat.brief.to_string());
+        }
+        args.push("--system-prompt-snapshot".to_string());
+        args.push("off".to_string());
         Some(args)
     }
 

@@ -56,7 +56,7 @@ Note: D-005 is referenced elsewhere in this file (e.g. D-009, D-011) but has no 
 | [D-046](D-046.md) | WP-04 | alive | WP-04: the context gauge is `AppCommand::Roster`'s job, not a new channel; the window is our own 128k, not CC's 200k guess; the live gauge never estimates |
 | [D-047](D-047.md) | WP-05 | amended by D-100 | WP-05: the task board is a fold over the event log, and the one arm that never reaches a terminal |
 | [D-048](D-048.md) | WP-06 | alive | WP-06: the worktrees stay, because the object database was already shared |
-| [D-049](D-049.md) | WP-06 | alive | WP-06: the reviewer is named in the assignment message, not in a field on the block |
+| [D-049](D-049.md) | WP-06 | amended by D-108 | WP-06: the reviewer is named in the assignment message, not in a field on the block |
 | [D-050](D-050.md) | WP-06 | alive | WP-06: `fleet done` runs the check locally, and its exit code still means delivery |
 | [D-051](D-051.md) | WP-07 | alive | WP-07: the operator is a name in the record, and `recorded` is one word rather than two |
 | [D-052](D-052.md) | WP-08 | superseded | WP-08: the fence is `HOME`, seeded with one file, and the PATH leak it would have left open |
@@ -112,6 +112,9 @@ Note: D-005 is referenced elsewhere in this file (e.g. D-009, D-011) but has no 
 | [D-103](D-103.md) | S1 | alive | an edit replaces a whole field and keeps both texts; a comment changes nothing else; the briefs say task, not block |
 | [D-104](D-104.md) | S1 | alive | S1 wiring: the store sits under `targets/<slug>/`, the UI reads it through one snapshot command, and the operator writes through the hub |
 | [D-105](D-105.md) | S2 | alive | a release is one chain entry with four required fields; the hub settles "where" and who it is on behalf of |
+| [D-107](D-107.md) | S3 | alive | a receipt is a chain entry recorded after `fleet done` sends its message; the latest one tells a release where the work sits |
+| [D-108](D-108.md) | S3 | alive | the reviewer has its own rule, a verdict and a goal handoff are chain entries, and monitor flags are read off the chain in the UI |
 | [D-106](D-106.md) | S2 | amended by D-109 | the startup setting is one key in config.json, read through `{startup_tasks}`; an owner from another lineage reads as an earlier run |
 | [D-109](D-109.md) | S2 | alive | a reopen follows the startup setting: its owners are told to continue, or the operator is asked first |
 | [D-110](D-110.md) | meta | alive | STANDING RULE: nothing starts an agent at launch — an agent acts only after a message someone sent it |
+| [D-111](D-111.md) | S2 | alive | a reopened pane is given this launch's brief again; WP-27's rule R13 is reversed for the brief |

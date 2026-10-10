@@ -703,6 +703,9 @@ body,
   font-size: var(--t-label);
   color: var(--fg-dim);
 }
+.mc-card__held, .mc-card__latest { font-size: var(--t-label); color: var(--fg-mute); }
+.mc-card__latest { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mc-card__flag { align-self: flex-start; }
 .mc-card__msg {
   font-size: var(--t-label);
   color: var(--fg-mute);
@@ -1821,6 +1824,10 @@ button.homepage__run:disabled { cursor: default; }
 .task-row__owner { color: var(--fg-dim); }
 .task-row__outcome { font-family: var(--sans); flex: 1 1 12rem; min-width: 0; word-break: break-word; }
 .task-row__counts, .task-row__comments { font-size: var(--t-label); color: var(--fg-mute); }
+.task-row__waiting, .task-row__receipt, .task-row__review { font-size: var(--t-label); color: var(--fg-mute); }
+.task-row__waiting.is-late { color: var(--coral); }
+.task-flag { font-size: var(--t-label); color: var(--coral); border: 1px solid currentColor; border-radius: var(--radius-sm); padding: 0 0.3125rem; }
+.task-form__reviewer { display: flex; align-items: center; gap: 0.5rem; }
 .task-row__latest { flex: 1 1 100%; font-size: var(--t-label); color: var(--fg-mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .task-page { flex: 1 1 26rem; min-width: 0; background: var(--bg-2); border: 1px solid var(--border-soft); border-radius: var(--radius); padding: 0.5rem 0.6875rem; }
 .chain { list-style: none; margin: 0.625rem 0 0; padding: 0.375rem 0 0; border-top: 1px solid var(--border-soft); display: flex; flex-direction: column; gap: 0.375rem; }
