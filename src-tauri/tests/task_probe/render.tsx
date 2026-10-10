@@ -120,6 +120,27 @@ const ANSWERED: ChainEvent[] = [
   now2(2, "worker-3", { entry: "reviewed", met: false, reason: "depth 3 still fails", requested: true }),
 ];
 
+// S4: worker-2 opens a destructive task under no goal; two panes flag it,
+// orch removes it, the operator restores it. worker-4's find is attached.
+const CURATED: ChainEvent[] = [
+  now2(1, "operator", { entry: "opened", block: goal }),
+  now2(2, "worker-2", { entry: "opened", block: task("delete the fixtures", null, null) }),
+  now2(3, "worker-4", { entry: "opened", block: task("the lexer leaks", null, null) }),
+  now2(2, "worker-2", { entry: "taken-up" }),
+  now2(2, "worker-3", { entry: "flagged", reason: "the suite reads those fixtures" }),
+  now2(2, "worker-3", { entry: "flagged", reason: "and so does CI" }),
+  now2(2, "worker-1", { entry: "flagged", reason: "agreed" }),
+  now2(3, "orch", { entry: "attached", new: 1 }),
+];
+const REMOVED: ChainEvent[] = [
+  ...CURATED,
+  now2(2, "orch", { entry: "removed", reason: "it deletes what the suite reads" }),
+];
+const RESTORED: ChainEvent[] = [
+  ...REMOVED,
+  now2(2, "operator", { entry: "restored", reason: "it was a rename" }),
+];
+
 const LIVE: TaskStoreInfo = { live: true, target: "/work/logstat", run: "run-2", lineage: "lin-2" };
 const GATE: TaskStoreInfo = { live: false, target: "/work/logstat", run: null, lineage: null };
 
@@ -187,6 +208,23 @@ process.stdout.write(
         unreadPanes={new Set()}
         now={LATER}
       />,
+    ),
+    flagged: renderToStaticMarkup(<TaskBoard chain={CURATED} store={LIVE} ops={OPS} initialOpen={2} />),
+    attached: renderToStaticMarkup(<TaskBoard chain={CURATED} store={LIVE} ops={OPS} initialOpen={3} />),
+    unowned: renderToStaticMarkup(<TaskBoard chain={CURATED} store={LIVE} ops={OPS} initialOwner="unowned" />),
+    flagging: renderToStaticMarkup(
+      <TaskBoard chain={CURATED} store={LIVE} ops={OPS} initialOpen={2} initialMode="flag" />,
+    ),
+    removing: renderToStaticMarkup(
+      <TaskBoard chain={CURATED} store={LIVE} ops={OPS} initialOpen={2} initialMode="remove" />,
+    ),
+    removed: renderToStaticMarkup(<TaskBoard chain={REMOVED} store={LIVE} ops={OPS} />),
+    removedOnly: renderToStaticMarkup(
+      <TaskBoard chain={REMOVED} store={LIVE} ops={OPS} initialFilter="removed" initialOpen={2} />,
+    ),
+    restored: renderToStaticMarkup(<TaskBoard chain={RESTORED} store={LIVE} ops={OPS} initialOpen={2} />),
+    curated_activity: renderToStaticMarkup(
+      <EventFeed feed={[notice(1, "first")]} tasks={RESTORED.slice(4).map((event) => ({ event, after: 1 }))} />,
     ),
     empty: renderToStaticMarkup(<TaskBoard chain={[]} store={GATE} />),
   }),

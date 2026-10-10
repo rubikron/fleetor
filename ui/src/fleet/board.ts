@@ -23,6 +23,8 @@ export function replayBoard(events: ChainEvent[]): TaskRecord[] {
   const oldestFirst = [...events].sort((a, b) => a.seq - b.seq);
   const order: number[] = [];
   const records = new Map<number, TaskRecord>();
+  // The status each removed task had, for a restore to bring back.
+  const before = new Map<number, TaskStatus>();
 
   for (const event of oldestFirst) {
     const { entry } = event;
@@ -55,6 +57,16 @@ export function replayBoard(events: ChainEvent[]): TaskRecord[] {
     } else if (entry.entry === "released") {
       next.status = "planned";
       next.owner = null;
+    } else if (entry.entry === "removed") {
+      if (record.status !== "removed") before.set(event.task, record.status);
+      next.status = "removed";
+    } else if (entry.entry === "restored") {
+      if (record.status === "removed") {
+        next.status = before.get(event.task) ?? "planned";
+        before.delete(event.task);
+      }
+    } else if (entry.entry === "attached") {
+      next.block = { ...record.block, parent: entry.new };
     } else if (entry.entry === "edited") {
       next.block =
         entry.field === "outcome"
@@ -68,6 +80,11 @@ export function replayBoard(events: ChainEvent[]): TaskRecord[] {
     const record = records.get(number);
     return record ? [record] : [];
   });
+}
+
+/// How many different panes have flagged a record as not worth doing.
+export function flaggers(record: TaskRecord): number {
+  return new Set(record.chain.filter((e) => e.entry.entry === "flagged").map((e) => e.from)).size;
 }
 
 /// Goals in the order they were opened, each with the tasks that name it, then

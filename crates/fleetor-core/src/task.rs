@@ -22,6 +22,8 @@ pub enum TaskStatus {
     InProgress,
     Done,
     Dropped,
+    /// Off the working board, chain kept. Set by `fleet task remove` only.
+    Removed,
 }
 
 impl TaskStatus {
@@ -31,6 +33,7 @@ impl TaskStatus {
             TaskStatus::InProgress => "in-progress",
             TaskStatus::Done => "done",
             TaskStatus::Dropped => "dropped",
+            TaskStatus::Removed => "removed",
         }
     }
 
@@ -40,6 +43,9 @@ impl TaskStatus {
             "in-progress" => Ok(TaskStatus::InProgress),
             "done" => Ok(TaskStatus::Done),
             "dropped" => Ok(TaskStatus::Dropped),
+            "removed" => Err("a task is removed with `fleet task remove <number> \"<reason>\"`, \
+                              not with --status"
+                .into()),
             other => Err(format!(
                 "{other:?} is not a task status — use one of {}",
                 TASK_STATUSES.join(", ")
@@ -212,6 +218,25 @@ pub enum ChainEntry {
         /// Whether the author was the task's named reviewer.
         requested: bool,
     },
+    /// Someone says this is not worth doing. It changes nothing else.
+    Flagged {
+        reason: String,
+    },
+    /// Taken off the working board; the status becomes `removed`.
+    Removed {
+        reason: String,
+    },
+    /// A removal undone: the status it had before comes back.
+    Restored {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+    /// The task was put under a goal.
+    Attached {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        old: Option<u64>,
+        new: u64,
+    },
     /// orch's handoff, on the goal it closes.
     Handoff {
         built: String,
@@ -272,6 +297,14 @@ impl ChainEntry {
             return Err("a comment needs text — `fleet task comment 14 \"what you found\"`".into());
         }
         Ok(ChainEntry::Commented { text })
+    }
+
+    pub fn flag(reason: &str) -> Result<Self, String> {
+        let reason = plain(reason);
+        if reason.is_empty() {
+            return Err("a flag needs the reason — `fleet task flag 14 \"why this is not worth doing\"`".into());
+        }
+        Ok(ChainEntry::Flagged { reason })
     }
 
     /// `--not-met` needs a reason; `--met` may carry one.
@@ -451,6 +484,77 @@ impl TaskRecord {
         Ok(ChainEntry::ReviewerSet { old: self.block.reviewer, new })
     }
 
+    /// orch and the operator remove and restore; orch never the operator's.
+    fn may_curate(&self, from: PaneId, verb: &str) -> Result<(), String> {
+        let n = self.number;
+        match from {
+            PaneId::Operator => Ok(()),
+            PaneId::Orch if self.creator != PaneId::Operator => Ok(()),
+            PaneId::Orch => Err(format!(
+                "#{n} was opened by the operator, and only the operator may {verb} it — flag it \
+                 instead: `fleet task flag {n} \"<reason>\"`"
+            )),
+            _ => Err(format!(
+                "orch and the operator {verb} tasks, and you are {from} — flag it instead: \
+                 `fleet task flag {n} \"<reason>\"`"
+            )),
+        }
+    }
+
+    pub fn remove(&self, from: PaneId, reason: &str) -> Result<ChainEntry, String> {
+        let n = self.number;
+        self.may_curate(from, "remove")?;
+        if self.status == TaskStatus::Removed {
+            return Err(format!("#{n} is already removed — nothing changed"));
+        }
+        let reason = plain(reason);
+        if reason.is_empty() {
+            return Err(format!(
+                "a removal needs the reason — `fleet task remove {n} \"why it is destructive or \
+                 counterproductive\"`"
+            ));
+        }
+        Ok(ChainEntry::Removed { reason })
+    }
+
+    pub fn restore(&self, from: PaneId, reason: Option<&str>) -> Result<ChainEntry, String> {
+        let n = self.number;
+        self.may_curate(from, "restore")?;
+        if self.status != TaskStatus::Removed {
+            return Err(format!("#{n} is not removed (it is {}) — nothing changed", self.status));
+        }
+        Ok(ChainEntry::Restored { reason: reason.map(plain).filter(|text| !text.is_empty()) })
+    }
+
+    /// orch and the operator put a task under a goal. Whether `goal` is one
+    /// is the hub's to answer.
+    pub fn attach(&self, from: PaneId, goal: u64) -> Result<ChainEntry, String> {
+        let n = self.number;
+        if !matches!(from, PaneId::Orch | PaneId::Operator) {
+            return Err(format!(
+                "orch and the operator attach a task to a goal, and you are {from} — ask orch"
+            ));
+        }
+        if self.block.kind == Kind::Goal {
+            return Err(format!("#{n} is a goal, and a goal has no parent — attach its tasks"));
+        }
+        if self.block.parent == Some(goal) {
+            return Err(format!("#{n} is already under #{goal} — nothing changed"));
+        }
+        Ok(ChainEntry::Attached { old: self.block.parent, new: goal })
+    }
+
+    /// How many different panes have flagged it.
+    pub fn flaggers(&self) -> usize {
+        let mut seen: Vec<PaneId> = Vec::new();
+        for line in &self.chain {
+            if matches!(line.entry, ChainEntry::Flagged { .. }) && !seen.contains(&line.from) {
+                seen.push(line.from);
+            }
+        }
+        seen.len()
+    }
+
     /// Where the latest receipt says the work sits.
     pub fn receipt_place(&self) -> Option<String> {
         self.chain.iter().rev().find_map(|line| match &line.entry {
@@ -473,6 +577,9 @@ impl TaskRecord {
             TaskStatus::InProgress | TaskStatus::Done if self.block.kind == Kind::Goal => Err(format!(
                 "#{n} is a goal, and a goal is not taken up or marked done — take up one of its \
                  tasks (`fleet task list`)"
+            )),
+            TaskStatus::Removed => Err(format!(
+                "a task is removed with `fleet task remove {n} \"<reason>\"`, not with --status"
             )),
             TaskStatus::InProgress if self.block.reviewer == Some(from) => Err(format!(
                 "you are #{n}'s reviewer, and nobody reviews their own work — ask orch to name \
@@ -532,6 +639,8 @@ pub fn may_open(from: PaneId, block: &TaskBlock) -> Result<(), String> {
 pub fn board<'a>(events: impl IntoIterator<Item = &'a FleetEvent>) -> Vec<TaskRecord> {
     let mut order: Vec<u64> = Vec::new();
     let mut records: HashMap<u64, TaskRecord> = HashMap::new();
+    // The status each removed task had, for a restore to bring back.
+    let mut before: HashMap<u64, TaskStatus> = HashMap::new();
 
     for event in events {
         let FleetEvent::Chain { task, from, at, run, lineage, entry } = event else { continue };
@@ -572,8 +681,31 @@ pub fn board<'a>(events: impl IntoIterator<Item = &'a FleetEvent>) -> Vec<TaskRe
                 record.status = *status;
                 record.chain.push(line);
             }
-            ChainEntry::Commented { .. } | ChainEntry::Receipt { .. } | ChainEntry::Reviewed { .. } => {
+            ChainEntry::Commented { .. }
+            | ChainEntry::Receipt { .. }
+            | ChainEntry::Reviewed { .. }
+            | ChainEntry::Flagged { .. } => {
                 let Some(record) = records.get_mut(task) else { continue };
+                record.chain.push(line);
+            }
+            ChainEntry::Removed { .. } => {
+                let Some(record) = records.get_mut(task) else { continue };
+                if record.status != TaskStatus::Removed {
+                    before.insert(*task, record.status);
+                }
+                record.status = TaskStatus::Removed;
+                record.chain.push(line);
+            }
+            ChainEntry::Restored { .. } => {
+                let Some(record) = records.get_mut(task) else { continue };
+                if record.status == TaskStatus::Removed {
+                    record.status = before.remove(task).unwrap_or(TaskStatus::Planned);
+                }
+                record.chain.push(line);
+            }
+            ChainEntry::Attached { new, .. } => {
+                let Some(record) = records.get_mut(task) else { continue };
+                record.block.parent = Some(*new);
                 record.chain.push(line);
             }
             ChainEntry::ReviewerSet { new, .. } => {

@@ -36,7 +36,7 @@ Use the `fleet` command through Bash. It writes straight into the target termina
 - `fleet broadcast "<text>"` — every other pane at once. Use it sparingly.
 - `fleet reply "<text>"` — answers whoever messaged you last.
 - `fleet cmd <pane|self> "<slash command>" --why "<reason>"` — see below.
-- `fleet task post|list|show|update|comment|edit` — goals and tasks on the shared board; see below.
+- `fleet task post|list|show|update|comment|edit|release|flag|remove|restore` — goals and tasks on the shared board; see below.
 - `fleet handoff --built "…" --evidence "…"` — tell the operator the whole goal is met; see below.
 - `fleet roster` — who exists, whether they are live, and each worker's ≈context-window usage. A blank or stale figure means *unknown*, not zero — decide accordingly.
 - `fleet whoami` — your own pane name.
@@ -82,6 +82,9 @@ Who may change a task depends on who opened it and who owns it, and a refusal te
 - `fleet task edit 14 --outcome "…"` / `--crit-t "…"` / `--crit-s "…"` — each flag replaces that whole field, so restate every criterion you are keeping; the old text stays in the chain. Yours on the same tasks as dropping.
 - `fleet task comment 14 "<text>"` — anyone, on any goal or task; it changes neither status nor owner. It is how you answer a `done` you doubt.
 - `fleet task release 14 --why "…" --done "…" --left "…" --where "<branch> @ <commit>"` — hands a task on: it returns to `planned` with no owner. A worker releases its own; you release for one that cannot, and `--where` is then yours to find and type.
+- `fleet task flag 14 "<why>"` — anyone says a task is not worth doing; the list shows `(flagged by 2)`. Read the reasons before you hand a flagged task out.
+- `fleet task remove 14 "<why>"` — takes a destructive or counterproductive task off the board: it reads `removed`, keeps its chain and leaves `fleet task list` (`--removed` shows them). `fleet task restore 14` undoes it. Yours on tasks you or a worker opened, never on the operator's.
+- Workers open tasks they come across, unowned and under no goal. `fleet task edit 14 --parent 11` puts one under a goal; remove it if it should not be done.
 
 ### Tasks from earlier sessions
 

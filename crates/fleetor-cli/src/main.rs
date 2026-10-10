@@ -230,6 +230,36 @@ enum TaskCmd {
         /// Name the reviewer. orch and the operator only, on any task.
         #[arg(long, value_name = "PANE")]
         reviewer: Option<String>,
+        /// Put the task under this goal, by number. orch and the operator only.
+        #[arg(long, value_name = "NUMBER")]
+        parent: Option<String>,
+    },
+    /// Say a task is not worth doing, and why. Anyone may; it changes neither
+    /// status nor owner, and the task list shows how many have flagged it.
+    Flag {
+        /// The task's number — `14`, not `#14`.
+        #[arg(value_name = "NUMBER")]
+        task: Option<String>,
+        #[arg(trailing_var_arg = true)]
+        reason: Vec<String>,
+    },
+    /// Take a destructive or counterproductive task off the board, and say why.
+    /// Its chain is kept and `restore` undoes it. orch and the operator only;
+    /// orch never the operator's tasks.
+    Remove {
+        /// The task's number — `14`, not `#14`.
+        #[arg(value_name = "NUMBER")]
+        task: Option<String>,
+        #[arg(trailing_var_arg = true)]
+        reason: Vec<String>,
+    },
+    /// Undo a removal: the task returns with the status and owner it had.
+    Restore {
+        /// The task's number — `14`, not `#14`.
+        #[arg(value_name = "NUMBER")]
+        task: Option<String>,
+        #[arg(trailing_var_arg = true)]
+        reason: Vec<String>,
     },
     /// Put your verdict on a task's work. Not for the task's owner. It changes
     /// neither status nor owner.
@@ -284,6 +314,9 @@ enum TaskCmd {
         /// Only the tasks you own.
         #[arg(long)]
         mine: bool,
+        /// Only removed tasks, which the list otherwise hides.
+        #[arg(long)]
+        removed: bool,
     },
 }
 
@@ -308,9 +341,11 @@ fn run() -> Result<ExitCode> {
         Command::Task { action: TaskCmd::List { full: true, .. } | TaskCmd::Show { .. } }
     );
     let filter = match cli.command {
-        Command::Task { action: TaskCmd::List { open, mine, .. } } => {
-            Filter { open, mine: if mine { Some(me()?) } else { None } }
-        }
+        Command::Task { action: TaskCmd::List { open, mine, removed, .. } } => Filter {
+            open,
+            mine: if mine { Some(me()?) } else { None },
+            removed: Some(removed),
+        },
         _ => Filter::default(),
     };
 
@@ -426,15 +461,38 @@ fn task_action(action: TaskCmd) -> Result<TaskAction> {
         TaskCmd::Comment { task, text } => {
             TaskAction::Comment { task: task_number(task, "comment")?, text: join(text) }
         }
-        TaskCmd::Edit { task, outcome, crit_t, crit_s, reviewer } => {
+        TaskCmd::Edit { task, outcome, crit_t, crit_s, reviewer, parent } => {
             let task = task_number(task, "edit")?;
-            if outcome.is_none() && crit_t.is_empty() && crit_s.is_empty() && reviewer.is_none() {
+            if outcome.is_none()
+                && crit_t.is_empty()
+                && crit_s.is_empty()
+                && reviewer.is_none()
+                && parent.is_none()
+            {
                 anyhow::bail!(
                     "`fleet task edit {task}` needs what to replace: --outcome \"…\", the \
-                     whole new list of --crit-t / --crit-s, or --reviewer <pane>"
+                     whole new list of --crit-t / --crit-s, --reviewer <pane>, or --parent <goal \
+                     number>"
                 );
             }
-            TaskAction::Edit { task, outcome, technical: crit_t, vision: crit_s, reviewer: pane(reviewer)? }
+            TaskAction::Edit {
+                task,
+                outcome,
+                technical: crit_t,
+                vision: crit_s,
+                reviewer: pane(reviewer)?,
+                parent: parent.map(|raw| number(&raw, "--parent")).transpose()?,
+            }
+        }
+        TaskCmd::Flag { task, reason } => {
+            TaskAction::Flag { task: task_number(task, "flag")?, reason: join(reason) }
+        }
+        TaskCmd::Remove { task, reason } => {
+            TaskAction::Remove { task: task_number(task, "remove")?, reason: join(reason) }
+        }
+        TaskCmd::Restore { task, reason } => {
+            let reason = Some(join(reason)).filter(|text| !text.trim().is_empty());
+            TaskAction::Restore { task: task_number(task, "restore")?, reason }
         }
         TaskCmd::Review { task, met, not_met, note } => {
             let task = task_number(task, "review")?;
@@ -476,11 +534,14 @@ fn task_action(action: TaskCmd) -> Result<TaskAction> {
     })
 }
 
-/// `fleet task list --open` / `--mine`: a rendering choice the hub is not told.
+/// `fleet task list --open` / `--mine` / `--removed`: a rendering choice the
+/// hub is not told.
 #[derive(Default)]
 struct Filter {
     open: bool,
     mine: Option<PaneId>,
+    /// A list shows removed tasks or the rest, never both. `None` shows all.
+    removed: Option<bool>,
 }
 
 impl Filter {
@@ -491,7 +552,8 @@ impl Filter {
             let mine = self.mine.is_none_or(|me| {
                 record.owner.as_ref().is_some_and(|o| o.pane == me && !earlier(o, lineage.as_deref()))
             });
-            (open || !self.open) && mine
+            let removed = self.removed.is_none_or(|only| only == (record.status == TaskStatus::Removed));
+            (open || !self.open) && mine && removed
         };
         OpResult::Board { tasks: tasks.into_iter().filter(keep).collect(), lineage }
     }
@@ -650,8 +712,14 @@ fn earlier(owner: &fleetor_core::task::Owner, lineage: Option<&str>) -> bool {
 /// `#14 [in-progress] worker-2 — the parser accepts nested groups`.
 fn summary(record: &TaskRecord, lineage: Option<&str>) -> String {
     let n = record.number;
+    let flagged = match record.flaggers() {
+        0 => String::new(),
+        count => format!("  (flagged by {count})"),
+    };
     let who = match (&record.block.kind, &record.owner) {
-        (Kind::Goal, _) => return format!("#{n} goal [{}] — {}", record.status, record.block.outcome),
+        (Kind::Goal, _) => {
+            return format!("#{n} goal [{}] — {}{flagged}", record.status, record.block.outcome)
+        }
         (Kind::Task, Some(owner)) if earlier(owner, lineage) => format!("{}, earlier run", owner.pane),
         (Kind::Task, Some(owner)) => owner.pane.to_string(),
         (Kind::Task, None) => "unowned".to_string(),
@@ -661,7 +729,7 @@ fn summary(record: &TaskRecord, lineage: Option<&str>) -> String {
         .converges_on
         .map(|n| format!("  → converges on #{n}"))
         .unwrap_or_default();
-    format!("#{n} [{}] {who} — {}{converges}", record.status, record.block.outcome)
+    format!("#{n} [{}] {who} — {}{converges}{flagged}", record.status, record.block.outcome)
 }
 
 fn details(record: &TaskRecord) -> Vec<String> {
@@ -702,6 +770,13 @@ fn details(record: &TaskRecord) -> Vec<String> {
                 ),
                 reason,
             ),
+            ChainEntry::Flagged { reason } => format!("flagged it as not worth doing — {reason}"),
+            ChainEntry::Removed { reason } => format!("removed it — {reason}"),
+            ChainEntry::Restored { reason } => with("restored it".to_string(), reason),
+            ChainEntry::Attached { old, new } => match old {
+                Some(old) => format!("moved it under #{new} — was under #{old}"),
+                None => format!("put it under #{new}"),
+            },
             ChainEntry::Handoff { built, evidence, open, open_tasks } => format!(
                 "handed off — built: {built} — evidence: {}{}{}",
                 evidence.join(" | "),
@@ -1367,7 +1442,7 @@ mod tests {
         }
         assert_eq!(
             action(&["fleet", "task", "edit", "#14", "--crit-t", "a", "--crit-t", "b"]).unwrap(),
-            TaskAction::Edit { task: 14, outcome: None, technical: vec!["a".into(), "b".into()], vision: vec![], reviewer: None },
+            TaskAction::Edit { task: 14, outcome: None, technical: vec!["a".into(), "b".into()], vision: vec![], reviewer: None, parent: None },
         );
         let why = action(&["fleet", "task", "edit", "14"]).unwrap_err().to_string();
         assert!(why.contains("--outcome") && why.contains("whole new list"), "{why}");
@@ -1381,9 +1456,62 @@ mod tests {
             OpResult::Board { tasks, .. } => tasks.iter().map(|r| r.number).collect::<Vec<_>>(),
             other => panic!("{other:?}"),
         };
-        assert_eq!(numbers(Filter { open: true, mine: None }), vec![1, 2, 3]);
-        assert_eq!(numbers(Filter { open: false, mine: Some(PaneId::Worker(2)) }), vec![2]);
-        assert_eq!(numbers(Filter { open: true, mine: Some(PaneId::Worker(3)) }), Vec::<u64>::new());
+        assert_eq!(numbers(Filter { open: true, mine: None, removed: None }), vec![1, 2, 3]);
+        assert_eq!(numbers(Filter { open: false, mine: Some(PaneId::Worker(2)), removed: None }), vec![2]);
+        assert_eq!(numbers(Filter { open: true, mine: Some(PaneId::Worker(3)), removed: None }), Vec::<u64>::new());
+    }
+
+    #[test]
+    fn flag_remove_and_restore_carry_a_rejoined_reason_and_edit_attaches() {
+        assert_eq!(
+            action(&["fleet", "task", "flag", "#14", "it", "deletes", "fixtures"]).unwrap(),
+            TaskAction::Flag { task: 14, reason: "it deletes fixtures".into() }
+        );
+        assert_eq!(
+            action(&["fleet", "task", "remove", "14", "it deletes fixtures"]).unwrap(),
+            TaskAction::Remove { task: 14, reason: "it deletes fixtures".into() }
+        );
+        assert_eq!(
+            action(&["fleet", "task", "restore", "14"]).unwrap(),
+            TaskAction::Restore { task: 14, reason: None }
+        );
+        let why = action(&["fleet", "task", "flag"]).unwrap_err().to_string();
+        assert!(why.contains("`fleet task flag 14`"), "{why}");
+        let TaskAction::Edit { parent, .. } = action(&["fleet", "task", "edit", "14", "--parent", "#3"]).unwrap()
+        else {
+            panic!("expected an edit")
+        };
+        assert_eq!(parent, Some(3));
+        let why = TaskStatus::parse("removed").unwrap_err();
+        assert!(why.contains("fleet task remove"), "{why}");
+    }
+
+    /// A list hides removed tasks unless `--removed` asks for them; `show`
+    /// hides nothing.
+    #[test]
+    fn the_list_hides_removed_tasks_and_counts_flaggers() {
+        let at = |from, entry: ChainEntry| entry.into_event(3, from, "run-1", "lin-1");
+        let mut events: Vec<_> = records()
+            .iter()
+            .flat_map(|r| r.chain.iter().map(|l| l.entry.clone().into_event(r.number, l.from, &l.run, &l.lineage)))
+            .collect();
+        events.push(at(PaneId::Worker(2), ChainEntry::flag("it deletes fixtures").unwrap()));
+        events.push(at(PaneId::Worker(3), ChainEntry::flag("agreed").unwrap()));
+        let flagged = board(&events);
+        assert!(summary(&flagged[2], None).ends_with("(flagged by 2)"), "{}", summary(&flagged[2], None));
+        assert!(details(&flagged[2]).iter().any(|l| l == "worker-3: flagged it as not worth doing — agreed"));
+
+        events.push(at(PaneId::Orch, ChainEntry::Removed { reason: "destructive".into() }));
+        let numbers = |removed| {
+            let filter = Filter { open: false, mine: None, removed };
+            match filter.apply(OpResult::Board { tasks: board(&events), lineage: None }) {
+                OpResult::Board { tasks, .. } => tasks.iter().map(|r| r.number).collect::<Vec<_>>(),
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(numbers(Some(false)), vec![1, 2]);
+        assert_eq!(numbers(Some(true)), vec![3]);
+        assert_eq!(numbers(None), vec![1, 2, 3]);
     }
 
     #[test]
@@ -1411,7 +1539,7 @@ mod tests {
     fn an_owner_from_another_session_reads_as_an_earlier_run() {
         let lines = board_lines(&records(), Some("another-lineage"), false);
         assert_eq!(lines[1], "  #2 [in-progress] worker-2, earlier run — nested groups parse at any depth");
-        let mine = Filter { open: false, mine: Some(PaneId::Worker(2)) };
+        let mine = Filter { open: false, mine: Some(PaneId::Worker(2)), removed: None };
         let kept = |lineage: &str| {
             match mine.apply(OpResult::Board { tasks: records(), lineage: Some(lineage.into()) }) {
                 OpResult::Board { tasks, .. } => tasks.len(),

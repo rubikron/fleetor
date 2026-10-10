@@ -275,7 +275,8 @@ export type PaneStatus = "idle" | "live" | "dead";
 
 /// `fleetor_core::task::TaskStatus`. A status is what someone said, never a
 /// verified fact, so nothing renders `done` as a tick.
-export type TaskStatus = "planned" | "in-progress" | "done" | "dropped";
+/// `removed` is set by a removal only, never typed as a status.
+export type TaskStatus = "planned" | "in-progress" | "done" | "dropped" | "removed";
 
 /// What a goal or task says (`fleetor_core::task::TaskBlock`).
 export interface TaskBlock {
@@ -319,6 +320,10 @@ export type ChainEntry =
     }
   | { entry: "reviewer-set"; old?: PaneId | null; new: PaneId }
   | { entry: "reviewed"; met: boolean; reason?: string | null; requested: boolean }
+  | { entry: "flagged"; reason: string }
+  | { entry: "removed"; reason: string }
+  | { entry: "restored"; reason?: string | null }
+  | { entry: "attached"; old?: number | null; new: number }
   | { entry: "handoff"; built: string; evidence: string[]; open?: string[]; open_tasks?: number[] };
 
 /// A chain entry as it arrives on `fleet://task`: who, when, and in which run
@@ -357,7 +362,11 @@ export type TaskAction =
       technical: string[];
       vision: string[];
       reviewer?: PaneId | null;
+      parent?: number | null;
     }
+  | { action: "flag"; task: number; reason: string }
+  | { action: "remove"; task: number; reason: string }
+  | { action: "restore"; task: number; reason?: string | null }
   | { action: "release"; task: number; why: string; done: string; left: string; place: string };
 
 /// The run-log task event as it was before D-100. Nothing writes it; a reopened

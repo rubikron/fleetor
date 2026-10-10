@@ -836,6 +836,10 @@ mod tests {
             "fleet handoff --goal 11",
             "worker-3, earlier run",
             "start from `fleet task show 14`",
+            "fleet task flag 14",
+            "fleet task remove 14",
+            "fleet task restore 14",
+            "fleet task edit 14 --parent 11",
         ] {
             assert!(orch.contains(taught), "orch is never taught `{taught}`");
         }
@@ -852,10 +856,14 @@ mod tests {
             "fleet task review 14 --met",
             "fleet task review 14 --not-met",
             "If your session was resumed, run `fleet task show`",
+            "fleet task post --outcome",
+            "opens it unowned",
+            "fleet task flag 14",
+            "do not work on it",
         ] {
             assert!(worker.contains(taught), "a worker is never taught `{taught}`");
         }
-        for orchs in ["fleet task post", "fleet task edit", "--parent"] {
+        for orchs in ["--goal", "fleet task edit", "--parent", "fleet task remove"] {
             assert!(!worker.contains(orchs), "a worker's brief spends context on `{orchs}`");
         }
         for brief in [&orch, &worker] {

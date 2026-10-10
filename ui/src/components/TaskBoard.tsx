@@ -5,7 +5,7 @@
 // tasks are counted by status as text.
 
 import { Fragment, useEffect, useMemo, useState } from "react";
-import { byGoal, replayBoard, type TaskRecord } from "../fleet/board";
+import { byGoal, flaggers, replayBoard, type TaskRecord } from "../fleet/board";
 import { NEVER_TAKEN_UP_MS, assignedAt, elapsed, evidence, monitorFlags } from "../fleet/flags";
 import {
   WORKER_SLOTS,
@@ -28,14 +28,23 @@ export interface TaskOps {
 
 const NEEDS_FLEET = "start a fleet to change tasks";
 
-/// What the list can be narrowed to. `all` includes dropped tasks.
-export type TaskFilter = "all" | "planned" | "in-progress" | "done";
+/// What the list can be narrowed to. `all` includes dropped tasks and leaves
+/// out removed ones, which show only under `removed`.
+export type TaskFilter = "all" | "planned" | "in-progress" | "done" | "removed";
 const FILTERS: [TaskFilter, string][] = [
   ["all", "All"],
   ["planned", "Planned"],
   ["in-progress", "In progress"],
   ["done", "Done"],
+  ["removed", "Removed"],
 ];
+
+/// `any`, `unowned`, or a pane.
+export type OwnerFilter = "any" | "unowned" | PaneId;
+
+const matches = (record: TaskRecord, filter: TaskFilter, owner: OwnerFilter): boolean =>
+  (filter === "all" ? record.status !== "removed" : record.status === filter) &&
+  (owner === "any" || (owner === "unowned" ? !record.owner : record.owner?.pane === owner));
 
 /// An owner from another lineage is a pane that no longer exists. With no
 /// fleet running, that is every owner.
@@ -212,7 +221,61 @@ function NewForm({
 }
 
 /// Which form the controls show in place of their buttons.
-type Mode = "edit" | "release" | null;
+type Mode = "edit" | "release" | "flag" | "remove" | null;
+
+const REASON = {
+  flag: { title: "Flag", label: "why it is not worth doing", send: "Flag" },
+  remove: { title: "Remove", label: "why it is destructive or counterproductive", send: "Remove" },
+} as const;
+
+/// Flag and remove both take one required reason.
+function ReasonForm({
+  kind,
+  record,
+  off,
+  why: title,
+  onSend,
+  onCancel,
+}: {
+  kind: "flag" | "remove";
+  record: TaskRecord;
+  off: boolean;
+  why: string | undefined;
+  onSend: (action: TaskAction) => void;
+  onCancel: () => void;
+}) {
+  const [reason, setReason] = useState("");
+  const missing = reason.trim() === "";
+  return (
+    <form
+      className="task-form task-form--reason"
+      onSubmit={(e) => {
+        e.preventDefault();
+        onSend({ action: kind, task: record.number, reason });
+      }}
+    >
+      <h4 className="task-form__title">
+        {REASON[kind].title} #{record.number}
+      </h4>
+      <Field label={REASON[kind].label}>
+        <input className="composer__input" value={reason} onChange={(e) => setReason(e.target.value)} />
+      </Field>
+      <div className="task-form__actions">
+        <button
+          type="submit"
+          className="composer__send"
+          disabled={off || missing}
+          title={title ?? (missing ? "a reason is required" : undefined)}
+        >
+          {REASON[kind].send}
+        </button>
+        <button type="button" className="task-form__quiet" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
 
 /// The release form: the same four fields `fleet task release` requires. The
 /// operator stands in no checkout, so "where" is typed.
@@ -272,15 +335,17 @@ function ReleaseForm({
   );
 }
 
-/// The operator's controls on one record: comment, edit, release, close and
-/// reopen.
+/// The operator's controls on one record: comment, edit, release, close,
+/// reopen, flag, remove, restore, and the goal and reviewer it names.
 function Controls({
   record,
+  goals,
   ops,
   writable,
   start,
 }: {
   record: TaskRecord;
+  goals: TaskRecord[];
   ops: TaskOps | null;
   writable: boolean;
   start: Mode;
@@ -357,10 +422,37 @@ function Controls({
           onRelease={(action) => run(action, () => setMode(null))}
           onCancel={() => setMode(null)}
         />
+      ) : mode === "flag" || mode === "remove" ? (
+        <ReasonForm
+          kind={mode}
+          record={record}
+          off={off}
+          why={why}
+          onSend={(action) => run(action, () => setMode(null))}
+          onCancel={() => setMode(null)}
+        />
+      ) : record.status === "removed" ? (
+        <div className="task-form__actions">
+          <button
+            type="button"
+            className="task-form__quiet"
+            disabled={off}
+            title={why}
+            onClick={() => run({ action: "restore", task: record.number })}
+          >
+            Restore
+          </button>
+        </div>
       ) : (
         <div className="task-form__actions">
           <button type="button" className="task-form__quiet" disabled={off} title={why} onClick={() => setEditing(true)}>
             Edit
+          </button>
+          <button type="button" className="task-form__quiet" disabled={off} title={why} onClick={() => setMode("flag")}>
+            Flag
+          </button>
+          <button type="button" className="task-form__quiet" disabled={off} title={why} onClick={() => setMode("remove")}>
+            Remove
           </button>
           {block.kind === "task" && record.owner && isOpen(record) && (
             <button type="button" className="task-form__quiet" disabled={off} title={why} onClick={() => setMode("release")}>
@@ -390,6 +482,30 @@ function Controls({
             </button>
           )}
         </div>
+      )}
+      {block.kind === "task" && (
+        <label className="task-form__reviewer">
+          <span className="composer__label">goal</span>
+          <select
+            className="composer__target"
+            value={goals.some((goal) => goal.number === block.parent) ? String(block.parent) : ""}
+            disabled={off}
+            title={why}
+            onChange={(e) =>
+              e.target.value &&
+              run({ action: "edit", task: record.number, technical: [], vision: [], parent: Number(e.target.value) })
+            }
+          >
+            <option value="" disabled>
+              No goal
+            </option>
+            {goals.map((goal) => (
+              <option key={goal.number} value={goal.number}>
+                #{goal.number} {goal.block.outcome}
+              </option>
+            ))}
+          </select>
+        </label>
       )}
       {block.kind === "task" && (
         <label className="task-form__reviewer">
@@ -472,6 +588,14 @@ export function summary(event: ChainEvent): string {
       return `named ${entry.new} reviewer`;
     case "reviewed":
       return `reviewed it${entry.requested ? "" : " (unrequested)"}: ${entry.met ? "met" : "not met"}`;
+    case "flagged":
+      return "flagged it as not worth doing";
+    case "removed":
+      return "removed it";
+    case "restored":
+      return "restored it";
+    case "attached":
+      return entry.old ? `moved it under #${entry.new}, was under #${entry.old}` : `put it under #${entry.new}`;
     case "handoff":
       return "handed off this goal";
     case "released":
@@ -508,6 +632,7 @@ function Row({
   const latest = record.chain[record.chain.length - 1];
   const comments = record.chain.filter((e) => e.entry.entry === "commented").length;
   const { receipt, verdict } = evidence(record);
+  const flagged = flaggers(record);
   const assigned = assignedAt(record);
   const waited = assigned === null ? null : now - assigned;
   // The elapsed time on the row is how "never taken up" shows.
@@ -547,6 +672,7 @@ function Row({
           reviewed{verdict.requested ? "" : " (unrequested)"}: {verdict.met ? "met" : "not met"}
         </span>
       )}
+      {flagged > 0 && <span className="task-row__flagged">flagged by {flagged}</span>}
       {flags.map((flag) => (
         <span key={flag.kind} className="task-flag">
           {flag.text}
@@ -577,7 +703,10 @@ function Entry({ event }: { event: ChainEvent }) {
   const note =
     entry.entry === "taken-up" || entry.entry === "status"
       ? entry.note
-      : entry.entry === "reviewed"
+      : entry.entry === "reviewed" ||
+          entry.entry === "flagged" ||
+          entry.entry === "removed" ||
+          entry.entry === "restored"
         ? entry.reason
         : null;
   return (
@@ -670,6 +799,8 @@ function TaskPage({
   start: Mode;
 }) {
   const { block } = record;
+  const flagged = flaggers(record);
+  const goals = board.filter((r) => r.block.kind === "goal" && r.status !== "removed");
   return (
     <article className="task-page">
       <header className="task__head">
@@ -689,6 +820,7 @@ function TaskPage({
         <span className="task__posted">
           opened by <span className="mono">{record.creator}</span>
         </span>
+        {flagged > 0 && <span className="task-row__flagged">flagged by {flagged}</span>}
         {monitorFlags(record, board, now).map((flag) => (
           <span key={flag.kind} className="task-flag">
             {flag.text}
@@ -736,7 +868,7 @@ function TaskPage({
           );
         })}
       </ol>
-      <Controls record={record} ops={ops} writable={writable} start={start} />
+      <Controls record={record} goals={goals} ops={ops} writable={writable} start={start} />
     </article>
   );
 }
@@ -750,6 +882,8 @@ export function TaskBoard({
   initialEdit = false,
   initialRelease = false,
   initialFilter = "all",
+  initialOwner = "any",
+  initialMode = null,
   now: fixedNow,
 }: {
   chain: ChainEvent[];
@@ -761,6 +895,8 @@ export function TaskBoard({
   initialEdit?: boolean;
   initialRelease?: boolean;
   initialFilter?: TaskFilter;
+  initialOwner?: OwnerFilter;
+  initialMode?: "flag" | "remove" | null;
   /// The clock, fixed; the render probe passes one.
   now?: number;
 }) {
@@ -772,14 +908,18 @@ export function TaskBoard({
   const toggle = (number: number) => setOpen((now) => (now === number ? null : number));
   const [form, setForm] = useState<"goal" | "task" | null>(initialForm);
   const [filter, setFilter] = useState<TaskFilter>(initialFilter);
+  const [owner, setOwner] = useState<OwnerFilter>(initialOwner);
+  const narrowed = filter !== "all" || owner !== "any";
   // A filter narrows the tasks; a goal stays while any of its tasks match, and
-  // its counts still describe all of them.
+  // its counts still describe all of them. A removed goal shows under Removed.
   const visible = groups
     .map((group) => ({
       ...group,
-      shown: group.tasks.filter((task) => filter === "all" || task.status === filter),
+      shown: group.tasks.filter((task) => matches(task, filter, owner)),
     }))
-    .filter((group) => filter === "all" || group.shown.length > 0);
+    .filter(({ goal, shown }) =>
+      shown.length > 0 || (!!goal && (narrowed ? filter === "removed" && goal.status === "removed" : goal.status !== "removed")),
+    );
   // Writes go only through the hub, so with no fleet every control is off.
   const writable = !!store?.live && !!ops;
   const why = writable ? undefined : NEEDS_FLEET;
@@ -843,8 +983,24 @@ export function TaskBoard({
                   {label}
                 </button>
               ))}
+              <select
+                className="composer__target"
+                aria-label="filter tasks by owner"
+                value={owner}
+                onChange={(e) => setOwner(e.target.value as OwnerFilter)}
+              >
+                <option value="any">any owner</option>
+                <option value="unowned">unowned</option>
+                {WORKER_SLOTS.map(workerPane).map((pane) => (
+                  <option key={pane} value={pane}>
+                    {pane}
+                  </option>
+                ))}
+              </select>
             </div>
-            {visible.length === 0 && <div className="feed--empty">No {filter} tasks.</div>}
+            {visible.length === 0 && (
+              <div className="feed--empty">No {filter === "all" ? "matching" : filter} tasks.</div>
+            )}
             {visible.map(({ goal, tasks, shown: matching }) => (
               <section key={goal?.number ?? "none"} className="tasks__group">
                 {goal ? (
@@ -867,7 +1023,7 @@ export function TaskBoard({
               now={now}
               ops={ops}
               writable={writable}
-              start={initialEdit ? "edit" : initialRelease ? "release" : null}
+              start={initialEdit ? "edit" : initialRelease ? "release" : initialMode}
               goal={board.find((r) => r.number === shown.block.parent && r.block.kind === "goal")}
             />
           )}

@@ -161,6 +161,19 @@ pub enum TaskAction {
         /// Name the reviewer. orch and the operator only, whoever opened it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reviewer: Option<PaneId>,
+        /// Put the task under this goal. orch and the operator only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent: Option<u64>,
+    },
+    /// Say a task is not worth doing. Anyone; it changes nothing else.
+    Flag { task: u64, reason: String },
+    /// Take a task off the working board. orch (not the operator's) and the operator.
+    Remove { task: u64, reason: String },
+    /// Undo a removal.
+    Restore {
+        task: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
     /// A verdict on a task's work. Anyone but its owner.
     Review {
@@ -350,6 +363,7 @@ mod tests {
                     technical: vec![],
                     vision: vec!["one grammar".into()],
                     reviewer: None,
+                    parent: None,
                 },
             },
             Op::Task { action: TaskAction::List },
