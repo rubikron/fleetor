@@ -91,9 +91,9 @@ there is no reload question — but no fleet has been started since this landed.
 
 ## 2. The scanner, against commands the fleet really runs
 
-`cases.py` drives `src-tauri/src/write_guardrail.py` directly over 49 cases: the
+`cases.py` drives `src-tauri/src/write_guardrail.py` directly over 68 cases: the
 fleet's own flows (`fleet done`'s `git commit`, a peer's three-dot diff, `cargo
-build`, `npx tsc`) and the accidents the guardrail exists to catch. All 49 behave
+build`, `npx tsc`) and the accidents the guardrail exists to catch. All 68 behave
 as specified on the current implementation; the file is the specification.
 
 The three that matter most, because they are the ones a stricter rule would get
@@ -263,7 +263,7 @@ operator unable to tell a mission going badly from a fence set badly.
 
 ## What this does not stop, named rather than implied
 
-The same honesty `fence-notes.md` ends on, and for the same reason: 49 green cases
+The same honesty `fence-notes.md` ends on, and for the same reason: 68 green cases
 otherwise read as a guarantee the mechanism cannot give.
 
 - **A write whose path the command does not name.** `cargo build`, `git commit`,

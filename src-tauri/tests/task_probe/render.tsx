@@ -226,6 +226,18 @@ process.stdout.write(
     curated_activity: renderToStaticMarkup(
       <EventFeed feed={[notice(1, "first")]} tasks={RESTORED.slice(4).map((event) => ({ event, after: 1 }))} />,
     ),
+    releasingLive: renderToStaticMarkup(
+      <TaskBoard chain={REVIEWED} store={LIVE} ops={OPS} now={LATER} initialOpen={5} initialRelease />,
+    ),
+    // Assigned in an earlier session: nobody is being waited on.
+    stale: renderToStaticMarkup(
+      <TaskBoard
+        chain={[CHAIN[0], at(9, "orch", { entry: "opened", block: task("old work", "worker-1", 1) })]}
+        store={LIVE}
+        ops={OPS}
+        now={LATER}
+      />,
+    ),
     empty: renderToStaticMarkup(<TaskBoard chain={[]} store={GATE} />),
   }),
 );

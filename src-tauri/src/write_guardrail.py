@@ -51,6 +51,7 @@ program.
 import argparse
 import json
 import os
+import re
 import shlex
 import sys
 import time
@@ -145,6 +146,15 @@ def looks_like_a_path(token):
     if "=" in token.split("/")[0] and not token.startswith(("/", ".", "~")):
         return False  # an env assignment or a `key=value` flag
     return True
+
+
+#: Standard stream devices. Sending output to one is not a write (D-112).
+STREAM_DEVICE = re.compile(r"/dev/(null|stdout|stderr|tty|fd/[0-9]+)")
+
+
+def is_stream_device(raw, cwd):
+    """Matched on the spelling, not the realpath: `/dev/stdout` is a symlink."""
+    return bool(STREAM_DEVICE.fullmatch(os.path.normpath(os.path.join(cwd, raw))))
 
 
 # --- the Bash scanner ----------------------------------------------------------
@@ -304,6 +314,8 @@ def offenders(tool, tool_input, cwd, roots, denied):
 
     out = []
     for raw in candidates:
+        if is_stream_device(raw, cwd):
+            continue
         path = resolve(raw, cwd)
         if any(within(path, d) for d in denied):
             out.append((raw, path, "policy"))

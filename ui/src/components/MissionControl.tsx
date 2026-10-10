@@ -89,7 +89,7 @@ export function MissionControl({
           const takenUp = current?.chain.filter((e) => e.entry.entry === "taken-up").pop();
           const latest = current?.chain[current.chain.length - 1];
           const flags = owned.flatMap((r) =>
-            monitorFlags(r, board, now).map((flag) => ({ ...flag, number: r.number })),
+            monitorFlags(r, board, now, taskStore?.lineage).map((flag) => ({ ...flag, number: r.number })),
           );
           const reading = gauges[pane];
           const pct = reading?.kind === "sampled" ? reading.gauge.pct : null;

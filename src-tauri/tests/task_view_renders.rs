@@ -542,3 +542,24 @@ fn a_removed_task_is_hidden_until_asked_for_and_can_be_restored() {
         assert!(feed.contains(line), "the feed says {line:?}: {feed}");
     }
 }
+
+/// Releasing or removing only writes the record, so the form offers to message
+/// the owner, and only an owner that is a pane of this session.
+#[test]
+fn release_and_remove_offer_to_tell_a_live_owner_to_stop() {
+    let Some(all) = rendered() else { return };
+    assert!(markup(&all, "releasingLive").contains("message worker-1 to stop work on it"));
+    assert!(markup(&all, "removing").contains("message worker-2 to stop work on it"));
+    for key in ["releasing", "flagging"] {
+        assert!(!markup(&all, key).contains("to stop work on it"), "{key} offers no stop message");
+    }
+}
+
+/// The "not taken up" clock does not run for an owner from an earlier session.
+#[test]
+fn an_earlier_runs_assignment_is_not_waited_on() {
+    let Some(all) = rendered() else { return };
+    let stale = markup(&all, "stale");
+    assert!(stale.contains("worker-1, earlier run"), "{stale}");
+    assert!(!stale.contains("not taken up") && !stale.contains("never taken up"), "{stale}");
+}
