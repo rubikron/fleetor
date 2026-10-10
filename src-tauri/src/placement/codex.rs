@@ -1223,6 +1223,10 @@ fn install(
     if let (false, Some(git)) = (seed.operators_own_seat, &seed.worktree_git) {
         add_writable_roots(&mut doc, &commit_roots(git));
     }
+    // The operator's own value is kept (D-116).
+    if !doc.contains_key(CONTEXT_WINDOW_KEY) {
+        set_path(&mut doc, &[CONTEXT_WINDOW_KEY], Value::from(CONTEXT_WINDOW));
+    }
     notices.push(narrowing_notice(spec, &seat, seed.operators_own_seat));
     // Checkpoint 14, and it is **two** rows rather than one (#30, C34). Written
     // with `set_owned` rather than `set_path` because an operator who marked a
@@ -2154,6 +2158,11 @@ fn set_path(doc: &mut DocumentMut, segments: &[&str], value: Value) {
     }
     table.insert(last, Item::Value(value));
 }
+
+const CONTEXT_WINDOW_KEY: &str = "model_context_window";
+
+/// Assumed for every model, not looked up (D-116).
+const CONTEXT_WINDOW: i64 = 872_000;
 
 /// The table and key codex reads extra writable roots from.
 const WRITABLE_ROOTS: [&str; 2] = ["sandbox_workspace_write", "writable_roots"];
@@ -3533,6 +3542,42 @@ writable_roots = [{:?}, {:?}]
             )
             .expect("seed");
         assert_eq!(writable_roots(&machine.seeded("orch")), Vec::<String>::new());
+    }
+
+    #[test]
+    fn every_seat_gets_the_assumed_context_window() {
+        let machine = Machine::new("context-window");
+        a_full_installation(&machine);
+        machine.seed("worker-1").expect("seed");
+        machine.seed_for_the_operator("orch").expect("seed");
+        for pane in ["worker-1", "orch"] {
+            assert_eq!(
+                machine.seeded(pane)[CONTEXT_WINDOW_KEY].as_integer(),
+                Some(872_000),
+                "{pane}",
+            );
+        }
+    }
+
+    #[test]
+    fn the_operators_own_context_window_survives() {
+        let machine = Machine::new("context-window-theirs");
+        machine.operator_file(CONFIG_FILE, "model_context_window = 400000\n");
+        for round in ["first seed", "re-seed"] {
+            let mut notices = machine.notices("worker-1");
+            notices.extend(machine.notices_for_the_operator("orch"));
+            for pane in ["worker-1", "orch"] {
+                assert_eq!(
+                    machine.seeded(pane)[CONTEXT_WINDOW_KEY].as_integer(),
+                    Some(400_000),
+                    "{round}: {pane}",
+                );
+            }
+            assert!(
+                !notices.iter().any(|(_, text)| text.contains(CONTEXT_WINDOW_KEY)),
+                "{round}: nothing was replaced: {notices:#?}",
+            );
+        }
     }
 
     /// **An operator's `untrusted` loses, and is told so** (#30, C21).
