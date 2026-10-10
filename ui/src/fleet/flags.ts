@@ -22,9 +22,11 @@ const lastIndex = (record: TaskRecord, match: (index: number) => boolean): numbe
 };
 
 /// When a planned task with an owner was last handed to them, or null when
-/// nobody is being waited on.
-export function assignedAt(record: TaskRecord): number | null {
+/// nobody is being waited on. An owner from another lineage than `lineage` is
+/// a pane that no longer exists, so nobody waits on it.
+export function assignedAt(record: TaskRecord, lineage?: string | null): number | null {
   if (record.block.kind !== "task" || record.status !== "planned" || !record.owner) return null;
+  if (lineage !== undefined && record.owner.lineage !== lineage) return null;
   const since = lastIndex(record, (i) =>
     ["opened", "status", "released"].includes(record.chain[i].entry.entry),
   );
@@ -44,7 +46,12 @@ export function evidence(record: TaskRecord) {
   return { receipts, receipt: receipts[receipts.length - 1], verdict: verdicts[verdicts.length - 1] };
 }
 
-export function monitorFlags(record: TaskRecord, board: TaskRecord[], now: number): MonitorFlag[] {
+export function monitorFlags(
+  record: TaskRecord,
+  board: TaskRecord[],
+  now: number,
+  lineage?: string | null,
+): MonitorFlag[] {
   const flags: MonitorFlag[] = [];
   if (record.block.kind === "goal") {
     const open = board.filter((r) => r.block.parent === record.number && isOpen(r)).length;
@@ -53,7 +60,7 @@ export function monitorFlags(record: TaskRecord, board: TaskRecord[], now: numbe
     }
     return flags;
   }
-  const assigned = assignedAt(record);
+  const assigned = assignedAt(record, lineage);
   if (assigned !== null && now - assigned >= NEVER_TAKEN_UP_MS) {
     flags.push({ kind: "never-taken-up", text: "assigned, never taken up" });
   }

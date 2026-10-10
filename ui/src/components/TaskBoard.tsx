@@ -228,10 +228,22 @@ const REASON = {
   remove: { title: "Remove", label: "why it is destructive or counterproductive", send: "Remove" },
 } as const;
 
+/// Releasing or removing only writes the record; telling the owner is a
+/// separate, chosen act.
+function TellOwner({ owner, tell, setTell }: { owner: PaneId; tell: boolean; setTell: (on: boolean) => void }) {
+  return (
+    <label className="task-form__check">
+      <input type="checkbox" checked={tell} onChange={(e) => setTell(e.target.checked)} />
+      message {owner} to stop work on it
+    </label>
+  );
+}
+
 /// Flag and remove both take one required reason.
 function ReasonForm({
   kind,
   record,
+  owner,
   off,
   why: title,
   onSend,
@@ -239,19 +251,22 @@ function ReasonForm({
 }: {
   kind: "flag" | "remove";
   record: TaskRecord;
+  /// The pane to offer a stop message to, when a removal has one.
+  owner: PaneId | null;
   off: boolean;
   why: string | undefined;
-  onSend: (action: TaskAction) => void;
+  onSend: (action: TaskAction, tell: boolean) => void;
   onCancel: () => void;
 }) {
   const [reason, setReason] = useState("");
+  const [tell, setTell] = useState(false);
   const missing = reason.trim() === "";
   return (
     <form
       className="task-form task-form--reason"
       onSubmit={(e) => {
         e.preventDefault();
-        onSend({ action: kind, task: record.number, reason });
+        onSend({ action: kind, task: record.number, reason }, tell);
       }}
     >
       <h4 className="task-form__title">
@@ -260,6 +275,7 @@ function ReasonForm({
       <Field label={REASON[kind].label}>
         <input className="composer__input" value={reason} onChange={(e) => setReason(e.target.value)} />
       </Field>
+      {kind === "remove" && owner && <TellOwner owner={owner} tell={tell} setTell={setTell} />}
       <div className="task-form__actions">
         <button
           type="submit"
@@ -281,17 +297,20 @@ function ReasonForm({
 /// operator stands in no checkout, so "where" is typed.
 function ReleaseForm({
   record,
+  owner,
   off,
   why: title,
   onRelease,
   onCancel,
 }: {
   record: TaskRecord;
+  owner: PaneId | null;
   off: boolean;
   why: string | undefined;
-  onRelease: (action: TaskAction) => void;
+  onRelease: (action: TaskAction, tell: boolean) => void;
   onCancel: () => void;
 }) {
+  const [tell, setTell] = useState(false);
   const [why, setWhy] = useState("");
   const [done, setDone] = useState("");
   const [left, setLeft] = useState("");
@@ -302,7 +321,7 @@ function ReleaseForm({
       className="task-form task-form--release"
       onSubmit={(e) => {
         e.preventDefault();
-        onRelease({ action: "release", task: record.number, why, done, left, place });
+        onRelease({ action: "release", task: record.number, why, done, left, place }, tell);
       }}
     >
       <h4 className="task-form__title">Release #{record.number}</h4>
@@ -318,6 +337,7 @@ function ReleaseForm({
       <Field label="where the work sits: branch @ commit">
         <input className="composer__input" value={place} onChange={(e) => setPlace(e.target.value)} />
       </Field>
+      {owner && <TellOwner owner={owner} tell={tell} setTell={setTell} />}
       <div className="task-form__actions">
         <button
           type="submit"
@@ -340,12 +360,15 @@ function ReleaseForm({
 function Controls({
   record,
   goals,
+  owner,
   ops,
   writable,
   start,
 }: {
   record: TaskRecord;
   goals: TaskRecord[];
+  /// The owner, when it is a pane of this session.
+  owner: PaneId | null;
   ops: TaskOps | null;
   writable: boolean;
   start: Mode;
@@ -366,6 +389,18 @@ function Controls({
       if (!ops) return;
       await ops.run(action);
       then?.();
+    });
+  const stop = (action: TaskAction, tell: boolean, word: string) =>
+    act(async () => {
+      if (!ops) return;
+      await ops.run(action);
+      if (tell && owner) {
+        await ops.message(
+          owner,
+          `The operator ${word} task #${record.number}. Stop work on it and commit what you have; run \`fleet task show ${record.number}\` for why.`,
+        );
+      }
+      setMode(null);
     });
   const same = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
 
@@ -417,18 +452,22 @@ function Controls({
       ) : mode === "release" ? (
         <ReleaseForm
           record={record}
+          owner={owner}
           off={off}
           why={why}
-          onRelease={(action) => run(action, () => setMode(null))}
+          onRelease={(action, tell) => stop(action, tell, "released")}
           onCancel={() => setMode(null)}
         />
       ) : mode === "flag" || mode === "remove" ? (
         <ReasonForm
           kind={mode}
           record={record}
+          owner={owner}
           off={off}
           why={why}
-          onSend={(action) => run(action, () => setMode(null))}
+          onSend={(action, tell) =>
+            mode === "remove" ? stop(action, tell, "removed") : run(action, () => setMode(null))
+          }
           onCancel={() => setMode(null)}
         />
       ) : record.status === "removed" ? (
@@ -633,10 +672,10 @@ function Row({
   const comments = record.chain.filter((e) => e.entry.entry === "commented").length;
   const { receipt, verdict } = evidence(record);
   const flagged = flaggers(record);
-  const assigned = assignedAt(record);
+  const assigned = assignedAt(record, store?.lineage);
   const waited = assigned === null ? null : now - assigned;
   // The elapsed time on the row is how "never taken up" shows.
-  const flags = monitorFlags(record, board, now).filter((flag) => flag.kind !== "never-taken-up");
+  const flags = monitorFlags(record, board, now, store?.lineage).filter((flag) => flag.kind !== "never-taken-up");
   return (
     <button
       type="button"
@@ -821,7 +860,7 @@ function TaskPage({
           opened by <span className="mono">{record.creator}</span>
         </span>
         {flagged > 0 && <span className="task-row__flagged">flagged by {flagged}</span>}
-        {monitorFlags(record, board, now).map((flag) => (
+        {monitorFlags(record, board, now, store?.lineage).map((flag) => (
           <span key={flag.kind} className="task-flag">
             {flag.text}
           </span>
@@ -868,7 +907,14 @@ function TaskPage({
           );
         })}
       </ol>
-      <Controls record={record} goals={goals} ops={ops} writable={writable} start={start} />
+      <Controls
+        record={record}
+        goals={goals}
+        owner={record.owner && !earlier(record, store) ? record.owner.pane : null}
+        ops={ops}
+        writable={writable}
+        start={start}
+      />
     </article>
   );
 }

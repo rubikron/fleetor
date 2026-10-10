@@ -120,3 +120,4 @@ Note: D-005 is referenced elsewhere in this file (e.g. D-009, D-011) but has no 
 | [D-111](D-111.md) | S2 | alive | a reopened pane is given this launch's brief again; WP-27's rule R13 is reversed for the brief |
 | [D-112](D-112.md) | meta | alive | the write guardrail does not treat a standard stream device as a write target |
 | [D-113](D-113.md) | S4 | alive | flag, remove, restore and attach are chain entries; `removed` is a fifth status set only by a removal; brief tripwire restated to 20,000 / 10,300 |
+| [D-114](D-114.md) | S4 | alive | the release and remove forms offer to message the owner to stop; the not-taken-up clock ignores earlier-run owners |
