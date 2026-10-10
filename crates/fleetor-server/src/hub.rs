@@ -600,12 +600,7 @@ impl TaskSide {
                 let _writing = self.write.lock().unwrap_or_else(|e| e.into_inner());
                 let board = self.board()?;
                 if let Some(parent) = block.parent {
-                    if find(&board, parent)?.block.kind != Kind::Goal {
-                        return Err(format!(
-                            "#{parent} is a task, and --parent names the goal a task serves — \
-                             `fleet task list` shows the goals"
-                        ));
-                    }
+                    a_goal(&board, parent)?;
                 }
                 let number = board.iter().map(|record| record.number).max().unwrap_or(0) + 1;
                 self.append(number, from, ChainEntry::Opened { block })
@@ -621,14 +616,20 @@ impl TaskSide {
                 find(&self.board()?, task)?;
                 self.append(task, from, entry)
             }
-            TaskAction::Edit { task, outcome, technical, vision, reviewer } => {
+            TaskAction::Edit { task, outcome, technical, vision, reviewer, parent } => {
                 let _writing = self.write.lock().unwrap_or_else(|e| e.into_inner());
                 let board = self.board()?;
                 let record = find(&board, task)?;
                 // The reviewer has its own rule, so it is settled apart from the text.
                 let mut entries = Vec::new();
-                if outcome.is_some() || !technical.is_empty() || !vision.is_empty() || reviewer.is_none() {
+                let text = outcome.is_some() || !technical.is_empty() || !vision.is_empty();
+                if text || (reviewer.is_none() && parent.is_none()) {
                     entries = record.edits(from, outcome.as_deref(), &technical, &vision)?;
+                }
+                if let Some(goal) = parent {
+                    let entry = record.attach(from, goal)?;
+                    a_goal(&board, goal)?;
+                    entries.push(entry);
                 }
                 if let Some(reviewer) = reviewer {
                     entries.push(record.set_reviewer(from, &self.ctx.lineage, reviewer)?);
@@ -660,6 +661,21 @@ impl TaskSide {
             TaskAction::Review { task, met, reason } => {
                 let requested = find(&self.board()?, task)?.may_review(from, &self.ctx.lineage)?;
                 self.append(task, from, ChainEntry::review(met, reason.as_deref(), requested)?)
+            }
+            TaskAction::Flag { task, reason } => {
+                let entry = ChainEntry::flag(&reason)?;
+                find(&self.board()?, task)?;
+                self.append(task, from, entry)
+            }
+            TaskAction::Remove { task, reason } => {
+                let _writing = self.write.lock().unwrap_or_else(|e| e.into_inner());
+                let entry = find(&self.board()?, task)?.remove(from, &reason)?;
+                self.append(task, from, entry)
+            }
+            TaskAction::Restore { task, reason } => {
+                let _writing = self.write.lock().unwrap_or_else(|e| e.into_inner());
+                let entry = find(&self.board()?, task)?.restore(from, reason.as_deref())?;
+                self.append(task, from, entry)
             }
             TaskAction::Receipt { task, check, status, branch, commit, uncommitted, accepted } => {
                 if find(&self.board()?, task)?.block.kind == Kind::Goal {
@@ -697,6 +713,17 @@ impl TaskSide {
             .map(|_| OpResult::Recorded { record_id: number.to_string() })
             .map_err(|e| format!("the task store could not be written to, so nothing was recorded: {e}"))
     }
+}
+
+/// `--parent` names a goal that exists.
+fn a_goal(board: &[TaskRecord], number: u64) -> Result<(), String> {
+    if find(board, number)?.block.kind != Kind::Goal {
+        return Err(format!(
+            "#{number} is a task, and --parent names the goal a task serves — `fleet task list` \
+             shows the goals"
+        ));
+    }
+    Ok(())
 }
 
 fn find(board: &[TaskRecord], number: u64) -> Result<&TaskRecord, String> {

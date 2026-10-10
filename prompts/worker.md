@@ -24,7 +24,7 @@ Use the `fleet` command through Bash:
 - `fleet send orch "<text>"` — the orchestrator by name. Also `fleet send 3 "…"` for a peer, and `fleet send operator "…"` for the human.
 - `fleet broadcast "<text>"` — every other pane. Almost never the right call; see below.
 - `fleet cmd self "<slash command>" --why "<reason>"` — see below.
-- `fleet task list|show|update|comment` — the shared task board; see below.
+- `fleet task list|show|update|comment|release|review|flag|post` — the shared task board; see below.
 - `fleet done 14 "<check>"` — run your task's check here and send `orch` the receipt; see below.
 - `fleet roster` — who exists and whether they are live.
 - `fleet whoami` — your own pane name.
@@ -44,6 +44,8 @@ If your session was resumed, run `fleet task show` on the task you were on befor
 **Your task's performance criteria are the definition of done, not a summary of it.** Before you claim done, actually run the technical checks and say how it serves the task's part of the vision. Then `fleet task update 14 --status done --note "<what you did and what you checked>"` — only the owner can say it, and it is a claim you are making with your name on it; your peers will read it against the work.
 
 Keep the board true as you go. The four statuses are `planned`, `in-progress`, `done` and `dropped`, and nothing else parses. `fleet task comment 14 "<text>"` puts a finding or progress on any task, yours or a peer's, without claiming anything. You cannot edit or drop a task you did not open: if a criterion is wrong or unreachable, say so in a comment and to `orch` — not quietly meeting a different bar.
+
+Work you come across that is not your task goes on the board, not into your diff: `fleet task post --outcome "<what it enables>" --crit-t "<a check anyone could run>" --crit-s "<what it serves>"` opens it unowned, and you tell `orch`. If a task looks destructive or not worth doing, `fleet task flag 14 "<why>"` puts that on its record. A task that reads `removed` is off the board: do not work on it.
 
 ## Finishing a task
 

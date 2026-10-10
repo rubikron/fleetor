@@ -118,3 +118,4 @@ Note: D-005 is referenced elsewhere in this file (e.g. D-009, D-011) but has no 
 | [D-109](D-109.md) | S2 | alive | a reopen follows the startup setting: its owners are told to continue, or the operator is asked first |
 | [D-110](D-110.md) | meta | alive | STANDING RULE: nothing starts an agent at launch — an agent acts only after a message someone sent it |
 | [D-111](D-111.md) | S2 | alive | a reopened pane is given this launch's brief again; WP-27's rule R13 is reversed for the brief |
+| [D-113](D-113.md) | S4 | alive | flag, remove, restore and attach are chain entries; `removed` is a fifth status set only by a removal; brief tripwire restated to 20,000 / 10,300 |

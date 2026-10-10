@@ -1734,6 +1734,7 @@ button.homepage__run:disabled { cursor: default; }
    whole of what is being reported, and WP-06's review is what verifies it. */
 .task__status--done { color: var(--green); }
 .task__status--dropped { color: var(--fg-mute); text-decoration: line-through; }
+.task__status--removed { color: var(--coral); text-decoration: line-through; }
 /* agent-authored prose, like .msg__body — the same deliberate exception to the
    all-mono shell. */
 .task__outcome {
@@ -1824,8 +1825,9 @@ button.homepage__run:disabled { cursor: default; }
 .task-row__owner { color: var(--fg-dim); }
 .task-row__outcome { font-family: var(--sans); flex: 1 1 12rem; min-width: 0; word-break: break-word; }
 .task-row__counts, .task-row__comments { font-size: var(--t-label); color: var(--fg-mute); }
-.task-row__waiting, .task-row__receipt, .task-row__review { font-size: var(--t-label); color: var(--fg-mute); }
+.task-row__waiting, .task-row__receipt, .task-row__review, .task-row__flagged { font-size: var(--t-label); color: var(--fg-mute); }
 .task-row__waiting.is-late { color: var(--coral); }
+.task-row__flagged { color: var(--gold); }
 .task-flag { font-size: var(--t-label); color: var(--coral); border: 1px solid currentColor; border-radius: var(--radius-sm); padding: 0 0.3125rem; }
 .task-form__reviewer { display: flex; align-items: center; gap: 0.5rem; }
 .task-row__latest { flex: 1 1 100%; font-size: var(--t-label); color: var(--fg-mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

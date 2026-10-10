@@ -132,6 +132,14 @@ function renderTask(event: ChainEvent): Rendered {
                   ? `reviewed #${event.task}${entry.requested ? "" : " (unrequested)"}: ${
                       entry.met ? "met" : "not met"
                     }${note(entry.reason)}`
+                  : entry.entry === "flagged"
+                    ? `flagged #${event.task} as not worth doing — ${entry.reason}`
+                  : entry.entry === "removed"
+                    ? `removed #${event.task} — ${entry.reason}`
+                  : entry.entry === "restored"
+                    ? `restored #${event.task}${note(entry.reason)}`
+                  : entry.entry === "attached"
+                    ? `put #${event.task} under goal #${entry.new}`
                   : entry.entry === "handoff"
                     ? `handed off goal #${event.task} · ${entry.built}${
                         entry.open_tasks?.length

@@ -331,11 +331,17 @@ fn comment(task: u64, text: &str) -> Op {
 
 fn edit_outcome(task: u64, outcome: &str) -> Op {
     Op::Task {
-        action: TaskAction::Edit { task, outcome: Some(outcome.into()), technical: vec![], vision: vec![], reviewer: None },
+        action: TaskAction::Edit {
+            task,
+            outcome: Some(outcome.into()),
+            technical: vec![],
+            vision: vec![],
+            reviewer: None,
+            parent: None,
+        },
     }
 }
 
-/// Anyone comments on any task, and a comment moves neither status nor owner.
 #[tokio::test]
 async fn anyone_may_comment_and_nothing_else_changes() {
     let fleet = start_hub().await;
@@ -398,6 +404,7 @@ async fn an_edit_follows_the_creator_and_keeps_the_old_text() {
             technical: vec!["cargo test -p parser".into(), "clippy is clean".into()],
             vision: vec!["one grammar, one parser".into()],
             reviewer: None,
+            parent: None,
         },
     };
     orch.call(both).await.unwrap();
@@ -583,6 +590,7 @@ fn name_reviewer(task: u64, reviewer: u8) -> Op {
             technical: vec![],
             vision: vec![],
             reviewer: Some(PaneId::Worker(reviewer)),
+            parent: None,
         },
     }
 }
@@ -715,6 +723,128 @@ async fn a_handoff_closes_its_goal_and_lists_the_open_tasks() {
 
 /// The task store's own pipe: a follower from zero sees every chain entry once,
 /// in order, whether it was written before or after it subscribed.
+fn curate(task: u64, verb: &str, reason: &str) -> Op {
+    let reason = reason.to_string();
+    Op::Task {
+        action: match verb {
+            "flag" => TaskAction::Flag { task, reason },
+            "remove" => TaskAction::Remove { task, reason },
+            _ => TaskAction::Restore { task, reason: Some(reason).filter(|r| !r.is_empty()) },
+        },
+    }
+}
+
+fn attach(task: u64, goal: u64) -> Op {
+    Op::Task {
+        action: TaskAction::Edit {
+            task,
+            outcome: None,
+            technical: vec![],
+            vision: vec![],
+            reviewer: None,
+            parent: Some(goal),
+        },
+    }
+}
+
+/// The slice's demo: a worker opens a destructive task, two panes flag it,
+/// orch removes it, the operator restores it.
+#[tokio::test]
+async fn a_task_is_flagged_removed_and_restored_with_its_chain_kept() {
+    let fleet = start_hub().await;
+    let mut orch = pane(&fleet, PaneId::Orch).await;
+    let mut two = pane(&fleet, PaneId::Worker(2)).await;
+    let mut three = pane(&fleet, PaneId::Worker(3)).await;
+
+    let task = number(two.call(open_task("delete the fixtures", None, None)).await.unwrap());
+    two.call(set(task, TaskStatus::InProgress)).await.unwrap();
+
+    let why = refusal(three.call(curate(task, "flag", " ")).await.unwrap());
+    assert!(why.contains("needs the reason"), "{why}");
+    three.call(curate(task, "flag", "the suite reads those fixtures")).await.unwrap();
+    three.call(curate(task, "flag", "and so does CI")).await.unwrap();
+    orch.call(curate(task, "flag", "agreed")).await.unwrap();
+    let record = list(&mut orch).await.remove(0);
+    assert_eq!(record.flaggers(), 2, "one pane flagging twice counts once");
+    assert_eq!(record.status, TaskStatus::InProgress, "a flag changes nothing else");
+
+    let written = chain_len(&fleet);
+    for refused in [curate(task, "remove", "no"), curate(task, "restore", "")] {
+        let why = refusal(three.call(refused).await.unwrap());
+        assert!(why.contains("orch and the operator") && why.contains("fleet task flag"), "{why}");
+    }
+    let why = refusal(orch.call(curate(task, "remove", "")).await.unwrap());
+    assert!(why.contains("needs the reason"), "{why}");
+    let why = refusal(orch.call(curate(task, "restore", "")).await.unwrap());
+    assert!(why.contains("is not removed"), "{why}");
+    let why = refusal(orch.call(set(task, TaskStatus::Removed)).await.unwrap());
+    assert!(why.contains("fleet task remove"), "{why}");
+    assert_eq!(chain_len(&fleet), written, "a refusal writes nothing");
+
+    orch.call(curate(task, "remove", "it deletes what the suite reads")).await.unwrap();
+    let record = list(&mut orch).await.remove(0);
+    assert_eq!(record.status, TaskStatus::Removed);
+    let why = refusal(orch.call(curate(task, "remove", "again")).await.unwrap());
+    assert!(why.contains("already removed"), "{why}");
+
+    fleet.hub.handle(PaneId::Operator, curate(task, "restore", "it was a rename")).await;
+    let record = list(&mut orch).await.remove(0);
+    assert_eq!(record.status, TaskStatus::InProgress, "the status it had comes back");
+    assert_eq!(record.owner.as_ref().map(|o| o.pane), Some(PaneId::Worker(2)));
+    assert!(matches!(record.chain.last().unwrap().entry, ChainEntry::Restored { .. }));
+    assert_eq!(record.chain.len(), 7, "nothing left the chain");
+}
+
+#[tokio::test]
+async fn orch_never_removes_or_restores_the_operators_tasks() {
+    let fleet = start_hub().await;
+    let mut orch = pane(&fleet, PaneId::Orch).await;
+    let task = match fleet.hub.handle(PaneId::Operator, open_task("ship the docs", None, None)).await {
+        OpResult::Recorded { record_id } => record_id.parse::<u64>().unwrap(),
+        other => panic!("{other:?}"),
+    };
+
+    let why = refusal(orch.call(curate(task, "remove", "not now")).await.unwrap());
+    assert!(why.contains("opened by the operator"), "{why}");
+    fleet.hub.handle(PaneId::Operator, curate(task, "remove", "superseded")).await;
+    let why = refusal(orch.call(curate(task, "restore", "")).await.unwrap());
+    assert!(why.contains("opened by the operator"), "{why}");
+    assert_eq!(list(&mut orch).await[0].status, TaskStatus::Removed);
+}
+
+#[tokio::test]
+async fn a_workers_task_starts_with_no_goal_and_orch_attaches_it() {
+    let fleet = start_hub().await;
+    let mut orch = pane(&fleet, PaneId::Orch).await;
+    let mut worker = pane(&fleet, PaneId::Worker(2)).await;
+    let goal = number(orch.call(open_goal("one grammar")).await.unwrap());
+    let other = number(orch.call(open_goal("fast builds")).await.unwrap());
+    let task = number(worker.call(open_task("the lexer leaks", None, None)).await.unwrap());
+    assert_eq!(list(&mut orch).await[2].block.parent, None);
+
+    let written = chain_len(&fleet);
+    let why = refusal(worker.call(attach(task, goal)).await.unwrap());
+    assert!(why.contains("orch and the operator attach"), "{why}");
+    let why = refusal(orch.call(attach(task, task)).await.unwrap());
+    assert!(why.contains("is a task"), "{why}");
+    let why = refusal(orch.call(attach(goal, other)).await.unwrap());
+    assert!(why.contains("a goal has no parent"), "{why}");
+    let why = refusal(orch.call(attach(task, 99)).await.unwrap());
+    assert!(why.contains("there is no #99"), "{why}");
+    assert_eq!(chain_len(&fleet), written, "a refused attach writes nothing");
+
+    orch.call(attach(task, goal)).await.unwrap();
+    let why = refusal(orch.call(attach(task, goal)).await.unwrap());
+    assert!(why.contains("already under"), "{why}");
+    fleet.hub.handle(PaneId::Operator, attach(task, other)).await;
+    let record = list(&mut orch).await.remove(2);
+    assert_eq!(record.block.parent, Some(other));
+    assert_eq!(
+        record.chain.last().unwrap().entry,
+        ChainEntry::Attached { old: Some(goal), new: other }
+    );
+}
+
 #[tokio::test]
 async fn the_task_pipe_replays_without_gaps_and_the_run_log_stays_empty() {
     let fleet = start_hub().await;

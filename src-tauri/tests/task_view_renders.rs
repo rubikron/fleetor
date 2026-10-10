@@ -183,7 +183,7 @@ fn with_no_fleet_the_view_is_marked_read_only() {
         .skip(1)
         .filter(|b| !b.contains("aria-pressed"))
         .collect();
-    let labels = ["New goal", "New task", "Edit", "Close", "Reopen", "Comment"];
+    let labels = ["New goal", "New task", "Edit", "Flag", "Remove", "Close", "Reopen", "Comment"];
     assert_eq!(controls.len(), labels.len(), "{controls:#?}");
     for (control, label) in controls.iter().zip(labels) {
         let tag = control.split('>').next().unwrap();
@@ -256,7 +256,7 @@ fn a_live_record_offers_comment_edit_close_and_reopen() {
 fn the_list_filters_by_status_and_keeps_the_goal_of_a_matching_task() {
     let Some(all) = rendered() else { return };
     let list = markup(&all, "list");
-    for label in ["All", "Planned", "In progress", "Done"] {
+    for label in ["All", "Planned", "In progress", "Done", "Removed"] {
         assert!(list.contains(&format!(">{label}</button>")), "the {label} filter is offered");
     }
 
@@ -416,7 +416,7 @@ fn the_page_shows_the_reviewer_the_evidence_verdicts_and_the_handoff() {
     assert!(verdicts[1].contains("reviewed it: not met") && verdicts[1].contains("depth 3 still fails"), "{}", verdicts[1]);
 
     // The reviewer control never offers the owner.
-    let control = page.split("task-form__reviewer").nth(1).expect("a reviewer control").split("</select>").next().unwrap();
+    let control = page.split(">reviewer</span>").nth(1).expect("a reviewer control").split("</select>").next().unwrap();
     assert!(control.contains(">worker-3<") && !control.contains(">worker-2<"), "{control}");
 
     let goal = markup(&all, "handoff");
@@ -454,4 +454,91 @@ fn a_worker_card_shows_its_task_how_long_it_has_held_it_and_its_flags() {
     assert!(!two.contains("mc-card__task"), "a done task is not held: {two}");
     assert!(card("worker-4").contains("#4 done, no receipt"));
     assert!(!card("worker-3").contains("task-flag"), "the reviewer's card carries no flag: {}", card("worker-3"));
+}
+
+/// A worker's task sits under "No goal" until it is attached, and a row counts
+/// the panes that flagged it, not the flags.
+#[test]
+fn a_flagged_task_counts_its_flaggers_and_an_attached_one_joins_its_goal() {
+    let Some(all) = rendered() else { return };
+    let page = markup(&all, "flagged");
+    let list = page.split("<article").next().unwrap();
+    let stray = list.split("No goal").nth(1).expect("a No goal group");
+    assert!(stray.contains(">#2<") && !stray.contains(">#3<"), "the attached task left the group: {stray}");
+    assert!(row(&rows(list), "2").contains("flagged by 2"), "three flags, two panes: {list}");
+    assert!(!row(&rows(list), "3").contains("flagged by"), "{list}");
+
+    let chain = page.split("<ol class=\"chain\">").nth(1).expect("the chain");
+    for text in ["flagged it as not worth doing", "the suite reads those fixtures", "and so does CI", "agreed"] {
+        assert!(chain.contains(text), "the chain says {text:?}: {chain}");
+    }
+    let controls = page.split("<div class=\"task-controls\">").nth(1).expect("the controls");
+    for label in ["Flag", "Remove", "Release"] {
+        assert!(controls.contains(&format!(">{label}<")), "a live task offers {label}: {controls}");
+    }
+    assert!(!controls.contains(">Restore<"), "{controls}");
+
+    let attached = markup(&all, "attached");
+    assert!(attached.contains("put it under #1") && attached.contains("serves goal"), "{attached}");
+    let goal = attached.split("<span class=\"composer__label\">goal</span>").nth(1).expect("the goal control");
+    assert!(goal.contains("<option value=\"1\" selected=\"\">#1 one grammar"), "{goal}");
+
+    let unowned = markup(&all, "unowned");
+    let rows = rows(&unowned);
+    assert_eq!(rows.len(), 2, "the goal and its one unowned task:\n{unowned}");
+    assert!(rows[1].contains(">#3<") && unowned.contains("filter tasks by owner"), "{unowned}");
+}
+
+/// Flag and remove each ask for one reason, and neither can be sent without it.
+#[test]
+fn flagging_and_removing_ask_for_a_reason() {
+    let Some(all) = rendered() else { return };
+    for (key, title, label) in [
+        ("flagging", "Flag #2", "why it is not worth doing"),
+        ("removing", "Remove #2", "why it is destructive or counterproductive"),
+    ] {
+        let page = markup(&all, key);
+        let form = page.split("task-form--reason").nth(1).unwrap_or_else(|| panic!("no reason form: {page}"));
+        assert!(form.contains(title) && form.contains(label), "{form}");
+        assert!(form.contains("disabled=\"\"") && form.contains("a reason is required"), "{form}");
+    }
+}
+
+/// A removed task leaves the list and its goal's counts, shows under Removed
+/// with its whole chain, and comes back with the status it had.
+#[test]
+fn a_removed_task_is_hidden_until_asked_for_and_can_be_restored() {
+    let Some(all) = rendered() else { return };
+    let removed = markup(&all, "removed");
+    assert!(!removed.contains(">#2<") && !removed.contains("No goal"), "hidden by default:\n{removed}");
+
+    let only = markup(&all, "removedOnly");
+    let list = only.split("<article").next().unwrap();
+    let rows = rows(list);
+    assert_eq!(rows.len(), 1, "only the removed task:\n{list}");
+    assert!(rows[0].contains("task__status--removed") && rows[0].contains("flagged by 2"), "{}", rows[0]);
+    let chain = only.split("<ol class=\"chain\">").nth(1).expect("the chain");
+    assert!(chain.contains("removed it") && chain.contains("it deletes what the suite reads"), "{chain}");
+    assert!(chain.contains("opened this") && chain.contains("took this up"), "the chain is kept: {chain}");
+    let controls = only.split("<div class=\"task-controls\">").nth(1).expect("the controls");
+    assert!(controls.contains(">Restore<"), "{controls}");
+    for label in ["Edit", "Remove", "Close", "Release"] {
+        assert!(!controls.contains(&format!(">{label}<")), "a removed task offers no {label}: {controls}");
+    }
+
+    let restored = markup(&all, "restored");
+    let list = restored.split("<article").next().unwrap();
+    let back = row(&self::rows(list), "2").to_string();
+    assert!(back.contains("task__status--in-progress") && back.contains("worker-2"), "{back}");
+    assert!(restored.contains("restored it") && restored.contains("it was a rename"), "{restored}");
+
+    let feed = markup(&all, "curated_activity");
+    for line in [
+        "worker-3 flagged #2 as not worth doing — the suite reads those fixtures",
+        "orch put #3 under goal #1",
+        "orch removed #2 — it deletes what the suite reads",
+        "operator restored #2 — it was a rename",
+    ] {
+        assert!(feed.contains(line), "the feed says {line:?}: {feed}");
+    }
 }
