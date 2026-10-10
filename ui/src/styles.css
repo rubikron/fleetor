@@ -1496,8 +1496,7 @@ button.homepage__run:disabled { cursor: default; }
 .seat-row__field { position: relative; min-width: 0; }
 .seat-row__field .seat-row__model { padding-right: 1.75rem; }
 
-/* One slot, two glyphs, never both: a chevron at the default (there is a list),
-   a reset once a model is named (there is a way back). */
+/* The reset on a hand-typed model field (a harness with no catalog). */
 .seat-row__aff {
   position: absolute;
   top: 50%;
@@ -1518,9 +1517,6 @@ button.homepage__run:disabled { cursor: default; }
 }
 .seat-row__aff:hover { color: var(--accent); background: var(--bg-3); }
 .seat-row__aff:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
-/* The chevron is a signpost, not a control — a datalist cannot be opened from
-   script, so it never pretends to be clickable. */
-.seat-row__aff--list { opacity: 0.7; pointer-events: none; }
 .seat-row__sentinel {
   font-family: var(--mono);
   font-size: var(--t-label);

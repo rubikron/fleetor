@@ -232,13 +232,8 @@ fn the_orchestrators_sentinel_is_a_placeholder_not_a_value() {
     let Some(all) = rendered() else { return };
     let row = markup(&all, "orchestrator");
     assert!(
-        row.contains("placeholder=\"default (your login)\""),
-        "the sentinel is no longer offered as the model field's placeholder:\n{row}"
-    );
-    assert!(
-        row.contains("aria-label=\"orchestrator model\" value=\"\""),
-        "the orchestrator's model field now carries a printed value instead of staying empty \
-         with the sentinel as its placeholder:\n{row}"
+        row.contains("<option value=\"\" selected=\"\">default (your login)</option>"),
+        "the sentinel is no longer the model dropdown's selected empty-valued option:\n{row}"
     );
 }
 
@@ -483,7 +478,7 @@ fn no_row_renders_anywhere_to_put_a_credential() {
     ] {
         let row = markup(&all, key);
         assert_eq!(
-            row.matches("<input").count(),
+            row.matches("<input").count() + row.matches("<select class=\"seat-row__model\"").count(),
             1,
             "`{key}` renders more than the one model field. The second input on a row that \
              has just been told to log in is the credential field this ticket refuses:\n{row}"

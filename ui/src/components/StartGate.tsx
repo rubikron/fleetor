@@ -154,7 +154,6 @@ export function SeatRow({
 }: SeatRowProps) {
   const offer = offerFor(gate, seat.harness);
   const models = modelsFor(gate, seat);
-  const listId = `models-${label.replace(/\s+/g, "-")}`;
   const [typed, setTyped] = useState<string | null>(null);
   const shown = typed ?? seat.model ?? "";
 
@@ -216,63 +215,60 @@ export function SeatRow({
           </select>
         )}
         <div className="seat-row__field">
-        <input
-          className="seat-row__model"
-          type="text"
-          list={models.length > 0 ? listId : undefined}
-          spellCheck={false}
-          autoCorrect="off"
-          autoCapitalize="off"
-          placeholder={sentinel}
-          aria-label={`${label} model`}
-          value={shown}
-          onChange={(e) => setTyped(e.target.value)}
-          onBlur={() => {
-            if (typed !== null) onModel(typed);
-            setTyped(null);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") e.currentTarget.blur();
-            if (e.key === "Escape") setTyped(null);
-          }}
-        />
-        {/* The vendor's own catalog, in the vendor's own order — suggestions on a
-            field the operator may still type into, because a harness that publishes
-            no catalog offers an empty list and a name typed by hand is the only
-            answer there is. */}
-        {models.length > 0 && (
-          <datalist id={listId}>
-            {models.map((model) => (
-              <option key={model.slug} value={model.slug}>
-                {model.display_name}
-              </option>
-            ))}
-          </datalist>
-        )}
-        {/* **One slot, two glyphs, never both** (C78). `use default` was a button
-            the width of the credential dropdown that replaced it; folded into the
-            field, it is also better placed, since it resets that field and
-            nothing else. At the default the slot shows a chevron, because what it
-            has to advertise is that there is a list; once a model is named it
-            shows the reset, because what it has to offer is the way back. */}
-        {seat.model === null ? (
-          <span className="seat-row__aff seat-row__aff--list" aria-hidden="true">
-            ▾
-          </span>
-        ) : (
-          <button
-            type="button"
-            className="seat-row__aff"
-            aria-label={`reset ${label} model`}
-            title={`Run this seat on ${sentinel}`}
-            onClick={() => {
-              setTyped(null);
-              onModel("");
-            }}
-          >
-            ↺
-          </button>
-        )}
+          {models.length > 0 ? (
+            <select
+              className="seat-row__model"
+              aria-label={`${label} model`}
+              value={seat.model ?? ""}
+              onChange={(e) => onModel(e.target.value)}
+            >
+              <option value="">{sentinel}</option>
+              {seat.model !== null && !models.some((m) => m.slug === seat.model) && (
+                <option value={seat.model}>{seat.model}</option>
+              )}
+              {models.map((model) => (
+                <option key={model.slug} value={model.slug}>
+                  {model.display_name}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <>
+              <input
+                className="seat-row__model"
+                type="text"
+                spellCheck={false}
+                autoCorrect="off"
+                autoCapitalize="off"
+                placeholder={sentinel}
+                aria-label={`${label} model`}
+                value={shown}
+                onChange={(e) => setTyped(e.target.value)}
+                onBlur={() => {
+                  if (typed !== null) onModel(typed);
+                  setTyped(null);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") e.currentTarget.blur();
+                  if (e.key === "Escape") setTyped(null);
+                }}
+              />
+              {seat.model !== null && (
+                <button
+                  type="button"
+                  className="seat-row__aff"
+                  aria-label={`reset ${label} model`}
+                  title={`Run this seat on ${sentinel}`}
+                  onClick={() => {
+                    setTyped(null);
+                    onModel("");
+                  }}
+                >
+                  ↺
+                </button>
+              )}
+            </>
+          )}
         </div>
       </div>
       {showFacts && <p className="seat-row__facts">{factsFor(offer)}</p>}
