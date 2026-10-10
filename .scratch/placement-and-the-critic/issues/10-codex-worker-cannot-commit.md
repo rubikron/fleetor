@@ -4,7 +4,7 @@
 
 **Blocked by:** nothing.
 
-**Status:** needs-triage
+**Status:** fix in tree (D-115), live run pending
 
 ## Seen
 
@@ -32,4 +32,4 @@ Add the target repo's `.git` directory to the codex pane's `sandbox_workspace_wr
 
 - [ ] A codex worker commits in its worktree during a live run.
 - [ ] Its `fleet done` receipt names a commit with no "uncommitted changes".
-- [ ] A conformance check covers it, so a codex version change cannot silently bring it back.
+- [x] A conformance check covers it, so a codex version change cannot silently bring it back.

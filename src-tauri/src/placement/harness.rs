@@ -998,6 +998,14 @@ impl CredentialSource<'_> {
     }
 }
 
+/// A linked worktree's own gitdir and the common dir it shares, both
+/// canonicalized, as git reports them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeGit {
+    pub git_dir: PathBuf,
+    pub common_dir: PathBuf,
+}
+
 #[derive(Debug, Clone)]
 pub struct Seed<'a> {
     /// **Whether this is the operator's own pane** — the field #28 added, and the
@@ -1058,6 +1066,9 @@ pub struct Seed<'a> {
     /// [`in_repository`](Self::in_repository) is how a test fabricates one
     /// without git.
     pub main_repository: Option<PathBuf>,
+    /// [`cwd`](Self::cwd)'s git directories when it is inside a *linked*
+    /// worktree; `None` in a main checkout or outside git (D-115).
+    pub worktree_git: Option<WorktreeGit>,
     /// The operator's own `HOME`, when this machine has one — the root the
     /// snapshot is taken from, for a harness that takes one. `None` on a machine
     /// nobody looked at, and a harness that seeds from the operator then seeds a
@@ -1102,6 +1113,7 @@ impl<'a> Seed<'a> {
             config_dir,
             cwd,
             main_repository: super::main_repository(cwd),
+            worktree_git: super::worktree_git(cwd),
             operator_home,
             brief: "",
         }

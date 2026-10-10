@@ -195,7 +195,7 @@ use super::harness::{
     CredentialSource, Credentials, GaugeSource, GuardrailInstall, Harness, HarnessReadiness,
     HarnessSpec, LoginInstruction, LoginState, ModelChoice, OperatorLogin, OrphanNames, Outbound,
     Posture, PostureExpectation, ProjectIdentityAndTrust, Program, ProviderKey, ResolvedPosture,
-    Seat, Seed, Transcript, Transport, TypingProfile,
+    Seat, Seed, Transcript, Transport, TypingProfile, WorktreeGit,
 };
 
 // --- the vendor's own shape ----------------------------------------------------
@@ -1219,6 +1219,10 @@ fn install(
             set_owned(&mut doc, &path, toml_value(value), &seat, FEATURES_WHY, &mut notices);
         }
     }
+    // Per-pane paths, so written here and not as a spec row (D-115).
+    if let (false, Some(git)) = (seed.operators_own_seat, &seed.worktree_git) {
+        add_writable_roots(&mut doc, &commit_roots(git));
+    }
     notices.push(narrowing_notice(spec, &seat, seed.operators_own_seat));
     // Checkpoint 14, and it is **two** rows rather than one (#30, C34). Written
     // with `set_owned` rather than `set_path` because an operator who marked a
@@ -2149,6 +2153,40 @@ fn set_path(doc: &mut DocumentMut, segments: &[&str], value: Value) {
         table = entry.as_table_mut().expect("just made it a table");
     }
     table.insert(last, Item::Value(value));
+}
+
+/// The table and key codex reads extra writable roots from.
+const WRITABLE_ROOTS: [&str; 2] = ["sandbox_workspace_write", "writable_roots"];
+
+/// The four roots a worker needs to commit in a linked worktree — never the
+/// whole `.git` (D-115).
+fn commit_roots(git: &WorktreeGit) -> [PathBuf; 4] {
+    [
+        git.git_dir.clone(),
+        git.common_dir.join("objects"),
+        git.common_dir.join("refs"),
+        git.common_dir.join("logs"),
+    ]
+}
+
+/// Append to `writable_roots`, keeping what is there and skipping duplicates.
+/// Nothing is replaced, so nothing is announced.
+fn add_writable_roots(doc: &mut DocumentMut, roots: &[PathBuf]) {
+    let [table, key] = WRITABLE_ROOTS;
+    let mut merged = doc
+        .get(table)
+        .and_then(Item::as_table_like)
+        .and_then(|t| t.get(key))
+        .and_then(Item::as_array)
+        .cloned()
+        .unwrap_or_default();
+    for root in roots {
+        let root = root.to_string_lossy();
+        if !merged.iter().any(|have| have.as_str() == Some(root.as_ref())) {
+            merged.push(root.as_ref());
+        }
+    }
+    set_path(doc, &WRITABLE_ROOTS, Value::Array(merged));
 }
 
 // --- the refusal ---------------------------------------------------------------
@@ -3382,6 +3420,119 @@ args = ["--root", "~/notes"]
             "the seeder wrote `--show-toplevel`'s answer, which does not cover {}:\n{seeded}",
             deep.display(),
         );
+    }
+
+    /// A real repository and a linked worktree, for the D-115 tests.
+    fn a_linked_worktree(machine: &Machine) -> (PathBuf, PathBuf) {
+        let repo = machine.root.join("repo");
+        init_repo(&repo);
+        let worktree = machine.root.join("wt");
+        git_in(&repo, &["worktree", "add", "-q", "-b", "fleet/probe", &worktree.to_string_lossy()]);
+        (repo, worktree)
+    }
+
+    fn writable_roots(seeded: &DocumentMut) -> Vec<String> {
+        seeded
+            .get("sandbox_workspace_write")
+            .and_then(Item::as_table_like)
+            .and_then(|t| t.get("writable_roots"))
+            .and_then(Item::as_array)
+            .map(|a| a.iter().map(|v| v.as_str().expect("a string root").to_string()).collect())
+            .unwrap_or_default()
+    }
+
+    /// The four roots D-115 names, built from the fixture rather than from git.
+    fn the_four_roots(repo: &Path) -> Vec<String> {
+        let git = std::fs::canonicalize(repo).expect("the repo resolves").join(".git");
+        ["worktrees/wt", "objects", "refs", "logs"]
+            .iter()
+            .map(|rel| git.join(rel).to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn a_worker_in_a_linked_worktree_gets_exactly_the_four_commit_roots() {
+        let machine = Machine::new("commit-roots");
+        a_full_installation(&machine);
+        let (repo, worktree) = a_linked_worktree(&machine);
+        let deep = worktree.join("sub").join("deep");
+        std::fs::create_dir_all(&deep).expect("a subdirectory of the worktree");
+
+        machine.seed_at("worker-1", &worktree).expect("seed");
+        machine.seed_at("worker-2", &deep).expect("seed");
+
+        let expected = the_four_roots(&repo);
+        for pane in ["worker-1", "worker-2"] {
+            let roots = writable_roots(&machine.seeded(pane));
+            assert_eq!(roots, expected, "{pane}");
+            for root in &roots {
+                assert!(Path::new(root).is_dir(), "{root} is not a directory git made");
+            }
+        }
+    }
+
+    #[test]
+    fn the_operators_writable_roots_survive_beside_the_commit_roots() {
+        let machine = Machine::new("commit-roots-merge");
+        let (repo, worktree) = a_linked_worktree(&machine);
+        let mut expected = vec!["/operators/own".to_string()];
+        expected.extend(the_four_roots(&repo));
+        // One of the fleet's roots is already the operator's: it is not doubled.
+        expected.swap(1, 3);
+        let theirs = [&expected[0], &expected[1]];
+        machine.operator_file(
+            CONFIG_FILE,
+            &format!(
+                "[sandbox_workspace_write]
+writable_roots = [{:?}, {:?}]
+                 exclude_tmpdir_env_var = true
+",
+                theirs[0], theirs[1],
+            ),
+        );
+        let dir = machine.pane_dir("worker-1");
+        let home = machine.operator_home();
+        let seed = Seed::new(&dir, &worktree, Some(&home)).with_brief(A_BRIEF);
+
+        for round in ["first seed", "re-seed"] {
+            let notices = codex().seed_config_dir(&seed).expect("seed");
+            let mut roots = writable_roots(&machine.seeded("worker-1"));
+            assert_eq!(roots[..2], expected[..2], "{round}: the operator's entries moved");
+            roots.sort();
+            let mut want = expected.clone();
+            want.sort();
+            assert_eq!(roots, want, "{round}");
+            assert!(
+                !notices.iter().any(|(_, text)| text.contains("writable_roots")),
+                "{round}: nothing was replaced, so nothing should be announced: {notices:#?}",
+            );
+        }
+        let seeded = machine.seeded("worker-1");
+        assert_eq!(seeded["sandbox_workspace_write"]["exclude_tmpdir_env_var"].as_bool(), Some(true));
+        assert_eq!(seeded["sandbox_workspace_write"]["network_access"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn the_main_checkout_and_the_operators_own_seat_get_no_commit_roots() {
+        let machine = Machine::new("commit-roots-none");
+        a_full_installation(&machine);
+        let (repo, worktree) = a_linked_worktree(&machine);
+
+        machine.seed_at("worker-1", &repo).expect("seed");
+        assert_eq!(writable_roots(&machine.seeded("worker-1")), Vec::<String>::new());
+
+        // Outside git altogether.
+        machine.seed("worker-2").expect("seed");
+        assert_eq!(writable_roots(&machine.seeded("worker-2")), Vec::<String>::new());
+
+        let dir = machine.pane_dir("orch");
+        let home = machine.operator_home();
+        codex()
+            .seed_config_dir(
+                &Seed::new(&dir, &worktree, Some(&home)).with_brief(A_BRIEF).for_the_operator(),
+            )
+            .expect("seed");
+        assert_eq!(writable_roots(&machine.seeded("orch")), Vec::<String>::new());
     }
 
     /// **An operator's `untrusted` loses, and is told so** (#30, C21).

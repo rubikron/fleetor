@@ -1360,6 +1360,27 @@ pub(crate) fn main_repository(cwd: &Path) -> Option<PathBuf> {
     std::fs::canonicalize(common.parent()?).ok()
 }
 
+/// The gitdir and common dir of the linked worktree `cwd` is inside, asked of
+/// git and canonicalized; `None` in a main checkout or outside git (D-115).
+pub(crate) fn worktree_git(cwd: &Path) -> Option<harness::WorktreeGit> {
+    let ask = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(cwd)
+            .arg("rev-parse")
+            .args(args)
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        std::fs::canonicalize(String::from_utf8_lossy(&out.stdout).trim()).ok()
+    };
+    let git_dir = ask(&["--absolute-git-dir"])?;
+    let common_dir = ask(&["--path-format=absolute", "--git-common-dir"])?;
+    (git_dir != common_dir).then_some(harness::WorktreeGit { git_dir, common_dir })
+}
+
 /// What the operator is told when the `fleet` binary is nowhere. Pinned by a test
 /// for the same reason [`orch_config_dir_notice`] is.
 pub const MISSING_FLEET_BIN: &str =

@@ -1134,6 +1134,141 @@ fn the_sandbox_trio_fences_a_real_pane_and_the_fleet_socket_still_reaches_it() {
     fs::remove_dir_all(&root).ok();
 }
 
+/// **A codex worker can commit in its linked worktree, and the roots that allow
+/// it open nothing else** (issue 10, D-115).
+///
+/// The roots are read back from the document the seeder wrote, so this measures
+/// the production list under the real seatbelt. Zero tokens.
+#[test]
+fn a_seeded_worker_commits_in_its_linked_worktree_and_the_rest_of_dot_git_stays_shut() {
+    use fleetor_shell::placement::codex::{codex, CODEX_SPEC};
+    use fleetor_shell::placement::Seed;
+
+    let Some(vendor) = the_vendor_binary() else {
+        announce(&[
+            format!("SKIPPED: the codex worktree-commit arm — `{VENDOR_BIN}` is not on PATH."),
+            "  Nothing below was measured: commit-with-the-roots,".into(),
+            "    commit-refused-without-them, hooks-and-main-checkout-still-refused (D-115)".into(),
+        ]);
+        return;
+    };
+
+    let root = std::env::temp_dir().join(scratch_name("commit"));
+    fs::create_dir_all(&root).expect("a scratch root");
+    let root = fs::canonicalize(&root).expect("the scratch root resolves");
+    let repo = root.join("repo");
+    let worktree = root.join("wt");
+    let pane_home = root.join("pane-home");
+    // `$TMPDIR` is a default writable root and the ambient one holds this whole
+    // fixture; the pane gets one that holds neither the repo nor the worktree.
+    let pane_tmp = root.join("pane-tmp");
+    let bare_home = root.join("bare-codex-home");
+    for dir in [&repo, &pane_home, &pane_tmp, &bare_home] {
+        fs::create_dir_all(dir).expect("a fixture directory");
+    }
+
+    const GIT: &str = "git -c user.name=tier -c user.email=tier@fleetor.test \
+                       -c commit.gpgsign=false -c core.hooksPath=/dev/null";
+    let git = |dir: &Path, args: &[&str]| {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.name=tier", "-c", "user.email=tier@fleetor.test"])
+            .args(["-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"])
+            .args(args)
+            .output()
+            .expect("git must be on PATH for this arm");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    fs::write(repo.join("README.md"), "base\n").expect("something to commit");
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-q", "-m", "base"]);
+    git(&repo, &["worktree", "add", "-q", "-b", "fleet/probe", &worktree.to_string_lossy()]);
+
+    // The production path: seed a worker at the worktree, read what it wrote.
+    let seeded = root.join("worker-1");
+    codex()
+        .seed_config_dir(&Seed::new(&seeded, &worktree, None).with_brief("a worker's brief"))
+        .expect("seeding a pane's CODEX_HOME");
+    let document: toml_edit::DocumentMut = fs::read_to_string(seeded.join("config.toml"))
+        .expect("the seeded config")
+        .parse()
+        .expect("the seeded config is TOML");
+    let roots = document["sandbox_workspace_write"]["writable_roots"]
+        .as_array()
+        .expect("a worker in a linked worktree is seeded with writable roots")
+        .to_string();
+
+    let mut fence: Vec<String> = CODEX_SPEC
+        .posture
+        .sandbox_keys
+        .iter()
+        .chain(CODEX_SPEC.outbound.reachability_keys)
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect();
+    fence.push("sandbox_workspace_write.exclude_slash_tmp=true".into());
+    fence.push("sandbox_workspace_write.exclude_tmpdir_env_var=true".into());
+    let with_roots: Vec<String> = fence
+        .iter()
+        .cloned()
+        .chain([format!("sandbox_workspace_write.writable_roots={roots}")])
+        .collect();
+
+    let under_seatbelt = |overrides: &[String], script: &str| {
+        let mut command = Command::new(&vendor);
+        command.arg("sandbox");
+        for over in overrides {
+            command.args(["-c", over]);
+        }
+        command
+            .args(["--", "sh", "-c", script])
+            .env("HOME", &pane_home)
+            .env("TMPDIR", &pane_tmp)
+            .env("CODEX_HOME", &bare_home)
+            .current_dir(&worktree)
+            .output()
+            .unwrap_or_else(|e| panic!("could not run {}: {e}", vendor.display()))
+    };
+    let said = |out: &std::process::Output| {
+        format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
+    };
+    let head = || git(&worktree, &["rev-parse", "HEAD"]);
+    let commit = format!("echo x > f.txt && {GIT} add -A && {GIT} commit -qm probe");
+    let base = head();
+
+    // The control: without the roots the same commit does not happen.
+    let refused = under_seatbelt(&fence, &commit);
+    assert_eq!(
+        head(),
+        base,
+        "a worker committed with no added roots, so the arm below measures nothing.\n{}",
+        said(&refused),
+    );
+
+    let committed = under_seatbelt(&with_roots, &commit);
+    assert_ne!(head(), base, "no commit was made with the seeded roots.\n{}", said(&committed));
+    assert_eq!(git(&worktree, &["log", "-1", "--format=%s"]), "probe");
+    assert_eq!(git(&worktree, &["status", "--porcelain"]), "", "the worktree is not clean");
+
+    // And the roots open neither the hooks nor the main checkout.
+    let hook = repo.join(".git").join("hooks").join("pre-commit");
+    let out = under_seatbelt(
+        &with_roots,
+        &format!("printf '#!/bin/sh\\n' > '{}'; echo x >> '{}'", hook.display(), repo.join("README.md").display()),
+    );
+    assert!(!hook.exists(), "a worker wrote a hook into the target repo.\n{}", said(&out));
+    assert_eq!(
+        fs::read_to_string(repo.join("README.md")).expect("the README"),
+        "base\n",
+        "a worker wrote into the main checkout.\n{}",
+        said(&out),
+    );
+
+    fs::remove_dir_all(&root).ok();
+}
+
 /// **The vendor resolves a worker to FLEETOR's provider, and the operator's own
 /// key cannot satisfy it** (WP-25 phase 2, #29; C2, C9, D-062).
 ///
