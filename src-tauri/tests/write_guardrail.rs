@@ -274,6 +274,43 @@ fn a_write_outside_the_roots_is_refused_with_a_reason_a_pane_can_act_on() {
     assert!(journal.contains("notes.txt"), "{journal}");
 }
 
+/// D-112: a standard stream device is not a write target; the rest of `/dev` is.
+#[test]
+fn discarding_output_is_allowed_and_other_devices_are_not() {
+    let bench = common::Bench::new("stream-devices");
+    let pane = bench.pane(PaneSpec::worker(1, claude_code()));
+
+    for allowed in [
+        "ls nope 2>/dev/null",
+        "cargo build >/dev/null 2>&1",
+        "cargo build &>/dev/null",
+        "echo oops > /dev/stderr",
+        "echo hi > /dev/stdout",
+        "echo hi > /dev/tty",
+        "echo hi > /dev/fd/2",
+        "echo hi > /dev/../dev/null",
+        "cargo build 2>&1 | tee /dev/null",
+        "dd if=out.txt of=/dev/null",
+    ] {
+        assert_eq!(pane.bash(allowed), None, "a pane must be able to run: {allowed}");
+    }
+
+    for refused in [
+        "dd if=/dev/zero of=/dev/disk2",
+        "echo x > /dev/rdisk0",
+        "echo x > /dev/nullx",
+        "echo x > /dev/null/x",
+    ] {
+        assert!(pane.bash(refused).is_some(), "must still be refused: {refused}");
+    }
+
+    let why = pane
+        .bash("echo x > /Users/somebody/f 2>/dev/null")
+        .expect("a real outside path is refused whatever is discarded beside it");
+    assert!(why.contains("/Users/somebody/f"), "it names the real path: {why}");
+    assert!(!why.contains("/dev/null"), "and only that one: {why}");
+}
+
 /// **`orch` and workers get correct per-pane roots.** `orch` works in the target
 /// repo and a worker does not; a worker works in its own worktree and `orch` has
 /// no business in it. Both share `_shell` and nothing else.
