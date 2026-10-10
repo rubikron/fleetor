@@ -1492,7 +1492,7 @@ pub const CLAUDE_CODE_SPEC: HarnessSpec = HarnessSpec {
         model_flag: None,
         // **The vendor's own aliases, from its own `--help`** (C78): "an alias
         // for the latest model (e.g. 'fable', 'opus', or 'sonnet') or a model's
-        // full name (e.g. 'claude-fable-5')". An alias is deliberately preferred
+        // full name". An alias is deliberately preferred
         // to a dated id here — it tracks the latest of each family, so this list
         // does not go stale every release.
         //
@@ -1501,9 +1501,9 @@ pub const CLAUDE_CODE_SPEC: HarnessSpec = HarnessSpec {
         // these names resolves; the gate picks the list per credential.
         declared_models: &[
             ("fable", "Claude Fable 5.1"),
-            ("opus", "Claude Opus 5"),
-            ("sonnet", "Claude Sonnet 5"),
-            ("haiku", "Claude Haiku 4.5"),
+            ("opus", "Claude Opus 5.5"),
+            ("sonnet", "Claude Sonnet 5.5"),
+            ("haiku", "Claude Haiku 5.5"),
         ],
         permission_flag: Some("--permission-mode"),
         sandbox_keys: &[],

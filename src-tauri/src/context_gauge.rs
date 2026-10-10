@@ -71,8 +71,7 @@ pub fn model_window_tokens(model: Option<&str>) -> u32 {
         return LARGE;
     }
     match slug {
-        "sonnet" | "opus" | "default" | "fable" | "best" | "opusplan" => return LARGE,
-        "haiku" => return STANDARD,
+        "sonnet" | "opus" | "default" | "fable" | "best" | "opusplan" | "haiku" => return LARGE,
         _ => {}
     }
     let Some(rest) = slug.strip_prefix("claude-") else { return WORKER_WINDOW_TOKENS };
@@ -84,7 +83,7 @@ pub fn model_window_tokens(model: Option<&str>) -> u32 {
     match family {
         "fable" => LARGE,
         "opus" if major >= 5 || (major == 4 && minor >= 7) => LARGE,
-        "sonnet" if major >= 5 => LARGE,
+        "sonnet" | "haiku" if major >= 5 => LARGE,
         _ => STANDARD,
     }
 }
@@ -1325,10 +1324,10 @@ mod tests {
 
     #[test]
     fn aliases_and_current_models_get_the_window_claude_code_runs_them_at() {
-        for large in ["sonnet", "opus", "default", "opusplan", "claude-sonnet-5-5", "claude-opus-5", "claude-opus-4-7", "claude-fable-5-1"] {
+        for large in ["sonnet", "opus", "default", "opusplan", "haiku", "fable", "claude-sonnet-5-5", "claude-opus-5", "claude-opus-5-5", "claude-opus-4-7", "claude-fable-5-1", "claude-haiku-5-5"] {
             assert_eq!(model_window_tokens(Some(large)), 1_000_000, "{large}");
         }
-        for standard in ["haiku", "claude-opus-4-6", "claude-sonnet-4-6", "claude-sonnet-4-5", "claude-haiku-4-5"] {
+        for standard in ["claude-opus-4-6", "claude-sonnet-4-6", "claude-sonnet-4-5", "claude-haiku-4-5"] {
             assert_eq!(model_window_tokens(Some(standard)), 200_000, "{standard}");
         }
     }
