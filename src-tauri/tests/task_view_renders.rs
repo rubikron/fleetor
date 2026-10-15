@@ -46,7 +46,7 @@ fn rendered() -> Option<serde_json::Value> {
         announce(&[
             format!("SKIPPED: the Tasks view render tier — {BUNDLER} is not installed."),
             "  Run `npm install`. Nothing below was measured: the task list, the".into(),
-            "  task page and its chain, and the read-only banner (D-100).".into(),
+            "  task page and its chain, and the no-fleet banner (D-117).".into(),
             "  This machine is running a strictly weaker suite.".into(),
         ]);
         return None;
@@ -169,29 +169,17 @@ fn the_task_page_shows_the_chain_with_edits_and_run_boundaries() {
     assert!(entries[5].contains("cargo test passes"), "a status keeps its note: {}", entries[5]);
 }
 
-/// With no fleet running the same records show, marked read-only.
+/// With no fleet running no task is shown, and the view says why (D-117).
 #[test]
-fn with_no_fleet_the_view_is_marked_read_only() {
+fn with_no_fleet_the_view_shows_no_tasks() {
     let Some(all) = rendered() else { return };
-    let readonly = markup(&all, "readonly");
-    assert!(readonly.contains("read-only · start a fleet to change tasks"), "{readonly}");
-    assert_eq!(rows(&readonly).len(), 4);
-
-    // Every operator control is there, off, and says why.
-    let controls: Vec<&str> = readonly
-        .split("<button type=\"")
-        .skip(1)
-        .filter(|b| !b.contains("aria-pressed"))
-        .collect();
-    let labels = ["New goal", "New task", "Edit", "Flag", "Remove", "Close", "Reopen", "Comment"];
-    assert_eq!(controls.len(), labels.len(), "{controls:#?}");
-    for (control, label) in controls.iter().zip(labels) {
-        let tag = control.split('>').next().unwrap();
-        assert!(control.contains(&format!(">{label}<")), "{control}");
+    let idle = markup(&all, "readonly");
+    assert!(idle.contains("no fleet running · start one to see this repo&#x27;s tasks"), "{idle}");
+    assert!(rows(&idle).is_empty(), "{idle}");
+    for label in ["New goal", "New task"] {
+        let tag = idle.split(&format!(">{label}<")).next().unwrap().rsplit("<button").next().unwrap();
         assert!(tag.contains("disabled") && tag.contains("start a fleet to change tasks"), "{label}: {tag}");
     }
-    let empty = markup(&all, "empty");
-    assert!(empty.contains("No goals or tasks for this repository yet"), "{empty}");
 }
 
 fn fields(form: &str) -> Vec<String> {

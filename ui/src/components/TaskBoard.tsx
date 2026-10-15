@@ -947,7 +947,9 @@ export function TaskBoard({
   now?: number;
 }) {
   const now = useNow(fixedNow);
-  const board = useMemo(() => replayBoard(chain), [chain]);
+  // With no fleet running, no tasks are shown (D-117).
+  const idle = !!store && !store.live;
+  const board = useMemo(() => replayBoard(idle ? [] : chain), [idle, chain]);
   const groups = useMemo(() => byGoal(board), [board]);
   const [open, setOpen] = useState<number | null>(initialOpen);
   const shown = board.find((r) => r.number === open);
@@ -978,8 +980,8 @@ export function TaskBoard({
         <h3>Tasks</h3>
         <span className="label">a status is what someone said, not a verdict</span>
         <span className="grow" style={{ flex: "1 1 auto" }} />
-        {store && !store.live && (
-          <span className="tasks__readonly">read-only · start a fleet to change tasks</span>
+        {idle && (
+          <span className="tasks__readonly">no fleet running · start one to see this repo's tasks</span>
         )}
         {store && <span className="mono text-mute tasks__target">{store.target}</span>}
         <button type="button" className="task-form__quiet" disabled={!writable} title={why} onClick={() => setForm("goal")}>

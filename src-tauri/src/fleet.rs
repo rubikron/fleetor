@@ -2041,8 +2041,7 @@ pub struct TaskSnapshot {
     events: Vec<WireEvent>,
 }
 
-/// The task store the Tasks view shows: the live fleet's, else the gate
-/// target's opened read-only and never created (D-100).
+/// The live fleet's task store; with no fleet, no tasks at all (D-117).
 #[tauri::command]
 pub fn fleet_tasks(state: State<'_, FleetState>) -> Result<TaskSnapshot, String> {
     task_snapshot(&state, &layout())
@@ -2068,18 +2067,12 @@ fn task_snapshot(state: &FleetState, layout: &Layout) -> Result<TaskSnapshot, St
     }
     drop(guard);
     let target = configured_target(layout)?.unwrap_or_else(|| layout.testbed());
-    let path = layout.task_store(&target);
-    let events = if path.is_file() {
-        fleetor_db::archive::events(&path, 0).map_err(|e| e.to_string())?
-    } else {
-        Vec::new()
-    };
     Ok(TaskSnapshot {
         live: false,
         target: target.to_string_lossy().into_owned(),
         run: None,
         lineage: None,
-        events: wire(events),
+        events: Vec::new(),
     })
 }
 
@@ -3407,13 +3400,14 @@ mod tests {
         let numbers: Vec<_> = second["tasks"].as_array().unwrap().iter().map(|t| t["number"].clone()).collect();
         assert_eq!(numbers, vec![serde_json::json!(2)], "only what that run touched, not the whole store");
 
-        // With no fleet, the gate target's store is shown read-only and a
-        // target that never had one is not given one.
+        // With no fleet no tasks are shown (D-117), and a target that never
+        // had a store is not given one.
         teardown(&mut bench.state.0.lock().unwrap(), &bench.registry);
-        bench.point_at("repo-a");
+        let repo_a = bench.point_at("repo-a");
         let gate = task_snapshot(&bench.state, &bench.layout).unwrap();
         assert!(!gate.live && gate.run.is_none());
-        assert_eq!(gate.events.len(), 2, "repo-a's two goals, read without a fleet");
+        assert!(gate.events.is_empty(), "repo-a's two goals stay hidden without a fleet");
+        assert!(bench.layout.task_store(&repo_a).is_file(), "hidden, not deleted");
         let repo_c = bench.point_at("repo-c");
         assert!(task_snapshot(&bench.state, &bench.layout).unwrap().events.is_empty());
         assert!(!bench.layout.target_dir(&repo_c).exists(), "reading never creates a store");
