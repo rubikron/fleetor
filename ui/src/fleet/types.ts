@@ -147,15 +147,10 @@ export interface HarnessOffer {
 
 /// One seat's choice — a harness and the model it *starts* with.
 ///
-/// `model: null` is the seat's own default: the orchestrator's
-/// `default (your login)` sentinel, or a worker's launch-configured model.
+/// `model: null` is the seat's own default, the `default (your login)` sentinel.
 export interface SeatChoice {
   harness: string;
   model: string | null;
-  /// **Whose usage this seat spends** (C78). Absent reads as `plan` on the Rust
-  /// side, which is what makes a selection remembered before this field existed
-  /// land on the default the operator was offered.
-  credential: CredentialChoice;
 }
 
 /// What the operator picked, for every seat that may carry a choice.
@@ -192,15 +187,6 @@ export interface CostLine {
   sentence: string;
 }
 
-/// A seat whose chosen credential is not available on this machine, and the one it
-/// runs on instead (C79).
-export interface CredentialFallback {
-  seat: string;
-  harness: string;
-  asked: CredentialChoice;
-  fell_back_to: CredentialChoice;
-}
-
 /// A model the harness's own catalog does not list, and what the seat fell back to
 /// (story 14).
 export interface ModelFallback {
@@ -216,10 +202,6 @@ export interface StartVerdict {
   refusals: StartRefusal[];
   cost: CostLine[];
   fallbacks: ModelFallback[];
-  /// **Seats whose credential this machine could not honour, moved to the one it
-  /// can** (C79). The row's own dropdown already shows the new answer; this is
-  /// what stops that from being a value that changed while nobody was looking.
-  credential_fallbacks: CredentialFallback[];
   /// **How many seats are about to spend the operator's plan** (C75), as one
   /// sentence, or `null` when none are. A count rather than a flag: FLEETOR
   /// applies no per-pane budget, so the number is the thing to weigh.
@@ -236,29 +218,10 @@ export interface StartVerdict {
 export interface GateState {
   harnesses: HarnessOffer[];
   seats: FleetSeats;
-  /// The model a worker runs when the operator names none.
-  worker_model_default: string;
   verdict: StartVerdict;
-  /// Which harnesses this machine has a readable operator login for, so a row can
-  /// say why `your plan` is unavailable rather than offering something the
-  /// backend will refuse.
+  /// Which harnesses this machine has a readable operator login for.
   harnesses_with_a_login: string[];
-  /// Whether the `.env` walk found a worker key — the other half of the same
-  /// question, since a seat on `your key` refuses individually rather than the
-  /// whole fleet quietly becoming orchestrator-only.
-  has_fleet_key: boolean;
 }
-
-/// **Whose usage one worker seat spends** (WP-25 #49; C73, C75, C78).
-///
-/// `plan` is the default, including on a first run and on a selection remembered
-/// before this field existed — an operator with a subscription should not take a
-/// step to use it. `fleet_key` is D-062's original rule, one dropdown away.
-///
-/// The two spellings are `credential_source.rs`'s, and `tests/gate_pickers.rs`
-/// fails if these drift from them. A drift is invisible in both directions and
-/// the failure mode costs money, which is why it is pinned rather than trusted.
-export type CredentialChoice = "plan" | "fleet_key";
 
 /// The orchestrator's sentinel, and the one label it wears (M2).
 ///
@@ -589,9 +552,6 @@ export interface FleetConfig {
   target: string;
   target_path: string;
   branch: string;
-  /// The model in the worker seats, or `"none"` when no key is available and
-  /// only the orchestrator can start.
-  worker_backend: string;
   lead_model: string;
   gate: string;
 }

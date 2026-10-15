@@ -124,3 +124,4 @@ Note: D-005 is referenced elsewhere in this file (e.g. D-009, D-011) but has no 
 | [D-115](D-115.md) | meta | alive | a codex worker in a linked worktree gets four git writable roots, never the whole `.git` |
 | [D-116](D-116.md) | meta | alive | every codex pane is seeded with `model_context_window = 872000`, a constant; the operator's own value is kept |
 | [D-117](D-117.md) | meta | alive | with no fleet running the Tasks view shows no tasks; the store is kept and returns with the next fleet on that target |
+| [D-118](D-118.md) | meta | alive | the gate offers one credential: every worker seat runs the operator's login; slice 1 of removing the DeepSeek key path |

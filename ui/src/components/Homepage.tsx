@@ -9,7 +9,7 @@ import {
 } from "../fleet/types";
 import type { RunsView } from "../fleet/useRuns";
 import { useSeatPickers } from "../ui/useSeatPickers";
-import { SeatRow, CredentialSourcePicker } from "./StartGate";
+import { SeatRow } from "./StartGate";
 
 const DEBOUNCE_MS = 600;
 
@@ -103,7 +103,6 @@ export function Homepage({
 
   const gate = pickers.gate;
   const workers = gate?.seats.workers ?? [];
-  const workerDefault = gate?.worker_model_default ?? "…";
   const workerHarnesses = [...new Set(workers.map((s) => s.harness))];
   const refusals = gate?.verdict.refusals ?? [];
 
@@ -207,13 +206,6 @@ export function Homepage({
               onHarness={(h) => pickers.chooseHarness(ORCH, h)}
               onModel={(m) => pickers.chooseModel(ORCH, m)}
             />
-            <CredentialSourcePicker
-              chosen={pickers.workersCredential}
-              withALogin={gate.harnesses_with_a_login}
-              hasFleetKey={gate.has_fleet_key}
-              spending={workerHarnesses}
-              onChoose={pickers.chooseWorkersCredential}
-            />
             {WORKER_SLOTS.map((slot) => {
               const seat = workers[slot - 1];
               if (!seat) return null;
@@ -223,10 +215,9 @@ export function Homepage({
                   label={`worker ${slot}`}
                   gate={gate}
                   seat={seat}
-                  sentinel={seat.credential === "plan" ? DEFAULT_YOUR_LOGIN : workerDefault}
+                  sentinel={DEFAULT_YOUR_LOGIN}
                   onHarness={(h) => pickers.chooseHarness(workerPane(slot), h)}
                   onModel={(m) => pickers.chooseModel(workerPane(slot), m)}
-                  onCredential={(c) => pickers.chooseCredential(workerPane(slot), c)}
                   showFacts={workers[slot - 2]?.harness !== seat.harness}
                 />
               );

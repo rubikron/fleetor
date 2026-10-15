@@ -43,7 +43,7 @@ use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, oneshot, Notify};
 
 use crate::context_gauge::GaugeSources;
-use crate::credential_source::{CredentialChoice, Gap, PlanOffer};
+use crate::credential_source::{Gap, PlanOffer};
 use crate::placement::{self, harness, Host, Layout, PaneSpec};
 use crate::prompts::PaneContext;
 use crate::pty::PaneRegistry;
@@ -87,12 +87,6 @@ pub struct FleetConfig {
     target_path: String,
     /// That repo's current git branch (best-effort).
     branch: String,
-    /// What fills the worker seats by default: the model on the fleet's key,
-    /// or `"plan"` when there is none and seats spend the operator's own
-    /// login instead — never `"none"`. A worker seat has not required a key
-    /// since a seat can authenticate on the operator's plan (C78); this field
-    /// is display-only and does not gate whether worker seats exist.
-    worker_backend: String,
     /// The model in the orchestrator seat — the operator's own Opus.
     lead_model: String,
     /// A short, honest label for the quality gate workers pass through.
@@ -113,24 +107,8 @@ pub struct SeatChoice {
     /// three readers.
     pub harness: String,
     /// The model this seat starts with, or `None` for the seat's own default: the
-    /// orchestrator's `default (your login)` sentinel (M2), a worker's
-    /// launch-configured model on the fleet's key, or — on a plan seat — that
-    /// same sentinel again, because the vendor's own login is what chooses there.
+    /// `default (your login)` sentinel (M2), where the vendor's own login chooses.
     pub model: Option<String>,
-    /// **Whose usage this seat spends** (C78) — `plan` or `fleet_key`.
-    ///
-    /// **On the seat, because the answer is the seat's.** C75 put it in
-    /// `config.json` as one fleet-wide value and C78 reversed that: the operator
-    /// asked for a per-seat toggle, and a fleet-wide key beside a per-seat control
-    /// would be two homes for one answer — the shape M15 exists to refuse.
-    ///
-    /// **Absent on the wire reads as the plan**, which is what makes a first run
-    /// and a stored selection from before this field existed both land on the
-    /// default C75 chose. `Seed::credential_source` still defaults the *other*
-    /// way, and that asymmetry is deliberate: this is what the operator was
-    /// offered, and that is what a code path nobody thought about gets.
-    #[serde(default)]
-    pub credential: CredentialChoice,
 }
 
 /// **What the operator picked, for every seat that may carry a choice** (C23).
@@ -146,43 +124,15 @@ pub struct FleetSeats {
 }
 
 impl FleetSeats {
-    /// The fleet nobody has picked yet: Claude Code everywhere, the orchestrator on
-    /// its sentinel, the workers on the launch configuration's model.
-    ///
-    /// **Byte for byte the fleet that spawned before the pickers existed**, which is
-    /// the property that makes shipping them safe: an operator who never opens a
-    /// dropdown gets exactly what they got yesterday.
-    /// **No argument since C78.** It took the fleet's worker model and stamped it
-    /// on all four seats; a fresh fleet's workers are on the operator's plan now,
-    /// and a plan seat names no model at all. The launch-configured model is what
-    /// a seat falls back to when it is *moved* to the key, which `seatDefault`
-    /// answers per credential rather than once here.
+    /// The fleet nobody has picked yet: Claude Code everywhere, every seat on its
+    /// sentinel.
     fn unpicked() -> Self {
         let claude = harness::claude_code().spec().name.to_string();
         let workers = fleetor_core::pane::WORKER_SLOTS
             .iter()
-            .map(|_| SeatChoice {
-                harness: claude.clone(),
-                // **`None`, not the launch model** (C78). A fresh fleet's workers
-                // are on the plan, and a plan seat names no model: the login
-                // chooses. The launch-configured model is what a seat falls back
-                // to when it is moved to the fleet's key, which `seat_default`
-                // below answers per credential rather than once here.
-                model: None,
-                credential: CredentialChoice::OperatorsPlan,
-            })
+            .map(|_| SeatChoice { harness: claude.clone(), model: None })
             .collect();
-        Self {
-            orch: SeatChoice {
-                harness: claude,
-                model: None,
-                // The orchestrator has only ever run the operator's own login and
-                // has no second answer to hold. Recorded rather than left to a
-                // default so nothing reads its absence as the fleet's key.
-                credential: CredentialChoice::OperatorsPlan,
-            },
-            workers,
-        }
+        Self { orch: SeatChoice { harness: claude, model: None }, workers }
     }
 
     /// The same selection, refused if it names something that cannot be placed.
@@ -213,7 +163,7 @@ impl FleetSeats {
 
     /// This selection with every seat a past run recorded put back on what it ran
     /// (D-095). A seat the run never placed, or one on a harness this build lacks,
-    /// keeps the gate's pick; a record older than D-095 keeps the gate's credential.
+    /// keeps the gate's pick.
     fn as_recorded(mut self, recorded: &std::collections::BTreeMap<String, runs::PaneRecord>) -> Self {
         let slots = fleetor_core::pane::WORKER_SLOTS.iter().map(|&slot| PaneId::Worker(slot));
         let seats = std::iter::once(&mut self.orch).chain(&mut self.workers);
@@ -224,20 +174,8 @@ impl FleetSeats {
             }
             seat.harness = rec.harness.clone();
             seat.model = rec.model.clone();
-            if let Some(credential) = rec.credential {
-                seat.credential = credential;
-            }
         }
         self
-    }
-
-    /// The choice one seat carries, if it carries one.
-    fn choice_for(&self, pane: PaneId) -> Option<&SeatChoice> {
-        match pane {
-            PaneId::Orch => Some(&self.orch),
-            PaneId::Worker(slot) => self.workers.get(usize::from(slot).checked_sub(1)?),
-            _ => None,
-        }
     }
 
     /// The spec one seat places as, resolved against the registry.
@@ -253,23 +191,8 @@ impl FleetSeats {
         let harness = harness::by_name(&seat.harness)?;
         let placed = match pane {
             PaneId::Orch => PaneSpec::orch(harness),
-            // **Where the operator's gate pick becomes a seat's credential**
-            // (C75). The flag is read here rather than stored on `SeatChoice`
-            // because it is one answer for the fleet, not four: storing it per
-            // seat would let a saved selection disagree with the picker the
-            // operator is looking at.
-            PaneId::Worker(slot) => {
-                let placed = PaneSpec::worker(slot, harness);
-                // **Where the operator's row-level pick becomes a seat's
-                // credential** (C78). Read off `seat`, which is what the picker
-                // wrote and what the gate summarised — one value, so the sentence
-                // the operator read and the fleet that spawns cannot differ (M15).
-                if seat.credential.is_the_operators_plan() {
-                    placed.on_the_operators_plan()
-                } else {
-                    placed
-                }
-            }
+            // Every worker runs on the operator's login (D-118).
+            PaneId::Worker(slot) => PaneSpec::worker(slot, harness).on_the_operators_plan(),
             _ => return None,
         };
         Some(match &seat.model {
@@ -350,23 +273,6 @@ pub struct ModelFallback {
     fell_back_to: String,
 }
 
-/// **A seat whose chosen credential this machine could not honour, and the one it
-/// runs on instead** (C79).
-///
-/// A sibling of [`ModelFallback`] and for the same reason: the operator asked for
-/// something specific and got something else, which they have to be told. The
-/// seat's own dropdown already shows the new answer — this is what stops that
-/// from being a value that changed while nobody was looking.
-#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
-pub struct CredentialFallback {
-    seat: String,
-    harness: String,
-    /// What the seat was set to and this machine cannot provide.
-    asked: CredentialChoice,
-    /// What it runs on instead — the only other answer there is.
-    fell_back_to: CredentialChoice,
-}
-
 /// **What a click will do, read off the seats that will place** (M15).
 ///
 /// Computed in Rust and rendered by the interface rather than derived on both
@@ -383,9 +289,6 @@ pub struct StartVerdict {
     cost: Vec<CostLine>,
     /// What was quietly replaced, said out loud.
     fallbacks: Vec<ModelFallback>,
-    /// **Seats whose credential this machine could not honour, moved to the one
-    /// it can** (C79) — the same "said out loud" as `fallbacks`, one axis over.
-    credential_fallbacks: Vec<CredentialFallback>,
     /// **How many seats are about to spend the operator's plan, before Start**
     /// (#49, C75) — `None` when none are.
     ///
@@ -441,82 +344,39 @@ fn orchestrator_cost(harness: &str, reading: Option<&harness::HarnessReadiness>)
     };
     format!(
         "{harness} in the orchestrator seat runs your own login ({shape}){provider}. \
-         Turns there spend {bills} — never FLEETOR's metered key."
+         Turns there spend {bills}."
     )
 }
 
-/// **The fleet's half of C9's split, as one sentence** (story 12, reshaped by C75).
+/// **What the worker seats on one harness spend, as one sentence** (story 12).
 ///
-/// **The split this sentence carries is no longer orchestrator-versus-worker.** It
-/// was, and #49 said so: the pairing with [`orchestrator_cost`] used to be the
-/// whole content, because a worker could only ever be on the fleet's key. C73 made
-/// a worker able to run the operator's plan, so the axis moved to **plan versus
-/// fleet key**, and this function takes the answer rather than assuming it.
-///
-/// **The orchestrator's line is unchanged and still means what it did** — that
-/// seat has always run the operator's own login, and nothing here touched it.
-/// What changed is that a worker's line can now say the same thing, which is
-/// exactly why it has to be computed and not written down.
-///
-/// **No plan tier is promised in either branch** (C14 as narrowed by C58): "your
-/// own login" is what FLEETOR knows, and the tier is a thing only a vendor's
-/// diagnostic may say.
-fn worker_cost(harness: &str, seats: &str, spends_the_plan: bool) -> String {
-    if spends_the_plan {
-        return format!(
-            "{harness} in {seats} runs your own {harness} login, copied into each pane at \
-             spawn. Turns there spend your own subscription quota — not FLEETOR's metered \
-             key. FLEETOR applies no per-pane budget, and a seat that exhausts your quota \
-             stops responding rather than reporting an error."
-        );
-    }
+/// **No plan tier is promised** (C14 as narrowed by C58): "your own login" is
+/// what FLEETOR knows, and the tier is a thing only a vendor's diagnostic may say.
+fn worker_cost(harness: &str, seats: &str) -> String {
     format!(
-        "{harness} in {seats} runs FLEETOR's own provider and key. Turns there spend the \
-         fleet's metered credential — never your own login or plan."
+        "{harness} in {seats} runs your own {harness} login, copied into each pane at \
+         spawn. Turns there spend your own subscription quota. FLEETOR applies \
+         no per-pane budget, and a seat that exhausts your quota stops responding \
+         rather than reporting an error."
     )
 }
 
-/// **What a seat is refused with when *neither* credential is on this machine**
-/// (C78, narrowed by C79).
+/// **What a worker seat is refused with when its harness has no readable login.**
 ///
-/// **The only refusal left on this axis.** A seat that could run on the other
-/// credential has already been moved there by [`settle_credentials`]; this
-/// sentence is for the seat with nowhere to go, so it names both gaps rather than
-/// offering the other answer as a way out — C78's version ended "you can also put
-/// this seat on your key", which on a machine with no key was advice that led
-/// nowhere.
-///
-/// **Kept out of the call site and beside the cost sentences**, for
-/// `missing_api_key`'s reason: this is the sentence standing between the operator
-/// and a pane that would look perfectly healthy while logged out, so it is
-/// somewhere a test can read it.
-///
-/// It carries the harness's own [`LoginInstruction`] (C72) and the directory the
-/// `.env` walk started from (D-075) — the two things the operator can act on, and
-/// both of them, because either one alone unblocks the seat.
+/// It carries the harness's own [`LoginInstruction`] (C72), the one thing the
+/// operator can act on.
 ///
 /// [`LoginInstruction`]: harness::LoginInstruction
 fn credential_gap(harness: &str, gap: Gap) -> String {
+    let Gap::NoLogin = gap;
     let how = match harness::by_name(harness).map(|h| &h.spec().login) {
         Some(login) => {
             let then = login.then.map(|t| format!(" and {t}")).unwrap_or_default();
-            format!(" Run `{}`{then} and press Re-check logins,", login.command)
+            format!(": run `{}`{then}, then press Re-check logins", login.command)
         }
         None => String::new(),
     };
-    // The gap names which credential the seat was *asking* for, which is what
-    // decides the order the two fixes are offered in — the operator's own choice
-    // first, then the other.
-    let first = match gap {
-        Gap::NoLogin => "no {harness} login was readable on this machine".replace("{harness}", harness),
-        Gap::NoKey => "no worker key was found in your `.env`".to_string(),
-    };
-    format!(
-        "this seat has neither credential available — {first}, and the other is missing \
-         too.{how} or add a `DEEPSEEK_API_KEY` to a `.env` under `{}`. FLEETOR moves a seat \
-         to whichever credential this machine has; this one has neither.",
-        api_key_search_start().display(),
-    )
+    format!("no {harness} login was readable on this machine{how}")
 }
 
 /// `worker seat 3`, `worker seats 1 and 2`, `all 4 worker seats`.
@@ -546,20 +406,11 @@ fn seat_label(pane: PaneId) -> String {
 impl StartVerdict {
     /// **What this fleet would do if the operator clicked now.**
     ///
-    /// **Every worker seat is described and, if it cannot start, refused** — there
-    /// is no longer a fleet-wide "do workers run at all" (C78).
-    ///
-    /// The `workers_run: bool` that used to gate this whole block meant *no key,
-    /// no workers*, and a machine without one ran the orchestrator alone with no
-    /// refusal and no cost line. Since a seat can now authenticate on the
-    /// operator's plan, a key is no longer what makes a worker possible; and since
-    /// each seat carries its own credential, whether it can start is the seat's
-    /// question. `offer` answers it per seat, in both directions.
+    /// Every worker seat is described and, if it cannot start, refused.
     fn for_seats(
         seats: &FleetSeats,
         readings: &[harness::HarnessReadiness],
         fallbacks: Vec<ModelFallback>,
-        credential_fallbacks: Vec<CredentialFallback>,
         offer: &PlanOffer,
     ) -> Self {
         let orch = &seats.orch;
@@ -580,52 +431,35 @@ impl StartVerdict {
             });
         }
 
-        // **Grouped by harness *and* credential** (C78), in first-seat order. It
-        // was harness alone, which was right while a worker could only ever run
-        // the fleet's key; now claude-code on the plan and claude-code on the key
-        // are two different spends and must be two sentences. A fleet where all
-        // four agree still produces one.
-        let mut grouped: Vec<(String, CredentialChoice, Vec<u8>)> = Vec::new();
+        // Grouped by harness, in first-seat order.
+        let mut grouped: Vec<(String, Vec<u8>)> = Vec::new();
         for (at, seat) in seats.workers.iter().enumerate() {
             let slot = u8::try_from(at + 1).unwrap_or(u8::MAX);
-            match grouped
-                .iter_mut()
-                .find(|(name, cred, _)| name == &seat.harness && *cred == seat.credential)
-            {
-                Some((_, _, slots)) => slots.push(slot),
-                None => grouped.push((seat.harness.clone(), seat.credential, vec![slot])),
+            match grouped.iter_mut().find(|(name, _)| name == &seat.harness) {
+                Some((_, slots)) => slots.push(slot),
+                None => grouped.push((seat.harness.clone(), vec![slot])),
             }
             let reading = reading_for(readings, &seat.harness);
-            for reason in refusal_for(reading).into_iter().chain(posture_refusal(reading)) {
+            let cannot_log_in = refusal_for(reading);
+            // The vendor's own sentence stands alone when it already refuses.
+            let no_login = match cannot_log_in {
+                Some(_) => None,
+                None => offer.gap_for(&seat.harness).map(|gap| credential_gap(&seat.harness, gap)),
+            };
+            for reason in cannot_log_in.into_iter().chain(posture_refusal(reading)).chain(no_login) {
                 refusals.push(StartRefusal {
                     seat: seat_label(PaneId::Worker(slot)),
                     harness: seat.harness.clone(),
                     reason,
                 });
             }
-            // **Neither credential is available for this seat** (C79). A seat
-            // that could run on the *other* one has already been moved there by
-            // `settle_credentials` and is not refused — visibly moved, named in a
-            // notice, and showing its new answer in its own dropdown, which is
-            // what "not silent" means. This is the case with nowhere left to go,
-            // and it is the only one that stops a start.
-            if let Some(gap) = offer.gap_for(&seat.harness, seat.credential) {
-                refusals.push(StartRefusal {
-                    seat: seat_label(PaneId::Worker(slot)),
-                    harness: seat.harness.clone(),
-                    reason: credential_gap(&seat.harness, gap),
-                });
-            }
         }
-        for (name, cred, slots) in grouped {
+        for (name, slots) in grouped {
             let phrase = worker_seat_phrase(&slots);
-            let spends_the_plan = cred.is_the_operators_plan();
-            if spends_the_plan {
-                plan_slots.extend(slots.iter().copied());
-            }
+            plan_slots.extend(slots.iter().copied());
             cost.push(CostLine {
                 seats: phrase.clone(),
-                sentence: worker_cost(&name, &phrase, spends_the_plan),
+                sentence: worker_cost(&name, &phrase),
                 harness: name,
             });
         }
@@ -646,7 +480,7 @@ impl StartVerdict {
             )
         });
 
-        Self { refusals, cost, fallbacks, credential_fallbacks, plan_seats }
+        Self { refusals, cost, fallbacks, plan_seats }
     }
 
     /// The refusal as one sentence, or `None` when the fleet may start.
@@ -739,13 +573,7 @@ fn posture_refusal(reading: Option<&harness::HarnessReadiness>) -> Option<String
 /// quietly — a gate that silently ran a different model than the row showed is the
 /// same lie M15 refuses about harnesses.
 ///
-/// **Only the orchestrator seat is checked, and that is C9 rather than laziness.**
-/// The catalog is the vendor's own resolution of the *operator's* configuration —
-/// what the login in the orchestrator seat can ask for. A worker runs on FLEETOR's
-/// provider and key, whose model names that catalog knows nothing about; checking a
-/// worker against it would rewrite the launch configuration's own worker model to a
-/// default on the day somebody put a worker on a harness that publishes a list,
-/// which is the gate choosing a fleet nobody picked.
+/// **Only the orchestrator seat is checked** (C9).
 ///
 /// **A harness that publishes no catalog has no opinion.** An empty list is a real
 /// answer (Claude Code has no catalog command), not evidence that every model is
@@ -769,63 +597,6 @@ fn settle_models(
     };
     seats.orch.model = None;
     (seats, vec![fallback])
-}
-
-/// **Move any seat whose credential this machine cannot honour onto the one it
-/// can, and say so** (C79).
-///
-/// **This replaces a refusal, and the difference is what "silent" meant.** C78
-/// refused such a seat outright, on the rule that FLEETOR never substitutes one
-/// credential for another — because a substitution bills the operator for a
-/// choice they did not make. The property that actually mattered there was *no
-/// **invisible** spend*, not *no substitution*: a seat that moves, shows its new
-/// credential in its own dropdown, and is named in a notice above the button has
-/// not spent anything the operator could not see. What C78 got wrong was the
-/// cost of the strict rule — **the default is the plan on every seat, so a
-/// machine where one harness has no login met a dead gate on arrival**, refusing
-/// a fleet the operator had not configured at all.
-///
-/// **A seat with neither credential available is left alone**, and `for_seats`
-/// refuses it. That is the case the operator genuinely has to fix, and it is now
-/// the only one.
-///
-/// **Run before the seats are stored**, exactly as [`settle_models`] is and for
-/// its reason: what the summary describes and what the rows show is then the
-/// fleet that would spawn, rather than a selection the backend would quietly
-/// reinterpret later (M15).
-fn settle_credentials(
-    mut seats: FleetSeats,
-    offer: &PlanOffer,
-) -> (FleetSeats, Vec<CredentialFallback>) {
-    let mut moved = Vec::new();
-    for (at, seat) in seats.workers.iter_mut().enumerate() {
-        let slot = u8::try_from(at + 1).unwrap_or(u8::MAX);
-        if offer.gap_for(&seat.harness, seat.credential).is_none() {
-            continue;
-        }
-        let other = match seat.credential {
-            CredentialChoice::Plan => CredentialChoice::FleetKey,
-            CredentialChoice::FleetKey => CredentialChoice::Plan,
-        };
-        // Neither works. Left as asked so the refusal names the credential the
-        // operator actually chose rather than one this function picked for them.
-        if offer.gap_for(&seat.harness, other).is_some() {
-            continue;
-        }
-        moved.push(CredentialFallback {
-            seat: seat_label(PaneId::Worker(slot)),
-            harness: seat.harness.clone(),
-            asked: seat.credential,
-            fell_back_to: other,
-        });
-        seat.credential = other;
-        // **The model follows the credential** (C78). A name from one provider is
-        // meaningless to the other, so a seat that moves drops back to the new
-        // side's default rather than carrying `deepseek-v4-flash` to a login or an
-        // alias to FLEETOR's endpoint.
-        seat.model = None;
-    }
-    (seats, moved)
 }
 
 /// **What each harness reports about this machine, held for the gate** (C58).
@@ -1074,27 +845,14 @@ pub struct GateState {
     harnesses: Vec<HarnessOffer>,
     /// What is currently picked, which is what a click will spawn.
     seats: FleetSeats,
-    /// The model a worker runs when the operator names none, from `prompts/`.
-    worker_model_default: String,
     /// **What a click will cost and whether it is allowed at all** (#36), computed
     /// from `seats` above and the same readings `harnesses` was built from.
     ///
     /// On the gate's own value rather than derived by the interface, so the summary
     /// the operator reads and the rule [`fleet_launch`] enforces are one answer.
     verdict: StartVerdict,
-    /// **Which harnesses this machine has a readable operator login for** (C78),
-    /// so a row can say *why* `your plan` is unavailable instead of offering
-    /// something Start will refuse.
-    ///
-    /// On this value rather than fetched separately, for the reason every other
-    /// field here is: the picker and the cost sentence must be two readings of one
-    /// answer, and a second round trip is a second answer that agrees only until
-    /// it does not.
+    /// Which harnesses this machine has a readable operator login for.
     harnesses_with_a_login: Vec<String>,
-    /// **Whether the `.env` walk found a worker key** (C78) — the other half of
-    /// the same question, since a seat on `your key` refuses individually now
-    /// rather than the whole fleet quietly becoming orchestrator-only.
-    has_fleet_key: bool,
 }
 
 impl HarnessOffer {
@@ -1473,12 +1231,10 @@ fn verdict(
     // Settled first, so a model the vendor no longer lists has already fallen
     // back rather than reaching a `--model` flag (story 14).
     let (settled, model_fallbacks) = settle_models(asked, &readings);
-    let (settled, credential_fallbacks) = settle_credentials(settled, offer);
     // A fresh launch writes what it settled back into the gate; a reopen leaves
     // the gate's selection for the next new fleet.
     let seats = if reopen.is_some() { settled } else { gate.store_seats(settled) };
-    let start =
-        StartVerdict::for_seats(&seats, &readings, model_fallbacks, credential_fallbacks, offer);
+    let start = StartVerdict::for_seats(&seats, &readings, model_fallbacks, offer);
     if let Some(why) = start.why_it_will_not_start() {
         return Err(match source {
             LaunchSource::Fresh => why,
@@ -1813,13 +1569,7 @@ pub(crate) fn spawn_pane(
     // Neither is on the message path and neither can become so (Tier 1.4) — this is
     // the spawn path, several filesystem writes deep already, and a `fleet send`
     // reads none of it.
-    runs::record_pane(
-        &layout.shell(),
-        &pane.to_string(),
-        placed.harness,
-        placed.model.as_deref(),
-        seats.choice_for(pane).map(|seat| seat.credential),
-    );
+    runs::record_pane(&layout.shell(), &pane.to_string(), placed.harness, placed.model.as_deref());
     if let Err(e) = store.append_event(&FleetEvent::PaneState {
         pane,
         // A pane with no pty is `Dead` to every reader in the fleet — the roster
@@ -2288,8 +2038,7 @@ pub fn fleet_set_target(path: String, gate: State<'_, Arc<GateHold>>) -> Result<
 ///
 /// **It answers before there is a fleet, because that is when the gate runs**
 /// (#36). Everything it reads lives on [`GateHold`]; the running fleet is consulted
-/// only for the two things it knows better — the launch configuration it resolved
-/// and the feed to put a probe's sentences on. Requiring a bootstrap here made the
+/// only for the feed to put a probe's sentences on. Requiring a bootstrap here made the
 /// pickers unreachable in the one state they exist for.
 #[tauri::command]
 pub fn fleet_gate(
@@ -2297,7 +2046,7 @@ pub fn fleet_gate(
     state: State<'_, FleetState>,
     gate: State<'_, Arc<GateHold>>,
 ) -> Result<GateState, String> {
-    let (worker_model_default, store) = launch_and_feed(&state)?;
+    let store = feed(&state)?;
 
     let (readings, notices) =
         if refresh { gate.harnesses.refresh() } else { gate.harnesses.read() };
@@ -2314,7 +2063,7 @@ pub fn fleet_gate(
         None => gate.remember(notices),
     }
 
-    Ok(answer(&gate, &readings, worker_model_default))
+    Ok(answer(&gate, &readings))
 }
 
 /// Record what the operator picked, and answer with **the whole gate** read back.
@@ -2336,37 +2085,20 @@ pub fn fleet_gate(
 #[tauri::command]
 pub fn fleet_set_seats(
     seats: FleetSeats,
-    state: State<'_, FleetState>,
     gate: State<'_, Arc<GateHold>>,
 ) -> Result<GateState, String> {
-    let (worker_model_default, _) = launch_and_feed(&state)?;
     let picked = seats.validated()?;
     gate.store_seats(picked);
     // Never a fresh probe: a keystroke in a model box is not a reason to spend 1.4 s
     // per harness. `read` finds what the first render already paid for.
     let (readings, _) = gate.harnesses.read();
-    Ok(answer(&gate, &readings, worker_model_default))
+    Ok(answer(&gate, &readings))
 }
 
-/// The launch configuration's worker model, and the feed if there is one yet.
-///
-/// A running fleet answers from what it resolved at bootstrap — the value its panes
-/// were placed against, never a re-read. Before one exists there is no feed and the
-/// prompts are resolved on the spot, which is the same read `fleet_launch` will
-/// do and cannot disagree with: `PaneContext::resolve` is a pure function of a
-/// directory.
-fn launch_and_feed(state: &FleetState) -> Result<(String, Option<Arc<dyn Store>>), String> {
+/// The feed, if there is a fleet yet.
+fn feed(state: &FleetState) -> Result<Option<Arc<dyn Store>>, String> {
     let guard = state.0.lock().map_err(|e| e.to_string())?;
-    match guard.as_ref() {
-        Some(fleet) => {
-            Ok((fleet.context.launch.worker_model.clone(), Some(fleet.store.clone())))
-        }
-        None => {
-            drop(guard);
-            let context = PaneContext::resolve(&prompts::override_dir(layout().root()));
-            Ok((context.launch.worker_model, None))
-        }
-    }
+    Ok(guard.as_ref().map(|fleet| fleet.store.clone()))
 }
 
 /// **The one assembly of what the gate renders** (M15, #36).
@@ -2375,55 +2107,26 @@ fn launch_and_feed(state: &FleetState) -> Result<(String, Option<Arc<dyn Store>>
 /// re-check are the same function of the same two inputs. The seats are settled
 /// before anything is built out of them — a model the vendor no longer lists falls
 /// back *and is stored back*, so what the summary describes is what would spawn.
-fn answer(
-    gate: &GateHold,
-    readings: &[harness::HarnessReadiness],
-    worker_model_default: String,
-) -> GateState {
+fn answer(gate: &GateHold, readings: &[harness::HarnessReadiness]) -> GateState {
     let offer = plan_offer();
     let (settled, fallbacks) = settle_models(gate.seats(), readings);
-    let (settled, credential_fallbacks) = settle_credentials(settled, &offer);
     let seats = gate.store_seats(settled);
-    let verdict =
-        StartVerdict::for_seats(&seats, readings, fallbacks, credential_fallbacks, &offer);
+    let verdict = StartVerdict::for_seats(&seats, readings, fallbacks, &offer);
     GateState {
         harnesses: readings.iter().map(HarnessOffer::from).collect(),
         seats,
-        worker_model_default,
         verdict,
         harnesses_with_a_login: offer.readable().to_vec(),
-        has_fleet_key: offer.has_fleet_key(),
     }
 }
 
-// **`workers_run` is gone, and its absence is the ticket** (C78).
-//
-// It answered "is there a fleet key" for the whole fleet, and `false` meant no
-// worker seats existed at all — the orchestrator ran alone, silently, with no
-// refusal. Two things retired it. A machine with a subscription and no API
-// account must run four plan workers, so a key is no longer what makes a worker
-// possible; and once seats carry their own credential, "can a worker run" stops
-// being a fleet-wide question at all. Every seat now answers it for itself
-// through `PlanOffer::gap_for`, and a seat that cannot start **refuses** rather
-// than vanishing — which is what every other unusable seat on this card already
-// did.
-
-/// **What the operator picked, paired with what this machine can honour** (C75).
+/// **Which harnesses this machine has a readable operator login for.**
 ///
-/// Assembled here rather than passed down from `fleet_launch` because both
-/// readers — the gate's summary and [`workers_run`] — are reached on paths that
-/// do not share a [`Host`], and two hand-built offers is two answers to one
-/// question.
-///
-/// [`Host::discover`] is the read, which keeps the credential's one reader rule
-/// intact: this function takes the *names* off that value and drops the
-/// credentials with it, so nothing outside the spawn path ever holds one.
+/// [`Host::discover`] is the read: this takes the *names* off that value and
+/// drops the credentials with it, so nothing outside the spawn path holds one.
 fn plan_offer() -> PlanOffer {
     let host = Host::discover();
-    PlanOffer::new(
-        host.operator_logins.iter().map(|(name, _)| (*name).to_string()).collect(),
-        load_api_key().is_ok(),
-    )
+    PlanOffer::new(host.operator_logins.iter().map(|(name, _)| (*name).to_string()).collect())
 }
 
 // --- past runs (WP-11) --------------------------------------------------------
@@ -2692,13 +2395,6 @@ fn fleet_config_for(target: &Path) -> FleetConfig {
         target: name,
         target_path: target.to_string_lossy().into_owned(),
         branch: git_branch(target),
-        // What a click will spend by default, absent a per-seat override — never
-        // gates whether worker seats exist (C78): a seat with no fleet key still
-        // spends the operator's own plan.
-        worker_backend: match load_api_key() {
-            Ok(_) => "deepseek-v4-flash".to_string(),
-            Err(_) => "plan".to_string(),
-        },
         lead_model: "opus (operator)".to_string(),
         gate: "shell gate + peer review".to_string(),
     }
@@ -3078,22 +2774,17 @@ mod tests {
 
     fn seats_on(orch: &str, worker: &str) -> FleetSeats {
         FleetSeats {
-            orch: SeatChoice {
-                harness: orch.to_string(),
-                model: None,
-                credential: CredentialChoice::Plan,
-            },
+            orch: SeatChoice { harness: orch.to_string(), model: None },
             workers: fleetor_core::pane::WORKER_SLOTS
                 .iter()
-                .map(|_| SeatChoice {
-                    harness: worker.to_string(),
-                    model: Some("m".into()),
-                    // The stock seat for tests that are not about this feature
-                    // spends the key, matching `PlanOffer::fleet_key`.
-                    credential: CredentialChoice::FleetKey,
-                })
+                .map(|_| SeatChoice { harness: worker.to_string(), model: Some("m".into()) })
                 .collect(),
         }
+    }
+
+    /// A machine with a readable login for both harnesses.
+    fn logins() -> PlanOffer {
+        PlanOffer::new(vec!["claude-code".into(), "codex".into()])
     }
 
     // --- one launch (D-099) ---------------------------------------------------
@@ -3163,7 +2854,7 @@ mod tests {
 
         /// A launch as the app makes it: the old run's finish is still in flight.
         fn launch_unsettled(&self, source: LaunchSource) -> Result<BootSnapshot, LaunchFailure> {
-            let offer = PlanOffer::fleet_key();
+            let offer = logins();
             let archiveds = self.archiveds.clone();
             let launchings = self.launchings.clone();
             let task_events = self.task_events.clone();
@@ -3195,7 +2886,7 @@ mod tests {
         /// real pty behind it. `sleep` stands in for the harness.
         fn bring_up_orch(&self, model: &str) {
             let spec = harness::claude_code().spec();
-            runs::record_pane(&self.layout.shell(), "orch", spec, Some(model), Some(CredentialChoice::Plan));
+            runs::record_pane(&self.layout.shell(), "orch", spec, Some(model));
             let mut cmd = portable_pty::CommandBuilder::new("sleep");
             cmd.arg("30");
             self.registry.spawn(PaneId::Orch, cmd, spec, 24, 80).expect("a pty for sleep");
@@ -3563,35 +3254,43 @@ mod tests {
         assert!(bench.layout.shell().join("state.db").is_file(), "and the live slot holds the third");
     }
 
-    /// **A reopen places what the run recorded** (D-095): harness, model and
-    /// credential come from the record; a seat with no record, or on a harness
+    /// **A reopen places what the run recorded** (D-095): harness and model come
+    /// from the record; a seat with no record, or on a harness
     /// this build lacks, keeps the gate's pick.
     #[test]
     fn recorded_seats_replace_the_gates_pick() {
         let claude = harness::claude_code().spec().name;
         let codex = crate::placement::codex::codex().spec().name;
-        let record = |harness: &str, model: Option<&str>, credential| runs::PaneRecord {
+        let record = |harness: &str, model: Option<&str>| runs::PaneRecord {
             harness: harness.to_string(),
             model: model.map(str::to_string),
-            credential,
             transcript_format: String::new(),
             session_id: None,
         };
         let recorded = std::collections::BTreeMap::from([
-            ("orch".to_string(), record(codex, Some("gpt-x"), None)),
-            ("worker-1".to_string(), record(codex, None, Some(CredentialChoice::Plan))),
-            ("worker-2".to_string(), record("gamma-cli", Some("g"), None)),
+            ("orch".to_string(), record(codex, Some("gpt-x"))),
+            ("worker-1".to_string(), record(codex, None)),
+            ("worker-2".to_string(), record("gamma-cli", Some("g"))),
         ]);
 
         let seats = seats_on(claude, claude).as_recorded(&recorded);
 
         assert_eq!((seats.orch.harness.as_str(), seats.orch.model.as_deref()), (codex, Some("gpt-x")));
         let w1 = &seats.workers[0];
-        assert_eq!((w1.harness.as_str(), w1.model.as_deref(), w1.credential), (codex, None, CredentialChoice::Plan));
+        assert_eq!((w1.harness.as_str(), w1.model.as_deref()), (codex, None));
         for kept in &seats.workers[1..] {
             assert_eq!((kept.harness.as_str(), kept.model.as_deref()), (claude, Some("m")));
-            assert_eq!(kept.credential, CredentialChoice::FleetKey);
         }
+    }
+
+    /// A selection stored while seats chose a credential still parses; the field
+    /// is ignored (D-118).
+    #[test]
+    fn a_seat_that_names_a_credential_still_parses() {
+        let seat: SeatChoice =
+            serde_json::from_str(r#"{"harness":"codex","model":null,"credential":"fleet_key"}"#)
+                .expect("an old payload must not be rejected");
+        assert_eq!(seat, SeatChoice { harness: "codex".into(), model: None });
     }
 
     /// **Story 11.** A seat on a harness this machine cannot log into stops the
@@ -3604,7 +3303,7 @@ mod tests {
             LoginState::NoCredential { summary: "records no login in ~/.claude.json".into(), provider_key: None },
         )];
 
-        let refused = StartVerdict::for_seats(&seats, &out, Vec::new(), Vec::new(), &PlanOffer::fleet_key());
+        let refused = StartVerdict::for_seats(&seats, &out, Vec::new(), &logins());
         assert_eq!(
             refused.refusals.len(),
             1 + fleetor_core::pane::WORKER_SLOTS.len(),
@@ -3617,7 +3316,7 @@ mod tests {
 
         let in_ = vec![logged_in("claude-code", AccountShape::ApiKey)];
         assert!(
-            StartVerdict::for_seats(&seats, &in_, Vec::new(), Vec::new(), &PlanOffer::fleet_key())
+            StartVerdict::for_seats(&seats, &in_, Vec::new(), &logins())
                 .why_it_will_not_start()
                 .is_none(),
             "a logged-in fleet starts",
@@ -3629,111 +3328,50 @@ mod tests {
         let unreadable =
             vec![reading("claude-code", LoginState::Unreadable { why: "unknown format".into() })];
         assert!(
-            StartVerdict::for_seats(&seats, &unreadable, Vec::new(), Vec::new(), &PlanOffer::fleet_key())
+            StartVerdict::for_seats(&seats, &unreadable, Vec::new(), &logins())
                 .why_it_will_not_start()
                 .is_none(),
             "a report this build could not parse must not stop a fleet",
         );
     }
 
-    /// **A seat that cannot start refuses, and the fleet no longer degrades around
-    /// it** (C78 — reshaped, not deleted).
-    ///
-    /// This test used to assert the opposite half: that on a machine with no
-    /// worker key the orchestrator ran alone and a worker seat refused nothing,
-    /// because a fleet stopped by a seat that was never part of it is a refusal
-    /// nobody can act on. That was right while `workers_run` existed. It does not
-    /// survive per-seat credentials — a seat is now *always* part of the fleet, so
-    /// "was never going to spawn" has no referent, and the refusal it used to
-    /// suppress is exactly the one an operator can act on: put that seat on the
-    /// other credential, or supply the one it asked for.
-    ///
-    /// **The property underneath is unchanged and is what this now pins:** a seat
-    /// the operator cannot start is named, and no cost sentence promises spend in
-    /// a seat that will not run.
+    /// A seat the operator cannot start is named, with the vendor's sentence or,
+    /// where the vendor reports a login this machine cannot read, the login command.
     #[test]
-    fn a_seat_that_cannot_start_is_named_and_promises_no_spend() {
+    fn a_seat_that_cannot_start_is_named_and_told_how_to_log_in() {
         let seats = seats_on("claude-code", "codex");
-        let readings = vec![
-            logged_in("claude-code", AccountShape::ApiKey),
-            reading(
-                "codex",
-                LoginState::NoCredential {
-                    summary: "no Codex credentials".into(),
-                    provider_key: None,
-                },
-            ),
-        ];
+        let logged_out = reading(
+            "codex",
+            LoginState::NoCredential { summary: "no Codex credentials".into(), provider_key: None },
+        );
+        let readings = vec![logged_in("claude-code", AccountShape::ApiKey), logged_out];
 
-        let verdict = StartVerdict::for_seats(&seats, &readings, Vec::new(), Vec::new(), &PlanOffer::fleet_key());
+        let verdict = StartVerdict::for_seats(&seats, &readings, Vec::new(), &logins());
         let why = verdict.why_it_will_not_start().expect("a logged-out worker harness refuses");
         assert!(why.contains("worker 1"), "the refusal does not name the seat: {why}");
+        assert!(why.contains("no Codex credentials"), "the vendor's sentence survives: {why}");
+        assert!(!why.contains("was readable"), "the vendor's sentence was said twice: {why}");
 
-        // **A seat that can run on the other credential is moved, not refused**
-        // (C79). This is the case C78 got wrong: the default is the plan on every
-        // seat, so a machine where one harness has no login met a dead gate on a
-        // fleet the operator had not configured at all.
-        let plan_only = PlanOffer::new(vec!["claude-code".into()], false);
-        let on_the_key = FleetSeats {
-            orch: seats.orch.clone(),
-            workers: seats
-                .workers
-                .iter()
-                .map(|_| SeatChoice {
-                    harness: "claude-code".to_string(),
-                    model: Some("deepseek-v4-flash".into()),
-                    credential: CredentialChoice::FleetKey,
-                })
-                .collect(),
-        };
-        let (settled, moved) = settle_credentials(on_the_key.clone(), &plan_only);
-        assert_eq!(moved.len(), 4, "a seat that could run on the plan was not moved to it");
-        assert!(
-            settled.workers.iter().all(|s| s.credential == CredentialChoice::Plan),
-            "the seats were reported as moved and not actually moved",
-        );
-        assert!(
-            settled.workers.iter().all(|s| s.model.is_none()),
-            "a moved seat kept `deepseek-v4-flash`, which its new credential's vendor has \
-             never heard of",
-        );
-        let ran = StartVerdict::for_seats(
-            &settled,
-            &[logged_in("claude-code", AccountShape::SubscriptionPlan { plan: Some("Max".into()) })],
-            Vec::new(),
-            moved,
-            &plan_only,
-        );
-        assert!(
-            ran.why_it_will_not_start().is_none(),
-            "a fleet every seat of which can run was still refused: {:?}",
-            ran.refusals,
-        );
-
-        // **Neither credential available is the only refusal left** (C79).
-        let nothing = PlanOffer::new(Vec::new(), false);
-        let (unmoved, moved) = settle_credentials(on_the_key, &nothing);
-        assert!(moved.is_empty(), "a seat was moved to a credential that is also missing");
-        let refused = StartVerdict::for_seats(
-            &unmoved,
-            &[logged_in("claude-code", AccountShape::ApiKey)],
-            Vec::new(),
-            moved,
-            &nothing,
-        );
-        let why = refused.why_it_will_not_start().expect("a seat with neither credential refuses");
-        assert!(
-            why.contains("neither credential available"),
-            "the refusal does not say both are missing, so an operator fixes one and meets \
-             the same wall: {why}",
-        );
+        let readings = vec![
+            logged_in("claude-code", AccountShape::ApiKey),
+            logged_in("codex", AccountShape::ApiKey),
+        ];
+        let claude_only = PlanOffer::new(vec!["claude-code".into()]);
+        let refused = StartVerdict::for_seats(&seats, &readings, Vec::new(), &claude_only);
+        let unread = refused.refusals.iter().filter(|r| r.reason.contains("was readable")).count();
+        assert_eq!(unread, 4, "one per worker seat: {:?}", refused.refusals);
+        let why = refused.why_it_will_not_start().expect("a seat with no readable login refuses");
+        assert!(why.contains("no codex login was readable"), "{why}");
+        assert!(why.contains("`codex login`"), "the login command is named: {why}");
+        for gone in ["API_KEY", ".env", " key"] {
+            assert!(!why.contains(gone), "the refusal still offers a key: {why}");
+        }
     }
 
-    /// **Story 12, and C9 is the whole of it.** The orchestrator spends the
-    /// operator's own login; a worker spends FLEETOR's metered key. One sentence
-    /// each, and neither may claim the other's credential.
+    /// **Story 12.** Every seat spends the operator's own login, one sentence per
+    /// role, and none mentions a key FLEETOR holds.
     #[test]
-    fn the_cost_line_says_whose_credential_each_seat_spends() {
+    fn the_cost_line_says_what_each_seat_spends() {
         let seats = seats_on("codex", "claude-code");
         let readings = vec![
             HarnessReadiness {
@@ -3742,7 +3380,7 @@ mod tests {
             },
             logged_in("claude-code", AccountShape::ApiKey),
         ];
-        let verdict = StartVerdict::for_seats(&seats, &readings, Vec::new(), Vec::new(), &PlanOffer::fleet_key());
+        let verdict = StartVerdict::for_seats(&seats, &readings, Vec::new(), &logins());
 
         let orch = verdict.cost.iter().find(|line| line.seats == "orchestrator").expect("a line");
         assert_eq!(orch.harness, "codex");
@@ -3754,26 +3392,16 @@ mod tests {
             "\"it will spend tokens\" is not the warning when it spends a plan: {}",
             orch.sentence,
         );
-        assert!(
-            !orch.sentence.contains("FLEETOR's own provider and key"),
-            "the orchestrator does not run the fleet's key: {}",
-            orch.sentence,
-        );
 
         let workers =
             verdict.cost.iter().find(|line| line.seats.contains("worker")).expect("a line");
         assert_eq!(workers.harness, "claude-code");
-        assert!(workers.sentence.contains("FLEETOR's own provider and key"), "{}", workers.sentence);
-        assert!(
-            workers.sentence.contains("never your own login or plan"),
-            "a worker cannot reach the operator's plan, and says so: {}",
-            workers.sentence,
-        );
-        assert!(
-            !workers.sentence.contains("your own subscription quota"),
-            "and never claims it does: {}",
-            workers.sentence,
-        );
+        assert!(workers.sentence.contains("your own claude-code login"), "{}", workers.sentence);
+        for line in &verdict.cost {
+            for gone in ["FLEETOR's own provider", "metered"] {
+                assert!(!line.sentence.contains(gone), "{}", line.sentence);
+            }
+        }
 
         // **No plan tier, anywhere** (C14 as narrowed by C58). The shape comes from
         // `AccountShape::display`, so a tier could only appear if a vendor reported
@@ -3825,15 +3453,14 @@ mod tests {
             &seats_on("claude-code", "claude-code"),
             &readings,
             Vec::new(),
-            Vec::new(),
-            &PlanOffer::fleet_key(),
+            &logins(),
         );
         assert_eq!(same.cost.len(), 2, "one orchestrator line and one worker line: {:?}", same.cost);
         assert!(same.cost[1].seats.contains("all 4 worker seats"), "{:?}", same.cost[1]);
 
         let mut mixed = seats_on("claude-code", "claude-code");
         mixed.workers[1].harness = "codex".to_string();
-        let split = StartVerdict::for_seats(&mixed, &readings, Vec::new(), Vec::new(), &PlanOffer::fleet_key());
+        let split = StartVerdict::for_seats(&mixed, &readings, Vec::new(), &logins());
         assert_eq!(split.cost.len(), 3, "a mixed fleet says so: {:?}", split.cost);
         assert_eq!(split.cost[1].seats, "worker seats 1, 3 and 4");
         assert_eq!(split.cost[2].seats, "worker seat 2");
@@ -3959,7 +3586,7 @@ mod tests {
         // The negative control, first and deliberately: agreement starts a fleet.
         let agrees = vec![resolving_what_fleetor_writes()];
         assert_eq!(
-            StartVerdict::for_seats(&seats, &agrees, Vec::new(), Vec::new(), &PlanOffer::fleet_key()).why_it_will_not_start(),
+            StartVerdict::for_seats(&seats, &agrees, Vec::new(), &logins()).why_it_will_not_start(),
             None,
             "a vendor that resolved what FLEETOR wrote must not be refused",
         );
@@ -3977,7 +3604,7 @@ mod tests {
                 other => panic!("#37's tripwire grew a `{other}` row this test cannot flip"),
             }
 
-            let refused = StartVerdict::for_seats(&seats, &[broken], Vec::new(), Vec::new(), &PlanOffer::fleet_key());
+            let refused = StartVerdict::for_seats(&seats, &[broken], Vec::new(), &logins());
             let why = refused
                 .why_it_will_not_start()
                 .unwrap_or_else(|| panic!("`{}` disagreeing must stop the fleet", expectation.row));
@@ -4004,7 +3631,7 @@ mod tests {
         // dropped. Nothing else in the reading changes.
         let mut retired = resolving_what_fleetor_writes();
         retired.posture.network = None;
-        let why = StartVerdict::for_seats(&seats, &[retired], Vec::new(), Vec::new(), &PlanOffer::fleet_key())
+        let why = StartVerdict::for_seats(&seats, &[retired], Vec::new(), &logins())
             .why_it_will_not_start()
             .expect("a row the vendor no longer reports must stop the fleet");
         assert!(
@@ -4017,7 +3644,7 @@ mod tests {
         // keys whose readings came out of a document this build cannot read.
         let mut moved = resolving_what_fleetor_writes();
         moved.posture.schema = Some("2".to_string());
-        let refused = StartVerdict::for_seats(&seats, &[moved], Vec::new(), Vec::new(), &PlanOffer::fleet_key());
+        let refused = StartVerdict::for_seats(&seats, &[moved], Vec::new(), &logins());
         let why = refused.why_it_will_not_start().expect("a schema this arc does not understand");
         assert!(why.contains("schemaVersion"), "the schema refusal names the stamp: {why}");
         for expectation in spec_of("codex").posture.verified_as {

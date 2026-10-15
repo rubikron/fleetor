@@ -2,7 +2,7 @@
 
 *(working name)*
 
-A local desktop app that runs five agent terminals against a git repo you already have, and lets them talk to each other. One is your own login, as orchestrator. Four are workers, each in its own git worktree — running on the plan you are already logged into, or on a metered key, your choice per seat. All five are **real, interactive TUIs** (`claude`, `codex`) — chat, plan mode, skills and slash commands all work, because each one genuinely is the vendor's own binary.
+A local desktop app that runs five agent terminals against a git repo you already have, and lets them talk to each other. One is your own login, as orchestrator. Four are workers, each in its own git worktree — running on the plan you are already logged into. All five are **real, interactive TUIs** (`claude`, `codex`) — chat, plan mode, skills and slash commands all work, because each one genuinely is the vendor's own binary.
 
 They coordinate through one command:
 
@@ -65,10 +65,8 @@ macOS. Everything runs locally; nothing is uploaded anywhere.
 | **Xcode command line tools** | `xcode-select -p` | `xcode-select --install` |
 | **At least one agent CLI, logged in** | `claude` and/or `codex` on your PATH | see below |
 
-**You do not need an API key.** A worker seat can run on the plan you are already logged
-into — `claude` then `/login`, or `codex login`. If you would rather workers spend a
-metered key instead, put a `DEEPSEEK_API_KEY` in a `.env` at the repo root; the start gate
-offers whichever of the two this machine actually has, per seat.
+**You do not need an API key.** Every worker seat runs on the plan you are already logged
+into — `claude` then `/login`, or `codex login`.
 
 The orchestrator has always run your own login, and still does.
 
@@ -97,10 +95,9 @@ The start gate opens before anything spawns, and states what a click will cost.
    seeded testbed at `~/.fleetor/testbed`, a small Python project with a passing test
    suite that is embedded in the binary, so there is nothing to download and nothing of
    yours to break.
-2. **Choose what the workers spend** — `your plan` or `your key`, for all four at once or
-   per seat. Defaults to your plan. A seat whose credential this machine does not have
-   moves to the one it does and says so; a seat with neither is refused by name, and
-   **Start fleet** stays disabled until you fix it.
+2. **Choose each seat's harness and model.** Every seat spends your own plan. A seat on a
+   harness this machine has no login for is refused by name, and **Start fleet** stays
+   disabled until you fix it.
 3. **Start fleet.** Five processes spawn: your own login as orchestrator in the target
    repo, four workers in per-slot git worktrees under
    `~/.fleetor/_shell/worktrees/<target-slug>/`.

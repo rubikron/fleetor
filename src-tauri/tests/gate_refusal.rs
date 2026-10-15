@@ -19,7 +19,7 @@
 //!
 //! It reads the *declarations*, not the behaviour. The behaviour is asserted by the
 //! unit tests in `src-tauri/src/fleet.rs` — `a_seat_that_cannot_log_in_refuses_the_start`,
-//! `the_cost_line_says_whose_credential_each_seat_spends`, and
+//! `the_cost_line_says_what_each_seat_spends`, and
 //! `a_model_the_catalog_no_longer_lists_falls_back_instead_of_spawning` — which run
 //! the real functions against a machine a value describes. What this file adds is the
 //! half those cannot reach: that the interface is wired to the same answers, and that
@@ -332,53 +332,28 @@ fn what_the_backend_refuses_is_what_the_interface_greys_out() {
     );
 }
 
-// --- the cost line, and C9's split (story 12) ---------------------------------
+// --- the cost line (story 12) -------------------------------------------------
 
-/// Which credential a sentence says a seat **runs on**.
-///
-/// The verb is load-bearing and the first draft of this check did not have it: the
-/// worker's sentence ends "never your own login or plan", which *mentions* the
-/// operator's login in order to rule it out. Matching the mention flagged a sentence
-/// that was saying exactly the right thing. What the two halves of C9 assert is the
-/// claim — which credential the seat is described as running on — so the check reads
-/// the verb with it.
+/// Whether a sentence says the seat **runs on** the operator's own login. The verb
+/// is load-bearing: a mention that rules the login out is not the claim.
 fn names_the_operators_own_login(sentence: &str) -> bool {
     sentence.contains("runs your own login")
 }
 
-fn names_the_fleets_own_key(sentence: &str) -> bool {
-    sentence.contains("runs FLEETOR's own provider and key")
-}
-
 /// Whether a worker sentence describes running the operator's plan.
-///
-/// **A separate predicate from [`names_the_operators_own_login`], and not a
-/// widening of it.** That one reads the orchestrator's fixed sentence; this one
-/// reads a branch. Sharing a matcher between them is what let this file keep
-/// passing after C75 moved the axis: `worker_cost`'s plan branch says "runs your
-/// own `{harness}` login", which the orchestrator's matcher does not see, so the
-/// old assertion went on being true about a sentence it was no longer about.
 fn names_the_operators_plan(sentence: &str) -> bool {
     sentence.contains("runs your own {harness} login")
 }
 
-/// **The cost line's split is plan-versus-fleet-key** (story 12, reshaped by C75).
-///
-/// **This assertion used to be orchestrator-versus-worker, and #49 predicted it
-/// would go wrong here rather than fail.** It was true while a worker could only
-/// run the fleet's key; C73 made a worker able to run the operator's plan, so a
-/// test pinning "a worker's sentence never names the operator's login" is pinning
-/// the absence of the feature. It is reshaped rather than deleted, because the
-/// property underneath it is the one that matters and has not changed: **a cost
-/// sentence must name the credential the seat actually runs on, and no sentence
-/// may name the wrong one.**
-///
-/// So: the orchestrator's line is unchanged and still says the operator's own
-/// login. The worker's function must carry **both** branches — a fleet-key
-/// sentence and a plan sentence — because a `worker_cost` with only one of them is
-/// a gate that lies to half the fleets it renders.
+/// Whether a sentence refers to a key or provider of FLEETOR's own (D-118: none exists).
+fn names_a_key_of_fleetors(sentence: &str) -> bool {
+    sentence.contains("FLEETOR's own provider") || sentence.contains("metered")
+}
+
+/// **Every cost sentence names the operator's login, and none names a key of
+/// FLEETOR's** (story 12, D-118).
 #[test]
-fn the_cost_sentences_name_the_credential_each_seat_runs_on() {
+fn every_cost_sentence_names_the_operators_login() {
     let backend = read(BACKEND);
     let orch = rust_fn(&backend, "fn orchestrator_cost(");
     let worker = rust_fn(&backend, "fn worker_cost(");
@@ -389,38 +364,25 @@ fn the_cost_sentences_name_the_credential_each_seat_runs_on() {
          tokens\" is not the warning when the tokens are the operator's own plan:\n{orch}",
     );
     assert!(
-        !names_the_fleets_own_key(&orch),
-        "the orchestrator's cost line claims FLEETOR's provider and key. It runs the \
-         operator's own login (C9) — a gate that said otherwise would tell somebody their \
-         subscription is safe while it is being spent:\n{orch}",
-    );
-    assert!(
-        names_the_fleets_own_key(&worker),
-        "a worker's cost line no longer says it runs FLEETOR's own provider and key. That \
-         is still what a fleet-key seat does, and it is still the majority of \
-         them:\n{worker}",
-    );
-    assert!(
         names_the_operators_plan(&worker),
-        "a worker's cost line has no plan branch, so a fleet whose seats spend the \
-         operator's subscription is described as spending FLEETOR's metered key (C75). \
-         That is the wrong direction to be wrong in:\n{worker}",
+        "a worker's cost line no longer says it runs the operator's own login:\n{worker}",
     );
+    for sentence in [&orch, &worker] {
+        assert!(
+            !names_a_key_of_fleetors(sentence),
+            "a cost line refers to a key FLEETOR does not have:\n{sentence}",
+        );
+    }
     assert!(
         worker.contains("no per-pane budget"),
-        "the plan branch stops saying that FLEETOR caps nothing. No per-pane budget \
+        "the worker line stops saying that FLEETOR caps nothing. No per-pane budget \
          exists anywhere in this codebase, and four uncapped seats on one subscription is \
          the cost the operator is agreeing to:\n{worker}",
     );
 }
 
-/// **The plan is a choice the operator makes, and it is stated before Start**
-/// (#49, C75).
-///
-/// Two properties in one test because they are one requirement: a fleet may spend
-/// the operator's subscription, and the operator must have said so and been told
-/// how many seats will do it. Either half alone is the failure — a picker with no
-/// count is a choice made blind, and a count with no picker is an announcement.
+/// **How many seats spend the plan is stated before Start, and a seat with no
+/// readable login refuses rather than moving** (#49, D-118).
 #[test]
 fn the_gate_says_how_many_seats_will_spend_the_operators_plan() {
     let backend = read(BACKEND);
@@ -433,48 +395,22 @@ fn the_gate_says_how_many_seats_will_spend_the_operators_plan() {
     );
     assert!(
         verdict.contains("gap_for"),
-        "the gate no longer refuses a seat whose credential this machine cannot honour. \
-         Falling back silently bills the operator for a choice they did not make in one \
-         direction, and spends their subscription in the other:\n{verdict}",
-    );
-
-    // **A seat that could run on the other credential is moved, not refused**
-    // (C79 narrowed C78 here). The strict rule met a dead gate on arrival: the
-    // default is the plan on every seat, so a machine where one harness has no
-    // login refused a fleet the operator had not configured at all. What survives
-    // is the property that actually mattered — no *invisible* spend — which the
-    // move satisfies by being announced.
-    let settle = rust_fn(&backend, "fn settle_credentials(");
-    assert!(
-        settle.contains("gap_for") && settle.contains("CredentialFallback"),
-        "seats are no longer moved onto the credential this machine has, so a fleet nobody \
-         configured can arrive already refused:\n{settle}",
+        "the gate no longer refuses a worker seat whose harness has no readable \
+         login:\n{verdict}",
     );
     assert!(
-        settle.contains("seat.model = None"),
-        "a moved seat keeps its old model, which the credential it moved to has never heard \
-         of:\n{settle}",
+        !backend.contains("fn settle_credentials("),
+        "seats are moved between credentials again; there is one credential (D-118)",
     );
 
-    // **The refusal that is left is the one with nowhere to go**, and it must name
-    // both fixes — either one alone unblocks the seat.
     let refusal = rust_fn(&backend, "fn credential_gap(");
     assert!(
-        refusal.contains("Re-check logins"),
-        "the refusal no longer tells the operator how to log in — one of its two \
-         actionable lines:\n{refusal}",
+        refusal.contains("Re-check logins") && refusal.contains("login.command"),
+        "the refusal no longer tells the operator how to log in:\n{refusal}",
     );
-    assert!(
-        refusal.contains("DEEPSEEK_API_KEY"),
-        "the refusal no longer names the key that would unblock the seat, so an operator \
-         with no login is told only about the fix they cannot take:\n{refusal}",
-    );
-    assert!(
-        refusal.contains("neither"),
-        "the refusal no longer says both credentials are missing. A seat short of only one \
-         is moved rather than refused now, so a refusal that reads as a single gap sends \
-         the operator to fix something that was never the problem:\n{refusal}",
-    );
+    for gone in ["API_KEY", ".env", "neither"] {
+        assert!(!refusal.contains(gone), "the refusal offers a key again (`{gone}`):\n{refusal}");
+    }
 }
 
 /// Any plan tier a stretch of text promises.
@@ -721,22 +657,22 @@ fn the_checks_fire_on_a_source_that_violates_them() {
         "the interface-refusal scan does not read the list it is pointed at",
     );
 
-    // A cost line that swapped the two credentials over — C9 inverted.
-    let swapped =
+    // A cost line that claims a key of FLEETOR's.
+    let keyed =
         "format!(\"{harness} in the orchestrator seat runs FLEETOR's own provider and key.\")";
     assert!(
-        names_the_fleets_own_key(swapped) && !names_the_operators_own_login(swapped),
-        "the C9 split check would not notice an orchestrator line claiming the fleet's key",
+        names_a_key_of_fleetors(keyed) && !names_the_operators_own_login(keyed),
+        "the cost check would not notice a line claiming a key of FLEETOR's",
     );
     assert!(
         names_the_operators_own_login(&rust_fn(&backend, "fn orchestrator_cost("))
-            && !names_the_fleets_own_key(&rust_fn(&backend, "fn orchestrator_cost(")),
-        "the C9 split check does not read the real orchestrator sentence",
+            && !names_a_key_of_fleetors(&rust_fn(&backend, "fn orchestrator_cost(")),
+        "the cost check does not read the real orchestrator sentence",
     );
     assert!(
-        names_the_fleets_own_key(&rust_fn(&backend, "fn worker_cost("))
-            && !names_the_operators_own_login(&rust_fn(&backend, "fn worker_cost(")),
-        "the C9 split check does not read the real worker sentence",
+        names_the_operators_plan(&rust_fn(&backend, "fn worker_cost("))
+            && !names_a_key_of_fleetors(&rust_fn(&backend, "fn worker_cost(")),
+        "the cost check does not read the real worker sentence",
     );
 
     // A tier promised, and a provider that only looks like one.

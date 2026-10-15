@@ -33,7 +33,6 @@ import {
   type HarnessOffer,
   type PaneId,
   type SeatChoice,
-  type CredentialChoice,
 } from "../fleet/types";
 
 const STORAGE_KEY = "fleetor:seat-pickers";
@@ -55,26 +54,14 @@ export const PICKABLE_SEATS: readonly PaneId[] = [ORCH, ...WORKER_SLOTS.map(work
 /// would reset it to a default rather than restoring what it had.
 interface Remembered {
   harness: Record<string, string>;
-  /// **Model per seat, per harness, per credential** (M3 extended by C78).
-  ///
-  /// M3 remembered a model per harness because a model name from one vendor is
-  /// meaningless to another. A model name from one *provider* is meaningless to
-  /// the other credential for the same reason and more so — `deepseek-v4-flash`
-  /// and `opus` are not near-misses — so the key gained a second segment.
-  ///
-  /// **The key shape changed, which is a one-time cost stated rather than
-  /// hidden:** entries written before this ships do not match the new key and are
-  /// ignored, so a seat falls back to its default on the next launch. The read
-  /// below drops them rather than failing.
+  /// Model per seat, keyed by harness (M3).
   model: Record<string, Record<string, string | null>>;
-  credential: Record<string, CredentialChoice>;
 }
 
-const NOTHING_REMEMBERED: Remembered = { harness: {}, model: {}, credential: {} };
+const NOTHING_REMEMBERED: Remembered = { harness: {}, model: {} };
 
-/// The key one seat's model is remembered under. One spelling, three readers.
-const modelKey = (harness: string, credential: CredentialChoice): string =>
-  `${harness}:${credential}`;
+/// The key a model was remembered under while a seat also chose a credential.
+const LEGACY_PLAN = ":plan";
 
 /// A stored value read back, with anything that is not the shape above dropped.
 ///
@@ -87,28 +74,28 @@ function readRemembered(): Remembered {
     if (raw === null) return NOTHING_REMEMBERED;
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed !== "object" || parsed === null) return NOTHING_REMEMBERED;
-    const { harness, model, credential } = parsed as Partial<Remembered>;
+    const { harness, model } = parsed as Partial<Remembered>;
     const cleanHarness: Record<string, string> = {};
     const cleanModel: Record<string, Record<string, string | null>> = {};
-    const cleanCredential: Record<string, CredentialChoice> = {};
     for (const seat of PICKABLE_SEATS) {
       const named = harness?.[seat];
       if (typeof named === "string" && named !== "") cleanHarness[seat] = named;
-      const chosen = credential?.[seat];
-      if (chosen === "plan" || chosen === "fleet_key") cleanCredential[seat] = chosen;
       const perHarness = model?.[seat];
       if (typeof perHarness !== "object" || perHarness === null) continue;
       const kept: Record<string, string | null> = {};
       for (const [name, value] of Object.entries(perHarness)) {
-        // Keys written before C78 carry no `:credential` segment. Dropped rather
-        // than guessed at: a model remembered against an unknown credential could
-        // be restored onto the wrong provider, which is worse than a default.
-        if (!name.includes(":")) continue;
-        if (value === null || typeof value === "string") kept[name] = value;
+        if (value !== null && typeof value !== "string") continue;
+        if (!name.includes(":")) kept[name] = value;
+        // A legacy `<harness>:plan` entry stands in when no `<harness>` one exists;
+        // any other suffixed entry is dropped.
+        else if (name.endsWith(LEGACY_PLAN)) {
+          const bare = name.slice(0, -LEGACY_PLAN.length);
+          if (!(bare in perHarness)) kept[bare] = value;
+        }
       }
       cleanModel[seat] = kept;
     }
-    return { harness: cleanHarness, model: cleanModel, credential: cleanCredential };
+    return { harness: cleanHarness, model: cleanModel };
   } catch {
     return NOTHING_REMEMBERED;
   }
@@ -122,26 +109,9 @@ function writeRemembered(remembered: Remembered): void {
   }
 }
 
-/// The model a seat falls back to when nothing is remembered for this harness.
-///
-/// **The two seats answer differently, and that follows from C9.** An orchestrator's
-/// `null` is the `default (your login)` sentinel — it runs the operator's own login
-/// and lets the vendor choose. A worker runs FLEETOR's provider, where there is no
-/// vendor default to fall back to, so its unnamed model is the launch
-/// configuration's.
-function seatDefault(
-  seat: PaneId,
-  credential: CredentialChoice,
-  workerModelDefault: string,
-): string | null {
-  // **The orchestrator, and now every plan seat, name no model** (C9, C78). C9
-  // gave a worker a fleet default because its provider was FLEETOR's and there
-  // was no vendor default to fall back to. On a plan seat the provider *is* the
-  // vendor's, so that reason evaporates and the sentinel applies — the same
-  // `default (your login)` the orchestrator has always shown, not a second one.
-  if (seat === ORCH || credential === "plan") return null;
-  return workerModelDefault;
-}
+/// The model a seat falls back to when nothing is remembered for this harness:
+/// none, which is the `default (your login)` sentinel on every seat.
+const SEAT_DEFAULT: string | null = null;
 
 function seatOf(seats: FleetSeats, seat: PaneId): SeatChoice {
   const slot = paneSlot(seat);
@@ -183,15 +153,6 @@ export interface SeatPickers {
   /// Whether the four workers are currently on the same harness and model. A
   /// collapsed row may only speak for them when they agree.
   workersAgree: boolean;
-  /// **Put one seat on the operator's plan, or on the key they supplied** (C78).
-  chooseCredential: (seat: PaneId, credential: CredentialChoice) => void;
-  /// The same answer for all four workers at once — what the bulk control above
-  /// the rows writes. A shortcut for setting the seats, never a value they
-  /// inherit from: the seats stay the only answer (M15).
-  chooseWorkersCredential: (credential: CredentialChoice) => void;
-  /// **What the bulk control renders as selected**: the credential all four share,
-  /// or `"mixed"` when they do not. Reported, never chosen.
-  workersCredential: CredentialChoice | "mixed";
 }
 
 export function useSeatPickers(): SeatPickers {
@@ -254,11 +215,7 @@ export function useSeatPickers(): SeatPickers {
   const remember = useCallback((seat: PaneId, choice: SeatChoice) => {
     const remembered = readRemembered();
     remembered.harness[seat] = choice.harness;
-    remembered.credential[seat] = choice.credential;
-    remembered.model[seat] = {
-      ...remembered.model[seat],
-      [modelKey(choice.harness, choice.credential)]: choice.model,
-    };
+    remembered.model[seat] = { ...remembered.model[seat], [choice.harness]: choice.model };
     writeRemembered(remembered);
   }, []);
 
@@ -281,7 +238,6 @@ export function useSeatPickers(): SeatPickers {
 
   const onHarness = useCallback(
     (seats: PaneId[], harness: string) => {
-      const workerModelDefault = gate?.worker_model_default ?? "";
       const remembered = readRemembered();
       change(seats, (was, seat) => {
         if (was.harness === harness) return was;
@@ -290,13 +246,11 @@ export function useSeatPickers(): SeatPickers {
         // seat's own default rather than carrying the previous harness's model
         // across, which would name a model the new vendor has never heard of.
         const perSeat = remembered.model[seat] ?? {};
-        const key = modelKey(harness, was.credential);
-        const model =
-          key in perSeat ? perSeat[key] : seatDefault(seat, was.credential, workerModelDefault);
-        return { harness, model, credential: was.credential };
+        const model = harness in perSeat ? perSeat[harness] : SEAT_DEFAULT;
+        return { harness, model };
       });
     },
-    [change, gate],
+    [change],
   );
 
   const chooseHarness = useCallback(
@@ -310,17 +264,15 @@ export function useSeatPickers(): SeatPickers {
 
   const onModel = useCallback(
     (seats: PaneId[], typed: string) => {
-      const workerModelDefault = gate?.worker_model_default ?? "";
       const trimmed = typed.trim();
-      change(seats, (was, seat) => ({
+      change(seats, (was) => ({
         harness: was.harness,
-        credential: was.credential,
         // An empty field is the seat's own default, said once here rather than as an
         // empty string travelling to a `--model` flag.
-        model: trimmed === "" ? seatDefault(seat, was.credential, workerModelDefault) : trimmed,
+        model: trimmed === "" ? SEAT_DEFAULT : trimmed,
       }));
     },
-    [change, gate],
+    [change],
   );
 
   const chooseModel = useCallback((seat: PaneId, model: string) => onModel([seat], model), [
@@ -329,36 +281,6 @@ export function useSeatPickers(): SeatPickers {
   const chooseWorkersModel = useCallback(
     (model: string) => onModel([...WORKER_SLOTS.map(workerPane)], model),
     [onModel],
-  );
-
-  const onCredential = useCallback(
-    (seats: PaneId[], credential: CredentialChoice) => {
-      const workerModelDefault = gate?.worker_model_default ?? "";
-      const remembered = readRemembered();
-      change(seats, (was, seat) => {
-        if (was.credential === credential) return was;
-        // **The same restore M3 does for the harness**, one key deeper (C78).
-        // Flipping to your plan clears `deepseek-v4-flash` — it means nothing to
-        // the vendor's own login — and flipping back brings it home rather than
-        // making the operator retype it.
-        const perSeat = remembered.model[seat] ?? {};
-        const key = modelKey(was.harness, credential);
-        const model =
-          key in perSeat ? perSeat[key] : seatDefault(seat, credential, workerModelDefault);
-        return { harness: was.harness, model, credential };
-      });
-    },
-    [change, gate],
-  );
-
-  const chooseCredential = useCallback(
-    (seat: PaneId, credential: CredentialChoice) => onCredential([seat], credential),
-    [onCredential],
-  );
-  const chooseWorkersCredential = useCallback(
-    (credential: CredentialChoice) =>
-      onCredential([...WORKER_SLOTS.map(workerPane)], credential),
-    [onCredential],
   );
 
   const recheck = useCallback(() => {
@@ -372,22 +294,9 @@ export function useSeatPickers(): SeatPickers {
 
   const workersAgree = useMemo(() => {
     const workers = gate?.seats.workers ?? [];
-    // **The credential counts as disagreeing** (C78), for the same reason the
-    // harness and the model do: a collapsed row may only speak for four seats
-    // that agree, or it names one of them and silently rewrites the other three
-    // on the next click.
     return workers.every(
-      (seat) =>
-        seat.harness === workers[0]?.harness &&
-        seat.model === workers[0]?.model &&
-        seat.credential === workers[0]?.credential,
+      (seat) => seat.harness === workers[0]?.harness && seat.model === workers[0]?.model,
     );
-  }, [gate]);
-
-  const workersCredential = useMemo((): CredentialChoice | "mixed" => {
-    const workers = gate?.seats.workers ?? [];
-    const first = workers[0]?.credential ?? "plan";
-    return workers.every((seat) => seat.credential === first) ? first : "mixed";
   }, [gate]);
 
   return {
@@ -406,9 +315,6 @@ export function useSeatPickers(): SeatPickers {
     expanded: manuallyExpanded || !workersAgree,
     setExpanded: setManuallyExpanded,
     workersAgree,
-    chooseCredential,
-    chooseWorkersCredential,
-    workersCredential,
   };
 }
 
@@ -431,13 +337,10 @@ function restore(gate: GateState, remembered: Remembered): FleetSeats | null {
     const harness = remembered.harness[seat];
     if (harness === undefined || !known.has(harness)) continue;
     const was = seatOf(seats, seat);
-    const credential = remembered.credential[seat] ?? was.credential;
     const perSeat = remembered.model[seat] ?? {};
-    const key = modelKey(harness, credential);
-    const model =
-      key in perSeat ? perSeat[key] : seatDefault(seat, credential, gate.worker_model_default);
-    if (was.harness === harness && was.model === model && was.credential === credential) continue;
-    seats = withSeat(seats, seat, { harness, model, credential });
+    const model = harness in perSeat ? perSeat[harness] : SEAT_DEFAULT;
+    if (was.harness === harness && was.model === model) continue;
+    seats = withSeat(seats, seat, { harness, model });
     changed = true;
   }
   return changed ? seats : null;

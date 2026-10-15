@@ -605,31 +605,10 @@ fn the_orchestrator_keeps_its_default_your_login_sentinel() {
         read(GATE).contains("sentinel={DEFAULT_YOUR_LOGIN}"),
         "the orchestrator row no longer offers the sentinel",
     );
-    let default = between(
-        &read(PICKERS),
-        "function seatDefault(
-  seat: PaneId,
-  credential: CredentialChoice,
-  workerModelDefault: string,
-): string | null {",
-        "\n}",
-        "seatDefault",
-    );
-    // **The property, not the spelling** (C78 reshaped this). It read
-    // `seat === ORCH ? null`, which was the whole function while the orchestrator
-    // was the only seat naming no model. A worker on the operator's plan now names
-    // none either — same reason, same sentinel — so the branch grew a second
-    // condition and an assertion pinned to the ternary would fail on a change that
-    // widened the rule rather than broke it.
     assert!(
-        default.contains("seat === ORCH") && default.contains("return null"),
-        "the orchestrator's sentinel stopped being an absent model. A named default would \
-         put a model on the operator's own seat that they never chose:\n{default}",
-    );
-    assert!(
-        default.contains(r#"credential === "plan""#),
-        "a worker on the operator's plan no longer shares the sentinel, so it falls back to \
-         the fleet's model — a name its vendor has never heard of (C78):\n{default}",
+        read(PICKERS).contains("const SEAT_DEFAULT: string | null = null;"),
+        "a seat's default stopped being an absent model. A named default would put a model \
+         on a seat that the operator never chose",
     );
     let spawn = read("src-tauri/src/placement/spawn.rs");
     let orch = between(&spawn, "pub(super) fn orch_command_with(", "\n}", "orch_command_with");
@@ -871,69 +850,55 @@ fn the_declarations_this_file_reads_still_exist() {
     );
 }
 
-// --- whose usage a seat spends (WP-25 #49; C73, C75, C78) ----------------------
+// --- every seat runs the operator's login (D-118) ----------------------------
 
-/// The Rust half of the credential choice.
-const CREDENTIAL_SOURCE: &str = "src-tauri/src/credential_source.rs";
-
-/// **The two spellings are one spelling** (C75, C78).
-///
-/// The choice crosses the wire as a bare string on every seat. A drift between the
-/// union in `types.ts` and the `serde` renaming in `credential_source.rs` is the
-/// one drift in this file whose failure mode costs money: an unrecognised value
-/// fails the deserialize, and an *absent* one reads as the plan by design — so a
-/// field the interface stopped sending would silently put every seat on the
-/// operator's subscription.
-#[test]
-fn the_credential_spellings_agree_across_the_wire() {
-    let backend = read(CREDENTIAL_SOURCE);
-    let wire = read(WIRE);
-
-    assert!(
-        backend.contains(r#"#[serde(rename_all = "snake_case")]"#),
-        "{CREDENTIAL_SOURCE} no longer renames its variants, so the wire spellings are the \
-         Rust identifiers and no longer match {WIRE}",
-    );
-    for spelling in ["plan", "fleet_key"] {
-        assert!(
-            wire.contains(&format!(r#""{spelling}""#)),
-            "{WIRE} does not spell `{spelling}`. An absent credential reads as the plan by \
-             design, so this drift does not error — it spends a subscription",
-        );
-    }
-    assert!(
-        wire.contains("export type CredentialChoice"),
-        "{WIRE} no longer names the credential as a type, so a seat could carry any string",
-    );
-    assert!(
-        backend.contains("#[default]"),
-        "{CREDENTIAL_SOURCE} no longer marks a default variant, so a payload from before \
-         this field existed fails to parse instead of landing on the plan",
-    );
+/// The words a second credential would be offered or stored in.
+fn second_credential_words_in(text: &str) -> Vec<&'static str> {
+    ["fleet_key", "FleetKey", "your key", "CredentialSourcePicker", "CredentialChoice", "DEEPSEEK"]
+        .into_iter()
+        .filter(|word| text.contains(word))
+        .collect()
 }
 
-/// **The seat carries the credential, and nothing else stores it** (C78).
-///
-/// C75 kept the answer in `~/.fleetor/config.json` as one fleet-wide value; C78
-/// moved it onto the seat, because a per-seat control beside a fleet-wide key
-/// would be two homes for one answer — the shape M15 refuses. This fails if a
-/// second home comes back.
-#[test]
-fn the_credential_has_exactly_one_home() {
-    let wire = read(WIRE);
-    assert!(
-        wire.contains("credential: CredentialChoice;"),
-        "{WIRE}'s SeatChoice no longer carries the credential, so the per-seat picker has \
-         nowhere to write",
-    );
-
-    let backend = read(CREDENTIAL_SOURCE);
-    for gone in ["fn chosen(", "CONFIG_KEY", "worker_credential_source"] {
-        assert!(
-            !backend.contains(gone),
-            "{CREDENTIAL_SOURCE} stores the credential again (`{gone}`). The seat is the \
-             home (C78); a second one is a value that can disagree with the picker the \
-             operator is looking at",
-        );
+/// Every file under `dir`, as (repo-relative path, text).
+fn sources_under(dir: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut pending = vec![repo_root().join(dir)];
+    while let Some(at) = pending.pop() {
+        for entry in std::fs::read_dir(&at).unwrap_or_else(|e| panic!("{}: {e}", at.display())) {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if let Ok(text) = std::fs::read_to_string(&path) {
+                out.push((path.strip_prefix(repo_root()).unwrap().display().to_string(), text));
+            }
+        }
     }
+    out
+}
+
+/// `fleet.rs` above its tests, without the key loader placement still calls.
+fn the_gates_backend() -> String {
+    let backend = read(BACKEND);
+    let production = backend.split("\n#[cfg(test)]\nmod tests {").next().expect("a first half");
+    let loader = between(production, "// --- worker credentials ---", "// --- display ---", "the key loader");
+    production.replace(&loader, "")
+}
+
+/// **Nothing above placement offers, stores or sends a second credential** (D-118).
+#[test]
+fn the_gate_offers_no_second_credential() {
+    for (file, text) in sources_under("ui/src") {
+        let found = second_credential_words_in(&text);
+        assert!(found.is_empty(), "{file} carries {found:?}: every seat runs the operator's login");
+    }
+    let found = second_credential_words_in(&the_gates_backend());
+    assert!(found.is_empty(), "{BACKEND}'s gate code carries {found:?}");
+
+    let seat = between(&read(WIRE), "export interface SeatChoice {", "\n}", "SeatChoice");
+    assert!(!seat.contains("credential"), "{WIRE}'s SeatChoice carries a credential again:\n{seat}");
+    assert!(
+        !second_credential_words_in("<option value=\"fleet_key\">your key</option>").is_empty(),
+        "the check would not notice the control it exists to refuse",
+    );
 }
