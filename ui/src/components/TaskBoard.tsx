@@ -2,673 +2,84 @@
 //
 // Folded from the task store's chain entries in `fleet/board.ts`. A status is
 // what someone said, so nothing here renders a tick or a progress bar; a goal's
-// tasks are counted by status as text.
+// tasks are counted by status as text. The list, a task page and the new task
+// form each take the whole view (D-121).
 
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { byGoal, flaggers, replayBoard, type TaskRecord } from "../fleet/board";
 import { NEVER_TAKEN_UP_MS, assignedAt, elapsed, evidence, monitorFlags } from "../fleet/flags";
-import {
-  WORKER_SLOTS,
-  workerPane,
-  type ChainEvent,
-  type PaneId,
-  type TaskAction,
-  type TaskStatus,
-} from "../fleet/types";
+import { WORKER_SLOTS, workerPane, type ChainEvent, type PaneId, type TaskStatus } from "../fleet/types";
 import type { TaskStoreInfo } from "../fleet/useFleet";
+import { NewForm } from "./TaskForm";
+import { TaskPage, type Mode } from "./TaskPage";
+import { Chips, NEEDS_FLEET, Status, carriedFrom, clock, earlier, isOpen, runStarts, summary, useNow, type TaskOps } from "./taskKit";
 
-/// How the operator's controls reach the hub. Passed in rather than imported,
-/// so the view renders with no backend behind it.
-export interface TaskOps {
-  /// One task change as `operator`; resolves to the task's number, rejects
-  /// with the hub's refusal.
-  run: (action: TaskAction) => Promise<string>;
-  message: (to: PaneId, text: string) => Promise<unknown>;
-}
+export { summary, useNow, type TaskOps };
 
-const NEEDS_FLEET = "start a fleet to change tasks";
-
-/// What the list can be narrowed to. `all` includes dropped tasks and leaves
-/// out removed ones, which show only under `removed`.
-export type TaskFilter = "all" | "planned" | "in-progress" | "done" | "removed";
-const FILTERS: [TaskFilter, string][] = [
+/// The list's tabs. `all` leaves out removed tasks, which show only under `removed`.
+export type TaskFilter = "open" | "closed" | "all" | "removed";
+const IN_TAB: Record<TaskFilter, (status: TaskStatus) => boolean> = {
+  open: (s) => s === "planned" || s === "in-progress",
+  closed: (s) => s === "done" || s === "dropped",
+  all: (s) => s !== "removed",
+  removed: (s) => s === "removed",
+};
+const TABS: [TaskFilter, string][] = [
+  ["open", "Open"],
+  ["closed", "Closed"],
   ["all", "All"],
-  ["planned", "Planned"],
-  ["in-progress", "In progress"],
-  ["done", "Done"],
   ["removed", "Removed"],
 ];
 
 /// `any`, `unowned`, or a pane.
 export type OwnerFilter = "any" | "unowned" | PaneId;
+const OWNERS: [OwnerFilter, string][] = [
+  ["any", "anyone"],
+  ["unowned", "unowned"],
+  ["orch", "orch"],
+  ...WORKER_SLOTS.map(workerPane).map((p): [OwnerFilter, string] => [p, p]),
+  ["operator", "operator"],
+];
 
-const matches = (record: TaskRecord, filter: TaskFilter, owner: OwnerFilter): boolean =>
-  (filter === "all" ? record.status !== "removed" : record.status === filter) &&
-  (owner === "any" || (owner === "unowned" ? !record.owner : record.owner?.pane === owner));
-
-/// An owner from another lineage is a pane that no longer exists. With no
-/// fleet running, that is every owner.
-const earlier = (record: TaskRecord, store: TaskStoreInfo | null): boolean =>
-  !!record.owner && !!store && record.owner.lineage !== store.lineage;
-
-const ownerName = (record: TaskRecord, store: TaskStoreInfo | null): string =>
-  !record.owner ? "unowned" : earlier(record, store) ? `${record.owner.pane}, earlier run` : record.owner.pane;
-
-const isOpen = (record: TaskRecord): boolean =>
-  record.status === "planned" || record.status === "in-progress";
-
-/// The time, re-read often enough for a minutes-old figure to stay true.
-export function useNow(fixed?: number): number {
-  const [now, setNow] = useState(() => fixed ?? Date.now());
-  useEffect(() => {
-    if (fixed !== undefined) return;
-    const timer = setInterval(() => setNow(Date.now()), 30_000);
-    return () => clearInterval(timer);
-  }, [fixed]);
-  return fixed ?? now;
-}
-
-const lines = (text: string): string[] =>
-  text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-
-/// Run one change, holding the hub's refusal for display.
-function useChange(): [string | null, boolean, (change: () => Promise<void>) => void] {
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const act = (change: () => Promise<void>) => {
-    setBusy(true);
-    setError(null);
-    change()
-      .catch((e) => setError(String(e)))
-      .finally(() => setBusy(false));
-  };
-  return [error, busy, act];
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label className="task-form__field">
-      <span className="composer__label">{label}</span>
-      {children}
-    </label>
-  );
-}
-
-/// The new goal / new task form: the same fields `fleet task post` takes.
-function NewForm({
-  kind,
-  goals,
-  ops,
-  onDone,
-  onCancel,
-}: {
-  kind: "goal" | "task";
-  goals: TaskRecord[];
-  ops: TaskOps;
-  onDone: (number: number) => void;
-  onCancel: () => void;
-}) {
-  const [outcome, setOutcome] = useState("");
-  const [technical, setTechnical] = useState("");
-  const [vision, setVision] = useState("");
-  const [instructions, setInstructions] = useState("");
-  const [owner, setOwner] = useState<PaneId | "">("");
-  const [reviewer, setReviewer] = useState<PaneId | "">("");
-  const [parent, setParent] = useState<string>("");
-  const [tell, setTell] = useState(false);
-  const [error, busy, act] = useChange();
-
-  const submit = () =>
-    act(async () => {
-      const number = await ops.run({
-        action: "post",
-        goal: kind === "goal",
-        outcome,
-        technical: lines(technical),
-        vision: lines(vision),
-        owner: owner || null,
-        instructions: instructions.trim() || null,
-        parent: parent ? Number(parent) : null,
-        reviewer: reviewer || null,
-      });
-      // Opening a task assigns nobody; telling the owner is a separate, chosen act.
-      if (kind === "task" && owner && tell) {
-        await ops.message(
-          owner,
-          `Task #${number} is yours: ${outcome.trim()}. Run \`fleet task show ${number}\` for its criteria.`,
-        );
-      }
-      onDone(Number(number));
-    });
-
-  return (
-    <form
-      className="task-form"
-      onSubmit={(e) => {
-        e.preventDefault();
-        submit();
-      }}
-    >
-      <h4 className="task-form__title">New {kind}</h4>
-      <Field label="outcome">
-        <input className="composer__input" value={outcome} onChange={(e) => setOutcome(e.target.value)} />
-      </Field>
-      {kind === "task" && (
-        <Field label="technical criteria, one per line">
-          <textarea className="composer__input" rows={2} value={technical} onChange={(e) => setTechnical(e.target.value)} />
-        </Field>
-      )}
-      <Field label="vision criteria, one per line">
-        <textarea className="composer__input" rows={2} value={vision} onChange={(e) => setVision(e.target.value)} />
-      </Field>
-      {kind === "task" && (
-        <>
-          <Field label="instructions (optional)">
-            <textarea className="composer__input" rows={2} value={instructions} onChange={(e) => setInstructions(e.target.value)} />
-          </Field>
-          <Field label="goal">
-            <select className="composer__target" value={parent} onChange={(e) => setParent(e.target.value)}>
-              <option value="">No goal</option>
-              {goals.map((goal) => (
-                <option key={goal.number} value={goal.number}>
-                  #{goal.number} {goal.block.outcome}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="owner">
-            <select className="composer__target" value={owner} onChange={(e) => setOwner(e.target.value as PaneId | "")}>
-              <option value="">unowned</option>
-              {WORKER_SLOTS.map(workerPane).map((pane) => (
-                <option key={pane} value={pane}>
-                  {pane}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="reviewer">
-            <select className="composer__target" value={reviewer} onChange={(e) => setReviewer(e.target.value as PaneId | "")}>
-              <option value="">no reviewer</option>
-              {WORKER_SLOTS.map(workerPane)
-                .filter((pane) => pane !== owner)
-                .map((pane) => (
-                  <option key={pane} value={pane}>
-                    {pane}
-                  </option>
-                ))}
-            </select>
-          </Field>
-          <label className="task-form__check">
-            <input type="checkbox" checked={tell} disabled={!owner} onChange={(e) => setTell(e.target.checked)} />
-            message the owner with this task
-          </label>
-        </>
-      )}
-      <div className="task-form__actions">
-        <button type="submit" className="composer__send" disabled={busy}>
-          Open {kind}
-        </button>
-        <button type="button" className="task-form__quiet" onClick={onCancel}>
-          Cancel
-        </button>
-      </div>
-      {error && <p className="composer__result composer__result--bad">{error}</p>}
-    </form>
-  );
-}
-
-/// Which form the controls show in place of their buttons.
-type Mode = "edit" | "release" | "flag" | "remove" | null;
-
-const REASON = {
-  flag: { title: "Flag", label: "why it is not worth doing", send: "Flag" },
-  remove: { title: "Remove", label: "why it is destructive or counterproductive", send: "Remove" },
-} as const;
-
-/// Releasing or removing only writes the record; telling the owner is a
-/// separate, chosen act.
-function TellOwner({ owner, tell, setTell }: { owner: PaneId; tell: boolean; setTell: (on: boolean) => void }) {
-  return (
-    <label className="task-form__check">
-      <input type="checkbox" checked={tell} onChange={(e) => setTell(e.target.checked)} />
-      message {owner} to stop work on it
-    </label>
-  );
-}
-
-/// Flag and remove both take one required reason.
-function ReasonForm({
-  kind,
-  record,
-  owner,
-  off,
-  why: title,
-  onSend,
-  onCancel,
-}: {
-  kind: "flag" | "remove";
-  record: TaskRecord;
-  /// The pane to offer a stop message to, when a removal has one.
-  owner: PaneId | null;
-  off: boolean;
-  why: string | undefined;
-  onSend: (action: TaskAction, tell: boolean) => void;
-  onCancel: () => void;
-}) {
-  const [reason, setReason] = useState("");
-  const [tell, setTell] = useState(false);
-  const missing = reason.trim() === "";
-  return (
-    <form
-      className="task-form task-form--reason"
-      onSubmit={(e) => {
-        e.preventDefault();
-        onSend({ action: kind, task: record.number, reason }, tell);
-      }}
-    >
-      <h4 className="task-form__title">
-        {REASON[kind].title} #{record.number}
-      </h4>
-      <Field label={REASON[kind].label}>
-        <input className="composer__input" value={reason} onChange={(e) => setReason(e.target.value)} />
-      </Field>
-      {kind === "remove" && owner && <TellOwner owner={owner} tell={tell} setTell={setTell} />}
-      <div className="task-form__actions">
-        <button
-          type="submit"
-          className="composer__send"
-          disabled={off || missing}
-          title={title ?? (missing ? "a reason is required" : undefined)}
-        >
-          {REASON[kind].send}
-        </button>
-        <button type="button" className="task-form__quiet" onClick={onCancel}>
-          Cancel
-        </button>
-      </div>
-    </form>
-  );
-}
-
-/// The release form: the same four fields `fleet task release` requires. The
-/// operator stands in no checkout, so "where" is typed.
-function ReleaseForm({
-  record,
-  owner,
-  off,
-  why: title,
-  onRelease,
-  onCancel,
-}: {
-  record: TaskRecord;
-  owner: PaneId | null;
-  off: boolean;
-  why: string | undefined;
-  onRelease: (action: TaskAction, tell: boolean) => void;
-  onCancel: () => void;
-}) {
-  const [tell, setTell] = useState(false);
-  const [why, setWhy] = useState("");
-  const [done, setDone] = useState("");
-  const [left, setLeft] = useState("");
-  const [place, setPlace] = useState("");
-  const missing = [why, done, left, place].some((text) => text.trim() === "");
-  return (
-    <form
-      className="task-form task-form--release"
-      onSubmit={(e) => {
-        e.preventDefault();
-        onRelease({ action: "release", task: record.number, why, done, left, place }, tell);
-      }}
-    >
-      <h4 className="task-form__title">Release #{record.number}</h4>
-      <Field label="why it is being released">
-        <input className="composer__input" value={why} onChange={(e) => setWhy(e.target.value)} />
-      </Field>
-      <Field label="done so far">
-        <textarea className="composer__input" rows={2} value={done} onChange={(e) => setDone(e.target.value)} />
-      </Field>
-      <Field label="left to do">
-        <textarea className="composer__input" rows={2} value={left} onChange={(e) => setLeft(e.target.value)} />
-      </Field>
-      <Field label="where the work sits: branch @ commit">
-        <input className="composer__input" value={place} onChange={(e) => setPlace(e.target.value)} />
-      </Field>
-      {owner && <TellOwner owner={owner} tell={tell} setTell={setTell} />}
-      <div className="task-form__actions">
-        <button
-          type="submit"
-          className="composer__send"
-          disabled={off || missing}
-          title={title ?? (missing ? "all four fields are required" : undefined)}
-        >
-          Release
-        </button>
-        <button type="button" className="task-form__quiet" onClick={onCancel}>
-          Cancel
-        </button>
-      </div>
-    </form>
-  );
-}
-
-/// The operator's controls on one record: comment, edit, release, close,
-/// reopen, flag, remove, restore, and the goal and reviewer it names.
-function Controls({
-  record,
-  goals,
-  owner,
-  ops,
-  writable,
-  start,
-}: {
-  record: TaskRecord;
-  goals: TaskRecord[];
-  /// The owner, when it is a pane of this session.
-  owner: PaneId | null;
-  ops: TaskOps | null;
-  writable: boolean;
-  start: Mode;
-}) {
-  const { block } = record;
-  const [comment, setComment] = useState("");
-  const [mode, setMode] = useState<Mode>(start);
-  const editing = mode === "edit";
-  const setEditing = (on: boolean) => setMode(on ? "edit" : null);
-  const [outcome, setOutcome] = useState(block.outcome);
-  const [technical, setTechnical] = useState((block.technical ?? []).join("\n"));
-  const [vision, setVision] = useState(block.vision.join("\n"));
-  const [error, busy, act] = useChange();
-  const off = !writable || busy;
-  const why = writable ? undefined : NEEDS_FLEET;
-  const run = (action: TaskAction, then?: () => void) =>
-    act(async () => {
-      if (!ops) return;
-      await ops.run(action);
-      then?.();
-    });
-  const stop = (action: TaskAction, tell: boolean, word: string) =>
-    act(async () => {
-      if (!ops) return;
-      await ops.run(action);
-      if (tell && owner) {
-        await ops.message(
-          owner,
-          `The operator ${word} task #${record.number}. Stop work on it and commit what you have; run \`fleet task show ${record.number}\` for why.`,
-        );
-      }
-      setMode(null);
-    });
-  const same = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
-
-  // Each field is sent whole, and only when it differs; the hub refuses an
-  // edit that changes nothing.
-  const saveEdit = () =>
-    run(
-      {
-        action: "edit",
-        task: record.number,
-        outcome: outcome.trim() === block.outcome ? null : outcome,
-        technical: same(lines(technical), block.technical ?? []) ? [] : lines(technical),
-        vision: same(lines(vision), block.vision) ? [] : lines(vision),
-      },
-      () => setEditing(false),
-    );
-
-  return (
-    <div className="task-controls">
-      {editing ? (
-        <form
-          className="task-form"
-          onSubmit={(e) => {
-            e.preventDefault();
-            saveEdit();
-          }}
-        >
-          <h4 className="task-form__title">Edit #{record.number}</h4>
-          <Field label="outcome">
-            <input className="composer__input" value={outcome} onChange={(e) => setOutcome(e.target.value)} />
-          </Field>
-          {block.kind === "task" && (
-            <Field label="technical criteria, one per line">
-              <textarea className="composer__input" rows={2} value={technical} onChange={(e) => setTechnical(e.target.value)} />
-            </Field>
-          )}
-          <Field label="vision criteria, one per line">
-            <textarea className="composer__input" rows={2} value={vision} onChange={(e) => setVision(e.target.value)} />
-          </Field>
-          <div className="task-form__actions">
-            <button type="submit" className="composer__send" disabled={off} title={why}>
-              Save edit
-            </button>
-            <button type="button" className="task-form__quiet" onClick={() => setEditing(false)}>
-              Cancel
-            </button>
-          </div>
-        </form>
-      ) : mode === "release" ? (
-        <ReleaseForm
-          record={record}
-          owner={owner}
-          off={off}
-          why={why}
-          onRelease={(action, tell) => stop(action, tell, "released")}
-          onCancel={() => setMode(null)}
-        />
-      ) : mode === "flag" || mode === "remove" ? (
-        <ReasonForm
-          kind={mode}
-          record={record}
-          owner={owner}
-          off={off}
-          why={why}
-          onSend={(action, tell) =>
-            mode === "remove" ? stop(action, tell, "removed") : run(action, () => setMode(null))
-          }
-          onCancel={() => setMode(null)}
-        />
-      ) : record.status === "removed" ? (
-        <div className="task-form__actions">
-          <button
-            type="button"
-            className="task-form__quiet"
-            disabled={off}
-            title={why}
-            onClick={() => run({ action: "restore", task: record.number })}
-          >
-            Restore
-          </button>
-        </div>
-      ) : (
-        <div className="task-form__actions">
-          <button type="button" className="task-form__quiet" disabled={off} title={why} onClick={() => setEditing(true)}>
-            Edit
-          </button>
-          <button type="button" className="task-form__quiet" disabled={off} title={why} onClick={() => setMode("flag")}>
-            Flag
-          </button>
-          <button type="button" className="task-form__quiet" disabled={off} title={why} onClick={() => setMode("remove")}>
-            Remove
-          </button>
-          {block.kind === "task" && record.owner && isOpen(record) && (
-            <button type="button" className="task-form__quiet" disabled={off} title={why} onClick={() => setMode("release")}>
-              Release
-            </button>
-          )}
-          {record.status !== "dropped" && (
-            <button
-              type="button"
-              className="task-form__quiet"
-              disabled={off}
-              title={why}
-              onClick={() => run({ action: "update", task: record.number, status: "dropped" })}
-            >
-              Close
-            </button>
-          )}
-          {(record.status === "dropped" || record.status === "done") && (
-            <button
-              type="button"
-              className="task-form__quiet"
-              disabled={off}
-              title={why}
-              onClick={() => run({ action: "update", task: record.number, status: "planned" })}
-            >
-              Reopen
-            </button>
-          )}
-        </div>
-      )}
-      {block.kind === "task" && (
-        <label className="task-form__reviewer">
-          <span className="composer__label">goal</span>
-          <select
-            className="composer__target"
-            value={goals.some((goal) => goal.number === block.parent) ? String(block.parent) : ""}
-            disabled={off}
-            title={why}
-            onChange={(e) =>
-              e.target.value &&
-              run({ action: "edit", task: record.number, technical: [], vision: [], parent: Number(e.target.value) })
-            }
-          >
-            <option value="" disabled>
-              No goal
-            </option>
-            {goals.map((goal) => (
-              <option key={goal.number} value={goal.number}>
-                #{goal.number} {goal.block.outcome}
-              </option>
-            ))}
-          </select>
-        </label>
-      )}
-      {block.kind === "task" && (
-        <label className="task-form__reviewer">
-          <span className="composer__label">reviewer</span>
-          <select
-            className="composer__target"
-            value={block.reviewer ?? ""}
-            disabled={off}
-            title={why}
-            onChange={(e) =>
-              e.target.value &&
-              run({ action: "edit", task: record.number, technical: [], vision: [], reviewer: e.target.value as PaneId })
-            }
-          >
-            <option value="" disabled>
-              no reviewer
-            </option>
-            {WORKER_SLOTS.map(workerPane)
-              .filter((pane) => pane !== record.owner?.pane)
-              .map((pane) => (
-                <option key={pane} value={pane}>
-                  {pane}
-                </option>
-              ))}
-          </select>
-        </label>
-      )}
-      <form
-        className="task-form__comment"
-        onSubmit={(e) => {
-          e.preventDefault();
-          run({ action: "comment", task: record.number, text: comment }, () => setComment(""));
-        }}
-      >
-        <input
-          className="composer__input"
-          placeholder={writable ? "comment as operator" : NEEDS_FLEET}
-          value={comment}
-          disabled={!writable}
-          onChange={(e) => setComment(e.target.value)}
-        />
-        <button type="submit" className="composer__send" disabled={off || comment.trim() === ""} title={why}>
-          Comment
-        </button>
-      </form>
-      {error && <p className="composer__result composer__result--bad">{error}</p>}
-    </div>
-  );
-}
+/// `this` keeps what has an entry from the live run.
+export type RunFilter = "any" | "this";
 
 const STATUSES: TaskStatus[] = ["planned", "in-progress", "done", "dropped"];
 
-function Status({ status }: { status: TaskStatus }) {
-  return <span className={`task__status task__status--${status}`}>{status}</span>;
+function counts(tasks: TaskRecord[], goal: boolean): string {
+  const live = tasks.filter((t) => t.status !== "removed");
+  const noun = goal ? "sub-task" : "task";
+  const head = `${live.length} ${noun}${live.length === 1 ? "" : "s"}`;
+  if (!goal || live.length === 0) return head;
+  return [
+    head,
+    ...STATUSES.map((status) => [live.filter((t) => t.status === status).length, status] as const)
+      .filter(([n]) => n > 0)
+      .map(([n, status]) => `${n} ${status}`),
+  ].join(" · ");
 }
 
-const FIELD: Record<string, string> = {
-  outcome: "the outcome",
-  technical: "the technical criteria",
-  vision: "the vision criteria",
-};
-
-/// One chain entry in a sentence, for a row's "latest" column.
-export function summary(event: ChainEvent): string {
-  const { entry } = event;
-  switch (entry.entry) {
-    case "opened":
-      return "opened this";
-    case "taken-up":
-      return "took this up";
-    case "status":
-      return `marked it ${entry.status}`;
-    case "commented":
-      return entry.text;
-    case "edited":
-      return `edited ${FIELD[entry.field]}`;
-    case "receipt":
-      return `ran a check · ${entry.status}`;
-    case "reviewer-set":
-      return `named ${entry.new} reviewer`;
-    case "reviewed":
-      return `reviewed it${entry.requested ? "" : " (unrequested)"}: ${entry.met ? "met" : "not met"}`;
-    case "flagged":
-      return "flagged it as not worth doing";
-    case "removed":
-      return "removed it";
-    case "restored":
-      return "restored it";
-    case "attached":
-      return entry.old ? `moved it under #${entry.new}, was under #${entry.old}` : `put it under #${entry.new}`;
-    case "handoff":
-      return "handed off this goal";
-    case "released":
-      return entry.on_behalf_of ? `released this on behalf of ${entry.on_behalf_of}` : "released this";
-  }
+/// The row's second line: the latest entry, and an earlier release while it matters.
+function Latest({ record }: { record: TaskRecord }) {
+  const { chain } = record;
+  const latest = chain[chain.length - 1];
+  const release = [...chain].reverse().find((e) => e.entry.entry === "released");
+  const clip = (text: string) => (text.length > 80 ? `${text.slice(0, 79)}…` : text);
+  const quote = (e: ChainEvent) => (e.entry.entry === "released" ? `: "${clip(e.entry.why)}"` : "");
+  const what = latest.entry.entry === "commented" ? `commented: "${clip(latest.entry.text)}"` : summary(latest) + quote(latest);
+  return (
+    <span className="task-row__latest">
+      {latest.from} {what} · {clock(latest.at)}
+      {release && release !== latest && isOpen(record) && (
+        <>
+          {"  ·  "}earlier, {release.from} released it{quote(release)}
+        </>
+      )}
+    </span>
+  );
 }
 
-function counts(tasks: TaskRecord[]): string {
-  if (tasks.length === 0) return "no tasks yet";
-  return STATUSES.map((status) => [tasks.filter((t) => t.status === status).length, status] as const)
-    .filter(([n]) => n > 0)
-    .map(([n, status]) => `${n} ${status}`)
-    .join(" · ");
-}
-
-function Row({
-  record,
-  store,
-  board,
-  now,
-  tasks,
-  open,
-  onOpen,
-}: {
-  record: TaskRecord;
-  store: TaskStoreInfo | null;
-  board: TaskRecord[];
-  now: number;
-  tasks?: TaskRecord[];
-  open: boolean;
-  onOpen: (number: number) => void;
-}) {
-  const goal = record.block.kind === "goal";
-  const latest = record.chain[record.chain.length - 1];
+function Signals({ record, board, now, store }: { record: TaskRecord; board: TaskRecord[]; now: number; store: TaskStoreInfo | null }) {
   const comments = record.chain.filter((e) => e.entry.entry === "commented").length;
   const { receipt, verdict } = evidence(record);
   const flagged = flaggers(record);
@@ -677,245 +88,77 @@ function Row({
   // The elapsed time on the row is how "never taken up" shows.
   const flags = monitorFlags(record, board, now, store?.lineage).filter((flag) => flag.kind !== "never-taken-up");
   return (
-    <button
-      type="button"
-      className={`task-row ${goal ? "task-row--goal" : ""} ${open ? "is-open" : ""}`}
-      aria-pressed={open}
-      onClick={() => onOpen(record.number)}
-    >
-      <span className="mono task-row__number">#{record.number}</span>
-      <Status status={record.status} />
-      {goal ? (
-        <span className="task-row__kind">goal</span>
-      ) : (
-        <span className="mono task-row__owner">{ownerName(record, store)}</span>
-      )}
-      <span className="task-row__outcome">{record.block.outcome}</span>
-      {tasks && <span className="task-row__counts">{counts(tasks)}</span>}
-      <span className="task-row__latest">
-        <span className="mono">{latest.from}</span> {summary(latest)}
-      </span>
+    <span className="task-row__signals">
       {comments > 0 && (
-        <span className="task-row__comments">
+        <span className="task-row__sig">
           {comments} comment{comments === 1 ? "" : "s"}
         </span>
       )}
       {waited !== null && (
-        <span className={`task-row__waiting ${waited >= NEVER_TAKEN_UP_MS ? "is-late" : ""}`}>
+        <span className={`task-row__sig task-row__waiting ${waited >= NEVER_TAKEN_UP_MS ? "is-late" : ""}`}>
           assigned {elapsed(waited)} ago, not taken up
         </span>
       )}
-      {receipt && <span className="mono task-row__receipt">receipt {receipt.status}</span>}
+      {receipt && <span className="task-row__sig task-row__receipt">{receipt.status}</span>}
+      {!receipt && record.block.kind === "task" && record.status === "in-progress" && (
+        <span className="task-row__sig">no receipt</span>
+      )}
       {verdict && (
-        <span className="task-row__review">
+        <span className="task-row__sig">
           reviewed{verdict.requested ? "" : " (unrequested)"}: {verdict.met ? "met" : "not met"}
         </span>
       )}
-      {flagged > 0 && <span className="task-row__flagged">flagged by {flagged}</span>}
+      {flagged > 0 && <span className="task-row__sig task-row__flagged">flagged by {flagged}</span>}
       {flags.map((flag) => (
         <span key={flag.kind} className="task-flag">
           {flag.text}
         </span>
       ))}
-    </button>
+    </span>
   );
 }
 
-function Criteria({ label, items }: { label: string; items: string[] | undefined }) {
-  if (!items || items.length === 0) return null;
-  return (
-    <div className="task__crits">
-      <span className="task__crits-label">{label}</span>
-      <ul className="task__crit-list">
-        {items.map((item, index) => (
-          <li key={`${index}-${item}`} className="task__crit">
-            {item}
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-function Entry({ event }: { event: ChainEvent }) {
-  const { entry } = event;
-  const note =
-    entry.entry === "taken-up" || entry.entry === "status"
-      ? entry.note
-      : entry.entry === "reviewed" ||
-          entry.entry === "flagged" ||
-          entry.entry === "removed" ||
-          entry.entry === "restored"
-        ? entry.reason
-        : null;
-  return (
-    <li className={`chain__entry chain__entry--${entry.entry}`}>
-      <span className="mono chain__from">{event.from}</span>
-      <span className="chain__what">
-        {entry.entry === "commented" ? "commented" : summary(event)}
-      </span>
-      <time className="chain__at">{new Date(event.at).toLocaleString()}</time>
-      {entry.entry === "commented" && <p className="chain__text">{entry.text}</p>}
-      {note && <p className="chain__text">{note}</p>}
-      {entry.entry === "edited" && (
-        <div className="chain__edit">
-          <Criteria label="was" items={entry.old} />
-          <Criteria label="now" items={entry.new} />
-        </div>
-      )}
-      {entry.entry === "handoff" && (
-        <dl className="chain__release">
-          <dt>built</dt>
-          <dd>{entry.built}</dd>
-          <dt>evidence</dt>
-          <dd>{entry.evidence.join(" · ")}</dd>
-          {entry.open && entry.open.length > 0 && (
-            <>
-              <dt>open</dt>
-              <dd>{entry.open.join(" · ")}</dd>
-            </>
-          )}
-          {entry.open_tasks && entry.open_tasks.length > 0 && (
-            <>
-              <dt>tasks still open</dt>
-              <dd className="mono">{entry.open_tasks.map((n) => `#${n}`).join(" ")}</dd>
-            </>
-          )}
-        </dl>
-      )}
-      {entry.entry === "receipt" && (
-        <dl className="chain__release">
-          <dt>check</dt>
-          <dd className="mono">{entry.check}</dd>
-          <dt>result</dt>
-          <dd className="mono">{entry.status}</dd>
-          <dt>where</dt>
-          <dd className="mono">
-            {entry.branch ?? "no branch"} @ {entry.commit ?? "no commit"}
-            {entry.uncommitted && " + uncommitted changes"}
-          </dd>
-          {!entry.accepted && (
-            <>
-              <dt>message</dt>
-              <dd>the receipt message was not delivered to orch</dd>
-            </>
-          )}
-        </dl>
-      )}
-      {entry.entry === "released" && (
-        <dl className="chain__release">
-          <dt>why</dt>
-          <dd>{entry.why}</dd>
-          <dt>done</dt>
-          <dd>{entry.done}</dd>
-          <dt>left</dt>
-          <dd>{entry.left}</dd>
-          <dt>where</dt>
-          <dd className="mono">{entry.where}</dd>
-        </dl>
-      )}
-    </li>
-  );
-}
-
-function TaskPage({
-  record,
-  store,
-  board,
-  now,
-  goal,
-  ops,
-  writable,
-  start,
-}: {
+type RowProps = {
   record: TaskRecord;
   store: TaskStoreInfo | null;
   board: TaskRecord[];
   now: number;
-  goal: TaskRecord | undefined;
-  ops: TaskOps | null;
-  writable: boolean;
-  start: Mode;
-}) {
-  const { block } = record;
-  const flagged = flaggers(record);
-  const goals = board.filter((r) => r.block.kind === "goal" && r.status !== "removed");
+  starts: Map<string, number>;
+  onOpen: (number: number) => void;
+};
+
+function Row({ record, store, board, now, starts, onOpen }: RowProps) {
+  const carried = carriedFrom(record, store, starts);
   return (
-    <article className="task-page">
-      <header className="task__head">
-        <span className="mono task__id">#{record.number}</span>
-        <span className="task-row__kind">{block.kind}</span>
-        <Status status={record.status} />
-        {block.kind === "task" && (
-          <span className="task__posted">
-            owner <span className="mono">{ownerName(record, store)}</span>
-          </span>
-        )}
-        {block.kind === "task" && (
-          <span className="task__posted">
-            reviewer <span className="mono">{block.reviewer ?? "none"}</span>
-          </span>
-        )}
-        <span className="task__posted">
-          opened by <span className="mono">{record.creator}</span>
-        </span>
-        {flagged > 0 && <span className="task-row__flagged">flagged by {flagged}</span>}
-        {monitorFlags(record, board, now, store?.lineage).map((flag) => (
-          <span key={flag.kind} className="task-flag">
-            {flag.text}
-          </span>
-        ))}
-      </header>
+    <button type="button" className="task-row" onClick={() => onOpen(record.number)}>
+      <span className="mono task-row__number">#{record.number}</span>
+      <span className="task-row__main">
+        <span className="task-row__outcome">{record.block.outcome}</span>
+        {carried && <span className="task-carried"> · {carried}</span>}
+        <Latest record={record} />
+      </span>
+      <Status status={record.status} />
+      <span className="task-row__owner">
+        {record.owner ? <span className="mono">{record.owner.pane}</span> : <span className="task-owner--none">unowned</span>}
+      </span>
+      <Signals record={record} board={board} now={now} store={store} />
+    </button>
+  );
+}
 
-      <p className="task__outcome">{block.outcome}</p>
-      <Criteria label="technical" items={block.technical} />
-      {/* Evidence, not a tick: what was run against the criteria, and how it exited. */}
-      {block.kind === "task" && (
-        <Criteria
-          label="evidence"
-          items={
-            evidence(record).receipts.length > 0
-              ? evidence(record).receipts.map(
-                  (r) => `${r.check} — ${r.status} @ ${r.commit ?? "no commit"}${r.uncommitted ? " + uncommitted changes" : ""}`,
-                )
-              : ["no receipt recorded"]
-          }
-        />
-      )}
-      <Criteria label="vision" items={block.vision} />
-      {block.instructions && <p className="task__instructions">{block.instructions}</p>}
-      {goal && (
-        <div className="task__links">
-          <span className="task__link">
-            serves goal <span className="mono">#{goal.number}</span> {goal.block.outcome}
-          </span>
-        </div>
-      )}
-
-      <ol className="chain">
-        {record.chain.map((event, index) => {
-          const previous = record.chain[index - 1];
-          return (
-            <Fragment key={event.seq}>
-              {/* Run boundaries are not entries: they are drawn wherever
-                  neighbouring entries carry different run ids. */}
-              {previous && previous.run !== event.run && (
-                <li className="chain__run">a later session</li>
-              )}
-              <Entry event={event} />
-            </Fragment>
-          );
-        })}
-      </ol>
-      <Controls
-        record={record}
-        goals={goals}
-        owner={record.owner && !earlier(record, store) ? record.owner.pane : null}
-        ops={ops}
-        writable={writable}
-        start={start}
-      />
-    </article>
+/// A goal as its group's header, still a way into its page.
+function GoalHead({ record, tasks, ...rest }: RowProps & { tasks: TaskRecord[] }) {
+  const { store, board, now, onOpen } = rest;
+  return (
+    <button type="button" className="task-row task-row--goal" onClick={() => onOpen(record.number)}>
+      <span className="mono task-row__number">#{record.number}</span>
+      <span className="task-row__goal">
+        <strong>Goal: {record.block.outcome}</strong>
+        <span className="task-row__counts">{counts(tasks, true)}</span>
+        {record.status !== "planned" && <Status status={record.status} />}
+      </span>
+      <Signals record={record} board={board} now={now} store={store} />
+    </button>
   );
 }
 
@@ -927,8 +170,9 @@ export function TaskBoard({
   initialForm = null,
   initialEdit = false,
   initialRelease = false,
-  initialFilter = "all",
+  initialFilter = "open",
   initialOwner = "any",
+  initialRun = "any",
   initialMode = null,
   now: fixedNow,
 }: {
@@ -942,6 +186,7 @@ export function TaskBoard({
   initialRelease?: boolean;
   initialFilter?: TaskFilter;
   initialOwner?: OwnerFilter;
+  initialRun?: RunFilter;
   initialMode?: "flag" | "remove" | null;
   /// The clock, fixed; the render probe passes one.
   now?: number;
@@ -949,59 +194,50 @@ export function TaskBoard({
   const now = useNow(fixedNow);
   // With no fleet running, no tasks are shown (D-117).
   const idle = !!store && !store.live;
-  const board = useMemo(() => replayBoard(idle ? [] : chain), [idle, chain]);
+  const events = useMemo(() => (idle ? [] : chain), [idle, chain]);
+  const board = useMemo(() => replayBoard(events), [events]);
+  const starts = useMemo(() => runStarts(events), [events]);
   const groups = useMemo(() => byGoal(board), [board]);
   const [open, setOpen] = useState<number | null>(initialOpen);
   const shown = board.find((r) => r.number === open);
-  const toggle = (number: number) => setOpen((now) => (now === number ? null : number));
   const [form, setForm] = useState<"goal" | "task" | null>(initialForm);
   const [filter, setFilter] = useState<TaskFilter>(initialFilter);
   const [owner, setOwner] = useState<OwnerFilter>(initialOwner);
-  const narrowed = filter !== "all" || owner !== "any";
-  // A filter narrows the tasks; a goal stays while any of its tasks match, and
-  // its counts still describe all of them. A removed goal shows under Removed.
+  const thisRun = store?.live ? store.run : null;
+  const [runFilter, setRunFilter] = useState<RunFilter>(initialRun);
+  const byRun = runFilter === "this" && !!thisRun;
+
+  const tasks = board.filter((r) => r.block.kind === "task");
+  const tally = (tab: TaskFilter) => tasks.filter((t) => IN_TAB[tab](t.status)).length;
+  const touched = (r: TaskRecord) => !byRun || r.chain.some((e) => e.run === thisRun);
+  const matches = (r: TaskRecord) =>
+    IN_TAB[filter](r.status) &&
+    touched(r) &&
+    (owner === "any" || (owner === "unowned" ? !r.owner : r.owner?.pane === owner));
+  // A goal heads its group while any of its tasks is shown, and its counts
+  // still cover all of them; a goal with no tasks stands on its own status.
   const visible = groups
-    .map((group) => ({
-      ...group,
-      shown: group.tasks.filter((task) => matches(task, filter, owner)),
-    }))
-    .filter(({ goal, shown }) =>
-      shown.length > 0 || (!!goal && (narrowed ? filter === "removed" && goal.status === "removed" : goal.status !== "removed")),
+    .map((group) => ({ ...group, shown: group.tasks.filter(matches) }))
+    .filter(({ goal, tasks, shown }) =>
+      shown.length > 0 ||
+      (!!goal && owner === "any" && touched(goal) && IN_TAB[filter](goal.status) &&
+        (filter === "removed" || tasks.every((t) => t.status === "removed"))),
     );
   // Writes go only through the hub, so with no fleet every control is off.
   const writable = !!store?.live && !!ops;
   const why = writable ? undefined : NEEDS_FLEET;
   const goals = board.filter((r) => r.block.kind === "goal");
   const carried = board.filter((r) => isOpen(r) && earlier(r, store)).length;
+  const narrowed = owner !== "any" || byRun;
+  const rowProps = { store, board, now, starts, onOpen: setOpen };
 
-  return (
-    <div className="events-view">
-      <div className="events-view__head">
-        <h3>Tasks</h3>
-        <span className="label">a status is what someone said, not a verdict</span>
-        <span className="grow" style={{ flex: "1 1 auto" }} />
-        {idle && (
-          <span className="tasks__readonly">no fleet running · start one to see this repo's tasks</span>
-        )}
-        {store && <span className="mono text-mute tasks__target">{store.target}</span>}
-        <button type="button" className="task-form__quiet" disabled={!writable} title={why} onClick={() => setForm("goal")}>
-          New goal
-        </button>
-        <button type="button" className="task-form__quiet" disabled={!writable} title={why} onClick={() => setForm("task")}>
-          New task
-        </button>
-      </div>
-      {carried > 0 && (
-        <div className="tasks__carried">
-          <strong>Carried over</strong> {carried} open task{carried === 1 ? "" : "s"} owned by an
-          earlier run. Their owners are gone, so they are available to take up.
-        </div>
-      )}
-      {form && ops && writable && (
+  if (form && ops && writable) {
+    return (
+      <div className="events-view tasks-view">
         <NewForm
           key={form}
           kind={form}
-          goals={goals}
+          goals={goals.filter((g) => g.status !== "removed")}
           ops={ops}
           onCancel={() => setForm(null)}
           onDone={(number) => {
@@ -1009,72 +245,109 @@ export function TaskBoard({
             setOpen(number);
           }}
         />
-      )}
-      {board.length === 0 ? (
-        <div className="feed feed--empty">
-          No goals or tasks for this repository yet. Once the vision is confirmed, the orchestrator
-          records it with <span className="mono">fleet task post --goal</span> and cuts tasks under
-          it.
+      </div>
+    );
+  }
+
+  if (shown) {
+    return (
+      <div className="events-view tasks-view">
+        <TaskPage
+          key={shown.number}
+          record={shown}
+          store={store}
+          board={board}
+          now={now}
+          starts={starts}
+          ops={ops}
+          writable={writable}
+          start={(initialEdit ? "edit" : initialRelease ? "release" : initialMode) as Mode}
+          onNavigate={setOpen}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="events-view tasks-view">
+      <div className="tasks__head">
+        <h3>Tasks</h3>
+        {board.length > 0 && (
+          <span className="task-tabs" role="group" aria-label="filter tasks by status">
+            {TABS.filter(([tab]) => tab !== "removed" || tally("removed") > 0).map(([tab, label]) => (
+              <button
+                key={tab}
+                type="button"
+                className={`task-tab ${filter === tab ? "is-on" : ""}`}
+                aria-pressed={filter === tab}
+                onClick={() => setFilter(tab)}
+              >
+                {`${label} ${tally(tab)}`}
+              </button>
+            ))}
+          </span>
+        )}
+        <span className="grow" />
+        <button type="button" className="task-btn" disabled={!writable} title={why} onClick={() => setForm("goal")}>
+          New goal
+        </button>
+        <button type="button" className="task-btn task-btn--primary" disabled={!writable} title={why} onClick={() => setForm("task")}>
+          New task
+        </button>
+      </div>
+      {idle ? (
+        <div className="tasks__empty">no fleet running · start one to see this repo's tasks</div>
+      ) : board.length === 0 ? (
+        <div className="tasks__empty">
+          No goals or tasks for this repository yet. Once the vision is confirmed, the orchestrator records it with{" "}
+          <span className="mono">fleet task post --goal</span> and cuts tasks under it.
         </div>
       ) : (
         <div className="tasks">
-          <div className="tasks__list">
-            <div className="tasks__filters" role="group" aria-label="filter tasks by status">
-              {FILTERS.map(([value, label]) => (
-                <button
-                  key={value}
-                  type="button"
-                  className={`task-form__quiet ${filter === value ? "is-on" : ""}`}
-                  aria-pressed={filter === value}
-                  onClick={() => setFilter(value)}
-                >
-                  {label}
-                </button>
-              ))}
-              <select
-                className="composer__target"
-                aria-label="filter tasks by owner"
-                value={owner}
-                onChange={(e) => setOwner(e.target.value as OwnerFilter)}
-              >
-                <option value="any">any owner</option>
-                <option value="unowned">unowned</option>
-                {WORKER_SLOTS.map(workerPane).map((pane) => (
-                  <option key={pane} value={pane}>
-                    {pane}
-                  </option>
-                ))}
-              </select>
-            </div>
-            {visible.length === 0 && (
-              <div className="feed--empty">No {filter === "all" ? "matching" : filter} tasks.</div>
+          <div className="tasks__filters">
+            <span className="tasks__filter">
+              <span className="tasks__filter-label">Owner</span>
+              <Chips label="filter tasks by owner" options={OWNERS} value={owner} onChange={setOwner} dashed="unowned" />
+            </span>
+            {thisRun && (
+              <span className="tasks__filter">
+                <span className="tasks__filter-label">Run</span>
+                <Chips
+                  label="filter tasks by run"
+                  options={[
+                    ["any", "any run"],
+                    ["this", "this run"],
+                  ]}
+                  value={runFilter}
+                  onChange={setRunFilter}
+                />
+              </span>
             )}
-            {visible.map(({ goal, tasks, shown: matching }) => (
-              <section key={goal?.number ?? "none"} className="tasks__group">
-                {goal ? (
-                  <Row record={goal} store={store} board={board} now={now} tasks={tasks} open={open === goal.number} onOpen={toggle} />
-                ) : (
-                  <div className="tasks__no-goal">No goal</div>
-                )}
-                {matching.map((task) => (
-                  <Row key={task.number} record={task} store={store} board={board} now={now} open={open === task.number} onOpen={toggle} />
-                ))}
-              </section>
-            ))}
           </div>
-          {shown && (
-            <TaskPage
-              key={shown.number}
-              record={shown}
-              store={store}
-              board={board}
-              now={now}
-              ops={ops}
-              writable={writable}
-              start={initialEdit ? "edit" : initialRelease ? "release" : initialMode}
-              goal={board.find((r) => r.number === shown.block.parent && r.block.kind === "goal")}
-            />
+          {carried > 0 && (
+            <div className="tasks__carried">
+              <strong>Carried over</strong> {carried} open task{carried === 1 ? "" : "s"} owned by an earlier run.
+              Their owners are gone, so they are available to take up.
+            </div>
           )}
+          {visible.length === 0 && (
+            <div className="tasks__empty">No {narrowed ? "matching" : TABS.find(([t]) => t === filter)![1].toLowerCase()} tasks.</div>
+          )}
+          {visible.map(({ goal, tasks, shown: matching }) => (
+            <section key={goal?.number ?? "none"} className="tasks__group">
+              {goal ? (
+                <GoalHead record={goal} tasks={tasks} {...rowProps} />
+              ) : (
+                <div className="tasks__no-goal">
+                  <strong>No goal</strong>
+                  <span className="task-row__counts">{counts(tasks, false)}</span>
+                </div>
+              )}
+              {matching.map((task) => (
+                <Row key={task.number} record={task} {...rowProps} />
+              ))}
+            </section>
+          ))}
         </div>
       )}
     </div>

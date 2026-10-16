@@ -110,18 +110,22 @@ Note: D-005 is referenced elsewhere in this file (e.g. D-009, D-011) but has no 
 | [D-101](D-101.md) | S1 | alive | `fleet task post --goal` is a flag; a task names its goal with `--parent` |
 | [D-102](D-102.md) | S1 | alive | the hub takes the task store through `Hub::with_tasks`; `Hub::new` is unchanged |
 | [D-103](D-103.md) | S1 | alive | an edit replaces a whole field and keeps both texts; a comment changes nothing else; the briefs say task, not block |
-| [D-104](D-104.md) | S1 | amended by D-117 | S1 wiring: the store sits under `targets/<slug>/`, the UI reads it through one snapshot command, and the operator writes through the hub |
+| [D-104](D-104.md) | S1 | amended by D-117, D-121 | S1 wiring: the store sits under `targets/<slug>/`, the UI reads it through one snapshot command, and the operator writes through the hub |
 | [D-105](D-105.md) | S2 | alive | a release is one chain entry with four required fields; the hub settles "where" and who it is on behalf of |
-| [D-107](D-107.md) | S3 | alive | a receipt is a chain entry recorded after `fleet done` sends its message; the latest one tells a release where the work sits |
+| [D-107](D-107.md) | S3 | amended by D-122 | a receipt is a chain entry recorded after `fleet done` sends its message; the latest one tells a release where the work sits |
 | [D-108](D-108.md) | S3 | alive | the reviewer has its own rule, a verdict and a goal handoff are chain entries, and monitor flags are read off the chain in the UI |
 | [D-106](D-106.md) | S2 | amended by D-109 | the startup setting is one key in config.json, read through `{startup_tasks}`; an owner from another lineage reads as an earlier run |
 | [D-109](D-109.md) | S2 | alive | a reopen follows the startup setting: its owners are told to continue, or the operator is asked first |
 | [D-110](D-110.md) | meta | alive | STANDING RULE: nothing starts an agent at launch — an agent acts only after a message someone sent it |
 | [D-111](D-111.md) | S2 | alive | a reopened pane is given this launch's brief again; WP-27's rule R13 is reversed for the brief |
 | [D-112](D-112.md) | meta | alive | the write guardrail does not treat a standard stream device as a write target |
-| [D-113](D-113.md) | S4 | alive | flag, remove, restore and attach are chain entries; `removed` is a fifth status set only by a removal; brief tripwire restated to 20,000 / 10,300 |
+| [D-113](D-113.md) | S4 | amended by D-121 | flag, remove, restore and attach are chain entries; `removed` is a fifth status set only by a removal; brief tripwire restated to 20,000 / 10,300 |
 | [D-114](D-114.md) | S4 | alive | the release and remove forms offer to message the owner to stop; the not-taken-up clock ignores earlier-run owners |
 | [D-115](D-115.md) | meta | alive | a codex worker in a linked worktree gets four git writable roots, never the whole `.git` |
 | [D-116](D-116.md) | meta | alive | every codex pane is seeded with `model_context_window = 872000`, a constant; the operator's own value is kept |
 | [D-117](D-117.md) | meta | alive | with no fleet running the Tasks view shows no tasks; the store is kept and returns with the next fleet on that target |
 | [D-118](D-118.md) | meta | alive | the gate offers one credential: every worker seat runs the operator's login; slice 1 of removing the DeepSeek key path |
+| [D-119](D-119.md) | meta | alive | the UI is all SF Mono except agent prose (overriding the mockup's sans); the sidebar keeps its icons |
+| [D-120](D-120.md) | meta | alive | orch and worker cards also on Home while a fleet is live; orch pinned atop the column; restyled to the mockup |
+| [D-121](D-121.md) | meta | alive | the Tasks screens follow the mockups: Open/Closed/All tabs, a run filter, and a full task page |
+| [D-122](D-122.md) | meta | alive | a receipt carries `tail`, the last lines of its check's output |

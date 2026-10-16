@@ -135,6 +135,11 @@ fn the_list_groups_tasks_under_their_goal_and_each_row_answers_at_a_glance() {
     assert!(stray.contains("#4") && stray.contains("the tokenizer leaks"), "{stray}");
     assert!(!list.contains("task-page"), "no page until a row is opened");
     assert!(!list.contains("read-only"), "a live fleet's store is not read-only");
+
+    let open = markup(&all, "openTab");
+    let open_rows = self::rows(&open);
+    assert_eq!(open_rows.len(), 1, "Open is the default tab, and a goal with no open task has no header:\n{open}");
+    assert!(open_rows[0].contains(">#4<") && open.contains("No goal"), "{open}");
 }
 
 /// The task page shows the current text and the whole chain: who did what,
@@ -146,7 +151,7 @@ fn the_task_page_shows_the_chain_with_edits_and_run_boundaries() {
     let page = page.split("<article class=\"task-page\"").nth(1).expect("an open task page");
 
     assert!(page.contains("clippy is clean"), "the edited criteria are current: {page}");
-    assert!(page.contains("serves goal") && page.contains("one grammar"), "{page}");
+    assert!(page.contains("#1 one grammar"), "the goal it serves: {page}");
     let entries: Vec<&str> = page.split("<li class=\"chain__").skip(1).collect();
     let kinds: Vec<&str> = entries.iter().map(|e| e.split('"').next().unwrap()).collect();
     assert_eq!(
@@ -154,7 +159,7 @@ fn the_task_page_shows_the_chain_with_edits_and_run_boundaries() {
         vec![
             "entry chain__entry--opened",
             "entry chain__entry--taken-up",
-            "entry chain__entry--commented",
+            "entry chain__entry--commented chain__entry--box",
             "entry chain__entry--edited",
             "run",
             "entry chain__entry--status",
@@ -163,9 +168,8 @@ fn the_task_page_shows_the_chain_with_edits_and_run_boundaries() {
     );
     assert!(entries[2].contains("worker-3") && entries[2].contains("the tokenizer leaks a buffer"));
     let edit = entries[3];
-    let (was, now) = edit.split_once(">now<").expect("an edit shows both texts");
-    assert!(was.contains(">was<") && !was.contains("clippy is clean"), "{edit}");
-    assert!(now.contains("clippy is clean"), "{edit}");
+    assert!(edit.contains("added <ins>clippy is clean</ins>") && !edit.contains("<del>"), "an edit shows what changed: {edit}");
+    assert!(entries[4].contains("ended with this open") && entries[4].contains("started"), "{}", entries[4]);
     assert!(entries[5].contains("cargo test passes"), "a status keeps its note: {}", entries[5]);
 }
 
@@ -183,7 +187,11 @@ fn with_no_fleet_the_view_shows_no_tasks() {
 }
 
 fn fields(form: &str) -> Vec<String> {
-    form.split("class=\"composer__label\">").skip(1).map(|f| f.split('<').next().unwrap().to_string()).collect()
+    form.split("class=\"task-form__k\">")
+        .skip(1)
+        .map(|f| f.split('<').next().unwrap().to_string())
+        .filter(|f| !f.is_empty())
+        .collect()
 }
 
 /// The operator's forms carry the fields `fleet task post` and `edit` take.
@@ -192,34 +200,26 @@ fn the_operators_forms_carry_the_same_fields_an_agent_uses() {
     let Some(all) = rendered() else { return };
 
     let goal = markup(&all, "newGoal");
-    let goal = goal.split("<form class=\"task-form\"").nth(1).expect("the new goal form");
     assert!(goal.contains("New goal"));
-    assert_eq!(fields(goal), vec!["outcome", "vision criteria, one per line"], "a goal needs no technical checks");
+    let goal = goal.split("<form class=\"task-form task-form--new\"").nth(1).expect("the new goal form");
+    assert_eq!(fields(goal), vec!["Outcome", "Vision"], "a goal needs no technical checks");
 
     let task = markup(&all, "newTask");
-    let task = task.split("<form class=\"task-form\"").nth(1).expect("the new task form");
-    assert_eq!(
-        fields(task),
-        vec![
-            "outcome",
-            "technical criteria, one per line",
-            "vision criteria, one per line",
-            "instructions (optional)",
-            "goal",
-            "owner",
-            "reviewer",
-        ],
-    );
+    let task = task.split("<form class=\"task-form task-form--new\"").nth(1).expect("the new task form");
+    assert_eq!(fields(task), vec!["Outcome", "Technical checks", "Vision", "Instructions", "Goal", "Owner", "Reviewer"]);
     assert!(task.contains(">No goal<") && task.contains("#1 one grammar"), "a goal is optional: {task}");
     assert!(task.contains(">unowned<") && task.contains(">worker-4<"), "an owner is optional: {task}");
     let tell = task.split("type=\"checkbox\"").nth(1).expect("the message-the-owner choice");
-    assert!(tell.contains("message the owner with this task"));
+    assert!(tell.contains("Message the owner with this task"));
     assert!(tell.split('>').next().unwrap().contains("disabled"), "off until an owner is chosen, and never ticked for you");
 
     let edit = markup(&all, "editing");
-    let edit = edit.split("<form class=\"task-form\"").nth(1).expect("the edit form");
+    let edit = edit.split("<form class=\"task-form task-form--edit\"").nth(1).expect("the edit form");
     assert!(edit.contains("Edit #2") && edit.contains("value=\"nested groups parse\""), "prefilled: {edit}");
-    assert!(edit.contains("cargo test -p parser\nclippy is clean"), "the whole current list, to restate: {edit}");
+    assert!(
+        edit.contains("value=\"cargo test -p parser\"") && edit.contains("value=\"clippy is clean\""),
+        "the whole current list, to restate: {edit}"
+    );
 }
 
 /// A live record offers comment, edit and close; a closed one offers reopen.
@@ -228,35 +228,51 @@ fn a_live_record_offers_comment_edit_close_and_reopen() {
     let Some(all) = rendered() else { return };
     let controls = |key: &str| {
         let page = markup(&all, key);
-        page.split("<div class=\"task-controls\">").nth(1).expect("the controls").to_string()
+        page.split("<article class=\"task-page\"").nth(1).expect("the task page").to_string()
     };
     let done = controls("page");
-    for label in ["Edit", "Close", "Reopen", "Comment"] {
+    for label in ["Edit", "Close as dropped", "Reopen", "Comment"] {
         assert!(done.contains(&format!(">{label}<")), "a done task offers {label}: {done}");
     }
     assert!(!done.contains("start a fleet"), "nothing is off while a fleet runs: {done}");
     let dropped = controls("dropped");
-    assert!(dropped.contains(">Reopen<") && !dropped.contains(">Close<"), "{dropped}");
+    assert!(dropped.contains(">Reopen<") && !dropped.contains(">Close as dropped<"), "{dropped}");
 }
 
-/// The list narrows to one status; a goal stays while one of its tasks matches.
+/// The list's tabs count tasks: Open, Closed, All, and Removed only when there
+/// is one. A goal stays while one of its tasks is in the tab (D-121).
 #[test]
-fn the_list_filters_by_status_and_keeps_the_goal_of_a_matching_task() {
+fn the_list_tabs_count_tasks_and_keep_the_goal_of_a_matching_task() {
     let Some(all) = rendered() else { return };
     let list = markup(&all, "list");
-    for label in ["All", "Planned", "In progress", "Done", "Removed"] {
-        assert!(list.contains(&format!(">{label}</button>")), "the {label} filter is offered");
+    for label in ["Open 1", "Closed 2", "All 3"] {
+        assert!(list.contains(&format!(">{label}</button>")), "the {label} tab is offered: {list}");
     }
+    assert!(!list.contains(">Removed "), "no Removed tab while nothing is removed");
+    assert!(markup(&all, "removed").contains(">Removed 1</button>"), "a removed task stays reachable");
 
-    let done = markup(&all, "done");
-    let rows = rows(&done);
-    assert_eq!(rows.len(), 2, "the goal and its one done task:\n{done}");
+    let closed = markup(&all, "closed");
+    let rows = rows(&closed);
+    assert_eq!(rows.len(), 3, "the goal and its done and dropped tasks:\n{closed}");
     assert!(rows[0].contains("task-row--goal") && rows[0].contains("1 done · 1 dropped"), "the goal still counts every task: {}", rows[0]);
-    assert!(rows[1].contains("#2"), "{}", rows[1]);
-    assert!(!done.contains("No goal"), "a group with no match is hidden");
+    assert!(rows[1].contains("#2") && rows[2].contains("#3"), "{closed}");
+    assert!(!closed.contains("No goal"), "a group with no match is hidden");
 
-    let none = markup(&all, "inProgress");
-    assert!(self::rows(&none).is_empty() && none.contains("No in-progress tasks."), "{none}");
+    let none = markup(&all, "noMatch");
+    assert!(self::rows(&none).is_empty() && none.contains("No matching tasks."), "{none}");
+}
+
+/// "this run" keeps the tasks with an entry from the live run; with no live
+/// run the choice is not offered.
+#[test]
+fn the_run_filter_keeps_tasks_touched_in_this_run() {
+    let Some(all) = rendered() else { return };
+    let this = markup(&all, "thisRun");
+    let rows = rows(&this);
+    assert_eq!(rows.len(), 2, "the goal and #2, the one task with a run-2 entry:\n{this}");
+    assert!(rows[0].contains("task-row--goal") && rows[1].contains(">#2<"), "{this}");
+    assert!(markup(&all, "list").contains("filter tasks by run"));
+    assert!(!markup(&all, "noRun").contains("filter tasks by run"), "no live run, no run filter");
 }
 
 /// Task entries sit in the Activity feed where they arrived among the run-log
@@ -286,10 +302,10 @@ fn a_release_shows_its_four_fields_and_returns_the_task_to_planned() {
     let Some(all) = rendered() else { return };
     let page = markup(&all, "released");
     let page = page.split("<article class=\"task-page\"").nth(1).expect("an open task page");
-    let head = page.split("</header>").next().unwrap();
-    assert!(head.contains("task__status--planned") && head.contains("unowned"), "{head}");
+    let facts = page.split("<aside class=\"task-facts\">").nth(1).expect("the facts column");
+    assert!(facts.contains("task__status--planned") && facts.contains("unowned"), "{facts}");
 
-    let releases: Vec<&str> = page.split("<li class=\"chain__entry chain__entry--released\"").skip(1).collect();
+    let releases: Vec<&str> = page.split("<li class=\"chain__entry chain__entry--released").skip(1).collect();
     assert_eq!(releases.len(), 2, "{page}");
     for label in ["why", "done", "left", "where"] {
         assert!(releases[0].contains(&format!("<dt>{label}</dt>")), "{label}: {}", releases[0]);
@@ -307,18 +323,20 @@ fn a_release_shows_its_four_fields_and_returns_the_task_to_planned() {
 #[test]
 fn an_earlier_runs_owner_is_named_counted_and_can_be_released_for() {
     let Some(all) = rendered() else { return };
-    let view = markup(&all, "releasing");
-    let rows = rows(&view);
+    let list = markup(&all, "releasingList");
+    let rows = rows(&list);
     let held = rows.iter().find(|row| row.contains("#6")).expect("task #6");
-    assert!(held.contains("worker-4, earlier run"), "{held}");
-    assert!(view.contains("<strong>Carried over</strong> 1 open task owned by an"), "{view}");
+    assert!(held.contains("task-carried") && held.contains("from run "), "{held}");
+    assert!(held.contains(">worker-4<"), "the owner slot names the owner: {held}");
+    assert!(list.contains("<strong>Carried over</strong> 1 open task owned by an"), "{list}");
+    let view = markup(&all, "releasing");
     assert!(!markup(&all, "list").contains("Carried over"), "nothing open is carried in the first board");
 
     let form = view.split("task-form--release").nth(1).expect("the release form");
     let form = form.split("</form>").next().unwrap();
     assert_eq!(
         fields(form),
-        ["why it is being released", "done so far", "left to do", "where the work sits: branch @ commit"],
+        ["Why", "Done", "Left", "Where"],
     );
     let submit = form.split("<button type=\"submit\"").nth(1).unwrap().split('>').next().unwrap();
     assert!(submit.contains("disabled") && submit.contains("all four fields are required"), "{submit}");
@@ -334,9 +352,10 @@ fn an_earlier_runs_owner_is_named_counted_and_can_be_released_for() {
 fn a_receipt_shows_the_check_its_exit_and_where_it_ran() {
     let Some(all) = rendered() else { return };
     let page = markup(&all, "released");
-    let receipt = page.split("<li class=\"chain__entry chain__entry--receipt\"").nth(1).expect("a receipt entry");
+    let receipt = page.split("<li class=\"chain__entry chain__entry--receipt").nth(1).expect("a receipt entry");
     let receipt = receipt.split("</li>").next().unwrap();
-    assert!(receipt.contains("ran a check · exit 101"), "{receipt}");
+    assert!(receipt.contains("sent a receipt") && receipt.contains("task-exit--bad\">exit 101<"), "{receipt}");
+    assert!(!receipt.contains("chain__out"), "an old receipt has no output: {receipt}");
     assert!(receipt.contains("cargo test -p parser"), "{receipt}");
     assert!(receipt.contains("fleet/logstat/worker-1 @ d4e5f6a") && receipt.contains("+ uncommitted changes"), "{receipt}");
     assert!(receipt.contains("was not delivered to orch"), "{receipt}");
@@ -344,6 +363,11 @@ fn a_receipt_shows_the_check_its_exit_and_where_it_ran() {
 
     let feed = markup(&all, "released_activity");
     assert!(feed.contains("ran `cargo test -p parser` for #5 · exit 101"), "{feed}");
+
+    let tailed = markup(&all, "verdict");
+    let out = tailed.split("<pre class=\"chain__out\">").nth(1).expect("the output tail").split("</pre>").next().unwrap();
+    assert_eq!(out, "$ cargo test -p parser\nrunning 12 tests\ntest result: ok. 12 passed; 0 failed", "{out}");
+    assert!(tailed.contains("task-exit--ok\">exit 0<"), "{tailed}");
 }
 
 fn row<'a>(rows: &'a [String], number: &str) -> &'a str {
@@ -365,7 +389,7 @@ fn monitor_flags_show_what_the_chain_is_missing() {
     let reviewed = row(&rows, "2");
     assert!(reviewed.contains("done, no verdict from worker-3"), "an unrequested verdict is not the reviewer's: {reviewed}");
     assert!(!reviewed.contains("done, no receipt"), "it has a receipt since its take-up: {reviewed}");
-    assert!(reviewed.contains("receipt exit 0") && reviewed.contains("reviewed (unrequested): met"), "{reviewed}");
+    assert!(reviewed.contains("task-row__receipt\">exit 0<") && reviewed.contains("reviewed (unrequested): met"), "{reviewed}");
 
     assert!(row(&rows, "4").contains("done, no receipt"), "{}", row(&rows, "4"));
     assert!(!row(&rows, "5").contains("task-flag"), "an in-progress task has nothing missing: {}", row(&rows, "5"));
@@ -377,7 +401,7 @@ fn monitor_flags_show_what_the_chain_is_missing() {
     let early = row(&early_rows, "3");
     assert!(early.contains("assigned 4m ago, not taken up") && !early.contains("is-late"), "{early}");
 
-    let answered = markup(&all, "verdict");
+    let answered = markup(&all, "answeredList");
     let answered_rows = rows_of(&answered);
     assert!(!row(&answered_rows, "2").contains("no verdict"), "the reviewer answered after the done");
 }
@@ -393,8 +417,8 @@ fn the_page_shows_the_reviewer_the_evidence_verdicts_and_the_handoff() {
     let Some(all) = rendered() else { return };
     let page = markup(&all, "verdict");
     let page = page.split("<article class=\"task-page\"").nth(1).expect("an open task page");
-    let head = page.split("</header>").next().unwrap();
-    assert!(head.contains("reviewer <span class=\"mono\">worker-3</span>"), "{head}");
+    let facts = page.split("<aside class=\"task-facts\">").nth(1).expect("the facts column");
+    assert!(facts.contains("<span class=\"mono\">worker-3</span>, named by"), "{facts}");
     assert!(page.contains(">evidence<") && page.contains("cargo test -p parser — exit 0 @ a1b2c3d"), "{page}");
     assert!(!page.contains("✓"), "evidence, never a tick");
 
@@ -408,40 +432,57 @@ fn the_page_shows_the_reviewer_the_evidence_verdicts_and_the_handoff() {
     assert!(control.contains(">worker-3<") && !control.contains(">worker-2<"), "{control}");
 
     let goal = markup(&all, "handoff");
-    let handoff = goal.split("chain__entry--handoff\"").nth(1).expect("a handoff entry").split("</li>").next().unwrap();
+    let handoff = goal.split("chain__entry--handoff").nth(1).expect("a handoff entry").split("</li>").next().unwrap();
     assert!(handoff.contains("handed off this goal") && handoff.contains("the parser accepts nested groups"), "{handoff}");
     assert!(handoff.contains("tasks still open") && handoff.contains("#3 #5"), "{handoff}");
     assert!(goal.contains("task__status--done"), "the handoff closed the goal");
 
     let form = markup(&all, "reviewerForm");
-    assert!(fields(&form).contains(&"reviewer".to_string()), "{:?}", fields(&form));
+    assert!(fields(&form).contains(&"Reviewer".to_string()), "{:?}", fields(&form));
+}
+
+fn card_in(cards: &str, pane: &str) -> String {
+    cards
+        .split("<button class=\"mc-card")
+        .skip(1)
+        .find(|card| card.contains(&format!("data-pane=\"{pane}\"")))
+        .unwrap_or_else(|| panic!("no card for {pane}"))
+        .to_string()
 }
 
 /// A worker's card shows the task it holds, for how long, its latest entry,
-/// and the flags on the tasks it owns.
+/// and the flags on the tasks it owns. With nothing held it shows the task it
+/// finished last; a flag on that task drops the number shown above it (D-120).
 #[test]
 fn a_worker_card_shows_its_task_how_long_it_has_held_it_and_its_flags() {
     let Some(all) = rendered() else { return };
     let cards = markup(&all, "cards");
-    let card = |pane: &str| {
-        cards
-            .split("<button class=\"mc-card")
-            .skip(1)
-            .find(|card| card.contains(&format!("data-pane=\"{pane}\"")))
-            .unwrap_or_else(|| panic!("no card for {pane}"))
-            .to_string()
-    };
+    let card = |pane: &str| card_in(&cards, pane);
     let one = card("worker-1");
     assert!(one.contains("#5") && one.contains("errors carry a span"), "its current task: {one}");
-    assert!(one.contains("held 3m"), "{one}");
+    assert!(one.contains("in-progress 3 min"), "{one}");
     assert!(one.contains("named worker-2 reviewer"), "the task's latest entry: {one}");
     assert!(one.contains("#3 assigned, never taken up"), "{one}");
 
     let two = card("worker-2");
-    assert!(two.contains("#2 done, no verdict from worker-3"), "{two}");
-    assert!(!two.contains("mc-card__task"), "a done task is not held: {two}");
-    assert!(card("worker-4").contains("#4 done, no receipt"));
+    assert!(two.contains(">#2<") && two.contains("mc-card__state--done"), "its latest task, done: {two}");
+    assert!(!two.contains("in-progress"), "a done task is not held: {two}");
+    assert!(two.contains(">done, no verdict from worker-3<"), "{two}");
+    let four = card("worker-4");
+    assert!(four.contains(">done, no receipt<") && four.contains("marked done"), "{four}");
     assert!(!card("worker-3").contains("task-flag"), "the reviewer's card carries no flag: {}", card("worker-3"));
+    assert!(card("worker-3").contains("No task claimed"), "{}", card("worker-3"));
+}
+
+/// Home's grid is orch and the four workers, the same card as beside the terminals.
+#[test]
+fn home_shows_orch_and_the_four_worker_cards() {
+    let Some(all) = rendered() else { return };
+    let home = markup(&all, "homeCards");
+    assert_eq!(home.matches("<button class=\"mc-card").count(), 5, "{home}");
+    assert!(card_in(&home, "orch").contains("mc-card--orch"), "{home}");
+    assert!(card_in(&home, "worker-1").contains("in-progress 3 min"), "{home}");
+    assert!(card_in(&home, "worker-2").contains(">done, no verdict from worker-3<"), "{home}");
 }
 
 /// A worker's task sits under "No goal" until it is attached, and a row counts
@@ -450,7 +491,8 @@ fn a_worker_card_shows_its_task_how_long_it_has_held_it_and_its_flags() {
 fn a_flagged_task_counts_its_flaggers_and_an_attached_one_joins_its_goal() {
     let Some(all) = rendered() else { return };
     let page = markup(&all, "flagged");
-    let list = page.split("<article").next().unwrap();
+    let curated = markup(&all, "curatedList");
+    let list = curated.as_str();
     let stray = list.split("No goal").nth(1).expect("a No goal group");
     assert!(stray.contains(">#2<") && !stray.contains(">#3<"), "the attached task left the group: {stray}");
     assert!(row(&rows(list), "2").contains("flagged by 2"), "three flags, two panes: {list}");
@@ -467,8 +509,8 @@ fn a_flagged_task_counts_its_flaggers_and_an_attached_one_joins_its_goal() {
     assert!(!controls.contains(">Restore<"), "{controls}");
 
     let attached = markup(&all, "attached");
-    assert!(attached.contains("put it under #1") && attached.contains("serves goal"), "{attached}");
-    let goal = attached.split("<span class=\"composer__label\">goal</span>").nth(1).expect("the goal control");
+    assert!(attached.contains("put it under #1") && attached.contains("#1 one grammar"), "{attached}");
+    let goal = attached.split("<span class=\"task-fact__k\">goal</span>").nth(1).expect("the goal control");
     assert!(goal.contains("<option value=\"1\" selected=\"\">#1 one grammar"), "{goal}");
 
     let unowned = markup(&all, "unowned");
@@ -501,22 +543,22 @@ fn a_removed_task_is_hidden_until_asked_for_and_can_be_restored() {
     assert!(!removed.contains(">#2<") && !removed.contains("No goal"), "hidden by default:\n{removed}");
 
     let only = markup(&all, "removedOnly");
-    let list = only.split("<article").next().unwrap();
-    let rows = rows(list);
-    assert_eq!(rows.len(), 1, "only the removed task:\n{list}");
+    let removed_list = markup(&all, "removedList");
+    let rows = rows(&removed_list);
+    assert_eq!(rows.len(), 1, "only the removed task:\n{removed_list}");
     assert!(rows[0].contains("task__status--removed") && rows[0].contains("flagged by 2"), "{}", rows[0]);
     let chain = only.split("<ol class=\"chain\">").nth(1).expect("the chain");
     assert!(chain.contains("removed it") && chain.contains("it deletes what the suite reads"), "{chain}");
     assert!(chain.contains("opened this") && chain.contains("took this up"), "the chain is kept: {chain}");
-    let controls = only.split("<div class=\"task-controls\">").nth(1).expect("the controls");
+    let controls = only.split("<article class=\"task-page\"").nth(1).expect("the task page");
     assert!(controls.contains(">Restore<"), "{controls}");
-    for label in ["Edit", "Remove", "Close", "Release"] {
+    for label in ["Edit", "Remove", "Close as dropped", "Release"] {
         assert!(!controls.contains(&format!(">{label}<")), "a removed task offers no {label}: {controls}");
     }
 
     let restored = markup(&all, "restored");
-    let list = restored.split("<article").next().unwrap();
-    let back = row(&self::rows(list), "2").to_string();
+    let restored_list = markup(&all, "restoredList");
+    let back = row(&self::rows(&restored_list), "2").to_string();
     assert!(back.contains("task__status--in-progress") && back.contains("worker-2"), "{back}");
     assert!(restored.contains("restored it") && restored.contains("it was a rename"), "{restored}");
 
@@ -548,6 +590,6 @@ fn release_and_remove_offer_to_tell_a_live_owner_to_stop() {
 fn an_earlier_runs_assignment_is_not_waited_on() {
     let Some(all) = rendered() else { return };
     let stale = markup(&all, "stale");
-    assert!(stale.contains("worker-1, earlier run"), "{stale}");
+    assert!(stale.contains("task-carried") && stale.contains("from run "), "{stale}");
     assert!(!stale.contains("not taken up") && !stale.contains("never taken up"), "{stale}");
 }

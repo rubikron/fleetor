@@ -195,6 +195,7 @@ export function App() {
     <div className="app">
       <TopBar
         config={fleet.config}
+        runStartedMs={started ? runs.runs.find((r) => r.state === "running")?.started_ms : undefined}
         error={fleet.error}
         zoom={zoom.zoom}
       />
@@ -240,6 +241,20 @@ export function App() {
                 onOpen={(id) => void launch({ kind: "reopen", id })}
                 onShowFleet={() => setView("fleet")}
                 onTargetChanged={fleet.refreshConfig}
+                fleet={
+                  started
+                    ? {
+                        statuses,
+                        panes: fleet.panes,
+                        gauges,
+                        chain: fleet.chain,
+                        taskStore: fleet.taskStore,
+                        selected: selectedPane,
+                        unreadPanes,
+                        onOpen: jumpToPane,
+                      }
+                    : null
+                }
               />
             </div>
 

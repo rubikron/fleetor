@@ -84,7 +84,7 @@ export function PaneHead({
       )}
       <PaneGauge reading={gauge} block="pane__gauge" className="mono pane__meta" />
       <span className="grow" style={{ flex: "1 1 auto" }} />
-      <span className="pane__status">{STATUS_LABEL[status]}</span>
+      <span className={`pane__status pane__status--${statusTone(status)}`}>{STATUS_LABEL[status]}</span>
       {started && onRestart && (
         <button className="pane__ctl" onClick={onRestart}>
           Restart

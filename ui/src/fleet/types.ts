@@ -280,6 +280,8 @@ export type ChainEntry =
       commit?: string | null;
       uncommitted?: boolean;
       accepted: boolean;
+      /// The last lines of the check's output; absent on older receipts.
+      tail?: string | null;
     }
   | { entry: "reviewer-set"; old?: PaneId | null; new: PaneId }
   | { entry: "reviewed"; met: boolean; reason?: string | null; requested: boolean }

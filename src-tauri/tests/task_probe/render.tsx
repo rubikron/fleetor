@@ -6,7 +6,7 @@
 
 import { renderToStaticMarkup } from "react-dom/server";
 import { EventFeed } from "../../../ui/src/components/EventFeed";
-import { MissionControl } from "../../../ui/src/components/MissionControl";
+import { HomeCards, MissionControl } from "../../../ui/src/components/MissionControl";
 import { TaskBoard, type TaskOps } from "../../../ui/src/components/TaskBoard";
 import type { ChainEntry, ChainEvent, FleetEvent, PaneId, TaskBlock } from "../../../ui/src/fleet/types";
 import type { TaskStoreInfo } from "../../../ui/src/fleet/useFleet";
@@ -99,6 +99,7 @@ const REVIEWED: ChainEvent[] = [
     branch: "fleet/logstat/worker-2",
     commit: "a1b2c3d",
     accepted: true,
+    tail: "running 12 tests\ntest result: ok. 12 passed; 0 failed\n",
   }),
   now2(2, "worker-2", { entry: "status", status: "done" }),
   now2(2, "worker-4", { entry: "reviewed", met: true, requested: false }),
@@ -150,7 +151,13 @@ const notice = (seq: number, text: string): FleetEvent => ({ seq, type: "notice"
 
 process.stdout.write(
   JSON.stringify({
-    list: renderToStaticMarkup(<TaskBoard chain={CHAIN} store={LIVE} ops={OPS} />),
+    list: renderToStaticMarkup(<TaskBoard chain={CHAIN} store={LIVE} ops={OPS} initialFilter="all" />),
+    // The default tab is Open.
+    openTab: renderToStaticMarkup(<TaskBoard chain={CHAIN} store={LIVE} ops={OPS} />),
+    thisRun: renderToStaticMarkup(
+      <TaskBoard chain={CHAIN} store={LIVE} ops={OPS} initialFilter="all" initialRun="this" />,
+    ),
+    noRun: renderToStaticMarkup(<TaskBoard chain={CHAIN} store={{ ...LIVE, run: null }} ops={OPS} />),
     page: renderToStaticMarkup(<TaskBoard chain={CHAIN} store={LIVE} ops={OPS} initialOpen={2} />),
     readonly: renderToStaticMarkup(<TaskBoard chain={CHAIN} store={GATE} ops={OPS} initialOpen={2} />),
     newGoal: renderToStaticMarkup(<TaskBoard chain={CHAIN} store={LIVE} ops={OPS} initialForm="goal" />),
@@ -158,10 +165,8 @@ process.stdout.write(
     editing: renderToStaticMarkup(
       <TaskBoard chain={CHAIN} store={LIVE} ops={OPS} initialOpen={2} initialEdit />,
     ),
-    done: renderToStaticMarkup(<TaskBoard chain={CHAIN} store={LIVE} ops={OPS} initialFilter="done" />),
-    inProgress: renderToStaticMarkup(
-      <TaskBoard chain={CHAIN} store={LIVE} ops={OPS} initialFilter="in-progress" />,
-    ),
+    closed: renderToStaticMarkup(<TaskBoard chain={CHAIN} store={LIVE} ops={OPS} initialFilter="closed" />),
+    noMatch: renderToStaticMarkup(<TaskBoard chain={CHAIN} store={LIVE} ops={OPS} initialOwner="worker-1" />),
     // Newest first: the take-up arrived after run-log seq 1, the done after seq 2.
     activity: renderToStaticMarkup(
       <EventFeed
@@ -182,9 +187,15 @@ process.stdout.write(
     released_activity: renderToStaticMarkup(
       <EventFeed feed={[notice(1, "first")]} tasks={[{ event: HANDED_ON[13], after: 1 }, { event: HANDED_ON[14], after: 1 }]} />,
     ),
-    monitor: renderToStaticMarkup(<TaskBoard chain={REVIEWED} store={LIVE} ops={OPS} now={LATER} />),
+    releasingList: renderToStaticMarkup(<TaskBoard chain={HANDED_ON} store={LIVE} ops={OPS} />),
+    monitor: renderToStaticMarkup(
+      <TaskBoard chain={REVIEWED} store={LIVE} ops={OPS} now={LATER} initialFilter="all" />,
+    ),
     early: renderToStaticMarkup(
-      <TaskBoard chain={REVIEWED} store={LIVE} ops={OPS} now={ASSIGNED.at + 4 * 60_000} />,
+      <TaskBoard chain={REVIEWED} store={LIVE} ops={OPS} now={ASSIGNED.at + 4 * 60_000} initialFilter="all" />,
+    ),
+    answeredList: renderToStaticMarkup(
+      <TaskBoard chain={ANSWERED} store={LIVE} ops={OPS} now={LATER} initialFilter="all" />,
     ),
     verdict: renderToStaticMarkup(
       <TaskBoard chain={ANSWERED} store={LIVE} ops={OPS} now={LATER} initialOpen={2} />,
@@ -209,7 +220,21 @@ process.stdout.write(
         now={LATER}
       />,
     ),
+    homeCards: renderToStaticMarkup(
+      <HomeCards
+        statuses={{}}
+        panes={{}}
+        gauges={{}}
+        chain={REVIEWED}
+        taskStore={LIVE}
+        selected="orch"
+        unreadPanes={new Set()}
+        onOpen={() => {}}
+        now={LATER}
+      />,
+    ),
     flagged: renderToStaticMarkup(<TaskBoard chain={CURATED} store={LIVE} ops={OPS} initialOpen={2} />),
+    curatedList: renderToStaticMarkup(<TaskBoard chain={CURATED} store={LIVE} ops={OPS} />),
     attached: renderToStaticMarkup(<TaskBoard chain={CURATED} store={LIVE} ops={OPS} initialOpen={3} />),
     unowned: renderToStaticMarkup(<TaskBoard chain={CURATED} store={LIVE} ops={OPS} initialOwner="unowned" />),
     flagging: renderToStaticMarkup(
@@ -219,10 +244,14 @@ process.stdout.write(
       <TaskBoard chain={CURATED} store={LIVE} ops={OPS} initialOpen={2} initialMode="remove" />,
     ),
     removed: renderToStaticMarkup(<TaskBoard chain={REMOVED} store={LIVE} ops={OPS} />),
+    removedList: renderToStaticMarkup(
+      <TaskBoard chain={REMOVED} store={LIVE} ops={OPS} initialFilter="removed" />,
+    ),
     removedOnly: renderToStaticMarkup(
       <TaskBoard chain={REMOVED} store={LIVE} ops={OPS} initialFilter="removed" initialOpen={2} />,
     ),
     restored: renderToStaticMarkup(<TaskBoard chain={RESTORED} store={LIVE} ops={OPS} initialOpen={2} />),
+    restoredList: renderToStaticMarkup(<TaskBoard chain={RESTORED} store={LIVE} ops={OPS} />),
     curated_activity: renderToStaticMarkup(
       <EventFeed feed={[notice(1, "first")]} tasks={RESTORED.slice(4).map((event) => ({ event, after: 1 }))} />,
     ),

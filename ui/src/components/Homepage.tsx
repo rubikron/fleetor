@@ -10,6 +10,7 @@ import {
 import type { RunsView } from "../fleet/useRuns";
 import { useSeatPickers } from "../ui/useSeatPickers";
 import { SeatRow } from "./StartGate";
+import { HomeCards, type HomeCardsProps } from "./MissionControl";
 
 const DEBOUNCE_MS = 600;
 
@@ -23,6 +24,8 @@ interface HomepageProps {
   onOpen: (id: string) => void;
   onShowFleet: () => void;
   onTargetChanged: () => void;
+  /// The live fleet's worker cards; null with no fleet running.
+  fleet?: HomeCardsProps | null;
 }
 
 export function Homepage({
@@ -33,6 +36,7 @@ export function Homepage({
   onOpen,
   onShowFleet,
   onTargetChanged,
+  fleet,
 }: HomepageProps) {
   // The gate's own config: the next fleet's target, not the running fleet's.
   const [config, setConfig] = useState<FleetConfig | null>(null);
@@ -113,147 +117,150 @@ export function Homepage({
       : "unavailable";
 
   return (
-    <div className="homepage">
-      <div className="homepage__sessions">
-        <h3 className="homepage__heading">Recent sessions</h3>
-        {runs.runs.length === 0 ? (
-          <p className="homepage__empty">No past sessions yet.</p>
-        ) : (
-          <ul className="homepage__run-list">
-            {runs.runs.slice(0, 10).map((run) => {
-              const body = (
-                <>
-                  <span className="homepage__run-label">{run.label || run.id.slice(0, 8)}</span>
-                  <span className="homepage__run-meta mono">
-                    {run.state === "running"
-                      ? "Running now"
-                      : run.state === "archiving"
-                        ? "Archiving…"
-                        : run.cannot_reopen
-                      ? `can’t reopen — ${run.cannot_reopen}`
-                      : `${run.messages} msgs · ${run.events} events${run.target ? ` · ${run.target}` : ""}`}
-                  </span>
-                </>
-              );
-              return (
-                <li key={run.id}>
-                  {run.state === "running" ? (
-                    <button className="homepage__run" onClick={onShowFleet} title="Go to the running fleet">
-                      {body}
-                    </button>
-                  ) : run.state === "archiving" || run.cannot_reopen ? (
-                    <div className="homepage__run homepage__run--closed">{body}</div>
-                  ) : (
-                    <button
-                      className="homepage__run"
-                      onClick={() => onOpen(run.id)}
-                      disabled={launching}
-                      title="Open this session — the fleet you have now is archived first"
-                    >
-                      {body}
-                    </button>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        )}
-        {runs.error && <p className="homepage__error">{runs.error}</p>}
-      </div>
-      <div className="homepage__launch">
-        <span className="brand" style={{ fontSize: "1.5rem" }}>FLEETOR</span>
-        {config && (
-          <span className="homepage__branch mono">{config.branch}</span>
-        )}
-        <div className="homepage__target">
-          <input
-            className="homepage__target-input mono"
-            type="text"
-            value={shown}
-            spellCheck={false}
-            autoCorrect="off"
-            autoCapitalize="off"
-            placeholder="/path/to/repo"
-            aria-label="Target folder"
-            disabled={saving}
-            onChange={(e) => onInput(e.target.value)}
-          />
-          <button
-            className="homepage__target-pick"
-            onClick={() => void choose()}
-            disabled={picking || saving}
-          >
-            {picking ? "…" : "Choose folder…"}
-          </button>
+    <div className="home">
+      {fleet && <HomeCards {...fleet} />}
+      <div className="homepage">
+        <div className="homepage__sessions">
+          <h3 className="homepage__heading">Recent sessions</h3>
+          {runs.runs.length === 0 ? (
+            <p className="homepage__empty">No past sessions yet.</p>
+          ) : (
+            <ul className="homepage__run-list">
+              {runs.runs.slice(0, 10).map((run) => {
+                const body = (
+                  <>
+                    <span className="homepage__run-label">{run.label || run.id.slice(0, 8)}</span>
+                    <span className="homepage__run-meta mono">
+                      {run.state === "running"
+                        ? "Running now"
+                        : run.state === "archiving"
+                          ? "Archiving…"
+                          : run.cannot_reopen
+                        ? `can’t reopen — ${run.cannot_reopen}`
+                        : `${run.messages} msgs · ${run.events} events${run.target ? ` · ${run.target}` : ""}`}
+                    </span>
+                  </>
+                );
+                return (
+                  <li key={run.id}>
+                    {run.state === "running" ? (
+                      <button className="homepage__run" onClick={onShowFleet} title="Go to the running fleet">
+                        {body}
+                      </button>
+                    ) : run.state === "archiving" || run.cannot_reopen ? (
+                      <div className="homepage__run homepage__run--closed">{body}</div>
+                    ) : (
+                      <button
+                        className="homepage__run"
+                        onClick={() => onOpen(run.id)}
+                        disabled={launching}
+                        title="Open this session — the fleet you have now is archived first"
+                      >
+                        {body}
+                      </button>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          {runs.error && <p className="homepage__error">{runs.error}</p>}
         </div>
-        {pickError && <p className="homepage__error">{pickError}</p>}
-
-        <button
-          className="homepage__config-toggle"
-          onClick={() => setConfigExpanded(!configExpanded)}
-          aria-expanded={configExpanded}
-        >
-          {configExpanded ? "▾" : "▸"} {configSummary}
-        </button>
-
-        {configExpanded && gate && (
-          <ul className="homepage__config pane-gate__facts">
-            <SeatRow
-              label="orchestrator"
-              gate={gate}
-              seat={gate.seats.orch}
-              sentinel={DEFAULT_YOUR_LOGIN}
-              onHarness={(h) => pickers.chooseHarness(ORCH, h)}
-              onModel={(m) => pickers.chooseModel(ORCH, m)}
+        <div className="homepage__launch">
+          <span className="brand" style={{ fontSize: "1.5rem" }}>FLEETOR</span>
+          {config && (
+            <span className="homepage__branch mono">{config.branch}</span>
+          )}
+          <div className="homepage__target">
+            <input
+              className="homepage__target-input mono"
+              type="text"
+              value={shown}
+              spellCheck={false}
+              autoCorrect="off"
+              autoCapitalize="off"
+              placeholder="/path/to/repo"
+              aria-label="Target folder"
+              disabled={saving}
+              onChange={(e) => onInput(e.target.value)}
             />
-            {WORKER_SLOTS.map((slot) => {
-              const seat = workers[slot - 1];
-              if (!seat) return null;
-              return (
-                <SeatRow
-                  key={slot}
-                  label={`worker ${slot}`}
-                  gate={gate}
-                  seat={seat}
-                  sentinel={DEFAULT_YOUR_LOGIN}
-                  onHarness={(h) => pickers.chooseHarness(workerPane(slot), h)}
-                  onModel={(m) => pickers.chooseModel(workerPane(slot), m)}
-                  showFacts={workers[slot - 2]?.harness !== seat.harness}
-                />
-              );
-            })}
-            <li className="pane-gate__fact">
-              <span className="k">harness</span>
-              <span className="v">change in Settings</span>
-            </li>
-          </ul>
-        )}
+            <button
+              className="homepage__target-pick"
+              onClick={() => void choose()}
+              disabled={picking || saving}
+            >
+              {picking ? "…" : "Choose folder…"}
+            </button>
+          </div>
+          {pickError && <p className="homepage__error">{pickError}</p>}
 
-        {pickers.error && <p className="homepage__error">{pickers.error}</p>}
-
-        {(gate?.verdict.refusals ?? []).map((r) => (
-          <p key={r.seat} className="homepage__error">
-            {r.seat}: {r.reason}
-          </p>
-        ))}
-
-        {launchError && <p className="homepage__error">{launchError}</p>}
-
-        <div className="homepage__actions">
           <button
-            className="homepage__start"
-            onClick={onStart}
-            disabled={refusals.length > 0 || launching}
+            className="homepage__config-toggle"
+            onClick={() => setConfigExpanded(!configExpanded)}
+            aria-expanded={configExpanded}
           >
-            New fleet
+            {configExpanded ? "▾" : "▸"} {configSummary}
           </button>
-          <button
-            className="homepage__recheck"
-            onClick={pickers.recheck}
-            disabled={pickers.rechecking || pickers.loading}
-          >
-            {pickers.rechecking ? "Re-checking…" : "Re-check logins"}
-          </button>
+
+          {configExpanded && gate && (
+            <ul className="homepage__config pane-gate__facts">
+              <SeatRow
+                label="orchestrator"
+                gate={gate}
+                seat={gate.seats.orch}
+                sentinel={DEFAULT_YOUR_LOGIN}
+                onHarness={(h) => pickers.chooseHarness(ORCH, h)}
+                onModel={(m) => pickers.chooseModel(ORCH, m)}
+              />
+              {WORKER_SLOTS.map((slot) => {
+                const seat = workers[slot - 1];
+                if (!seat) return null;
+                return (
+                  <SeatRow
+                    key={slot}
+                    label={`worker ${slot}`}
+                    gate={gate}
+                    seat={seat}
+                    sentinel={DEFAULT_YOUR_LOGIN}
+                    onHarness={(h) => pickers.chooseHarness(workerPane(slot), h)}
+                    onModel={(m) => pickers.chooseModel(workerPane(slot), m)}
+                    showFacts={workers[slot - 2]?.harness !== seat.harness}
+                  />
+                );
+              })}
+              <li className="pane-gate__fact">
+                <span className="k">harness</span>
+                <span className="v">change in Settings</span>
+              </li>
+            </ul>
+          )}
+
+          {pickers.error && <p className="homepage__error">{pickers.error}</p>}
+
+          {(gate?.verdict.refusals ?? []).map((r) => (
+            <p key={r.seat} className="homepage__error">
+              {r.seat}: {r.reason}
+            </p>
+          ))}
+
+          {launchError && <p className="homepage__error">{launchError}</p>}
+
+          <div className="homepage__actions">
+            <button
+              className="homepage__start"
+              onClick={onStart}
+              disabled={refusals.length > 0 || launching}
+            >
+              New fleet
+            </button>
+            <button
+              className="homepage__recheck"
+              onClick={pickers.recheck}
+              disabled={pickers.rechecking || pickers.loading}
+            >
+              {pickers.rechecking ? "Re-checking…" : "Re-check logins"}
+            </button>
+          </div>
         </div>
       </div>
     </div>
