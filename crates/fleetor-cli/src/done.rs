@@ -34,6 +34,10 @@ use std::process::Command;
 /// more can run the command themselves — the receipt says exactly which one.
 pub const TAIL_CAP: usize = 2048;
 
+/// The receipt chain entry's `tail`: at most this many lines and bytes (D-122).
+pub const TAIL_LINES: usize = 20;
+pub const TAIL_BYTES: usize = 4096;
+
 /// What a check did. Facts only — there is no `passed` field on purpose, because
 /// a bool would be this file forming an opinion about somebody's criteria.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +54,8 @@ pub struct Check {
     /// rather than silently truncated — a tail that pretends to be the whole
     /// output is the same lie as `accepted` rendering as "delivered" (L3).
     pub dropped: usize,
+    /// The last lines of output for the chain entry; `None` when it printed nothing.
+    pub tail: Option<String>,
 }
 
 /// Where the check ran, as git sees it. Not an `Option<(String, String)>` because
@@ -124,7 +130,8 @@ fn run(command: &str) -> Result<Check> {
             )
         })?;
 
-    let text = readable(&String::from_utf8_lossy(&output.stdout));
+    let raw = String::from_utf8_lossy(&output.stdout);
+    let text = readable(&raw);
     let (kept, dropped) = tail_of(&text);
     Ok(Check {
         command: command.trim().to_string(),
@@ -134,6 +141,7 @@ fn run(command: &str) -> Result<Check> {
         },
         output: kept,
         dropped,
+        tail: last_lines(&readable(&strip_ansi(&raw))),
     })
 }
 
@@ -235,6 +243,64 @@ fn tail_of(text: &str) -> (String, usize) {
     (text[start..].to_string(), start)
 }
 
+/// The last [`TAIL_LINES`] lines, cut from the front at a line boundary to fit
+/// [`TAIL_BYTES`]. A single line longer than that keeps its end.
+fn last_lines(text: &str) -> Option<String> {
+    let text = text.trim_end().trim_start_matches('\n');
+    if text.trim().is_empty() {
+        return None;
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    let mut kept = &lines[lines.len().saturating_sub(TAIL_LINES)..];
+    while kept.len() > 1 && kept.iter().map(|l| l.len() + 1).sum::<usize>() - 1 > TAIL_BYTES {
+        kept = &kept[1..];
+    }
+    let joined = kept.join("\n");
+    Some(if joined.len() > TAIL_BYTES { tail_bytes(&joined, TAIL_BYTES) } else { joined })
+}
+
+/// The last `cap` bytes of `text`, starting on a character boundary.
+fn tail_bytes(text: &str, cap: usize) -> String {
+    let want = text.len() - cap;
+    let start = text.char_indices().map(|(i, _)| i).find(|i| *i >= want).unwrap_or(text.len());
+    text[start..].to_string()
+}
+
+/// Drop ANSI escape sequences whole: CSI (`ESC [ … final`), OSC/DCS-style strings
+/// ended by BEL or `ESC \`, and two-byte escapes.
+fn strip_ansi(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\x1b' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('[') => {
+                for c in chars.by_ref() {
+                    if ('\x40'..='\x7e').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            Some(']' | 'P' | 'X' | '^' | '_') => {
+                while let Some(c) = chars.next() {
+                    if c == '\x07' {
+                        break;
+                    }
+                    if c == '\x1b' && chars.peek() == Some(&'\\') {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// A fence longer than any run of backticks inside it, so output that itself
 /// contains a code block cannot end the block that carries it. The same class of
 /// bug as `message::sanitize`'s bracketed-paste escape, one layer up and with
@@ -284,6 +350,7 @@ mod tests {
             status: status.into(),
             output: output.into(),
             dropped: 0,
+            tail: None,
         }
     }
 
@@ -405,6 +472,52 @@ mod tests {
         let body = receipt("task-1-0", &place(), &check("exit 0", ""));
         assert!(body.contains("(the check printed nothing)"), "{body}");
         assert!(!body.contains("```"), "no empty fence: {body}");
+    }
+
+    // --- the chain entry's tail (D-122) -----------------------------------------
+
+    #[test]
+    fn the_tail_keeps_the_last_twenty_lines() {
+        let text: String = (1..=30).map(|n| format!("line {n}\n")).collect();
+        let tail = last_lines(&text).unwrap();
+        assert_eq!(tail.lines().count(), TAIL_LINES);
+        assert!(tail.starts_with("line 11\n") && tail.ends_with("line 30"), "{tail}");
+    }
+
+    #[test]
+    fn the_tail_is_cut_at_a_line_boundary_to_fit_four_kilobytes() {
+        let long = "x".repeat(1000);
+        let text = format!("{long}a\n{long}b\n{long}c\n{long}d\n{long}e\nlast");
+        let tail = last_lines(&text).unwrap();
+        assert!(tail.len() <= TAIL_BYTES, "{} bytes", tail.len());
+        assert!(tail.starts_with(&long) && tail.ends_with("last"), "whole lines only");
+        assert!(!tail.contains("a\n"), "the first line went: {}", &tail[..20]);
+
+        let one = "→".repeat(3000);
+        let tail = last_lines(&one).unwrap();
+        assert!(tail.len() <= TAIL_BYTES && tail.starts_with('→'), "one long line keeps its end");
+    }
+
+    #[test]
+    fn the_tail_has_no_ansi_escapes() {
+        let raw = "\x1b[1m\x1b[31mFAILED\x1b[0m arrays\n\x1b]0;title\x07test result: \x1b[32mok\x1b[0m\r\n";
+        assert_eq!(last_lines(&readable(&strip_ansi(raw))).as_deref(), Some("FAILED arrays\ntest result: ok"));
+    }
+
+    #[test]
+    fn a_check_that_printed_nothing_has_no_tail() {
+        assert_eq!(last_lines(""), None);
+        assert_eq!(last_lines("\n  \n"), None);
+        let (_, _, check) = checked(PaneId::Worker(1), "task-1-0", "true").unwrap();
+        assert_eq!(check.tail, None);
+    }
+
+    #[test]
+    fn the_check_captures_its_tail_from_both_streams() {
+        let (_, _, check) =
+            checked(PaneId::Worker(1), "task-1-0", "printf '\\033[31mred\\033[0m\\n'; echo err >&2; exit 1").unwrap();
+        assert_eq!(check.status, "exit 1");
+        assert_eq!(check.tail.as_deref(), Some("red\nerr"));
     }
 
     // --- the verb, end to end ---------------------------------------------------

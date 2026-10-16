@@ -677,13 +677,13 @@ impl TaskSide {
                 let entry = find(&self.board()?, task)?.restore(from, reason.as_deref())?;
                 self.append(task, from, entry)
             }
-            TaskAction::Receipt { task, check, status, branch, commit, uncommitted, accepted } => {
+            TaskAction::Receipt { task, check, status, branch, commit, uncommitted, accepted, tail } => {
                 if find(&self.board()?, task)?.block.kind == Kind::Goal {
                     return Err(format!(
                         "#{task} is a goal, and a receipt belongs on the task that was checked"
                     ));
                 }
-                let entry = ChainEntry::Receipt { check, status, branch, commit, uncommitted, accepted };
+                let entry = ChainEntry::Receipt { check, status, branch, commit, uncommitted, accepted, tail };
                 self.append(task, from, entry)
             }
             TaskAction::Show { task } => {

@@ -581,6 +581,7 @@ fn receipt_action(task: &str, place: done::Place, check: done::Check, accepted: 
         commit: place.commit,
         uncommitted: place.dirty,
         accepted,
+        tail: check.tail,
     })
 }
 
@@ -790,7 +791,7 @@ fn details(record: &TaskRecord) -> Vec<String> {
                     )
                 }
             ),
-            ChainEntry::Receipt { check, status, branch, commit, uncommitted, accepted } => format!(
+            ChainEntry::Receipt { check, status, branch, commit, uncommitted, accepted, .. } => format!(
                 "ran `{check}` — {status} — {} @ {}{}{}",
                 branch.as_deref().unwrap_or("no branch"),
                 commit.as_deref().unwrap_or("no commit"),
@@ -1396,13 +1397,14 @@ mod tests {
     /// that is not a number cannot be recorded, and says so.
     #[test]
     fn a_receipt_is_recorded_with_the_facts_it_was_sent_with() {
-        let (_, place, check) = done::checked(PaneId::Worker(2), "#14", "exit 9").expect("a receipt");
-        let TaskAction::Receipt { task: 14, check: command, status, accepted: false, .. } =
+        let (_, place, check) = done::checked(PaneId::Worker(2), "#14", "echo boom; exit 9").expect("a receipt");
+        let TaskAction::Receipt { task: 14, check: command, status, accepted: false, tail, .. } =
             receipt_action("#14", place.clone(), check.clone(), false).unwrap()
         else {
             panic!("a receipt action for #14")
         };
-        assert_eq!((command.as_str(), status.as_str()), ("exit 9", "exit 9"));
+        assert_eq!((command.as_str(), status.as_str()), ("echo boom; exit 9", "exit 9"));
+        assert_eq!(tail.as_deref(), Some("boom"));
         let why = receipt_action("the parser", place, check, true).unwrap_err().to_string();
         assert!(why.contains("task number like 14"), "{why}");
     }

@@ -209,6 +209,8 @@ pub enum TaskAction {
         #[serde(default)]
         uncommitted: bool,
         accepted: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tail: Option<String>,
     },
     /// One goal or task with its whole chain.
     Show { task: u64 },

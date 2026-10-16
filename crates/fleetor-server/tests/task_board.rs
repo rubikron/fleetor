@@ -533,6 +533,7 @@ fn receipt(task: u64, commit: &str) -> Op {
             commit: Some(commit.into()),
             uncommitted: false,
             accepted: true,
+            tail: Some("test result: ok".into()),
         },
     }
 }
@@ -555,7 +556,10 @@ async fn a_receipt_sits_on_the_chain_and_tells_a_later_release_where() {
     let record = list(&mut orch).await.remove(1);
     assert_eq!(record.status, TaskStatus::InProgress, "a receipt claims nothing");
     assert_eq!(record.owner.as_ref().unwrap().pane, PaneId::Worker(2));
-    assert!(matches!(record.chain.last().unwrap().entry, ChainEntry::Receipt { accepted: true, .. }));
+    let ChainEntry::Receipt { accepted: true, tail: Some(tail), .. } = &record.chain.last().unwrap().entry else {
+        panic!("the last entry is an accepted receipt with its tail")
+    };
+    assert_eq!(tail, "test result: ok");
 
     orch.call(release(task, "the parser", None, Some("master @ 0000000"))).await.unwrap();
     let record = list(&mut orch).await.remove(1);

@@ -261,6 +261,9 @@ pub enum ChainEntry {
         uncommitted: bool,
         /// Whether orch's pane took the receipt message.
         accepted: bool,
+        /// The check's last lines of output, ANSI stripped (D-122).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tail: Option<String>,
     },
 }
 
@@ -990,5 +993,34 @@ mod tests {
         let record = board(&[opened(1, PaneId::Orch, goal())]).remove(0);
         let line = serde_json::to_string(&record).unwrap();
         assert_eq!(serde_json::from_str::<TaskRecord>(&line).unwrap(), record, "{line}");
+    }
+
+    fn receipt(tail: Option<&str>) -> ChainEntry {
+        ChainEntry::Receipt {
+            check: "cargo test -p parser".into(),
+            status: "exit 1".into(),
+            branch: Some("fleet/worker-2".into()),
+            commit: Some("a1b2c3d".into()),
+            uncommitted: false,
+            accepted: true,
+            tail: tail.map(String::from),
+        }
+    }
+
+    #[test]
+    fn a_receipt_round_trips_with_its_tail_and_omits_it_when_absent() {
+        let with = receipt(Some("test result: 6 passed; 1 failed")).into_event(2, PaneId::Worker(2), RUN, LINEAGE);
+        let line = serde_json::to_string(&with).unwrap();
+        assert!(line.contains(r#""tail":"test result: 6 passed; 1 failed""#), "{line}");
+        assert_eq!(serde_json::from_str::<FleetEvent>(&line).unwrap(), with, "{line}");
+
+        let line = serde_json::to_string(&receipt(None)).unwrap();
+        assert!(!line.contains("tail"), "{line}");
+    }
+
+    #[test]
+    fn a_stored_receipt_from_before_tail_still_parses() {
+        let old = r#"{"entry":"receipt","check":"cargo test -p parser","status":"exit 1","branch":"fleet/worker-2","commit":"a1b2c3d","accepted":true}"#;
+        assert_eq!(serde_json::from_str::<ChainEntry>(old).unwrap(), receipt(None));
     }
 }
