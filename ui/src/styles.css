@@ -1825,6 +1825,9 @@ button.homepage__run:disabled { cursor: default; }
   display: flex;
   flex-direction: column;
 }
+/* Tasks scrolls as one page; its screens keep their height rather than shrink to the view. */
+.events-view.tasks-view { overflow-y: auto; }
+.tasks-view > * { flex-shrink: 0; }
 .events-view__head {
   display: flex;
   align-items: center;
