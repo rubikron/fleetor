@@ -182,6 +182,19 @@ impl FleetSeats {
     ///
     /// `None` for the operator, who carries no choice, so the caller keeps the arm
     /// it already had rather than growing a branch here.
+    /// What orch's brief says each worker runs (D-123).
+    fn worker_seats(&self) -> Vec<fleetor_core::brief::WorkerSeat> {
+        self.workers
+            .iter()
+            .zip(fleetor_core::pane::WORKER_SLOTS)
+            .map(|(seat, slot)| fleetor_core::brief::WorkerSeat {
+                pane: PaneId::Worker(slot),
+                harness: seat.harness.clone(),
+                model: seat.model.clone(),
+            })
+            .collect()
+    }
+
     fn spec_for(&self, pane: PaneId) -> Option<PaneSpec> {
         let seat = match pane {
             PaneId::Orch => &self.orch,
@@ -1543,6 +1556,7 @@ pub(crate) fn spawn_pane(
     for (level, text) in placement::machine_notices(&host, pane) {
         note(&store, level, &text);
     }
+    let context = PaneContext { worker_seats: seats.worker_seats(), ..context };
     let placed = placement::place(spec, &layout, &host, &target, &context)?;
     for (level, text) in &placed.notices {
         note(&store, *level, text);

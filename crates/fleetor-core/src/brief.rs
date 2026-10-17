@@ -112,7 +112,16 @@ pub fn worker_brief(me: PaneId, roster: &[PaneId], cwd: &str, branch_prefix: &st
 /// The orchestrator brief from an arbitrary template — the seam the operator's own
 /// `orch.md` comes in through. Validate it first; this renders whatever it is given.
 pub fn render_orch(template: &str, roster: &[PaneId], cwd: &str, branch_prefix: &str) -> String {
-    render_orch_at(template, roster, cwd, branch_prefix, Startup::Ask)
+    render_orch_at(template, roster, &[], cwd, branch_prefix, Startup::Ask)
+}
+
+/// What orch is told one worker runs, so it can match tasks to workers (D-123).
+/// Workers are never told it (M25).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerSeat {
+    pub pane: PaneId,
+    pub harness: String,
+    pub model: Option<String>,
 }
 
 /// What orch does about tasks left in progress when its session starts. It
@@ -171,11 +180,12 @@ impl Startup {
 pub fn render_orch_at(
     template: &str,
     roster: &[PaneId],
+    seats: &[WorkerSeat],
     cwd: &str,
     branch_prefix: &str,
     startup: Startup,
 ) -> String {
-    let workers = peer_list(roster, PaneId::Orch);
+    let workers = orch_peer_list(roster, seats);
     render(
         template,
         &[
@@ -283,7 +293,27 @@ fn require_verbs(rendered: &str) -> Result<(), String> {
 
 /// "worker-1, worker-2 and worker-3" — the roster minus yourself, in prose.
 fn peer_list(roster: &[PaneId], me: PaneId) -> String {
-    let names: Vec<String> = roster.iter().filter(|p| **p != me).map(|p| p.to_string()).collect();
+    join_names(roster.iter().filter(|p| **p != me).map(|p| p.to_string()).collect())
+}
+
+/// Orch's peers, each with the harness and model it runs when that is known.
+fn orch_peer_list(roster: &[PaneId], seats: &[WorkerSeat]) -> String {
+    join_names(
+        roster
+            .iter()
+            .filter(|p| **p != PaneId::Orch)
+            .map(|p| match seats.iter().find(|s| s.pane == *p) {
+                Some(seat) => {
+                    let model = seat.model.as_deref().unwrap_or("its default model");
+                    format!("{p} ({}, {model})", seat.harness)
+                }
+                None => p.to_string(),
+            })
+            .collect(),
+    )
+}
+
+fn join_names(names: Vec<String>) -> String {
     match names.split_last() {
         None => "nobody else, yet".to_string(),
         Some((last, [])) => last.clone(),
@@ -764,6 +794,32 @@ mod tests {
         );
     }
 
+    /// Orch reads what each worker runs so it can match tasks to them; a worker
+    /// never does (D-123, M25).
+    #[test]
+    fn only_the_orch_brief_names_each_workers_harness_and_model() {
+        let seat = |slot, harness: &str, model: Option<&str>| WorkerSeat {
+            pane: PaneId::Worker(slot),
+            harness: harness.to_string(),
+            model: model.map(str::to_string),
+        };
+        let seats = [
+            seat(1, "codex", Some("gpt-5.5")),
+            seat(2, "claude-code", Some("claude-opus-5-5")),
+            seat(3, "claude-code", None),
+            seat(4, "codex", Some("gpt-5.5-mini")),
+        ];
+        let orch = render_orch_at(DEFAULT_ORCH, &roster(), &seats, CWD, BRANCH, Startup::Ask);
+        assert!(orch.contains(
+            "worker-1 (codex, gpt-5.5), worker-2 (claude-code, claude-opus-5-5), \
+             worker-3 (claude-code, its default model) and worker-4 (codex, gpt-5.5-mini)"
+        ));
+        assert!(orch.contains("Match each task to a worker"));
+        assert!(!orch.contains("Claude Code terminals"));
+        let worker = worker_brief(PaneId::Worker(2), &roster(), CWD, BRANCH);
+        assert!(!worker.contains("codex") && !worker.contains("gpt-5.5"), "{worker}");
+    }
+
     /// Decomposition happens *after* the vision is confirmed (WP-02's clause),
     /// and the criteria have to be falsifiable or the task cannot be argued with.
     #[test]
@@ -796,7 +852,7 @@ mod tests {
     /// leave it out.
     #[test]
     fn the_startup_rule_renders_each_way_and_is_optional() {
-        let at = |startup| render_orch_at(DEFAULT_ORCH, &roster(), CWD, BRANCH, startup);
+        let at = |startup| render_orch_at(DEFAULT_ORCH, &roster(), &[], CWD, BRANCH, startup);
         let (ask, resume) = (at(Startup::Ask), at(Startup::Resume));
         assert_eq!(ask, orch_brief(&roster(), CWD, BRANCH), "asking first is the default");
         assert!(ask.contains("ask the operator whether to resume"), "{ask}");

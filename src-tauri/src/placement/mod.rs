@@ -891,6 +891,7 @@ fn place_orch(
     let rendered = fleetor_core::brief::render_orch_at(
         &context.orch_template,
         &fleetor_core::pane::PaneId::roster(&fleetor_core::pane::WORKER_SLOTS),
+        &context.worker_seats,
         &target.display().to_string(),
         &worker_branch_prefix(target, &context.sessions),
         context.startup,
