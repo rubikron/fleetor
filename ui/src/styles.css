@@ -1713,9 +1713,12 @@ button.homepage__run:disabled { cursor: default; }
 .task__status--removed { color: var(--coral); text-decoration: line-through; }
 
 /* the task page: main column and a facts column */
-.tasks-view:has(> .task-page) { padding: 0; }
-.task-page { display: grid; grid-template-columns: minmax(0, 1fr) 15rem; flex: 1 1 auto; min-height: 0; }
+/* A task page scrolls its main column; the side column stays put. */
+.events-view.tasks-view:has(> .task-page) { padding: 0; overflow: hidden; }
+.tasks-view > .task-page { display: grid; grid-template-columns: minmax(0, 1fr) 15rem; flex: 1 1 auto; min-height: 0; }
+.task-page > * { min-height: 0; overflow-y: auto; }
 .task-page__main { padding: var(--main-pad); display: flex; flex-direction: column; gap: 0.95rem; min-width: 0; border-right: 1px solid var(--border); }
+.task-page__main > * { flex-shrink: 0; }
 .task-crumbs { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: baseline; color: var(--fg-mute); }
 .task-crumbs button { font: inherit; color: var(--fg-mute); background: none; border: 0; padding: 0; cursor: pointer; text-align: left; }
 .task-crumbs button:hover { color: var(--fg); text-decoration: underline; }

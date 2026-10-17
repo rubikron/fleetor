@@ -623,7 +623,7 @@ export function TaskPage({
               </>
             ) : (
               "none"
-            )}
+            )}{" "}
             <label className="task-change">
               Change reviewer
               <select
