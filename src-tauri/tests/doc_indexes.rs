@@ -1,7 +1,7 @@
 //! **The two indexes agree with what they index** (D-124, guards G2 and G4).
 //!
 //! G2: every `decisions/D-XXX.md` has one `INDEX.md` row, its frontmatter `id` is its
-//! filename, and its `status` is the row's. G4: every file under `docs/` is named in
+//! filename, its `status` is the row's, and every path its `guard:` names exists. G4: every file under `docs/` is named in
 //! `docs/README.md`, or for `docs/roadmap/`, in `roadmap/00-index.md` (D-057).
 //!
 //! Each check is a function over strings, and the last test runs each against a
@@ -84,6 +84,23 @@ fn every_decision_has_one_index_row_with_its_status() {
     assert!(files.len() > 100, "found only {} decision files; is this the right dir?", files.len());
     let problems = decision_problems(&read(&dir.join("INDEX.md")), &files);
     assert!(problems.is_empty(), "decisions/ and INDEX.md disagree:\n{}", problems.join("\n"));
+    let root = repo_root();
+    let missing = missing_guards(&files, |p| root.join(p).exists());
+    assert!(missing.is_empty(), "a decision's guard is gone:\n{}", missing.join("\n"));
+}
+
+/// `guard: a, b` paths (repo-relative) that `exists` says are gone.
+fn missing_guards(files: &[(String, String)], exists: impl Fn(&str) -> bool) -> Vec<String> {
+    let mut missing = Vec::new();
+    for (stem, text) in files {
+        for path in frontmatter_field(text, "guard").iter().flat_map(|g| g.split(',')) {
+            let path = path.trim();
+            if !exists(path) {
+                missing.push(format!("{stem}: guard `{path}` does not exist"));
+            }
+        }
+    }
+    missing
 }
 
 // --- G4: docs -----------------------------------------------------------------
@@ -164,6 +181,10 @@ fn the_checks_fire_on_a_source_that_violates_them() {
     for (files, what) in cases {
         assert!(!decision_problems(index, &files).is_empty(), "G2 missed {what}");
     }
+
+    let guarded = ("D-001".to_string(), "---\nid: D-001\nguard: a.rs, b.rs\n---\n".to_string());
+    assert!(missing_guards(std::slice::from_ref(&guarded), |_| true).is_empty());
+    assert_eq!(missing_guards(&[guarded], |p| p == "a.rs").len(), 1, "G2 missed a deleted guard");
 
     let docs =
         ["README.md".to_string(), "a.md".into(), "notes/b.md".into(), "roadmap/01-c.md".into()];
