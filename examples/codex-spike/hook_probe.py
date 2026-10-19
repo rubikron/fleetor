@@ -81,6 +81,8 @@ import sys
 import threading
 import uuid
 
+import teardown
+
 BUILD = "codex-cli 0.153.4"
 
 # Short, under /tmp: codex opens `app-server-control.sock` inside CODEX_HOME and AF_UNIX
@@ -323,6 +325,7 @@ def main():
     real_arm()
 
     print(f"\n{len(FAILURES)} failed" + (f": {', '.join(FAILURES)}" if FAILURES else ""))
+    teardown.kill_from(ROOT)
     return len(FAILURES)
 
 
