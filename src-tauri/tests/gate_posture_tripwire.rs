@@ -94,8 +94,7 @@ fn every_containment_key_is_read_back_and_every_read_back_is_a_key() {
         }
 
         for (key, value) in &written {
-            let rows: Vec<_> =
-                verified.iter().filter(|row| row.written_key == *key).collect();
+            let rows: Vec<_> = verified.iter().filter(|row| row.written_key == *key).collect();
             assert_eq!(
                 rows.len(),
                 1,

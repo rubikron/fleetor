@@ -430,11 +430,15 @@ fn a_harness_with_nothing_to_suggest_renders_no_instruction() {
 #[test]
 fn a_harness_this_build_never_registered_gets_its_own_guidance() {
     let Some(all) = rendered() else { return };
-    let shapes: Vec<(&str, String)> = ["guidance_login_command", "guidance_two_step",
-        "guidance_provider_key", "guidance_unreadable"]
-        .into_iter()
-        .map(|key| (key, markup(&all, key)))
-        .collect();
+    let shapes: Vec<(&str, String)> = [
+        "guidance_login_command",
+        "guidance_two_step",
+        "guidance_provider_key",
+        "guidance_unreadable",
+    ]
+    .into_iter()
+    .map(|key| (key, markup(&all, key)))
+    .collect();
     for (key, row) in &shapes {
         assert_eq!(
             row.matches("seat-row__howto").count(),
@@ -449,8 +453,7 @@ fn a_harness_this_build_never_registered_gets_its_own_guidance() {
         );
     }
     // The five names are the probe's own, and none of them is registered anywhere.
-    let component =
-        std::fs::read_to_string(repo_root().join(COMPONENT)).expect("component reads");
+    let component = std::fs::read_to_string(repo_root().join(COMPONENT)).expect("component reads");
     for invented in ["beta-cli", "gamma-cli", "delta-cli", "epsilon-cli", "zeta-cli"] {
         assert!(
             !component.contains(invented),
@@ -478,7 +481,8 @@ fn no_row_renders_anywhere_to_put_a_credential() {
     ] {
         let row = markup(&all, key);
         assert_eq!(
-            row.matches("<input").count() + row.matches("<select class=\"seat-row__model\"").count(),
+            row.matches("<input").count()
+                + row.matches("<select class=\"seat-row__model\"").count(),
             1,
             "`{key}` renders more than the one model field. The second input on a row that \
              has just been told to log in is the credential field this ticket refuses:\n{row}"

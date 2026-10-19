@@ -188,7 +188,9 @@ async fn a_send_is_byte_identical_whether_the_task_store_is_empty_or_full() {
     let goal = number(orch.call(open_goal("one grammar")).await.unwrap());
     let mut numbers = Vec::new();
     for n in 0..10 {
-        numbers.push(number(orch.call(open_task(&format!("slice {n}"), Some(2), Some(goal))).await.unwrap()));
+        numbers.push(number(
+            orch.call(open_task(&format!("slice {n}"), Some(2), Some(goal))).await.unwrap(),
+        ));
     }
     worker.call(set(numbers[3], TaskStatus::InProgress)).await.unwrap();
     worker.call(set(numbers[3], TaskStatus::Done)).await.unwrap();
@@ -203,8 +205,10 @@ async fn a_send_is_byte_identical_whether_the_task_store_is_empty_or_full() {
     assert_eq!(bytes.len(), 2, "task operations wrote nothing to any pty: {bytes:?}");
     assert_eq!(bytes[0], bytes[1]);
 
-    let (OpResult::Delivered { accepted: a, detail: da, .. }, OpResult::Delivered { accepted: b, detail: db, .. }) =
-        (&before, &after)
+    let (
+        OpResult::Delivered { accepted: a, detail: da, .. },
+        OpResult::Delivered { accepted: b, detail: db, .. },
+    ) = (&before, &after)
     else {
         panic!("expected two deliveries, got {before:?} / {after:?}")
     };
@@ -214,7 +218,9 @@ async fn a_send_is_byte_identical_whether_the_task_store_is_empty_or_full() {
     let messages: Vec<_> = log
         .iter()
         .filter_map(|(_, e)| match e {
-            FleetEvent::Message { from, to, body, accepted, .. } => Some((from, to, body, accepted)),
+            FleetEvent::Message { from, to, body, accepted, .. } => {
+                Some((from, to, body, accepted))
+            }
             _ => None,
         })
         .collect();
@@ -255,9 +261,13 @@ async fn a_goal_is_split_taken_up_and_done_and_the_chain_says_who() {
     assert_eq!(record.block.parent, Some(goal));
     assert_eq!(record.status, TaskStatus::Done);
     let owner = record.owner.as_ref().expect("taking it up made worker-2 the owner");
-    assert_eq!((owner.pane, owner.run.as_str(), owner.lineage.as_str()), (PaneId::Worker(2), "run-1", "lin-1"));
+    assert_eq!(
+        (owner.pane, owner.run.as_str(), owner.lineage.as_str()),
+        (PaneId::Worker(2), "run-1", "lin-1")
+    );
 
-    let said: Vec<(PaneId, &ChainEntry)> = record.chain.iter().map(|l| (l.from, &l.entry)).collect();
+    let said: Vec<(PaneId, &ChainEntry)> =
+        record.chain.iter().map(|l| (l.from, &l.entry)).collect();
     assert!(matches!(said[0], (PaneId::Orch, ChainEntry::Opened { .. })), "{said:?}");
     assert!(matches!(said[1], (PaneId::Worker(2), ChainEntry::TakenUp { .. })), "{said:?}");
     assert!(
@@ -311,7 +321,8 @@ async fn refusals_follow_who_is_asking_and_write_nothing() {
 
     let why = refusal(owner.call(set(99, TaskStatus::InProgress)).await.unwrap());
     assert!(why.contains("there is no #99") && why.contains("fleet task list"), "{why}");
-    let why = refusal(owner.call(Op::Task { action: TaskAction::Show { task: 99 } }).await.unwrap());
+    let why =
+        refusal(owner.call(Op::Task { action: TaskAction::Show { task: 99 } }).await.unwrap());
     assert!(why.contains("there is no #99"), "{why}");
 
     assert_eq!(chain_len(&fleet), written, "a refusal writes nothing");
@@ -348,7 +359,8 @@ async fn anyone_may_comment_and_nothing_else_changes() {
     let mut orch = pane(&fleet, PaneId::Orch).await;
     let mut peer = pane(&fleet, PaneId::Worker(3)).await;
     let goal = number(orch.call(open_goal("one grammar")).await.unwrap());
-    let task = number(orch.call(open_task("nested groups parse", Some(2), Some(goal))).await.unwrap());
+    let task =
+        number(orch.call(open_task("nested groups parse", Some(2), Some(goal))).await.unwrap());
 
     assert_eq!(number(peer.call(comment(task, "the tokenizer leaks")).await.unwrap()), task);
     number(fleet.hub.handle(PaneId::Operator, comment(goal, "keep it small")).await);
@@ -357,7 +369,10 @@ async fn anyone_may_comment_and_nothing_else_changes() {
     assert_eq!(all[1].status, TaskStatus::Planned);
     assert_eq!(all[1].owner.as_ref().unwrap().pane, PaneId::Worker(2));
     let last = all[1].chain.last().unwrap();
-    assert_eq!((last.from, &last.entry), (PaneId::Worker(3), &ChainEntry::Commented { text: "the tokenizer leaks".into() }));
+    assert_eq!(
+        (last.from, &last.entry),
+        (PaneId::Worker(3), &ChainEntry::Commented { text: "the tokenizer leaks".into() })
+    );
     assert_eq!(all[0].chain.last().unwrap().from, PaneId::Operator);
 
     let written = chain_len(&fleet);
@@ -376,13 +391,18 @@ async fn an_edit_follows_the_creator_and_keeps_the_old_text() {
     let mut peer = pane(&fleet, PaneId::Worker(3)).await;
 
     let goal = number(orch.call(open_goal("one grammar")).await.unwrap());
-    let orchs = number(orch.call(open_task("nested groups parse", Some(2), Some(goal))).await.unwrap());
+    let orchs =
+        number(orch.call(open_task("nested groups parse", Some(2), Some(goal))).await.unwrap());
     let workers = number(worker.call(open_task("the tokenizer leaks", None, None)).await.unwrap());
-    let operators = number(fleet.hub.handle(PaneId::Operator, open_task("ship the docs", None, None)).await);
+    let operators =
+        number(fleet.hub.handle(PaneId::Operator, open_task("ship the docs", None, None)).await);
     let written = chain_len(&fleet);
 
     let why = refusal(worker.call(edit_outcome(orchs, "an easier outcome")).await.unwrap());
-    assert!(why.contains("opened by orch") && why.contains(&format!("fleet task comment {orchs}")), "{why}");
+    assert!(
+        why.contains("opened by orch") && why.contains(&format!("fleet task comment {orchs}")),
+        "{why}"
+    );
     let why = refusal(peer.call(edit_outcome(workers, "not mine")).await.unwrap());
     assert!(why.contains("opened by worker-2"), "{why}");
     let why = refusal(orch.call(edit_outcome(operators, "orch's wording")).await.unwrap());
@@ -445,7 +465,8 @@ async fn a_new_session_over_the_same_store_reads_the_same_records() {
         let mut orch = pane(&first, PaneId::Orch).await;
         let mut worker = pane(&first, PaneId::Worker(2)).await;
         let goal = number(orch.call(open_goal("one grammar")).await.unwrap());
-        let task = number(orch.call(open_task("nested groups parse", None, Some(goal))).await.unwrap());
+        let task =
+            number(orch.call(open_task("nested groups parse", None, Some(goal))).await.unwrap());
         worker.call(set(task, TaskStatus::InProgress)).await.unwrap();
         list(&mut orch).await
     };
@@ -455,7 +476,10 @@ async fn a_new_session_over_the_same_store_reads_the_same_records() {
     let mut worker = pane(&second, PaneId::Worker(2)).await;
     assert_eq!(list(&mut orch).await, before);
 
-    assert_eq!(number(orch.call(open_task("errors name the token", None, Some(1))).await.unwrap()), 3);
+    assert_eq!(
+        number(orch.call(open_task("errors name the token", None, Some(1))).await.unwrap()),
+        3
+    );
 
     let why = refusal(worker.call(set(2, TaskStatus::Done)).await.unwrap());
     assert!(why.contains("worker-2, earlier run"), "{why}");
@@ -464,7 +488,11 @@ async fn a_new_session_over_the_same_store_reads_the_same_records() {
 
     let record = list(&mut orch).await.remove(1);
     let runs: Vec<&str> = record.chain.iter().map(|l| l.run.as_str()).collect();
-    assert_eq!(runs, vec!["run-1", "run-1", "run-2", "run-2"], "the chain shows where one run ended");
+    assert_eq!(
+        runs,
+        vec!["run-1", "run-1", "run-2", "run-2"],
+        "the chain shows where one run ended"
+    );
     assert_eq!(record.owner.unwrap().lineage, "lin-2");
 }
 
@@ -493,9 +521,13 @@ async fn a_release_hands_the_task_on_with_all_four_fields() {
     worker.call(set(task, TaskStatus::InProgress)).await.unwrap();
     let before = chain_len(&fleet);
 
-    let why = refusal(worker.call(release(task, "  ", None, Some("fleet/worker-2 @ a1b2c3d"))).await.unwrap());
+    let why = refusal(
+        worker.call(release(task, "  ", None, Some("fleet/worker-2 @ a1b2c3d"))).await.unwrap(),
+    );
     assert!(why.contains("--left") && !why.contains("needs --why"), "{why}");
-    let why = refusal(orch.call(release(task, "the parser", None, Some("master @ 0000000"))).await.unwrap());
+    let why = refusal(
+        orch.call(release(task, "the parser", None, Some("master @ 0000000"))).await.unwrap(),
+    );
     assert!(why.contains("--where"), "someone else's checkout says nothing about this task: {why}");
     let why = refusal(orch.call(release(goal, "the parser", Some("x"), None)).await.unwrap());
     assert!(why.contains("is a goal"), "{why}");
@@ -505,21 +537,31 @@ async fn a_release_hands_the_task_on_with_all_four_fields() {
     let record = list(&mut orch).await.remove(1);
     assert_eq!((record.status, record.owner.clone()), (TaskStatus::Planned, None));
     assert_eq!(chain_len(&fleet), before + 1, "one entry, not a release plus a status change");
-    let ChainEntry::Released { place, on_behalf_of, .. } = &record.chain.last().unwrap().entry else {
+    let ChainEntry::Released { place, on_behalf_of, .. } = &record.chain.last().unwrap().entry
+    else {
         panic!("the last entry is the release")
     };
     assert_eq!((place.as_str(), *on_behalf_of), ("fleet/worker-2 @ a1b2c3d", None));
 
     // orch releases for a worker who cannot: named, with a typed "where".
     worker.call(set(task, TaskStatus::InProgress)).await.unwrap();
-    orch.call(release(task, "the parser", Some("fleet/worker-2 @ a1b2c3d"), Some("master @ 0000000")))
-        .await
-        .unwrap();
+    orch.call(release(
+        task,
+        "the parser",
+        Some("fleet/worker-2 @ a1b2c3d"),
+        Some("master @ 0000000"),
+    ))
+    .await
+    .unwrap();
     let record = list(&mut orch).await.remove(1);
-    let ChainEntry::Released { place, on_behalf_of, .. } = &record.chain.last().unwrap().entry else {
+    let ChainEntry::Released { place, on_behalf_of, .. } = &record.chain.last().unwrap().entry
+    else {
         panic!("the last entry is the release")
     };
-    assert_eq!((place.as_str(), *on_behalf_of), ("fleet/worker-2 @ a1b2c3d", Some(PaneId::Worker(2))));
+    assert_eq!(
+        (place.as_str(), *on_behalf_of),
+        ("fleet/worker-2 @ a1b2c3d", Some(PaneId::Worker(2)))
+    );
     assert_eq!(fleet.asks.load(Ordering::Relaxed), 0, "a release asks the app for nothing");
 }
 
@@ -556,17 +598,23 @@ async fn a_receipt_sits_on_the_chain_and_tells_a_later_release_where() {
     let record = list(&mut orch).await.remove(1);
     assert_eq!(record.status, TaskStatus::InProgress, "a receipt claims nothing");
     assert_eq!(record.owner.as_ref().unwrap().pane, PaneId::Worker(2));
-    let ChainEntry::Receipt { accepted: true, tail: Some(tail), .. } = &record.chain.last().unwrap().entry else {
+    let ChainEntry::Receipt { accepted: true, tail: Some(tail), .. } =
+        &record.chain.last().unwrap().entry
+    else {
         panic!("the last entry is an accepted receipt with its tail")
     };
     assert_eq!(tail, "test result: ok");
 
     orch.call(release(task, "the parser", None, Some("master @ 0000000"))).await.unwrap();
     let record = list(&mut orch).await.remove(1);
-    let ChainEntry::Released { place, on_behalf_of, .. } = &record.chain.last().unwrap().entry else {
+    let ChainEntry::Released { place, on_behalf_of, .. } = &record.chain.last().unwrap().entry
+    else {
         panic!("the last entry is the release")
     };
-    assert_eq!((place.as_str(), *on_behalf_of), ("fleet/worker-2 @ d4e5f6a", Some(PaneId::Worker(2))));
+    assert_eq!(
+        (place.as_str(), *on_behalf_of),
+        ("fleet/worker-2 @ d4e5f6a", Some(PaneId::Worker(2)))
+    );
     assert_eq!(fleet.asks.load(Ordering::Relaxed), 0);
 }
 
@@ -634,7 +682,8 @@ async fn the_reviewer_is_named_by_orch_or_the_operator_and_is_never_the_owner() 
 
     // Its own rule, not the edit rule: orch names the reviewer on the operator's task.
     let theirs = number(operator.call(reviewed_task(None, None, goal)).await.unwrap());
-    assert!(refusal(orch.call(edit_outcome(theirs, "something else")).await.unwrap()).contains("opened by operator"));
+    assert!(refusal(orch.call(edit_outcome(theirs, "something else")).await.unwrap())
+        .contains("opened by operator"));
     orch.call(name_reviewer(theirs, 3)).await.unwrap();
     operator.call(name_reviewer(theirs, 1)).await.unwrap();
     let record = list(&mut orch).await.remove(2);
@@ -673,7 +722,8 @@ async fn a_verdict_is_recorded_for_anyone_but_the_owner() {
     let record = list(&mut orch).await.remove(1);
     assert_eq!(record.status, TaskStatus::Done, "a verdict does not flip the status");
     assert_eq!(record.owner.as_ref().unwrap().pane, PaneId::Worker(2));
-    let verdicts: Vec<_> = record.chain.iter().rev().take(2).map(|l| (l.from, l.entry.clone())).collect();
+    let verdicts: Vec<_> =
+        record.chain.iter().rev().take(2).map(|l| (l.from, l.entry.clone())).collect();
     assert_eq!(
         verdicts[1],
         (
@@ -685,7 +735,10 @@ async fn a_verdict_is_recorded_for_anyone_but_the_owner() {
             }
         )
     );
-    assert_eq!(verdicts[0], (PaneId::Worker(4), ChainEntry::Reviewed { met: true, reason: None, requested: false }));
+    assert_eq!(
+        verdicts[0],
+        (PaneId::Worker(4), ChainEntry::Reviewed { met: true, reason: None, requested: false })
+    );
 }
 
 /// A handoff that names its goal closes it, puts the handoff on its chain and
@@ -696,8 +749,10 @@ async fn a_handoff_closes_its_goal_and_lists_the_open_tasks() {
     let mut orch = pane(&fleet, PaneId::Orch).await;
     let mut two = pane(&fleet, PaneId::Worker(2)).await;
     let goal = number(orch.call(open_goal("one grammar")).await.unwrap());
-    let finished = number(orch.call(open_task("nested groups parse", None, Some(goal))).await.unwrap());
-    let open = number(orch.call(open_task("errors name the token", None, Some(goal))).await.unwrap());
+    let finished =
+        number(orch.call(open_task("nested groups parse", None, Some(goal))).await.unwrap());
+    let open =
+        number(orch.call(open_task("errors name the token", None, Some(goal))).await.unwrap());
     two.call(set(finished, TaskStatus::InProgress)).await.unwrap();
     two.call(set(finished, TaskStatus::Done)).await.unwrap();
     let handoff = |goal| Op::Handoff {
@@ -713,7 +768,11 @@ async fn a_handoff_closes_its_goal_and_lists_the_open_tasks() {
     assert!(why.contains("is a task"), "{why}");
     let why = refusal(orch.call(handoff(99)).await.unwrap());
     assert!(why.contains("there is no #99"), "{why}");
-    assert_eq!((chain_len(&fleet), run_log(&fleet)), (before, logged), "a refused handoff records nothing");
+    assert_eq!(
+        (chain_len(&fleet), run_log(&fleet)),
+        (before, logged),
+        "a refused handoff records nothing"
+    );
 
     orch.call(handoff(goal)).await.unwrap();
     assert_eq!((chain_len(&fleet), run_log(&fleet)), (before + 1, logged + 1));
@@ -803,10 +862,11 @@ async fn a_task_is_flagged_removed_and_restored_with_its_chain_kept() {
 async fn orch_never_removes_or_restores_the_operators_tasks() {
     let fleet = start_hub().await;
     let mut orch = pane(&fleet, PaneId::Orch).await;
-    let task = match fleet.hub.handle(PaneId::Operator, open_task("ship the docs", None, None)).await {
-        OpResult::Recorded { record_id } => record_id.parse::<u64>().unwrap(),
-        other => panic!("{other:?}"),
-    };
+    let task =
+        match fleet.hub.handle(PaneId::Operator, open_task("ship the docs", None, None)).await {
+            OpResult::Recorded { record_id } => record_id.parse::<u64>().unwrap(),
+            other => panic!("{other:?}"),
+        };
 
     let why = refusal(orch.call(curate(task, "remove", "not now")).await.unwrap());
     assert!(why.contains("opened by the operator"), "{why}");

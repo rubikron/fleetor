@@ -45,11 +45,7 @@ fn the_suite_runs_one_pass_per_registered_harness() {
     let passes = for_each_registered("shape", |pass| {
         assert!(!pass.spec.name.is_empty(), "a harness with no name cannot be written down");
     });
-    assert_eq!(
-        passes,
-        registered().len(),
-        "one pass per registered harness, no more and no fewer",
-    );
+    assert_eq!(passes, registered().len(), "one pass per registered harness, no more and no fewer",);
     assert!(passes >= 1, "the suite must have something to say");
 }
 
@@ -319,11 +315,7 @@ fn checkpoint_4_the_config_dir_is_pointed_at_seeded_and_merged_into() {
             );
 
             let text = pass.config_text(placed, config.seed_file);
-            assert!(
-                !text.trim().is_empty(),
-                "{}/{seat}: the seed file is empty",
-                pass.spec.name,
-            );
+            assert!(!text.trim().is_empty(), "{}/{seat}: the seed file is empty", pass.spec.name,);
             for key in config.seed_keys {
                 assert!(
                     text.contains(key),
@@ -339,7 +331,11 @@ fn checkpoint_4_the_config_dir_is_pointed_at_seeded_and_merged_into() {
             // was there before.
             let first = pass.harness.project_key(&pass.worker_cwd);
             let before = pass.config_text(&pass.worker, config.seed_file);
-            assert!(before.contains(&first), "{}: the first target was never seeded", pass.spec.name);
+            assert!(
+                before.contains(&first),
+                "{}: the first target was never seeded",
+                pass.spec.name
+            );
 
             let (_other, placed) = pass.place_worker_against("second-repo");
             let after = pass.config_text(&placed, config.seed_file);
@@ -506,7 +502,11 @@ fn checkpoint_6_configuration_and_credentials_are_isolated_by_the_named_mechanis
                 "{}: the Fence's private HOME is outside the layout: {home}",
                 pass.spec.name,
             );
-            assert!(Path::new(&home).is_dir(), "{}: the private HOME was never made", pass.spec.name);
+            assert!(
+                Path::new(&home).is_dir(),
+                "{}: the private HOME was never made",
+                pass.spec.name
+            );
             assert_ne!(
                 env_on(&pass.orch, "HOME").as_deref(),
                 Some(home.as_str()),
@@ -605,7 +605,10 @@ fn checkpoint_6_configuration_and_credentials_are_isolated_by_the_named_mechanis
                 //    their installation, and it would look identical from the
                 //    outside until the first pane wrote to it.
                 let dir = env_on(placed, isolation.config_env).unwrap_or_else(|| {
-                    panic!("{}/{seat}: {} is not on the command", pass.spec.name, isolation.config_env)
+                    panic!(
+                        "{}/{seat}: {} is not on the command",
+                        pass.spec.name, isolation.config_env
+                    )
                 });
                 assert!(
                     pass.is_contained(Path::new(&dir)),
@@ -722,8 +725,7 @@ fn checkpoint_7_every_seat_gets_the_write_guardrail_with_roots_no_wider_than_its
                 pass.spec.name,
             );
             let cwd = pass.cwd_of(seat);
-            let resolved =
-                std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
+            let resolved = std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
             assert!(
                 roots.iter().any(|root| {
                     let root = Path::new(root);

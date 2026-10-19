@@ -692,8 +692,12 @@ fn every_invoked_command_is_registered() {
             invoked.push(name);
         }
     }
-    assert!(invoked.len() >= 8, "the invoke scan found {} commands, which is too few to be \
-         reading `api.ts` correctly: {invoked:?}", invoked.len());
+    assert!(
+        invoked.len() >= 8,
+        "the invoke scan found {} commands, which is too few to be \
+         reading `api.ts` correctly: {invoked:?}",
+        invoked.len()
+    );
     for command in &invoked {
         assert!(
             handlers.contains(&format!("::{command},")),
@@ -834,9 +838,8 @@ fn the_checks_fire_on_a_source_that_violates_them() {
 /// quietly stopped existing.
 #[test]
 fn the_declarations_this_file_reads_still_exist() {
-    for rel in [GATE, PICKERS, WIRE, API, BACKEND, COMMANDS, HARNESS, CODEX]
-        .into_iter()
-        .chain(CHROME)
+    for rel in
+        [GATE, PICKERS, WIRE, API, BACKEND, COMMANDS, HARNESS, CODEX].into_iter().chain(CHROME)
     {
         let file = repo_root().join(rel);
         assert!(file.is_file(), "{} is read by this file and is gone", file.display());
@@ -881,7 +884,12 @@ fn sources_under(dir: &str) -> Vec<(String, String)> {
 fn the_gates_backend() -> String {
     let backend = read(BACKEND);
     let production = backend.split("\n#[cfg(test)]\nmod tests {").next().expect("a first half");
-    let loader = between(production, "// --- worker credentials ---", "// --- display ---", "the key loader");
+    let loader = between(
+        production,
+        "// --- worker credentials ---",
+        "// --- display ---",
+        "the key loader",
+    );
     production.replace(&loader, "")
 }
 
@@ -896,7 +904,10 @@ fn the_gate_offers_no_second_credential() {
     assert!(found.is_empty(), "{BACKEND}'s gate code carries {found:?}");
 
     let seat = between(&read(WIRE), "export interface SeatChoice {", "\n}", "SeatChoice");
-    assert!(!seat.contains("credential"), "{WIRE}'s SeatChoice carries a credential again:\n{seat}");
+    assert!(
+        !seat.contains("credential"),
+        "{WIRE}'s SeatChoice carries a credential again:\n{seat}"
+    );
     assert!(
         !second_credential_words_in("<option value=\"fleet_key\">your key</option>").is_empty(),
         "the check would not notice the control it exists to refuse",

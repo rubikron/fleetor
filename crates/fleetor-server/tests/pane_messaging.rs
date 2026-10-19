@@ -30,8 +30,7 @@ fn spawn_app(roster: Vec<PaneEntry>) -> (mpsc::UnboundedSender<AppCommand>, Writ
     let writes: Writes = Arc::new(Mutex::new(Vec::new()));
     let sink = writes.clone();
     tokio::spawn(async move {
-        let states: HashMap<PaneId, PaneState> =
-            roster.iter().map(|e| (e.pane, e.state)).collect();
+        let states: HashMap<PaneId, PaneState> = roster.iter().map(|e| (e.pane, e.state)).collect();
         while let Some(cmd) = rx.recv().await {
             match cmd {
                 AppCommand::Deliver { to, text, ack } => {
@@ -405,8 +404,11 @@ async fn the_roster_lists_the_operator_as_present_and_never_as_live() {
 /// the test that checked it was refused has nothing left to check.
 #[tokio::test]
 async fn a_hub_whose_app_has_gone_rejects_instead_of_pretending() {
-    let dir = std::env::temp_dir()
-        .join(format!("fleetor-noapp-{}-{}", std::process::id(), fleetor_core::ids::new_id("t")));
+    let dir = std::env::temp_dir().join(format!(
+        "fleetor-noapp-{}-{}",
+        std::process::id(),
+        fleetor_core::ids::new_id("t")
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let transport = Arc::new(UnixTransport::new(dir.join("fleet.sock")));
     let store = Arc::new(SqliteStore::open_in_memory().unwrap());
@@ -729,7 +731,8 @@ async fn an_operator_broadcast_wears_the_all_framing_the_reply_rule_binds_to() {
     let (transport, store, writes) = start_hub(all_live()).await;
     let mut operator = pane(&transport, PaneId::Operator).await;
 
-    let result = operator.call(Op::Broadcast { text: "stop and read the vision doc".into() }).await.unwrap();
+    let result =
+        operator.call(Op::Broadcast { text: "stop and read the vision doc".into() }).await.unwrap();
     let OpResult::Delivered { msg_id: group, accepted, .. } = result else {
         panic!("expected a delivery, got {result:?}");
     };
@@ -787,7 +790,10 @@ async fn the_operator_cannot_message_itself_either() {
     let (transport, store, _writes) = start_hub(all_live()).await;
     let mut operator = pane(&transport, PaneId::Operator).await;
 
-    let result = operator.call(Op::Send { to: PaneId::Operator, text: "note to self".into() }).await.unwrap();
+    let result = operator
+        .call(Op::Send { to: PaneId::Operator, text: "note to self".into() })
+        .await
+        .unwrap();
     assert!(
         matches!(&result, OpResult::Error { message } if message.contains("cannot message itself")),
         "got {result:?}",

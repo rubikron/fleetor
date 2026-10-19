@@ -194,7 +194,7 @@ use super::harness::{
     AccountShape, BriefCarrier, CommandChannel, ConfigAndCredentialIsolation, ConfigDir,
     CredentialSource, Credentials, GaugeSource, GuardrailInstall, Harness, HarnessReadiness,
     HarnessSpec, LoginInstruction, LoginState, ModelChoice, OperatorLogin, OrphanNames, Outbound,
-    Posture, PostureExpectation, ProjectIdentityAndTrust, Program, ProviderKey, ResolvedPosture,
+    Posture, PostureExpectation, Program, ProjectIdentityAndTrust, ProviderKey, ResolvedPosture,
     Seat, Seed, Transcript, Transport, TypingProfile, WorktreeGit,
 };
 
@@ -708,14 +708,7 @@ pub const CODEX_SPEC: HarnessSpec = HarnessSpec {
         // the raw patch text under `command` — and is **not** mapped to `Edit` or
         // `Write`. So a list of Claude Code's five names alone would have let
         // every codex file edit through. Both spellings, measured, both carried.
-        write_tools: &[
-            "Bash",
-            "Write",
-            "Edit",
-            "MultiEdit",
-            "NotebookEdit",
-            "apply_patch",
-        ],
+        write_tools: &["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "apply_patch"],
         hook_file: crate::guardrail::HOOK_FILE,
     },
 
@@ -934,11 +927,9 @@ impl Harness for CodexCli {
     /// read failure or an empty store.
     fn session_id(&self, seat_dir: &std::path::Path) -> Option<String> {
         let db = Self::thread_store(seat_dir)?;
-        let conn = rusqlite::Connection::open_with_flags(
-            &db,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )
-        .ok()?;
+        let conn =
+            rusqlite::Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .ok()?;
         conn.query_row(
             "SELECT thread_id FROM thread_items ORDER BY created_at_ms DESC LIMIT 1",
             [],
@@ -953,10 +944,9 @@ impl Harness for CodexCli {
     /// is one `codex resume` cannot either.
     fn has_session(&self, seat_dir: &std::path::Path, session_id: &str) -> bool {
         let Some(db) = Self::thread_store(seat_dir) else { return false };
-        let Ok(conn) = rusqlite::Connection::open_with_flags(
-            &db,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        ) else {
+        let Ok(conn) =
+            rusqlite::Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        else {
             return false;
         };
         conn.query_row(
@@ -1137,7 +1127,8 @@ fn install(
     let dir = seed.config_dir;
     let seat = seat_label(dir);
     let mut notices = Vec::new();
-    std::fs::create_dir_all(dir).map_err(|e| format!("create config dir {}: {e}", dir.display()))?;
+    std::fs::create_dir_all(dir)
+        .map_err(|e| format!("create config dir {}: {e}", dir.display()))?;
 
     let source = seed.operator_home.map(|home| home.join(OPERATOR_DIR)).filter(|d| d.is_dir());
 
@@ -1173,9 +1164,9 @@ fn install(
     // 2. The base document.
     let installed = dir.join(spec.config_dir.seed_file);
     let mut doc = match (spec.config_dir.seed_merges, std::fs::read_to_string(&installed)) {
-        (true, Ok(text)) => {
-            text.parse::<DocumentMut>().map_err(|e| format!("parse {}: {e}", installed.display()))?
-        }
+        (true, Ok(text)) => text
+            .parse::<DocumentMut>()
+            .map_err(|e| format!("parse {}: {e}", installed.display()))?,
         _ => seeded_document(source.as_deref(), dir, seed.operators_own_seat)?,
     };
 
@@ -1515,11 +1506,8 @@ fn existing_hook_entries(doc: &DocumentMut, install: &GuardrailInstall) -> Vec<V
 /// Looks for the hook file's name in any handler's `command`, which is
 /// [`crate::guardrail::is_our_command`]'s rule read through codex's nesting.
 fn entry_is_ours(entry: &Value, install: &GuardrailInstall) -> bool {
-    entry
-        .as_inline_table()
-        .and_then(|t| t.get("hooks"))
-        .and_then(Value::as_array)
-        .is_some_and(|handlers| {
+    entry.as_inline_table().and_then(|t| t.get("hooks")).and_then(Value::as_array).is_some_and(
+        |handlers| {
             handlers.iter().any(|handler| {
                 handler
                     .as_inline_table()
@@ -1527,7 +1515,8 @@ fn entry_is_ours(entry: &Value, install: &GuardrailInstall) -> bool {
                     .and_then(Value::as_str)
                     .is_some_and(|c| crate::guardrail::is_our_command(c, install))
             })
-        })
+        },
+    )
 }
 
 /// One entry, in codex's shape: a matcher group holding one command handler.
@@ -1645,10 +1634,7 @@ fn untrusted_notice(
 /// C41(b) give a vendor name read by the one method that writes it — rather than a
 /// spec field every other harness would answer with a copy of `hook_event`.
 fn hook_trust_key(config_dir: &Path, install: &GuardrailInstall, group: usize) -> String {
-    format!(
-        "{}:{TRUST_EVENT_SEGMENT}:{group}:0",
-        config_dir.join(install.settings_file).display(),
-    )
+    format!("{}:{TRUST_EVENT_SEGMENT}:{group}:0", config_dir.join(install.settings_file).display(),)
 }
 
 /// Codex, by name. **Not in the registry, and no longer for a reason**: #33
@@ -1798,8 +1784,7 @@ fn copy_into(from: &Path, to: &Path) -> Result<(), String> {
         return Ok(());
     }
     std::fs::create_dir_all(to).map_err(|e| format!("create {}: {e}", to.display()))?;
-    let entries =
-        std::fs::read_dir(from).map_err(|e| format!("read {}: {e}", from.display()))?;
+    let entries = std::fs::read_dir(from).map_err(|e| format!("read {}: {e}", from.display()))?;
     for entry in entries {
         let entry = entry.map_err(|e| format!("read {}: {e}", from.display()))?;
         copy_into(&entry.path(), &to.join(entry.file_name()))?;
@@ -2557,12 +2542,14 @@ fn login_state(report: &serde_json::Value, provider: Option<&str>) -> LoginState
     let ambient = detail(report, "auth.credentials", "auth env vars present");
 
     match stored.as_deref() {
-        Some("chatgpt") => return LoginState::LoggedIn(AccountShape::SubscriptionPlan {
-            // Codex 0.153.4 reports the shape and not the tier; see the field's own
-            // note. Read here so a release that starts naming one needs a line
-            // rather than a redesign.
-            plan: detail(report, "auth.credentials", "stored ChatGPT plan"),
-        }),
+        Some("chatgpt") => {
+            return LoginState::LoggedIn(AccountShape::SubscriptionPlan {
+                // Codex 0.153.4 reports the shape and not the tier; see the field's own
+                // note. Read here so a release that starts naming one needs a line
+                // rather than a redesign.
+                plan: detail(report, "auth.credentials", "stored ChatGPT plan"),
+            });
+        }
         Some("api_key") => return LoginState::LoggedIn(AccountShape::ApiKey),
         _ => {}
     }
@@ -2580,10 +2567,8 @@ fn login_state(report: &serde_json::Value, provider: Option<&str>) -> LoginState
     // the seat is refused identically either way, and only the *next action*
     // differs, which is a login command in one case and no command at all in this
     // one (#29 — a named provider key has no ambient fallback).
-    let provider_key = env_var
-        .as_deref()
-        .and_then(|v| v.trim().strip_suffix("(missing)"))
-        .map(|v| ProviderKey {
+    let provider_key =
+        env_var.as_deref().and_then(|v| v.trim().strip_suffix("(missing)")).map(|v| ProviderKey {
             provider: provider.unwrap_or("an unnamed provider").to_string(),
             env_var: v.trim().to_string(),
         });
@@ -2672,12 +2657,15 @@ fn run_json(
     };
     Some(serde_json::from_slice(&out.stdout).map_err(|e| {
         let said = String::from_utf8_lossy(&out.stderr);
-        let argv =
-            args.iter().map(ToString::to_string).collect::<Vec<_>>().join(" ");
-        format!("`{} {argv}` did not emit JSON ({e}){}", binary.display(), match said.trim() {
-            "" => String::new(),
-            text => format!(": {}", text.lines().next().unwrap_or(text)),
-        })
+        let argv = args.iter().map(ToString::to_string).collect::<Vec<_>>().join(" ");
+        format!(
+            "`{} {argv}` did not emit JSON ({e}){}",
+            binary.display(),
+            match said.trim() {
+                "" => String::new(),
+                text => format!(": {}", text.lines().next().unwrap_or(text)),
+            }
+        )
     }))
 }
 
@@ -3189,7 +3177,10 @@ args = ["--root", "~/notes"]
         std::fs::write(&installed, format!("{good}\nmodel_instructions_file = \"~/brief.md\"\n"))
             .expect("the pane's vendor wrote to its own config");
         let refused = machine.seed("worker-1").expect_err("a tilde must refuse");
-        assert!(refused.contains("model_instructions_file"), "the refusal names the key: {refused}");
+        assert!(
+            refused.contains("model_instructions_file"),
+            "the refusal names the key: {refused}"
+        );
         assert!(refused.contains("private HOME"), "and says why: {refused}");
         assert!(
             std::fs::read_to_string(&installed).expect("still there").contains("~/brief.md"),
@@ -3202,10 +3193,8 @@ args = ["--root", "~/notes"]
     /// the two columns both read, not produced by a vendor binary.
     #[test]
     fn codexs_presence_check_finds_the_thread_its_reader_names_and_no_other() {
-        let seat = std::env::temp_dir().join(format!(
-            "fleetor-codex-has-session-{}",
-            fleetor_core::time::now_ms()
-        ));
+        let seat = std::env::temp_dir()
+            .join(format!("fleetor-codex-has-session-{}", fleetor_core::time::now_ms()));
         std::fs::create_dir_all(&seat).expect("scratch seat");
         let conn = rusqlite::Connection::open(seat.join("thread_history_1.sqlite")).unwrap();
         conn.execute(
@@ -3217,7 +3206,8 @@ args = ["--root", "~/notes"]
         conn.execute("INSERT INTO thread_items VALUES ('thread-new', 2, '{}')", []).unwrap();
         drop(conn);
 
-        let codex = crate::placement::harness::by_name(CODEX_SPEC.name).expect("codex is registered");
+        let codex =
+            crate::placement::harness::by_name(CODEX_SPEC.name).expect("codex is registered");
         let id = codex.session_id(&seat).expect("the reader names the newest thread");
         assert_eq!(id, "thread-new");
         assert!(codex.has_session(&seat, &id));
@@ -3522,7 +3512,10 @@ writable_roots = [{:?}, {:?}]
             );
         }
         let seeded = machine.seeded("worker-1");
-        assert_eq!(seeded["sandbox_workspace_write"]["exclude_tmpdir_env_var"].as_bool(), Some(true));
+        assert_eq!(
+            seeded["sandbox_workspace_write"]["exclude_tmpdir_env_var"].as_bool(),
+            Some(true)
+        );
         assert_eq!(seeded["sandbox_workspace_write"]["network_access"].as_bool(), Some(true));
     }
 
@@ -3916,11 +3909,15 @@ writable_roots = [{:?}, {:?}]
         let seeded = machine.seeded("worker-1");
 
         assert!(
-            seeded["sandbox_workspace_write"]["writable_roots"].as_array().is_some_and(|a| a
-                .is_empty()),
+            seeded["sandbox_workspace_write"]["writable_roots"]
+                .as_array()
+                .is_some_and(|a| a.is_empty()),
             "an operator's narrowing of the sandbox's writable roots was dropped",
         );
-        assert_eq!(seeded["sandbox_workspace_write"]["exclude_tmpdir_env_var"].as_bool(), Some(true));
+        assert_eq!(
+            seeded["sandbox_workspace_write"]["exclude_tmpdir_env_var"].as_bool(),
+            Some(true)
+        );
         assert_eq!(seeded["mcp_servers"]["notes"]["enabled"].as_bool(), Some(false));
         // And FLEETOR's own row is in the same table, beside them rather than
         // instead of them.
@@ -4015,7 +4012,7 @@ writable_roots = [{:?}, {:?}]
             "/a/project",
             &Seed::new(&dir, &cwd, Some(&machine.operator_home())).with_brief(A_BRIEF),
         )
-            .expect("seed with all three lists full");
+        .expect("seed with all three lists full");
 
         let seeded: DocumentMut =
             std::fs::read_to_string(dir.join(CONFIG_FILE)).expect("seed").parse().expect("TOML");
@@ -4273,7 +4270,11 @@ writable_roots = [{:?}, {:?}]
             .filter(|(key, _)| key.ends_with(".env_key"))
             .map(|(_, value)| *value)
             .collect();
-        assert_eq!(declared, [FLEET_KEY_ENV], "the entry reads exactly one variable, and it is ours");
+        assert_eq!(
+            declared,
+            [FLEET_KEY_ENV],
+            "the entry reads exactly one variable, and it is ours"
+        );
 
         // The selection names the table that was actually written.
         for (_, provider) in WORKER_PROVIDER_SELECTION {
@@ -4346,7 +4347,10 @@ writable_roots = [{:?}, {:?}]
             "the names reported are the names checkpoint 5 declares, from the one call that \
              removed them",
         );
-        assert!(!worker.scrubbed.is_empty(), "a scrub that removes nothing is checkpoint 5 stubbed");
+        assert!(
+            !worker.scrubbed.is_empty(),
+            "a scrub that removes nothing is checkpoint 5 stubbed"
+        );
         assert_eq!(
             worker.command.get_env(FLEET_KEY_ENV).map(|v| v.to_string_lossy().into_owned()),
             Some("sk-the-fleets-own-key".to_string()),
@@ -4394,7 +4398,8 @@ writable_roots = [{:?}, {:?}]
         assert_eq!(machine.brief("worker-1"), A_BRIEF, "the brief is written verbatim");
 
         let key = CODEX_SPEC.brief.config_key.expect("codex carries its brief in a config key");
-        let named = machine.seeded("worker-1")[key].as_str().expect("the carrier is set").to_string();
+        let named =
+            machine.seeded("worker-1")[key].as_str().expect("the carrier is set").to_string();
         assert_eq!(
             named,
             dir.join(BRIEF_FILE).to_string_lossy(),
@@ -4416,13 +4421,12 @@ writable_roots = [{:?}, {:?}]
         let me = PaneId::Worker(2);
         // What `place_worker` renders and hands to `Seed::with_brief` — and, for a
         // Claude Code pane, what it hands to `--system-prompt` instead.
-        let rendered =
-            fleetor_core::brief::worker_brief(
-                me,
-                &PaneId::roster(&WORKER_SLOTS),
-                &cwd.to_string_lossy(),
-                "fleet/codex-test-0000",
-            );
+        let rendered = fleetor_core::brief::worker_brief(
+            me,
+            &PaneId::roster(&WORKER_SLOTS),
+            &cwd.to_string_lossy(),
+            "fleet/codex-test-0000",
+        );
         machine.seed_briefed("worker-2", &cwd, &rendered).expect("seed");
 
         assert_eq!(machine.brief("worker-2"), rendered, "byte-identical, not a codex dialect");
@@ -4515,7 +4519,10 @@ writable_roots = [{:?}, {:?}]
             !seeded.contains("base_instructions"),
             "the model catalog's instruction field is not honoured — it is not a carrier",
         );
-        assert!(!cwd.join("AGENTS.md").exists(), "an AGENTS.md would be in-band, as a user message");
+        assert!(
+            !cwd.join("AGENTS.md").exists(),
+            "an AGENTS.md would be in-band, as a user message"
+        );
         assert!(!dir.join("AGENTS.md").exists());
         assert!(
             !seeded.contains("experimental_instructions_file"),
@@ -4534,13 +4541,17 @@ writable_roots = [{:?}, {:?}]
         let machine = Machine::new("no-brief");
         let cwd = machine.cwd();
 
-        let why = machine.seed_briefed("worker-1", &cwd, "").expect_err("an empty brief is refused");
+        let why =
+            machine.seed_briefed("worker-1", &cwd, "").expect_err("an empty brief is refused");
         assert!(why.contains("no brief"), "the refusal says what is missing: {why}");
         assert!(
             !machine.pane_dir("worker-1").join(CONFIG_FILE).exists(),
             "and nothing is installed — a half-seeded pane is the thing being prevented",
         );
-        assert!(machine.seed_briefed("worker-2", &cwd, "   \n").is_err(), "whitespace is not a brief");
+        assert!(
+            machine.seed_briefed("worker-2", &cwd, "   \n").is_err(),
+            "whitespace is not a brief"
+        );
     }
 
     /// A re-seed rewrites the brief and keeps the carrier pointing at it — the
@@ -4677,7 +4688,11 @@ writable_roots = [{:?}, {:?}]
         // trust record codex requires cannot be written (see `UNTRUSTED_WHY`), so
         // the one thing this install must not do is look healthy.
         assert!(
-            doc.as_table().get("hooks").and_then(Item::as_table_like).and_then(|h| h.get("state")).is_none(),
+            doc.as_table()
+                .get("hooks")
+                .and_then(Item::as_table_like)
+                .and_then(|h| h.get("state"))
+                .is_none(),
             "no trust record is written at all: a guessed hash reads back as `modified`, which \
              is the vendor's word for tampered-with rather than unreviewed",
         );
@@ -4755,8 +4770,7 @@ writable_roots = [{:?}, {:?}]
         // the wrong key would trust one of their own hooks and leave ours dead.
         let key = hook_trust_key(&machine.pane_dir("worker-1"), &CODEX_SPEC.guardrail, 1);
         assert!(
-            notices.iter().any(|(level, text)| *level == NoticeLevel::Error
-                && text.contains(&key)),
+            notices.iter().any(|(level, text)| *level == NoticeLevel::Error && text.contains(&key)),
             "the key quoted must be our entry's, at index 1: {notices:#?}",
         );
     }
@@ -4875,17 +4889,18 @@ writable_roots = [{:?}, {:?}]
     #[test]
     fn the_operators_own_seat_is_never_handed_the_bypass() {
         assert!(
-            codex().command_args(&Seat::new("").for_the_operator()).iter().all(|a| a != BYPASS_HOOK_TRUST),
+            codex()
+                .command_args(&Seat::new("").for_the_operator())
+                .iter()
+                .all(|a| a != BYPASS_HOOK_TRUST),
             "the operator's own pane answers hook trust itself",
         );
         // And the asymmetry is the seat's, not the posture's: a seat that carries a
         // permission mode and is not the operator's is one FLEETOR drives.
-        assert!(
-            codex()
-                .command_args(&Seat::new("").with_permission_mode("acceptEdits"))
-                .iter()
-                .any(|a| a == BYPASS_HOOK_TRUST),
-        );
+        assert!(codex()
+            .command_args(&Seat::new("").with_permission_mode("acceptEdits"))
+            .iter()
+            .any(|a| a == BYPASS_HOOK_TRUST),);
         // **The same asymmetry on a reopen** (WP-29 gap 1). Before the fix this
         // held for the wrong reason: `resume_args` handed nobody the bypass,
         // including the four seats whose guardrail depends on it.
@@ -4929,10 +4944,7 @@ writable_roots = [{:?}, {:?}]
             "a fenced seat's guardrail survives the reopen: {argv:?}",
         );
         // A brief here would land on `codex resume`'s `[PROMPT]` positional.
-        assert!(
-            !argv.iter().any(|a| a.contains("BRIEF")),
-            "no brief in a reopen's argv: {argv:?}",
-        );
+        assert!(!argv.iter().any(|a| a.contains("BRIEF")), "no brief in a reopen's argv: {argv:?}",);
     }
 
     /// A relaunch must not accumulate a copy of our hook per launch — every one of
@@ -5061,8 +5073,9 @@ writable_roots = [{:?}, {:?}]
             None,
         );
 
-        let why = ask("Bash", serde_json::json!({ "command": "echo x > /Users/somebody/notes.txt" }))
-            .expect("a write outside every root must be refused");
+        let why =
+            ask("Bash", serde_json::json!({ "command": "echo x > /Users/somebody/notes.txt" }))
+                .expect("a write outside every root must be refused");
         assert!(why.contains("/Users/somebody/notes.txt"), "it names the path: {why}");
         assert!(why.contains("worker-1"), "and whose workspace it is outside of: {why}");
         assert!(why.contains("Reading is not restricted"), "and what the rule is: {why}");
@@ -5073,7 +5086,8 @@ writable_roots = [{:?}, {:?}]
 
         // The structured half: codex's own edit tool names its destination.
         assert!(
-            ask("apply_patch", serde_json::json!({ "path": "/Users/somebody/CLAUDE.md" })).is_some(),
+            ask("apply_patch", serde_json::json!({ "path": "/Users/somebody/CLAUDE.md" }))
+                .is_some(),
             "apply_patch must be refused outside the roots",
         );
 
@@ -5136,9 +5150,13 @@ writable_roots = [{:?}, {:?}]
     #[test]
     fn all_three_auth_shapes_count_as_logged_in_and_are_named_individually() {
         let plan = login_state(
-            &recorded("ok", "auth is configured", serde_json::json!({
-                "stored auth mode": "chatgpt", "stored ChatGPT tokens": "true",
-            })),
+            &recorded(
+                "ok",
+                "auth is configured",
+                serde_json::json!({
+                    "stored auth mode": "chatgpt", "stored ChatGPT tokens": "true",
+                }),
+            ),
             Some("loopback"),
         );
         assert_eq!(
@@ -5149,17 +5167,25 @@ writable_roots = [{:?}, {:?}]
         assert_eq!(plan.caveat(), Some(super::super::harness::REACHABILITY_NOT_AUTHORIZATION));
 
         let key = login_state(
-            &recorded("ok", "auth is configured", serde_json::json!({
-                "stored auth mode": "api_key", "stored API key": "true",
-            })),
+            &recorded(
+                "ok",
+                "auth is configured",
+                serde_json::json!({
+                    "stored auth mode": "api_key", "stored API key": "true",
+                }),
+            ),
             Some("loopback"),
         );
         assert_eq!(key, LoginState::LoggedIn(AccountShape::ApiKey), "a stored key is a login");
 
         let custom = login_state(
-            &recorded("ok", "auth is provided by the active model provider", serde_json::json!({
-                "provider auth env var": "OPERATORS_SHELL_KEY (present)",
-            })),
+            &recorded(
+                "ok",
+                "auth is provided by the active model provider",
+                serde_json::json!({
+                    "provider auth env var": "OPERATORS_SHELL_KEY (present)",
+                }),
+            ),
             Some("the operator's own"),
         );
         assert_eq!(
@@ -5204,7 +5230,10 @@ writable_roots = [{:?}, {:?}]
         );
         assert_eq!(
             none,
-            LoginState::NoCredential { summary: "no Codex credentials were found".to_string(), provider_key: None },
+            LoginState::NoCredential {
+                summary: "no Codex credentials were found".to_string(),
+                provider_key: None
+            },
             "the vendor's own sentence is the operator's most actionable line",
         );
         assert_eq!(none.caveat(), None, "there is nothing to caveat about a refusal");
@@ -5212,17 +5241,25 @@ writable_roots = [{:?}, {:?}]
         // A named provider whose variable is *missing* is the same refusal, and the
         // only thing separating it from the login above is the suffix.
         let missing = login_state(
-            &recorded("fail", "active model provider auth env var is missing", serde_json::json!({
-                "provider auth env var": "FLEETOR_CODEX_KEY (missing)",
-            })),
+            &recorded(
+                "fail",
+                "active model provider auth env var is missing",
+                serde_json::json!({
+                    "provider auth env var": "FLEETOR_CODEX_KEY (missing)",
+                }),
+            ),
             Some("fleetor"),
         );
         assert!(matches!(missing, LoginState::NoCredential { .. }), "{missing:?}");
 
         let ambient = login_state(
-            &recorded("ok", "auth is configured", serde_json::json!({
-                "auth env vars present": "CODEX_API_KEY",
-            })),
+            &recorded(
+                "ok",
+                "auth is configured",
+                serde_json::json!({
+                    "auth env vars present": "CODEX_API_KEY",
+                }),
+            ),
             None,
         );
         assert_eq!(
@@ -5232,8 +5269,11 @@ writable_roots = [{:?}, {:?}]
         );
 
         let free = login_state(
-            &recorded("ok", "OpenAI auth is not required for the active model provider",
-                serde_json::json!({})),
+            &recorded(
+                "ok",
+                "OpenAI auth is not required for the active model provider",
+                serde_json::json!({}),
+            ),
             Some("a local endpoint"),
         );
         assert_eq!(
@@ -5289,7 +5329,10 @@ writable_roots = [{:?}, {:?}]
         assert_eq!(readiness.login, LoginState::NotInstalled);
         assert!(readiness.models.is_empty(), "nothing to offer and nothing guessed (M2)");
         assert_eq!(readiness.posture, ResolvedPosture::default());
-        assert!(std::ptr::eq(readiness.harness, codex().spec()), "it is still codex that is absent");
+        assert!(
+            std::ptr::eq(readiness.harness, codex().spec()),
+            "it is still codex that is absent"
+        );
 
         let lines = readiness.notices();
         assert_eq!(lines.len(), 1, "one sentence, no posture and no caveat: {lines:#?}");

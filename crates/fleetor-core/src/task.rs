@@ -94,7 +94,10 @@ impl TaskBlock {
     pub fn with_reviewer(mut self, reviewer: Option<PaneId>) -> Result<Self, String> {
         if let Some(reviewer) = reviewer {
             if self.kind == Kind::Goal {
-                return Err("a goal has no reviewer — drop --reviewer; its tasks are what get reviewed".into());
+                return Err(
+                    "a goal has no reviewer — drop --reviewer; its tasks are what get reviewed"
+                        .into(),
+                );
             }
             if self.owner == Some(reviewer) {
                 return Err(format!(
@@ -134,7 +137,9 @@ impl TaskBlock {
         match kind {
             Kind::Goal => {
                 if owner.is_some() {
-                    return Err("a goal has no owner — drop --to; its tasks are what get owned".into());
+                    return Err(
+                        "a goal has no owner — drop --to; its tasks are what get owned".into()
+                    );
                 }
                 if parent.is_some() {
                     return Err("a goal has no parent — drop --parent, or drop --goal to open a \
@@ -305,7 +310,10 @@ impl ChainEntry {
     pub fn flag(reason: &str) -> Result<Self, String> {
         let reason = plain(reason);
         if reason.is_empty() {
-            return Err("a flag needs the reason — `fleet task flag 14 \"why this is not worth doing\"`".into());
+            return Err(
+                "a flag needs the reason — `fleet task flag 14 \"why this is not worth doing\"`"
+                    .into(),
+            );
         }
         Ok(ChainEntry::Flagged { reason })
     }
@@ -314,7 +322,10 @@ impl ChainEntry {
     pub fn review(met: bool, reason: Option<&str>, requested: bool) -> Result<Self, String> {
         let reason = reason.map(plain).filter(|text| !text.is_empty());
         if !met && reason.is_none() {
-            return Err("--not-met needs the reason — say which criterion is not met and what you saw".into());
+            return Err(
+                "--not-met needs the reason — say which criterion is not met and what you saw"
+                    .into(),
+            );
         }
         Ok(ChainEntry::Reviewed { met, reason, requested })
     }
@@ -327,7 +338,12 @@ impl ChainEntry {
         place: &str,
         on_behalf_of: Option<PaneId>,
     ) -> Result<Self, String> {
-        let fields = [("--why", plain(why)), ("--done", plain(done)), ("--left", plain(left)), ("--where", plain(place))];
+        let fields = [
+            ("--why", plain(why)),
+            ("--done", plain(done)),
+            ("--left", plain(left)),
+            ("--where", plain(place)),
+        ];
         let missing: Vec<&str> =
             fields.iter().filter(|(_, text)| text.is_empty()).map(|(flag, _)| *flag).collect();
         if !missing.is_empty() {
@@ -413,16 +429,31 @@ impl TaskRecord {
             ));
         }
         let given = [
-            (Field::Outcome, outcome.map(|text| vec![text.to_string()]), vec![self.block.outcome.clone()]),
-            (Field::Technical, (!technical.is_empty()).then(|| technical.to_vec()), self.block.technical.clone()),
-            (Field::Vision, (!vision.is_empty()).then(|| vision.to_vec()), self.block.vision.clone()),
+            (
+                Field::Outcome,
+                outcome.map(|text| vec![text.to_string()]),
+                vec![self.block.outcome.clone()],
+            ),
+            (
+                Field::Technical,
+                (!technical.is_empty()).then(|| technical.to_vec()),
+                self.block.technical.clone(),
+            ),
+            (
+                Field::Vision,
+                (!vision.is_empty()).then(|| vision.to_vec()),
+                self.block.vision.clone(),
+            ),
         ];
         let mut entries = Vec::new();
         for (field, new, old) in given {
             let Some(new) = new else { continue };
             let new = kept(&new);
             if new.is_empty() {
-                return Err(format!("{} cannot be replaced with nothing — give its new text", field.flag()));
+                return Err(format!(
+                    "{} cannot be replaced with nothing — give its new text",
+                    field.flag()
+                ));
             }
             if new != old {
                 entries.push(ChainEntry::Edited { field, old, new });
@@ -456,7 +487,9 @@ impl TaskRecord {
     pub fn may_review(&self, from: PaneId, lineage: &str) -> Result<bool, String> {
         let n = self.number;
         if self.block.kind == Kind::Goal {
-            return Err(format!("#{n} is a goal, and a verdict belongs on one of its tasks (`fleet task list`)"));
+            return Err(format!(
+                "#{n} is a goal, and a verdict belongs on one of its tasks (`fleet task list`)"
+            ));
         }
         if self.owned_by(from, lineage) {
             return Err(format!(
@@ -468,7 +501,12 @@ impl TaskRecord {
     }
 
     /// orch and the operator name the reviewer, on any task.
-    pub fn set_reviewer(&self, from: PaneId, lineage: &str, new: PaneId) -> Result<ChainEntry, String> {
+    pub fn set_reviewer(
+        &self,
+        from: PaneId,
+        lineage: &str,
+        new: PaneId,
+    ) -> Result<ChainEntry, String> {
         let n = self.number;
         if !matches!(from, PaneId::Orch | PaneId::Operator) {
             return Err(format!(
@@ -476,10 +514,14 @@ impl TaskRecord {
             ));
         }
         if self.block.kind == Kind::Goal {
-            return Err(format!("#{n} is a goal, and a goal has no reviewer — name one on its tasks"));
+            return Err(format!(
+                "#{n} is a goal, and a goal has no reviewer — name one on its tasks"
+            ));
         }
         if self.owned_by(new, lineage) {
-            return Err(format!("{new} owns #{n}, and nobody reviews their own work — name a different pane"));
+            return Err(format!(
+                "{new} owns #{n}, and nobody reviews their own work — name a different pane"
+            ));
         }
         if self.block.reviewer == Some(new) {
             return Err(format!("{new} is already #{n}'s reviewer — nothing changed"));
@@ -577,10 +619,12 @@ impl TaskRecord {
     pub fn may_set(&self, from: PaneId, lineage: &str, status: TaskStatus) -> Result<(), String> {
         let n = self.number;
         match status {
-            TaskStatus::InProgress | TaskStatus::Done if self.block.kind == Kind::Goal => Err(format!(
+            TaskStatus::InProgress | TaskStatus::Done if self.block.kind == Kind::Goal => {
+                Err(format!(
                 "#{n} is a goal, and a goal is not taken up or marked done — take up one of its \
                  tasks (`fleet task list`)"
-            )),
+            ))
+            }
             TaskStatus::Removed => Err(format!(
                 "a task is removed with `fleet task remove {n} \"<reason>\"`, not with --status"
             )),
@@ -624,10 +668,10 @@ pub fn may_open(from: PaneId, block: &TaskBlock) -> Result<(), String> {
             "a task you open starts unowned — drop --to, then message the peer or orch about it"
                 .to_string(),
         ),
-        (PaneId::Worker(_), Kind::Task) if block.reviewer.is_some() => Err(
-            "orch and the operator name a task's reviewer — drop --reviewer and ask orch"
-                .to_string(),
-        ),
+        (PaneId::Worker(_), Kind::Task) if block.reviewer.is_some() => {
+            Err("orch and the operator name a task's reviewer — drop --reviewer and ask orch"
+                .to_string())
+        }
         (PaneId::Orch, Kind::Task) if block.parent.is_none() => Err(
             "a task must serve a goal — add --parent <goal number> (`fleet task list` shows the \
              goals), or open the goal first with `fleet task post --goal`"
@@ -773,8 +817,17 @@ mod tests {
     }
 
     fn goal() -> TaskBlock {
-        TaskBlock::new(Kind::Goal, "one grammar", &[], &crits(&["the parser is the product"]), None, None, None, None)
-            .unwrap()
+        TaskBlock::new(
+            Kind::Goal,
+            "one grammar",
+            &[],
+            &crits(&["the parser is the product"]),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap()
     }
 
     fn task(owner: Option<PaneId>, parent: Option<u64>) -> TaskBlock {
@@ -804,22 +857,49 @@ mod tests {
         assert_eq!(goal().technical, Vec::<String>::new());
         let why = TaskBlock::new(Kind::Goal, "x", &[], &[], None, None, None, None).unwrap_err();
         assert!(why.contains("--crit-s"), "{why}");
-        let why = TaskBlock::new(Kind::Goal, "x", &[], &crits(&["v"]), Some(PaneId::Worker(1)), None, None, None)
-            .unwrap_err();
+        let why = TaskBlock::new(
+            Kind::Goal,
+            "x",
+            &[],
+            &crits(&["v"]),
+            Some(PaneId::Worker(1)),
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
         assert!(why.contains("--to"), "{why}");
-        let why =
-            TaskBlock::new(Kind::Goal, "x", &[], &crits(&["v"]), None, None, Some(3), None).unwrap_err();
+        let why = TaskBlock::new(Kind::Goal, "x", &[], &crits(&["v"]), None, None, Some(3), None)
+            .unwrap_err();
         assert!(why.contains("--parent"), "{why}");
     }
 
     #[test]
     fn a_task_needs_a_technical_criterion_and_an_owner_is_optional() {
         assert_eq!(task(None, Some(1)).owner, None);
-        let why = TaskBlock::new(Kind::Task, "x", &crits(&["", " "]), &crits(&["v"]), None, None, Some(1), None)
-            .unwrap_err();
+        let why = TaskBlock::new(
+            Kind::Task,
+            "x",
+            &crits(&["", " "]),
+            &crits(&["v"]),
+            None,
+            None,
+            Some(1),
+            None,
+        )
+        .unwrap_err();
         assert!(why.contains("--crit-t") && why.contains("cargo test"), "{why}");
-        let why = TaskBlock::new(Kind::Task, " ", &crits(&["t"]), &crits(&["v"]), None, None, Some(1), None)
-            .unwrap_err();
+        let why = TaskBlock::new(
+            Kind::Task,
+            " ",
+            &crits(&["t"]),
+            &crits(&["v"]),
+            None,
+            None,
+            Some(1),
+            None,
+        )
+        .unwrap_err();
         assert!(why.contains("--outcome"), "{why}");
     }
 
@@ -923,9 +1003,15 @@ mod tests {
             assert!(board[1].may_set(PaneId::Worker(2), LINEAGE, status).is_ok(), "its creator");
             assert!(board[1].may_set(PaneId::Orch, LINEAGE, status).is_ok(), "orch on a worker's");
             assert!(board[1].may_set(PaneId::Worker(3), LINEAGE, status).is_err(), "a peer");
-            assert!(board[2].may_set(PaneId::Orch, LINEAGE, status).is_err(), "orch on the operator's");
+            assert!(
+                board[2].may_set(PaneId::Orch, LINEAGE, status).is_err(),
+                "orch on the operator's"
+            );
             assert!(board[2].may_set(PaneId::Operator, LINEAGE, status).is_ok());
-            assert!(board[0].may_set(PaneId::Operator, LINEAGE, status).is_ok(), "the operator on any");
+            assert!(
+                board[0].may_set(PaneId::Operator, LINEAGE, status).is_ok(),
+                "the operator on any"
+            );
         }
     }
 
@@ -934,22 +1020,36 @@ mod tests {
         let log = vec![
             opened(1, PaneId::Orch, goal()),
             opened(2, PaneId::Orch, task(Some(PaneId::Worker(2)), Some(1))),
-            ChainEntry::comment(" the tokenizer leaks ").unwrap().into_event(2, PaneId::Worker(3), RUN, LINEAGE),
+            ChainEntry::comment(" the tokenizer leaks ").unwrap().into_event(
+                2,
+                PaneId::Worker(3),
+                RUN,
+                LINEAGE,
+            ),
         ];
         let record = board(&log).remove(1);
         assert_eq!(record.status, TaskStatus::Planned);
         assert_eq!(record.owner.unwrap().pane, PaneId::Worker(2));
-        assert_eq!(record.chain[1].entry, ChainEntry::Commented { text: "the tokenizer leaks".into() });
+        assert_eq!(
+            record.chain[1].entry,
+            ChainEntry::Commented { text: "the tokenizer leaks".into() }
+        );
         assert!(ChainEntry::comment("  ").unwrap_err().contains("needs text"));
     }
 
     #[test]
     fn an_edit_keeps_the_whole_old_and_new_value_and_refuses_a_no_op() {
-        let log = vec![opened(1, PaneId::Orch, goal()), opened(2, PaneId::Orch, task(None, Some(1)))];
+        let log =
+            vec![opened(1, PaneId::Orch, goal()), opened(2, PaneId::Orch, task(None, Some(1)))];
         let record = board(&log).remove(1);
 
         let entries = record
-            .edits(PaneId::Orch, Some(&record.block.outcome), &crits(&["cargo test -p parser", "clippy is clean"]), &[])
+            .edits(
+                PaneId::Orch,
+                Some(&record.block.outcome),
+                &crits(&["cargo test -p parser", "clippy is clean"]),
+                &[],
+            )
             .unwrap();
         assert_eq!(
             entries,
@@ -960,12 +1060,15 @@ mod tests {
             }],
             "the unchanged outcome produced no entry",
         );
-        let edited = [log, vec![entries[0].clone().into_event(2, PaneId::Orch, RUN, LINEAGE)]].concat();
+        let edited =
+            [log, vec![entries[0].clone().into_event(2, PaneId::Orch, RUN, LINEAGE)]].concat();
         let after = board(&edited).remove(1);
         assert_eq!(after.block.technical.len(), 2);
         assert_eq!(after.chain.len(), 2);
 
-        let why = record.edits(PaneId::Orch, Some("the parser accepts nested groups"), &[], &[]).unwrap_err();
+        let why = record
+            .edits(PaneId::Orch, Some("the parser accepts nested groups"), &[], &[])
+            .unwrap_err();
         assert!(why.contains("changes nothing"), "{why}");
         let why = record.edits(PaneId::Orch, None, &[], &[]).unwrap_err();
         assert!(why.contains("changes nothing"), "{why}");
@@ -981,10 +1084,20 @@ mod tests {
             opened(1, PaneId::Orch, goal()),
             opened(2, PaneId::Orch, task(Some(PaneId::Worker(2)), Some(1))),
             set(2, PaneId::Worker(2), TaskStatus::InProgress),
-            ChainEntry::comment("found a leak").unwrap().into_event(2, PaneId::Worker(3), RUN, LINEAGE),
+            ChainEntry::comment("found a leak").unwrap().into_event(
+                2,
+                PaneId::Worker(3),
+                RUN,
+                LINEAGE,
+            ),
             ChainEntry::Edited { field: Field::Outcome, old: crits(&["a"]), new: crits(&["b"]) }
                 .into_event(2, PaneId::Orch, RUN, LINEAGE),
-            ChainEntry::status(TaskStatus::Done, Some("cargo test passes")).into_event(2, PaneId::Worker(2), RUN, LINEAGE),
+            ChainEntry::status(TaskStatus::Done, Some("cargo test passes")).into_event(
+                2,
+                PaneId::Worker(2),
+                RUN,
+                LINEAGE,
+            ),
         ] {
             let line = serde_json::to_string(&event).unwrap();
             assert!(line.contains(r#""type":"chain""#), "{line}");
@@ -1009,7 +1122,12 @@ mod tests {
 
     #[test]
     fn a_receipt_round_trips_with_its_tail_and_omits_it_when_absent() {
-        let with = receipt(Some("test result: 6 passed; 1 failed")).into_event(2, PaneId::Worker(2), RUN, LINEAGE);
+        let with = receipt(Some("test result: 6 passed; 1 failed")).into_event(
+            2,
+            PaneId::Worker(2),
+            RUN,
+            LINEAGE,
+        );
         let line = serde_json::to_string(&with).unwrap();
         assert!(line.contains(r#""tail":"test result: 6 passed; 1 failed""#), "{line}");
         assert_eq!(serde_json::from_str::<FleetEvent>(&line).unwrap(), with, "{line}");

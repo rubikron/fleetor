@@ -341,11 +341,9 @@ fn run() -> Result<ExitCode> {
         Command::Task { action: TaskCmd::List { full: true, .. } | TaskCmd::Show { .. } }
     );
     let filter = match cli.command {
-        Command::Task { action: TaskCmd::List { open, mine, removed, .. } } => Filter {
-            open,
-            mine: if mine { Some(me()?) } else { None },
-            removed: Some(removed),
-        },
+        Command::Task { action: TaskCmd::List { open, mine, removed, .. } } => {
+            Filter { open, mine: if mine { Some(me()?) } else { None }, removed: Some(removed) }
+        }
         _ => Filter::default(),
     };
 
@@ -379,7 +377,9 @@ fn run() -> Result<ExitCode> {
         }
         Command::Handoff { built, evidence, open, goal } => {
             let goal = goal.map(|raw| number(&raw, "--goal")).transpose()?;
-            let Op::Handoff { built, evidence, open, .. } = handoff_op(me()?, built, evidence, open)? else {
+            let Op::Handoff { built, evidence, open, .. } =
+                handoff_op(me()?, built, evidence, open)?
+            else {
                 unreachable!("handoff_op builds a handoff")
             };
             Op::Handoff { built, evidence, open, goal }
@@ -421,7 +421,17 @@ fn run() -> Result<ExitCode> {
 /// on the model's own stderr rather than a socket round trip.
 fn task_action(action: TaskCmd) -> Result<TaskAction> {
     Ok(match action {
-        TaskCmd::Post { goal, to, outcome, crit_t, crit_s, instructions, parent, converges_on, reviewer } => {
+        TaskCmd::Post {
+            goal,
+            to,
+            outcome,
+            crit_t,
+            crit_s,
+            instructions,
+            parent,
+            converges_on,
+            reviewer,
+        } => {
             if let Some(Some(value)) = &goal {
                 let n = value.trim().trim_start_matches('#');
                 anyhow::bail!(
@@ -498,7 +508,9 @@ fn task_action(action: TaskCmd) -> Result<TaskAction> {
             let task = task_number(task, "review")?;
             match (met, not_met) {
                 (true, None) => TaskAction::Review { task, met: true, reason: note },
-                (false, Some(reason)) => TaskAction::Review { task, met: false, reason: Some(reason) },
+                (false, Some(reason)) => {
+                    TaskAction::Review { task, met: false, reason: Some(reason) }
+                }
                 _ => anyhow::bail!(
                     "`fleet task review {task}` needs exactly one verdict: --met, or --not-met \
                      \"<which criterion, and what you saw>\""
@@ -550,9 +562,13 @@ impl Filter {
         let keep = |record: &TaskRecord| {
             let open = matches!(record.status, TaskStatus::Planned | TaskStatus::InProgress);
             let mine = self.mine.is_none_or(|me| {
-                record.owner.as_ref().is_some_and(|o| o.pane == me && !earlier(o, lineage.as_deref()))
+                record
+                    .owner
+                    .as_ref()
+                    .is_some_and(|o| o.pane == me && !earlier(o, lineage.as_deref()))
             });
-            let removed = self.removed.is_none_or(|only| only == (record.status == TaskStatus::Removed));
+            let removed =
+                self.removed.is_none_or(|only| only == (record.status == TaskStatus::Removed));
             (open || !self.open) && mine && removed
         };
         OpResult::Board { tasks: tasks.into_iter().filter(keep).collect(), lineage }
@@ -562,7 +578,9 @@ impl Filter {
 /// A task number as a model types it: `14` or a quoted `#14`.
 fn number(raw: &str, what: &str) -> Result<u64> {
     raw.trim().trim_start_matches('#').parse().map_err(|_| {
-        anyhow::anyhow!("{what} takes a task number like 14, not {raw:?} — `fleet task list` shows them")
+        anyhow::anyhow!(
+            "{what} takes a task number like 14, not {raw:?} — `fleet task list` shows them"
+        )
     })
 }
 
@@ -572,7 +590,12 @@ fn pane(raw: Option<String>) -> Result<Option<PaneId>> {
 }
 
 /// What `fleet done` puts on the task's chain once its message has gone.
-fn receipt_action(task: &str, place: done::Place, check: done::Check, accepted: bool) -> Result<TaskAction> {
+fn receipt_action(
+    task: &str,
+    place: done::Place,
+    check: done::Check,
+    accepted: bool,
+) -> Result<TaskAction> {
     Ok(TaskAction::Receipt {
         task: number(task, "`fleet done`")?,
         check: check.command,
@@ -675,7 +698,10 @@ fn roster_lines(panes: &[PaneEntry]) -> Vec<String> {
         .map(|entry| {
             let state = format!("{:?}", entry.state).to_lowercase();
             let context = match entry.context {
-                Some(c) => format!("≈{}% ({}/{} tok, from transcript)", c.pct, c.used_tokens, c.window_tokens),
+                Some(c) => format!(
+                    "≈{}% ({}/{} tok, from transcript)",
+                    c.pct, c.used_tokens, c.window_tokens
+                ),
                 None => "—".to_string(),
             };
             format!("{:<10} {state:<10} {context}", entry.pane.to_string())
@@ -687,11 +713,9 @@ fn roster_lines(panes: &[PaneEntry]) -> Vec<String> {
 /// criteria, instructions and the chain. Pure, so the shape is testable.
 fn board_lines(tasks: &[TaskRecord], lineage: Option<&str>, full: bool) -> Vec<String> {
     if tasks.is_empty() {
-        return vec![
-            "there are no goals or tasks yet — `fleet task post --goal --outcome \"…\" \
+        return vec!["there are no goals or tasks yet — `fleet task post --goal --outcome \"…\" \
              --crit-s \"…\"` opens the first goal"
-                .to_string(),
-        ];
+            .to_string()];
     }
     let mut lines = Vec::new();
     for (index, depth) in tree_order(tasks) {
@@ -721,15 +745,14 @@ fn summary(record: &TaskRecord, lineage: Option<&str>) -> String {
         (Kind::Goal, _) => {
             return format!("#{n} goal [{}] — {}{flagged}", record.status, record.block.outcome)
         }
-        (Kind::Task, Some(owner)) if earlier(owner, lineage) => format!("{}, earlier run", owner.pane),
+        (Kind::Task, Some(owner)) if earlier(owner, lineage) => {
+            format!("{}, earlier run", owner.pane)
+        }
         (Kind::Task, Some(owner)) => owner.pane.to_string(),
         (Kind::Task, None) => "unowned".to_string(),
     };
-    let converges = record
-        .block
-        .converges_on
-        .map(|n| format!("  → converges on #{n}"))
-        .unwrap_or_default();
+    let converges =
+        record.block.converges_on.map(|n| format!("  → converges on #{n}")).unwrap_or_default();
     format!("#{n} [{}] {who} — {}{converges}{flagged}", record.status, record.block.outcome)
 }
 
@@ -781,7 +804,11 @@ fn details(record: &TaskRecord) -> Vec<String> {
             ChainEntry::Handoff { built, evidence, open, open_tasks } => format!(
                 "handed off — built: {built} — evidence: {}{}{}",
                 evidence.join(" | "),
-                if open.is_empty() { String::new() } else { format!(" — open: {}", open.join(" | ")) },
+                if open.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — open: {}", open.join(" | "))
+                },
                 if open_tasks.is_empty() {
                     String::new()
                 } else {
@@ -791,7 +818,9 @@ fn details(record: &TaskRecord) -> Vec<String> {
                     )
                 }
             ),
-            ChainEntry::Receipt { check, status, branch, commit, uncommitted, accepted, .. } => format!(
+            ChainEntry::Receipt {
+                check, status, branch, commit, uncommitted, accepted, ..
+            } => format!(
                 "ran `{check}` — {status} — {} @ {}{}{}",
                 branch.as_deref().unwrap_or("no branch"),
                 commit.as_deref().unwrap_or("no commit"),
@@ -854,9 +883,10 @@ fn target(pane: &str) -> Result<PaneId> {
 }
 
 fn socket() -> Result<PathBuf> {
-    let raw = std::env::var(ENV_SOCKET).ok().filter(|s| !s.trim().is_empty()).with_context(|| {
-        format!("{ENV_SOCKET} is not set — the fleet shell sets it on every pane it spawns")
-    })?;
+    let raw =
+        std::env::var(ENV_SOCKET).ok().filter(|s| !s.trim().is_empty()).with_context(|| {
+            format!("{ENV_SOCKET} is not set — the fleet shell sets it on every pane it spawns")
+        })?;
     Ok(PathBuf::from(raw))
 }
 
@@ -1074,8 +1104,24 @@ mod tests {
     #[test]
     fn the_refusal_is_exactly_as_wide_as_the_recipient_fleet_send_accepts() {
         for candidate in [
-            "orch", "lead", "o", "operator", "2", "w2", "worker2", "worker-2", "self",
-            "w", "worker", "worker-", "worker_3", "256", "3pm", "Agreed", "annex", "orch,",
+            "orch",
+            "lead",
+            "o",
+            "operator",
+            "2",
+            "w2",
+            "worker2",
+            "worker-2",
+            "self",
+            "w",
+            "worker",
+            "worker-",
+            "worker_3",
+            "256",
+            "3pm",
+            "Agreed",
+            "annex",
+            "orch,",
             "worker-3 said the annex is out",
         ] {
             let is_a_pane_name = candidate.parse::<PaneId>().is_ok();
@@ -1100,10 +1146,22 @@ mod tests {
     /// wrong pane, but a message meant for one pane reaching all four.
     #[test]
     fn a_broadcast_that_names_a_recipient_is_refused_for_every_spelling_send_accepts() {
-        for name in
-            ["orch", "orchestrator", "lead", "o", "operator", "0", "3", "255", "w3",
-             "worker3", "worker-3", "OrCh", "Worker-3", " orch "]
-        {
+        for name in [
+            "orch",
+            "orchestrator",
+            "lead",
+            "o",
+            "operator",
+            "0",
+            "3",
+            "255",
+            "w3",
+            "worker3",
+            "worker-3",
+            "OrCh",
+            "Worker-3",
+            " orch ",
+        ] {
             assert!(
                 name.parse::<PaneId>().is_ok(),
                 "{name:?}: this test is only meaningful for names `fleet send` accepts"
@@ -1152,8 +1210,24 @@ mod tests {
     #[test]
     fn broadcast_and_reply_refuse_exactly_the_same_set_of_names() {
         for candidate in [
-            "orch", "lead", "o", "operator", "2", "w2", "worker2", "worker-2", "self",
-            "w", "worker", "worker-", "worker_3", "256", "3pm", "Agreed", "annex", "orch,",
+            "orch",
+            "lead",
+            "o",
+            "operator",
+            "2",
+            "w2",
+            "worker2",
+            "worker-2",
+            "self",
+            "w",
+            "worker",
+            "worker-",
+            "worker_3",
+            "256",
+            "3pm",
+            "Agreed",
+            "annex",
+            "orch,",
             "worker-3 is blocked on the schema",
         ] {
             let is_a_pane_name = candidate.parse::<PaneId>().is_ok();
@@ -1173,7 +1247,10 @@ mod tests {
     #[test]
     fn a_command_without_a_why_is_refused_by_the_parser() {
         assert!(Cli::try_parse_from(["fleet", "cmd", "2", "/clear"]).is_err());
-        assert!(Cli::try_parse_from(["fleet", "cmd", "2", "--why", "stale"]).is_err(), "no command");
+        assert!(
+            Cli::try_parse_from(["fleet", "cmd", "2", "--why", "stale"]).is_err(),
+            "no command"
+        );
         assert!(Cli::try_parse_from(["fleet", "cmd", "--why", "stale"]).is_err(), "no pane");
         assert!(Cli::try_parse_from(["fleet", "cmd", "2", "/clear", "--why", "stale"]).is_ok());
     }
@@ -1186,8 +1263,28 @@ mod tests {
     fn the_why_survives_however_the_model_quotes_the_command() {
         for argv in [
             vec!["fleet", "cmd", "2", "/compact keep the parser", "--why", "task block done"],
-            vec!["fleet", "cmd", "2", "/compact", "keep", "the", "parser", "--why", "task block done"],
-            vec!["fleet", "cmd", "--why", "task block done", "2", "/compact", "keep", "the", "parser"],
+            vec![
+                "fleet",
+                "cmd",
+                "2",
+                "/compact",
+                "keep",
+                "the",
+                "parser",
+                "--why",
+                "task block done",
+            ],
+            vec![
+                "fleet",
+                "cmd",
+                "--why",
+                "task block done",
+                "2",
+                "/compact",
+                "keep",
+                "the",
+                "parser",
+            ],
         ] {
             let cli = Cli::try_parse_from(&argv).unwrap_or_else(|e| panic!("{argv:?}: {e}"));
             let Command::Cmd { pane, command, why } = cli.command else { panic!("expected cmd") };
@@ -1240,7 +1337,11 @@ mod tests {
         let lines = roster_lines(&[PaneEntry::new(PaneId::Orch, PaneState::Live)]);
         assert_eq!(lines.len(), 1);
         assert!(lines[0].contains('—'), "{}", lines[0]);
-        assert!(!lines[0].contains('%'), "no percent may appear for an unsampled pane: {}", lines[0]);
+        assert!(
+            !lines[0].contains('%'),
+            "no percent may appear for an unsampled pane: {}",
+            lines[0]
+        );
     }
 
     /// A sampled worker's line carries its pane name, state, and the honest
@@ -1269,40 +1370,92 @@ mod tests {
     /// Goal #1 with tasks #2 (owned by worker-2, taken up) and #3 (unowned).
     fn records() -> Vec<TaskRecord> {
         let crit = |s: &str| vec![s.to_string()];
-        let goal = TaskBlock::new(Kind::Goal, "one grammar", &[], &crit("the parser is the product"), None, None, None, None).unwrap();
+        let goal = TaskBlock::new(
+            Kind::Goal,
+            "one grammar",
+            &[],
+            &crit("the parser is the product"),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         let task = |owner, outcome: &str| {
-            TaskBlock::new(Kind::Task, outcome, &crit("cargo test -p parser"), &crit("one grammar"), owner, Some("start from the tokenizer"), Some(1), None).unwrap()
+            TaskBlock::new(
+                Kind::Task,
+                outcome,
+                &crit("cargo test -p parser"),
+                &crit("one grammar"),
+                owner,
+                Some("start from the tokenizer"),
+                Some(1),
+                None,
+            )
+            .unwrap()
         };
         let at = |n, from, entry: ChainEntry| entry.into_event(n, from, "run-1", "lin-1");
         board(&[
             at(1, PaneId::Operator, ChainEntry::Opened { block: goal }),
-            at(2, PaneId::Orch, ChainEntry::Opened { block: task(Some(PaneId::Worker(2)), "nested groups parse") }),
+            at(
+                2,
+                PaneId::Orch,
+                ChainEntry::Opened { block: task(Some(PaneId::Worker(2)), "nested groups parse") },
+            ),
             at(3, PaneId::Orch, ChainEntry::Opened { block: task(None, "errors name the token") }),
             at(2, PaneId::Worker(2), ChainEntry::status(TaskStatus::InProgress, Some("starting"))),
             at(2, PaneId::Worker(3), ChainEntry::comment("the tokenizer leaks").unwrap()),
-            at(2, PaneId::Orch, ChainEntry::Edited {
-                field: fleetor_core::task::Field::Outcome,
-                old: crit("nested groups parse"),
-                new: crit("nested groups parse at any depth"),
-            }),
+            at(
+                2,
+                PaneId::Orch,
+                ChainEntry::Edited {
+                    field: fleetor_core::task::Field::Outcome,
+                    old: crit("nested groups parse"),
+                    new: crit("nested groups parse at any depth"),
+                },
+            ),
         ])
     }
 
     #[test]
     fn goal_is_a_flag_and_a_task_names_its_goal_with_parent() {
-        let TaskAction::Post { goal, owner, parent, technical, .. } =
-            action(&["fleet", "task", "post", "--goal", "--outcome", "one grammar", "--crit-s", "v"]).unwrap()
-        else {
+        let TaskAction::Post { goal, owner, parent, technical, .. } = action(&[
+            "fleet",
+            "task",
+            "post",
+            "--goal",
+            "--outcome",
+            "one grammar",
+            "--crit-s",
+            "v",
+        ])
+        .unwrap() else {
             panic!("expected a post")
         };
         assert!(goal && owner.is_none() && parent.is_none() && technical.is_empty());
 
-        let TaskAction::Post { goal, owner, parent, technical, vision, converges_on, .. } = action(&[
-            "fleet", "task", "post", "--to", "worker-3", "--outcome", "the parser lands",
-            "--crit-t", "cargo test -p parser", "--crit-t", "fleet task show 14",
-            "--crit-s", "one grammar", "--parent", "11", "--converges-on", "#12",
-        ])
-        .unwrap() else {
+        let TaskAction::Post { goal, owner, parent, technical, vision, converges_on, .. } =
+            action(&[
+                "fleet",
+                "task",
+                "post",
+                "--to",
+                "worker-3",
+                "--outcome",
+                "the parser lands",
+                "--crit-t",
+                "cargo test -p parser",
+                "--crit-t",
+                "fleet task show 14",
+                "--crit-s",
+                "one grammar",
+                "--parent",
+                "11",
+                "--converges-on",
+                "#12",
+            ])
+            .unwrap()
+        else {
             panic!("expected a post")
         };
         assert!(!goal);
@@ -1312,7 +1465,8 @@ mod tests {
         assert_eq!(vision, vec!["one grammar"]);
 
         let TaskAction::Post { owner, .. } =
-            action(&["fleet", "task", "post", "--outcome", "o", "--crit-t", "t", "--crit-s", "s"]).unwrap()
+            action(&["fleet", "task", "post", "--outcome", "o", "--crit-t", "t", "--crit-s", "s"])
+                .unwrap()
         else {
             panic!("expected a post")
         };
@@ -1323,9 +1477,19 @@ mod tests {
     #[test]
     fn goal_with_a_number_is_refused_and_points_at_parent() {
         for value in ["11", "#11"] {
-            let why = action(&["fleet", "task", "post", "--goal", value, "--outcome", "o", "--crit-s", "s"])
-                .unwrap_err()
-                .to_string();
+            let why = action(&[
+                "fleet",
+                "task",
+                "post",
+                "--goal",
+                value,
+                "--outcome",
+                "o",
+                "--crit-s",
+                "s",
+            ])
+            .unwrap_err()
+            .to_string();
             assert!(why.contains("to open a task under goal 11, use --parent 11"), "{why}");
         }
     }
@@ -1333,11 +1497,28 @@ mod tests {
     #[test]
     fn a_task_number_is_bare_or_a_quoted_hash() {
         for raw in ["14", "#14"] {
-            assert_eq!(action(&["fleet", "task", "show", raw]).unwrap(), TaskAction::Show { task: 14 });
+            assert_eq!(
+                action(&["fleet", "task", "show", raw]).unwrap(),
+                TaskAction::Show { task: 14 }
+            );
         }
         assert_eq!(
-            action(&["fleet", "task", "update", "14", "--status", "in-progress", "--note", "on it"]).unwrap(),
-            TaskAction::Update { task: 14, status: TaskStatus::InProgress, note: Some("on it".into()) },
+            action(&[
+                "fleet",
+                "task",
+                "update",
+                "14",
+                "--status",
+                "in-progress",
+                "--note",
+                "on it"
+            ])
+            .unwrap(),
+            TaskAction::Update {
+                task: 14,
+                status: TaskStatus::InProgress,
+                note: Some("on it".into())
+            },
         );
         let why = action(&["fleet", "task", "show", "task-1-0"]).unwrap_err().to_string();
         assert!(why.contains("task number like 14"), "{why}");
@@ -1346,7 +1527,9 @@ mod tests {
     /// An unquoted `#14` is eaten by the shell, so the subcommand sees nothing.
     #[test]
     fn a_missing_number_explains_the_shell_comment() {
-        for argv in [vec!["fleet", "task", "show"], vec!["fleet", "task", "update", "--status", "done"]] {
+        for argv in
+            [vec!["fleet", "task", "show"], vec!["fleet", "task", "update", "--status", "done"]]
+        {
             let why = action(&argv).unwrap_err().to_string();
             assert!(why.contains("`#` as the start of a comment"), "{why}");
             assert!(why.contains(&format!("`fleet task {} 14`", argv[2])), "{why}");
@@ -1355,11 +1538,14 @@ mod tests {
 
     #[test]
     fn a_status_is_parsed_before_the_wire_and_a_typo_names_the_four() {
-        let why = action(&["fleet", "task", "update", "14", "--status", "claimed"]).unwrap_err().to_string();
+        let why = action(&["fleet", "task", "update", "14", "--status", "claimed"])
+            .unwrap_err()
+            .to_string();
         for status in fleetor_core::task::TASK_STATUSES {
             assert!(why.contains(status), "the refusal names {status}: {why}");
         }
-        let why = action(&["fleet", "task", "update", "14", "--note", "x"]).unwrap_err().to_string();
+        let why =
+            action(&["fleet", "task", "update", "14", "--note", "x"]).unwrap_err().to_string();
         assert!(why.contains("--status") && why.contains("fleet task comment 14"), "{why}");
     }
 
@@ -1387,8 +1573,23 @@ mod tests {
         else {
             panic!("an edit may name only the reviewer")
         };
-        let post = ["fleet", "task", "post", "--parent", "1", "--outcome", "o", "--crit-t", "t", "--crit-s", "s", "--reviewer", "worker-3"];
-        let TaskAction::Post { reviewer: Some(PaneId::Worker(3)), .. } = action(&post).unwrap() else {
+        let post = [
+            "fleet",
+            "task",
+            "post",
+            "--parent",
+            "1",
+            "--outcome",
+            "o",
+            "--crit-t",
+            "t",
+            "--crit-s",
+            "s",
+            "--reviewer",
+            "worker-3",
+        ];
+        let TaskAction::Post { reviewer: Some(PaneId::Worker(3)), .. } = action(&post).unwrap()
+        else {
             panic!("post names the reviewer")
         };
     }
@@ -1397,7 +1598,8 @@ mod tests {
     /// that is not a number cannot be recorded, and says so.
     #[test]
     fn a_receipt_is_recorded_with_the_facts_it_was_sent_with() {
-        let (_, place, check) = done::checked(PaneId::Worker(2), "#14", "echo boom; exit 9").expect("a receipt");
+        let (_, place, check) =
+            done::checked(PaneId::Worker(2), "#14", "echo boom; exit 9").expect("a receipt");
         let TaskAction::Receipt { task: 14, check: command, status, accepted: false, tail, .. } =
             receipt_action("#14", place.clone(), check.clone(), false).unwrap()
         else {
@@ -1444,7 +1646,14 @@ mod tests {
         }
         assert_eq!(
             action(&["fleet", "task", "edit", "#14", "--crit-t", "a", "--crit-t", "b"]).unwrap(),
-            TaskAction::Edit { task: 14, outcome: None, technical: vec!["a".into(), "b".into()], vision: vec![], reviewer: None, parent: None },
+            TaskAction::Edit {
+                task: 14,
+                outcome: None,
+                technical: vec!["a".into(), "b".into()],
+                vision: vec![],
+                reviewer: None,
+                parent: None
+            },
         );
         let why = action(&["fleet", "task", "edit", "14"]).unwrap_err().to_string();
         assert!(why.contains("--outcome") && why.contains("whole new list"), "{why}");
@@ -1454,13 +1663,21 @@ mod tests {
 
     #[test]
     fn the_list_filters_to_open_and_to_mine() {
-        let numbers = |filter: Filter| match filter.apply(OpResult::Board { tasks: records(), lineage: None }) {
+        let numbers = |filter: Filter| match filter
+            .apply(OpResult::Board { tasks: records(), lineage: None })
+        {
             OpResult::Board { tasks, .. } => tasks.iter().map(|r| r.number).collect::<Vec<_>>(),
             other => panic!("{other:?}"),
         };
         assert_eq!(numbers(Filter { open: true, mine: None, removed: None }), vec![1, 2, 3]);
-        assert_eq!(numbers(Filter { open: false, mine: Some(PaneId::Worker(2)), removed: None }), vec![2]);
-        assert_eq!(numbers(Filter { open: true, mine: Some(PaneId::Worker(3)), removed: None }), Vec::<u64>::new());
+        assert_eq!(
+            numbers(Filter { open: false, mine: Some(PaneId::Worker(2)), removed: None }),
+            vec![2]
+        );
+        assert_eq!(
+            numbers(Filter { open: true, mine: Some(PaneId::Worker(3)), removed: None }),
+            Vec::<u64>::new()
+        );
     }
 
     #[test]
@@ -1479,7 +1696,8 @@ mod tests {
         );
         let why = action(&["fleet", "task", "flag"]).unwrap_err().to_string();
         assert!(why.contains("`fleet task flag 14`"), "{why}");
-        let TaskAction::Edit { parent, .. } = action(&["fleet", "task", "edit", "14", "--parent", "#3"]).unwrap()
+        let TaskAction::Edit { parent, .. } =
+            action(&["fleet", "task", "edit", "14", "--parent", "#3"]).unwrap()
         else {
             panic!("expected an edit")
         };
@@ -1495,13 +1713,23 @@ mod tests {
         let at = |from, entry: ChainEntry| entry.into_event(3, from, "run-1", "lin-1");
         let mut events: Vec<_> = records()
             .iter()
-            .flat_map(|r| r.chain.iter().map(|l| l.entry.clone().into_event(r.number, l.from, &l.run, &l.lineage)))
+            .flat_map(|r| {
+                r.chain
+                    .iter()
+                    .map(|l| l.entry.clone().into_event(r.number, l.from, &l.run, &l.lineage))
+            })
             .collect();
         events.push(at(PaneId::Worker(2), ChainEntry::flag("it deletes fixtures").unwrap()));
         events.push(at(PaneId::Worker(3), ChainEntry::flag("agreed").unwrap()));
         let flagged = board(&events);
-        assert!(summary(&flagged[2], None).ends_with("(flagged by 2)"), "{}", summary(&flagged[2], None));
-        assert!(details(&flagged[2]).iter().any(|l| l == "worker-3: flagged it as not worth doing — agreed"));
+        assert!(
+            summary(&flagged[2], None).ends_with("(flagged by 2)"),
+            "{}",
+            summary(&flagged[2], None)
+        );
+        assert!(details(&flagged[2])
+            .iter()
+            .any(|l| l == "worker-3: flagged it as not worth doing — agreed"));
 
         events.push(at(PaneId::Orch, ChainEntry::Removed { reason: "destructive".into() }));
         let numbers = |removed| {
@@ -1540,13 +1768,16 @@ mod tests {
     #[test]
     fn an_owner_from_another_session_reads_as_an_earlier_run() {
         let lines = board_lines(&records(), Some("another-lineage"), false);
-        assert_eq!(lines[1], "  #2 [in-progress] worker-2, earlier run — nested groups parse at any depth");
+        assert_eq!(
+            lines[1],
+            "  #2 [in-progress] worker-2, earlier run — nested groups parse at any depth"
+        );
         let mine = Filter { open: false, mine: Some(PaneId::Worker(2)), removed: None };
-        let kept = |lineage: &str| {
-            match mine.apply(OpResult::Board { tasks: records(), lineage: Some(lineage.into()) }) {
-                OpResult::Board { tasks, .. } => tasks.len(),
-                other => panic!("{other:?}"),
-            }
+        let kept = |lineage: &str| match mine
+            .apply(OpResult::Board { tasks: records(), lineage: Some(lineage.into()) })
+        {
+            OpResult::Board { tasks, .. } => tasks.len(),
+            other => panic!("{other:?}"),
         };
         let own = records()[1].owner.clone().unwrap().lineage;
         assert_eq!((kept(&own), kept("another-lineage")), (1, 0));
@@ -1571,14 +1802,20 @@ mod tests {
             full.contains("orch: edited --outcome — was: nested groups parse — now: nested groups parse at any depth"),
             "{full}"
         );
-        assert!(full.contains("worker-2 — nested groups parse at any depth"), "the summary is the new text: {full}");
+        assert!(
+            full.contains("worker-2 — nested groups parse at any depth"),
+            "the summary is the new text: {full}"
+        );
     }
 
     #[test]
     fn a_recorded_entry_and_a_list_both_exit_zero() {
         assert!(report(OpResult::Recorded { record_id: "14".into() }, false));
         assert!(report(OpResult::Board { tasks: records(), lineage: None }, true));
-        assert!(report(OpResult::Board { tasks: vec![], lineage: None }, false), "an empty list is not a failure");
+        assert!(
+            report(OpResult::Board { tasks: vec![], lineage: None }, false),
+            "an empty list is not a failure"
+        );
     }
 
     // --- the receipt (WP-06) ----------------------------------------------------
@@ -1623,7 +1860,10 @@ mod tests {
         assert!(text.contains("· exit 9"), "the check's failure is in the body: {text}");
 
         assert!(
-            report(OpResult::Delivered { msg_id: "msg-9".into(), accepted: true, detail: None }, false),
+            report(
+                OpResult::Delivered { msg_id: "msg-9".into(), accepted: true, detail: None },
+                false
+            ),
             "a delivered receipt exits zero however the check went",
         );
         assert!(
@@ -1648,7 +1888,8 @@ mod tests {
     /// must not have to invent one.
     #[test]
     fn a_handoff_without_a_claim_or_evidence_is_refused_by_the_parser() {
-        let complete = ["fleet", "handoff", "--built", "the parser lands", "--evidence", "cargo test"];
+        let complete =
+            ["fleet", "handoff", "--built", "the parser lands", "--evidence", "cargo test"];
         assert!(Cli::try_parse_from(complete).is_ok());
         assert!(Cli::try_parse_from(["fleet", "handoff", "--evidence", "cargo test"]).is_err());
         assert!(Cli::try_parse_from(["fleet", "handoff", "--built", "it is done"]).is_err());
@@ -1661,9 +1902,16 @@ mod tests {
     #[test]
     fn the_handoff_flags_repeat_and_keep_their_order() {
         let cli = Cli::try_parse_from([
-            "fleet", "handoff", "--built", "the parser accepts nested groups",
-            "--evidence", "cargo test -p parser", "--evidence", "fleet/integration @ a1b2c3d",
-            "--open", "the error messages are still the tokenizer's",
+            "fleet",
+            "handoff",
+            "--built",
+            "the parser accepts nested groups",
+            "--evidence",
+            "cargo test -p parser",
+            "--evidence",
+            "fleet/integration @ a1b2c3d",
+            "--open",
+            "the error messages are still the tokenizer's",
         ])
         .expect("a complete handoff");
         let Command::Handoff { built, evidence, open, .. } = cli.command else {
@@ -1695,8 +1943,9 @@ mod tests {
     /// operator use — one word, one implementation, no room to drift.
     #[test]
     fn a_handoff_is_an_op_of_its_own_and_reports_recorded() {
-        let op = handoff_op(PaneId::Orch, "the CLI ships".into(), vec!["cargo test".into()], vec![])
-            .expect("orch may hand the work back");
+        let op =
+            handoff_op(PaneId::Orch, "the CLI ships".into(), vec!["cargo test".into()], vec![])
+                .expect("orch may hand the work back");
         assert!(matches!(op, Op::Handoff { .. }), "never a send, never a task: {op:?}");
         assert!(report(OpResult::Recorded { record_id: "handoff-1".into() }, false));
     }

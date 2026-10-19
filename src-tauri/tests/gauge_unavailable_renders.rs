@@ -281,10 +281,7 @@ fn an_unavailable_rail_carries_no_figure_at_all() {
 
     for key in ["pane_unavailable", "card_unavailable", "pane_pending"] {
         let m = as_read(&markup(&all, key));
-        assert!(
-            !m.contains('%'),
-            "`{key}` shows a percent for a reading that has none: {m}"
-        );
+        assert!(!m.contains('%'), "`{key}` shows a percent for a reading that has none: {m}");
         assert!(
             !m.chars().any(|c| c.is_ascii_digit()),
             "`{key}` shows a figure for a reading that has none. A number that looks right and \

@@ -431,8 +431,11 @@ fn tiers_promised(text: &str) -> Vec<String> {
 #[test]
 fn no_cost_sentence_promises_a_plan_tier() {
     let backend = read(BACKEND);
-    let sentences =
-        format!("{}{}", rust_fn(&backend, "fn orchestrator_cost("), rust_fn(&backend, "fn worker_cost("));
+    let sentences = format!(
+        "{}{}",
+        rust_fn(&backend, "fn orchestrator_cost("),
+        rust_fn(&backend, "fn worker_cost(")
+    );
     let promised = tiers_promised(&sentences);
     assert!(
         promised.is_empty(),

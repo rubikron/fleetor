@@ -314,8 +314,12 @@ mod tests {
         .unwrap();
         let log = [
             ChainEntry::Opened { block }.into_event(14, PaneId::Orch, "run-1", "lin-1"),
-            ChainEntry::status(TaskStatus::InProgress, Some("on it"))
-                .into_event(14, PaneId::Worker(2), "run-1", "lin-1"),
+            ChainEntry::status(TaskStatus::InProgress, Some("on it")).into_event(
+                14,
+                PaneId::Worker(2),
+                "run-1",
+                "lin-1",
+            ),
         ];
         board(&log).remove(0)
     }
@@ -406,9 +410,7 @@ mod tests {
             OpResult::Recorded { record_id: "msg-1".into() },
             OpResult::Board { tasks: vec![sample_record()], lineage: Some("lin-1".into()) },
             OpResult::Board { tasks: vec![], lineage: None },
-            OpResult::Roster {
-                panes: vec![PaneEntry::new(PaneId::Operator, PaneState::Present)],
-            },
+            OpResult::Roster { panes: vec![PaneEntry::new(PaneId::Operator, PaneState::Present)] },
         ];
         for result in results {
             let resp = Response::new("req-1", result);

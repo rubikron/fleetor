@@ -235,11 +235,7 @@ fn tail_of(text: &str) -> (String, usize) {
     let want = text.len() - TAIL_CAP;
     // Slice on a char boundary, or a multi-byte character straddling the cap
     // would panic on a receipt whose output happened to contain one.
-    let start = text
-        .char_indices()
-        .map(|(i, _)| i)
-        .find(|i| *i >= want)
-        .unwrap_or(text.len());
+    let start = text.char_indices().map(|(i, _)| i).find(|i| *i >= want).unwrap_or(text.len());
     (text[start..].to_string(), start)
 }
 
@@ -341,7 +337,11 @@ mod tests {
     use super::*;
 
     fn place() -> Place {
-        Place { branch: Some("fleet/worker-2".into()), commit: Some("a1b2c3d".into()), dirty: false }
+        Place {
+            branch: Some("fleet/worker-2".into()),
+            commit: Some("a1b2c3d".into()),
+            dirty: false,
+        }
     }
 
     fn check(status: &str, output: &str) -> Check {
@@ -421,7 +421,8 @@ mod tests {
         assert!(dropped > 0);
         assert!(kept.ends_with("test result: ok. 12 passed"), "the summary survives");
 
-        let body = receipt("task-1-0", &place(), &Check { output: kept, dropped, ..check("exit 0", "") });
+        let body =
+            receipt("task-1-0", &place(), &Check { output: kept, dropped, ..check("exit 0", "") });
         assert!(body.contains(&format!("{dropped} earlier bytes dropped")), "{body}");
     }
 
@@ -501,7 +502,10 @@ mod tests {
     #[test]
     fn the_tail_has_no_ansi_escapes() {
         let raw = "\x1b[1m\x1b[31mFAILED\x1b[0m arrays\n\x1b]0;title\x07test result: \x1b[32mok\x1b[0m\r\n";
-        assert_eq!(last_lines(&readable(&strip_ansi(raw))).as_deref(), Some("FAILED arrays\ntest result: ok"));
+        assert_eq!(
+            last_lines(&readable(&strip_ansi(raw))).as_deref(),
+            Some("FAILED arrays\ntest result: ok")
+        );
     }
 
     #[test]
@@ -514,8 +518,12 @@ mod tests {
 
     #[test]
     fn the_check_captures_its_tail_from_both_streams() {
-        let (_, _, check) =
-            checked(PaneId::Worker(1), "task-1-0", "printf '\\033[31mred\\033[0m\\n'; echo err >&2; exit 1").unwrap();
+        let (_, _, check) = checked(
+            PaneId::Worker(1),
+            "task-1-0",
+            "printf '\\033[31mred\\033[0m\\n'; echo err >&2; exit 1",
+        )
+        .unwrap();
         assert_eq!(check.status, "exit 1");
         assert_eq!(check.tail.as_deref(), Some("red\nerr"));
     }

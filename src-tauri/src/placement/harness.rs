@@ -1221,7 +1221,6 @@ impl<'a> Seat<'a> {
     pub fn for_the_operator(self) -> Self {
         Self { operators_own_seat: true, ..self }
     }
-
 }
 
 /// A registered harness: its fourteen answers, plus the three checkpoints that
@@ -1309,7 +1308,10 @@ pub trait Harness: std::fmt::Debug + Send + Sync + 'static {
     /// The default is `None`: a harness that has not answered this cannot take a
     /// plan seat, which fails toward the fleet's key rather than toward a pane
     /// that looks healthy while logged out.
-    fn read_operator_login(&self, operator_home: Option<&std::path::Path>) -> Option<OperatorLogin> {
+    fn read_operator_login(
+        &self,
+        operator_home: Option<&std::path::Path>,
+    ) -> Option<OperatorLogin> {
         let _ = operator_home;
         None
     }
@@ -1779,8 +1781,8 @@ impl Harness for ClaudeCode {
             "hooks": [{ "type": "command", "command": command }],
         }));
 
-        let text = serde_json::to_string_pretty(&root)
-            .map_err(|e| format!("encode settings: {e}"))?;
+        let text =
+            serde_json::to_string_pretty(&root).map_err(|e| format!("encode settings: {e}"))?;
         guardrail::install_document(spec, at.config_dir, &text)?;
         Ok(notices)
     }
@@ -1867,9 +1869,12 @@ impl Harness for ClaudeCode {
     /// way round.
     fn has_session(&self, seat_dir: &Path, session_id: &str) -> bool {
         let spec = self.spec();
-        crate::runs::transcript_files_for(&seat_dir.join(spec.transcript.subdir), spec.transcript.file_ext)
-            .iter()
-            .any(|file| file.file_stem().and_then(|s| s.to_str()) == Some(session_id))
+        crate::runs::transcript_files_for(
+            &seat_dir.join(spec.transcript.subdir),
+            spec.transcript.file_ext,
+        )
+        .iter()
+        .any(|file| file.file_stem().and_then(|s| s.to_str()) == Some(session_id))
     }
 }
 
@@ -2589,7 +2594,9 @@ impl HarnessReadiness {
                     self.login_guidance().map(|g| format!(" {}", g.line())).unwrap_or_default();
                 notices.push((
                     NoticeLevel::Warn,
-                    format!("{name} has no usable credential on this machine: {summary}.{guidance}"),
+                    format!(
+                        "{name} has no usable credential on this machine: {summary}.{guidance}"
+                    ),
                 ));
                 return notices;
             }
@@ -2618,11 +2625,7 @@ impl HarnessReadiness {
                 format!(
                     "{name} resolved its containment as {} — read back from the vendor, \
                      not from the keys FLEETOR wrote.",
-                    posture
-                        .iter()
-                        .map(|(k, v)| format!("{k} {v}"))
-                        .collect::<Vec<_>>()
-                        .join(", "),
+                    posture.iter().map(|(k, v)| format!("{k} {v}")).collect::<Vec<_>>().join(", "),
                 ),
             ));
         }
@@ -2754,7 +2757,7 @@ fn claude_code_login(home: Option<&Path>) -> LoginState {
                 // shape cannot arise for it — an honest `None` rather than an
                 // invented one (#51).
                 provider_key: None,
-            }
+            };
         }
         Err(e) => {
             let why = format!("{} could not be read: {e}", file.display());
@@ -2938,10 +2941,8 @@ mod tests {
     #[test]
     fn the_three_not_usable_shapes_are_told_three_different_things() {
         let spec = &CLAUDE_CODE_SPEC;
-        let readiness = |login: LoginState| HarnessReadiness {
-            login,
-            ..HarnessReadiness::not_installed(spec)
-        };
+        let readiness =
+            |login: LoginState| HarnessReadiness { login, ..HarnessReadiness::not_installed(spec) };
 
         // 1 — no credential at all: the vendor's own login command, with whatever
         // second step the spec declared.
@@ -2999,10 +3000,7 @@ mod tests {
         // carries the only actionable sentence there is, and a logged-in harness
         // has nothing to fix.
         assert_eq!(readiness(LoginState::NotInstalled).login_guidance(), None);
-        assert_eq!(
-            readiness(LoginState::LoggedIn(AccountShape::ApiKey)).login_guidance(),
-            None,
-        );
+        assert_eq!(readiness(LoginState::LoggedIn(AccountShape::ApiKey)).login_guidance(), None,);
 
         // **And none of the three respells the caveat.** That sentence is about a
         // machine that *is* logged in — the opposite state to all three — and it is
@@ -3042,7 +3040,8 @@ mod tests {
 
         for harness in all {
             let name = harness.spec().name;
-            let found = by_name(name).unwrap_or_else(|| panic!("{name} is registered and unfindable"));
+            let found =
+                by_name(name).unwrap_or_else(|| panic!("{name} is registered and unfindable"));
             assert!(
                 std::ptr::eq(found.spec(), harness.spec()),
                 "{name} resolves by name to a different spec than the registry holds",
@@ -3122,10 +3121,8 @@ mod tests {
     /// check is exact: a prefix of the id is not the session (R19).
     #[test]
     fn claude_codes_presence_check_finds_the_session_its_reader_names_and_no_other() {
-        let seat = std::env::temp_dir().join(format!(
-            "fleetor-cc-has-session-{}",
-            fleetor_core::time::now_ms()
-        ));
+        let seat = std::env::temp_dir()
+            .join(format!("fleetor-cc-has-session-{}", fleetor_core::time::now_ms()));
         let project = seat.join("projects").join("-tmp-slug");
         std::fs::create_dir_all(&project).expect("scratch seat");
         std::fs::write(project.join("abc-123.jsonl"), r#"{"type":"user"}"#).expect("a transcript");
@@ -3144,10 +3141,8 @@ mod tests {
         // Checkpoints 4 and 14 end to end, against a scratch directory — the same
         // property `placement`'s own rule buys: every filesystem effect is
         // confined to the directory it was handed.
-        let scratch = std::env::temp_dir().join(format!(
-            "fleetor-harness-seed-{}",
-            fleetor_core::time::now_ms()
-        ));
+        let scratch = std::env::temp_dir()
+            .join(format!("fleetor-harness-seed-{}", fleetor_core::time::now_ms()));
         let cwd = scratch.join("work");
         std::fs::create_dir_all(&cwd).expect("scratch cwd");
         let config = scratch.join("config");
@@ -3230,7 +3225,10 @@ mod tests {
         // The two that refuse carry the vendor's own words, and the not-installed
         // sentence is the one `HarnessOffer::from` puts on the row (`not_on_the_path`).
         let refused = HarnessReadiness {
-            login: LoginState::NoCredential { summary: "no Codex credentials".into(), provider_key: None },
+            login: LoginState::NoCredential {
+                summary: "no Codex credentials".into(),
+                provider_key: None,
+            },
             ..logged_in()
         };
         assert_eq!(refused.refusal().as_deref(), Some("no Codex credentials"));
@@ -3269,7 +3267,10 @@ mod tests {
         // Not on a machine with no credential: there is no green check to qualify,
         // and a caveat beside a refusal reads as a second problem.
         let refused = HarnessReadiness {
-            login: LoginState::NoCredential { summary: "no Codex credentials".to_string(), provider_key: None },
+            login: LoginState::NoCredential {
+                summary: "no Codex credentials".to_string(),
+                provider_key: None,
+            },
             ..logged_in()
         };
         assert!(

@@ -197,7 +197,12 @@ async fn a_handoff_with_no_evidence_is_refused_and_nothing_is_logged() {
     let mut orch = pane(&transport, PaneId::Orch).await;
 
     let result = orch
-        .call(Op::Handoff { built: "we finished".into(), evidence: vec![], open: vec![], goal: None })
+        .call(Op::Handoff {
+            built: "we finished".into(),
+            evidence: vec![],
+            open: vec![],
+            goal: None,
+        })
         .await
         .unwrap();
     let OpResult::Error { message } = result else { panic!("expected a refusal: {result:?}") };

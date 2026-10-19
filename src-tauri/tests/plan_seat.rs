@@ -95,7 +95,9 @@ fn a_codex_plan_seat_gets_auth_json_and_not_the_fleets_provider() {
     let mut bench = Bench::new("plan-seat-codex");
     bench.operator_logs_in(codex(), DOCUMENT);
 
-    bench.place(PaneSpec::worker(1, fleetor_shell::placement::codex::codex()).on_the_operators_plan());
+    bench.place(
+        PaneSpec::worker(1, fleetor_shell::placement::codex::codex()).on_the_operators_plan(),
+    );
     let dir = bench.config_dir(PaneId::Worker(1));
 
     let auth = dir.join("auth.json");

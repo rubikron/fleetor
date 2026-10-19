@@ -30,7 +30,9 @@ pub struct TaskBlock {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "change", rename_all = "kebab-case")]
 pub enum TaskChange {
-    Posted { block: TaskBlock },
+    Posted {
+        block: TaskBlock,
+    },
     Updated {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         status: Option<TaskStatus>,

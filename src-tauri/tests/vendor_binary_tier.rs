@@ -384,7 +384,8 @@ fn the_probe_is_committed_infrastructure_stamped_with_its_vendor_build() {
          failing arm cannot be traced to the measurement it contradicts"
     );
 
-    let clear_notes = fs::read_to_string(root.join(CLEAR_NOTES)).expect("C37's notes are committed");
+    let clear_notes =
+        fs::read_to_string(root.join(CLEAR_NOTES)).expect("C37's notes are committed");
     assert!(
         clear_notes.contains(RECORDED_BUILD),
         "{CLEAR_NOTES} must carry the same vendor build id as {CLEAR_PROBE} ({RECORDED_BUILD}), \
@@ -1022,9 +1023,12 @@ fn the_sandbox_trio_fences_a_real_pane_and_the_fleet_socket_still_reaches_it() {
                 body
             });
 
-            let probe = [python.to_string_lossy().into_owned(), "-c".into(), PROBE.into(), socket
-                .to_string_lossy()
-                .into_owned()];
+            let probe = [
+                python.to_string_lossy().into_owned(),
+                "-c".into(),
+                PROBE.into(),
+                socket.to_string_lossy().into_owned(),
+            ];
             let argv: Vec<&str> = probe.iter().map(String::as_str).collect();
 
             let connected = under_seatbelt(&trio, &argv);
@@ -1256,7 +1260,11 @@ fn a_seeded_worker_commits_in_its_linked_worktree_and_the_rest_of_dot_git_stays_
     let hook = repo.join(".git").join("hooks").join("pre-commit");
     let out = under_seatbelt(
         &with_roots,
-        &format!("printf '#!/bin/sh\\n' > '{}'; echo x >> '{}'", hook.display(), repo.join("README.md").display()),
+        &format!(
+            "printf '#!/bin/sh\\n' > '{}'; echo x >> '{}'",
+            hook.display(),
+            repo.join("README.md").display()
+        ),
     );
     assert!(!hook.exists(), "a worker wrote a hook into the target repo.\n{}", said(&out));
     assert_eq!(
@@ -1382,7 +1390,8 @@ fn the_vendor_resolves_a_worker_to_fleetors_provider_and_refuses_the_operators_k
         for (name, value) in env {
             command.env(name, value);
         }
-        let out = command.output().unwrap_or_else(|e| panic!("could not run {}: {e}", vendor.display()));
+        let out =
+            command.output().unwrap_or_else(|e| panic!("could not run {}: {e}", vendor.display()));
         serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
             panic!("`{VENDOR_BIN} doctor --json` stopped emitting JSON ({e}):\n{}", said(&out))
         })
@@ -1407,7 +1416,8 @@ fn the_vendor_resolves_a_worker_to_fleetors_provider_and_refuses_the_operators_k
     // Arm 2 — the same seat, the fleet's key gone and the *operator's* in its
     // place. This is the arm that proves arm 1 measured the entry rather than the
     // environment.
-    let with_the_operators_key = auth(&report(&worker, &[("CODEX_API_KEY", "sk-the-operators-own")]));
+    let with_the_operators_key =
+        auth(&report(&worker, &[("CODEX_API_KEY", "sk-the-operators-own")]));
     assert_eq!(
         with_the_operators_key["status"].as_str(),
         Some("fail"),
@@ -1776,8 +1786,8 @@ fn the_operators_own_seat_authenticates_and_a_fenced_seat_holds_nothing_of_the_o
 fn a_fleet_seeded_codex_worker_is_refused_a_write_outside_its_worktree() {
     use fleetor_shell::guardrail::GuardrailPlacement;
     use fleetor_shell::placement::codex::{codex, OPERATOR_DIR};
-    use fleetor_shell::placement::Seed;
     use fleetor_shell::placement::harness::Seat;
+    use fleetor_shell::placement::Seed;
     const HOOK_PROBE: &str = "examples/codex-spike/hook_probe.py";
     const BYPASS: &str = "--dangerously-bypass-hook-trust";
 
@@ -1814,7 +1824,9 @@ fn a_fleet_seeded_codex_worker_is_refused_a_write_outside_its_worktree() {
         return;
     }
     let Some(python) = on_path(INTERPRETER) else {
-        announce(&["SKIPPED: the codex write-guardrail arm — no `python3` to be the model.".into()]);
+        announce(
+            &["SKIPPED: the codex write-guardrail arm — no `python3` to be the model.".into()],
+        );
         return;
     };
 
@@ -1865,9 +1877,7 @@ fn a_fleet_seeded_codex_worker_is_refused_a_write_outside_its_worktree() {
 
         // The argv is production's, and the flag being in it is the half that makes
         // the hook run at all.
-        let argv = codex().command_args(
-            &Seat::new("do the work").with_permission_mode("never"),
-        );
+        let argv = codex().command_args(&Seat::new("do the work").with_permission_mode("never"));
         assert!(
             argv.iter().any(|a| a == BYPASS),
             "a fenced codex seat's argv carries the hook-trust bypass: {argv:?}",
@@ -2177,7 +2187,11 @@ fn the_gates_probe_reads_all_three_auth_shapes_the_vendor_reports() {
         "the containment the vendor *resolved*, not the keys FLEETOR wrote (C8): {:?}",
         named.posture,
     );
-    assert!(named.posture.network.is_some() && named.posture.approval.is_some(), "{:?}", named.posture);
+    assert!(
+        named.posture.network.is_some() && named.posture.approval.is_some(),
+        "{:?}",
+        named.posture
+    );
     assert!(
         named.version.as_deref().is_some_and(|v| RECORDED_BUILD.ends_with(v)),
         "the build every reading here was recorded against is {RECORDED_BUILD}; the probe \

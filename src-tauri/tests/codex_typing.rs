@@ -91,10 +91,8 @@ const GAMMA: &str = "TYPING-SENTINEL-GAMMA";
 /// **Built from `..CODEX_SPEC.typing` rather than written out**, so the control
 /// cannot drift into being a different profile. If it ever differs in a second
 /// field, the arm below stops being a control and nobody would be told.
-static NEVER_SUBMITS: HarnessSpec = HarnessSpec {
-    typing: TypingProfile { submit_bytes: &[], ..CODEX_SPEC.typing },
-    ..CODEX_SPEC
-};
+static NEVER_SUBMITS: HarnessSpec =
+    HarnessSpec { typing: TypingProfile { submit_bytes: &[], ..CODEX_SPEC.typing }, ..CODEX_SPEC };
 
 /// **The ticket: a message sent to a live codex pane is submitted, and one paste
 /// is one turn** (#32).

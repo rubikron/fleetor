@@ -27,9 +27,7 @@
 
 use std::path::{Path, PathBuf};
 
-use fleetor_core::brief::{
-    validate_orch, validate_worker, DEFAULT_ORCH, DEFAULT_WORKER,
-};
+use fleetor_core::brief::{validate_orch, validate_worker, DEFAULT_ORCH, DEFAULT_WORKER};
 use fleetor_core::event::NoticeLevel;
 
 /// The `claude` flags and endpoint a worker is launched with, from
@@ -200,15 +198,15 @@ fn load_template(
     };
 
     match validate(&text) {
-        Ok(()) => (
-            text,
-            vec![(NoticeLevel::Info, format!("using your {}", path.display()))],
-        ),
+        Ok(()) => (text, vec![(NoticeLevel::Info, format!("using your {}", path.display()))]),
         Err(why) => (
             fallback,
             vec![(
                 NoticeLevel::Warn,
-                format!("ignoring {} — {why}. The built-in brief is being used instead.", path.display()),
+                format!(
+                    "ignoring {} — {why}. The built-in brief is being used instead.",
+                    path.display()
+                ),
             )],
         ),
     }
@@ -342,7 +340,11 @@ mod tests {
     #[test]
     fn baked_launch_matches_the_shipped_conf() {
         let baked = PaneContext::baked();
-        assert!(baked.notices.is_empty(), "the shipped launch.conf does not parse: {:?}", baked.notices);
+        assert!(
+            baked.notices.is_empty(),
+            "the shipped launch.conf does not parse: {:?}",
+            baked.notices
+        );
         assert_eq!(baked.launch, LaunchConfig::default(), "launch.conf drifted from the fallback");
     }
 
@@ -353,7 +355,11 @@ mod tests {
         assert_eq!(ctx.orch_template, DEFAULT_ORCH);
         assert_eq!(ctx.worker_template, DEFAULT_WORKER);
         assert_eq!(ctx.launch, LaunchConfig::default());
-        assert!(ctx.notices.is_empty(), "a first run must not warn about anything: {:?}", ctx.notices);
+        assert!(
+            ctx.notices.is_empty(),
+            "a first run must not warn about anything: {:?}",
+            ctx.notices
+        );
     }
 
     /// A valid override is used *and announced* — a prompt change that quietly did
@@ -369,7 +375,10 @@ mod tests {
 
         let ctx = PaneContext::resolve(&dir);
         assert_eq!(ctx.worker_template, mine, "the operator's template is what gets rendered");
-        assert_eq!(ctx.orch_template, DEFAULT_ORCH, "an orch override was not written, so it is untouched");
+        assert_eq!(
+            ctx.orch_template, DEFAULT_ORCH,
+            "an orch override was not written, so it is untouched"
+        );
         assert!(
             ctx.notices.iter().any(|(l, t)| *l == NoticeLevel::Info && t.contains("worker.md")),
             "the operator is told their override took effect: {:?}",
@@ -377,14 +386,13 @@ mod tests {
         );
 
         // And it really does reach a rendered brief, fragments intact.
-        let brief =
-            render_worker(
-                &ctx.worker_template,
-                PaneId::Worker(2),
-                &PaneId::roster(&WORKER_SLOTS),
-                "/tmp/wt",
-                "fleet/wt-0000",
-            );
+        let brief = render_worker(
+            &ctx.worker_template,
+            PaneId::Worker(2),
+            &PaneId::roster(&WORKER_SLOTS),
+            "/tmp/wt",
+            "fleet/wt-0000",
+        );
         assert!(brief.contains("you work with"));
         assert!(brief.contains("exits non-zero"), "the delivery contract survived the override");
         assert!(brief.contains("Never reply to a broadcast unless it names you"), "L5 survived");
@@ -406,7 +414,8 @@ mod tests {
 
         let ctx = PaneContext::resolve(&dir);
         assert_eq!(ctx.worker_template, DEFAULT_WORKER, "a pane must never run a half-valid brief");
-        let (level, text) = ctx.notices.iter().find(|(_, t)| t.contains("worker.md")).expect("told");
+        let (level, text) =
+            ctx.notices.iter().find(|(_, t)| t.contains("worker.md")).expect("told");
         assert_eq!(*level, NoticeLevel::Warn);
         assert!(text.contains("{delivery_contract}"), "the complaint names what to fix: {text}");
         assert!(text.contains("built-in"), "and says what is running instead: {text}");
@@ -422,7 +431,11 @@ mod tests {
 
         let ctx = PaneContext::resolve(&dir);
         assert_eq!(ctx.launch.worker_model, "my-model");
-        assert_eq!(ctx.launch.worker_base_url, LaunchConfig::default().worker_base_url, "untouched");
+        assert_eq!(
+            ctx.launch.worker_base_url,
+            LaunchConfig::default().worker_base_url,
+            "untouched"
+        );
         assert_eq!(ctx.launch.worker_permission_mode, "auto", "untouched");
         assert!(ctx.notices.iter().any(|(l, _)| *l == NoticeLevel::Info));
 
@@ -479,7 +492,8 @@ mod tests {
     /// silently did nothing.
     #[test]
     fn fence_posture_open_parses_with_no_complaint() {
-        let (config, complaints) = apply_conf(&LaunchConfig::default(), "[fence]\nposture = open\n");
+        let (config, complaints) =
+            apply_conf(&LaunchConfig::default(), "[fence]\nposture = open\n");
         assert!(complaints.is_empty(), "{complaints:#?}");
         assert_eq!(config.fence_posture, "open");
     }
@@ -504,7 +518,8 @@ mod tests {
     #[test]
     fn fence_allow_expands_a_leading_tilde() {
         let home = std::env::var("HOME").expect("the test process has a HOME");
-        let (config, complaints) = apply_conf(&LaunchConfig::default(), "[fence]\nallow = ~/datasets\n");
+        let (config, complaints) =
+            apply_conf(&LaunchConfig::default(), "[fence]\nallow = ~/datasets\n");
         assert!(complaints.is_empty(), "{complaints:#?}");
         assert_eq!(config.fence_allow, vec![format!("{home}/datasets")]);
     }
@@ -514,9 +529,15 @@ mod tests {
     /// the reason, not silently resolved against whichever cwd came first.
     #[test]
     fn a_relative_fence_allow_is_refused_with_the_reason() {
-        let (config, complaints) =
-            apply_conf(&LaunchConfig::default(), "[fence]\nallow = scratch\nallow = /Users/me/ok\n");
-        assert_eq!(config.fence_allow, vec!["/Users/me/ok"], "a bad line must not discard a good one");
+        let (config, complaints) = apply_conf(
+            &LaunchConfig::default(),
+            "[fence]\nallow = scratch\nallow = /Users/me/ok\n",
+        );
+        assert_eq!(
+            config.fence_allow,
+            vec!["/Users/me/ok"],
+            "a bad line must not discard a good one"
+        );
         assert_eq!(complaints.len(), 1);
         assert!(complaints[0].contains("scratch"), "{complaints:#?}");
         assert!(complaints[0].contains("absolute"), "{complaints:#?}");
@@ -528,8 +549,12 @@ mod tests {
     /// setting nothing honors.
     #[test]
     fn an_unsupported_posture_falls_back_to_open_and_warns() {
-        let (config, complaints) = apply_conf(&LaunchConfig::default(), "[fence]\nposture = locked-down\n");
-        assert_eq!(config.fence_posture, "open", "an unimplemented posture must not silently \"take effect\"");
+        let (config, complaints) =
+            apply_conf(&LaunchConfig::default(), "[fence]\nposture = locked-down\n");
+        assert_eq!(
+            config.fence_posture, "open",
+            "an unimplemented posture must not silently \"take effect\""
+        );
         assert_eq!(complaints.len(), 1);
         assert!(complaints[0].contains("locked-down"), "{complaints:#?}");
         assert!(complaints[0].contains("only `open` exists"), "{complaints:#?}");

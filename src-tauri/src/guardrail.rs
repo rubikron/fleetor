@@ -186,8 +186,7 @@ pub fn prepare(
     // Overwritten on every spawn, unlike the gitconfig seed: this file ships
     // with the binary and a stale copy from an older build would be a guardrail
     // enforcing last version's rules.
-    std::fs::write(&script, HOOK_SCRIPT)
-        .map_err(|e| format!("write {}: {e}", script.display()))?;
+    std::fs::write(&script, HOOK_SCRIPT).map_err(|e| format!("write {}: {e}", script.display()))?;
 
     let command = hook_command(&script, spec, at);
 
@@ -221,8 +220,7 @@ pub fn install_document(
     let settings = config_dir.join(spec.settings_file);
     let tmp = config_dir.join(format!("{}.tmp", spec.settings_file));
     std::fs::write(&tmp, text).map_err(|e| format!("write {}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, &settings)
-        .map_err(|e| format!("install {}: {e}", settings.display()))
+    std::fs::rename(&tmp, &settings).map_err(|e| format!("install {}: {e}", settings.display()))
 }
 
 /// This pane's existing settings document, if it has one.
@@ -410,10 +408,7 @@ mod tests {
     }
 
     fn installed_command(dir: &Path) -> String {
-        settings(dir)["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
-            .as_str()
-            .unwrap()
-            .to_string()
+        settings(dir)["hooks"]["PreToolUse"][0]["hooks"][0]["command"].as_str().unwrap().to_string()
     }
 
     /// The whole install, at the seam: the script is on disk and `settings.json`
@@ -596,7 +591,11 @@ mod tests {
         let notices = journal.drain();
         assert_eq!(notices[0].0, NoticeLevel::Error);
         assert!(notices[0].1.contains("KeyError: x"), "{}", notices[0].1);
-        assert!(notices[0].1.contains("stuck"), "the operator needs the consequence: {}", notices[0].1);
+        assert!(
+            notices[0].1.contains("stuck"),
+            "the operator needs the consequence: {}",
+            notices[0].1
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -668,7 +667,11 @@ mod tests {
     #[test]
     fn the_fleets_toolchain_homes_are_inside_a_pane_root_so_a_build_cache_write_is_never_refused() {
         let shell = PathBuf::from("/Users/operator/.fleetor/_shell");
-        let roots = roots_for(Path::new("/Users/operator/.fleetor/_shell/worktrees/x/worker-1"), &shell, &[]);
+        let roots = roots_for(
+            Path::new("/Users/operator/.fleetor/_shell/worktrees/x/worker-1"),
+            &shell,
+            &[],
+        );
 
         for dir in ["cargo", "rustup"] {
             let home = shell.join(dir);

@@ -186,9 +186,12 @@ fn a_row_offers_what_its_state_allows() {
     let rows = rows(&list);
     assert_eq!(rows.len(), 3, "{list}");
     let row = |label: &str| {
-        rows.iter().find(|r| r.contains(label)).unwrap_or_else(|| panic!("no row for {label}:\n{list}"))
+        rows.iter()
+            .find(|r| r.contains(label))
+            .unwrap_or_else(|| panic!("no row for {label}:\n{list}"))
     };
-    let has_actions = |r: &str| r.contains(">Export<") || r.contains(">Rename<") || r.contains(">Delete<");
+    let has_actions =
+        |r: &str| r.contains(">Export<") || r.contains(">Rename<") || r.contains(">Delete<");
 
     let running = row("live work");
     assert!(running.contains("Running now"), "{running}");

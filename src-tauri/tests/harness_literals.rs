@@ -111,9 +111,13 @@ const NEEDLES: &[Needle] = &[
     ("cp 4 — config_dir.env_var", "CLAUDE_CONFIG_DIR", |s| one(s.config_dir.env_var)),
     ("cp 4 — config_dir.seed_file", ".claude.json", |s| one(s.config_dir.seed_file)),
     ("cp 4 — config_dir.seed_keys", "hasCompletedOnboarding", |s| list(s.config_dir.seed_keys)),
-    ("cp 5 — credentials.base_url_env", "ANTHROPIC_BASE_URL", |s| opt(s.credentials.base_url_env)),
+    ("cp 5 — credentials.base_url_env", "ANTHROPIC_BASE_URL", |s| {
+        opt(s.credentials.base_url_env)
+    }),
     ("cp 5 — credentials.token_env", "ANTHROPIC_AUTH_TOKEN", |s| opt(s.credentials.token_env)),
-    ("cp 5 — credentials.scrubbed_env", "ANTHROPIC_API_KEY", |s| list(s.credentials.scrubbed_env)),
+    ("cp 5 — credentials.scrubbed_env", "ANTHROPIC_API_KEY", |s| {
+        list(s.credentials.scrubbed_env)
+    }),
     ("cp 6 — isolation.credential_env", "CLAUDE_SECURESTORAGE_CONFIG_DIR", |s| {
         opt(s.isolation.credential_env)
     }),
@@ -128,7 +132,9 @@ const NEEDLES: &[Needle] = &[
     ("cp 9 — typing.paste_end", "\x1b[201~", |s| bytes(s.typing.paste_end)),
     ("cp 11 — gauge.window_env", "CLAUDE_CODE_MAX_CONTEXT_TOKENS", |s| opt(s.gauge.window_env)),
     ("cp 13 — transcript.format", "claude-code-jsonl", |s| one(s.transcript.format)),
-    ("cp 14 — project_identity.trust_file", ".claude.json", |s| one(s.project_identity.trust_file)),
+    ("cp 14 — project_identity.trust_file", ".claude.json", |s| {
+        one(s.project_identity.trust_file)
+    }),
     ("cp 14 — project_identity.trust_keys", "hasTrustDialogAccepted", |s| {
         list(s.project_identity.trust_keys)
     }),

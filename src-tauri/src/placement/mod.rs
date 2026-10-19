@@ -54,8 +54,8 @@ use fleetor_core::pane::PaneId;
 use portable_pty::CommandBuilder;
 
 use crate::context_gauge::{self, TranscriptSource};
-use crate::prompts::PaneContext;
 use crate::guardrail;
+use crate::prompts::PaneContext;
 
 /// How a pane's `claude` process is shaped — **an internal of this module** since
 /// D-075.
@@ -495,10 +495,7 @@ impl Host {
     /// **The one reader of [`operator_logins`](Self::operator_logins)**, so
     /// "does this machine have a login for this harness" has a single answer and
     /// a plan-backed seat cannot be built from a half-matched key.
-    pub fn operator_login(
-        &self,
-        harness: &'static dyn Harness,
-    ) -> Option<&harness::OperatorLogin> {
+    pub fn operator_login(&self, harness: &'static dyn Harness) -> Option<&harness::OperatorLogin> {
         let name = harness.spec().name;
         self.operator_logins.iter().find(|(n, _)| *n == name).map(|(_, login)| login)
     }
@@ -896,11 +893,13 @@ fn place_orch(
     );
 
     let config_dir = layout.pane_config(&context.sessions, pane);
-    notices.extend(harness.seed_config_dir(
-        &Seed::new(&config_dir, target, host.operator_home.as_deref())
-            .with_brief(&rendered)
-            .for_the_operator(),
-    )?);
+    notices.extend(
+        harness.seed_config_dir(
+            &Seed::new(&config_dir, target, host.operator_home.as_deref())
+                .with_brief(&rendered)
+                .for_the_operator(),
+        )?,
+    );
     notices.extend(guardrail_notices(harness, layout, pane, &config_dir, target, context, true)?);
 
     // One Activity line per pane launch (WP-04's spawn-time "Loadout" counter):
@@ -944,7 +943,14 @@ fn place_orch(
     // with #35 is that the operator may now say otherwise, and when they do the
     // record says what they said.
     let model = model.map(str::to_string);
-    Ok(Placed { command, notices, gauge: Some(gauge), harness: harness.spec(), model, scrubbed: &[] })
+    Ok(Placed {
+        command,
+        notices,
+        gauge: Some(gauge),
+        harness: harness.spec(),
+        model,
+        scrubbed: &[],
+    })
 }
 
 /// One fenced worker: its own checkout of the target, its own `HOME`, the fleet's
@@ -993,9 +999,7 @@ fn place_worker(
     // one that reaches its prompt, reports `accepted` on every `fleet send`, and
     // is logged out.
     let credential_source = if on_the_operators_plan {
-        let login = host
-            .operator_login(harness)
-            .ok_or_else(|| no_operator_login(harness))?;
+        let login = host.operator_login(harness).ok_or_else(|| no_operator_login(harness))?;
         CredentialSource::OperatorsPlan(login)
     } else {
         CredentialSource::FleetKey
@@ -1105,11 +1109,7 @@ fn place_worker(
     let seat_window = context_gauge::model_window_tokens(model);
     notices.push((
         NoticeLevel::Info,
-        context_gauge::spawn_estimate_notice_text(
-            pane,
-            &rendered,
-            Some(seat_window),
-        ),
+        context_gauge::spawn_estimate_notice_text(pane, &rendered, Some(seat_window)),
     ));
 
     let cargo_bin = toolchain.as_ref().map(|t| t.cargo_home.join("bin"));
@@ -1213,7 +1213,10 @@ fn shared_checkout_warning(slot: u8, why: &str, target: &Path) -> String {
 /// `Ok(None)` when the target is already inside a repository — including one with
 /// no commits, which is the operator's and is left alone. Refused for the
 /// operator's home directory and `/`, where `git add -A` would commit a machine.
-fn ensure_repository(target: &Path, operator_home: Option<&Path>) -> Result<Option<String>, String> {
+fn ensure_repository(
+    target: &Path,
+    operator_home: Option<&Path>,
+) -> Result<Option<String>, String> {
     if git(target, &["rev-parse", "--git-dir"]) {
         return Ok(None);
     }
@@ -1226,11 +1229,17 @@ fn ensure_repository(target: &Path, operator_home: Option<&Path>) -> Result<Opti
         None
     };
     if let Some(what) = refuse {
-        return Err(format!("{} is not a git repository, and it is {what}, so FLEETOR will not `git init` it", target.display()));
+        return Err(format!(
+            "{} is not a git repository, and it is {what}, so FLEETOR will not `git init` it",
+            target.display()
+        ));
     }
 
     if !git(target, &["init", "-q"]) {
-        return Err(format!("{} is not a git repository and `git init` failed there", target.display()));
+        return Err(format!(
+            "{} is not a git repository and `git init` failed there",
+            target.display()
+        ));
     }
     let committed = git(target, &["add", "-A"])
         && git(
@@ -1251,7 +1260,10 @@ fn ensure_repository(target: &Path, operator_home: Option<&Path>) -> Result<Opti
             ],
         );
     if !committed {
-        return Err(format!("FLEETOR ran `git init` in {} but could not make its initial commit", target.display()));
+        return Err(format!(
+            "FLEETOR ran `git init` in {} but could not make its initial commit",
+            target.display()
+        ));
     }
 
     let files = std::process::Command::new("git")
@@ -1280,7 +1292,12 @@ fn ensure_repository(target: &Path, operator_home: Option<&Path>) -> Result<Opti
 /// including the short-circuit on an existing `.git`, which is what makes a relaunch
 /// cheap, and the prune, which clears registrations left by a worktree directory
 /// someone deleted by hand.
-fn ensure_worktree(layout: &Layout, target: &Path, slot: u8, sessions: &SessionsId) -> Result<PathBuf, String> {
+fn ensure_worktree(
+    layout: &Layout,
+    target: &Path,
+    slot: u8,
+    sessions: &SessionsId,
+) -> Result<PathBuf, String> {
     let dir = layout.worktree(target, sessions, slot);
     if dir.join(".git").exists() {
         return Ok(dir);
@@ -1393,8 +1410,7 @@ pub const MISSING_FLEET_BIN: &str =
 /// reachable looks perfectly healthy right up until its first `cargo build`, and
 /// then fails with `command not found` — a message that points at the worker's own
 /// PATH rather than at the machine.
-pub const MISSING_RUSTUP: &str =
-    "no rustup was found — workers will spawn but cannot build Rust. \
+pub const MISSING_RUSTUP: &str = "no rustup was found — workers will spawn but cannot build Rust. \
      Install it from https://rustup.rs, or set RUSTUP_HOME/CARGO_HOME \
      before launching if your toolchain lives somewhere unusual.";
 
@@ -1635,7 +1651,8 @@ mod tests {
     /// A scratch directory for [`ensure_repository`], outside any repository so
     /// the test does not pass by finding this one.
     fn loose_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("fleetor-ensure-repo-{tag}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("fleetor-ensure-repo-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -1644,10 +1661,18 @@ mod tests {
     #[test]
     fn an_empty_target_still_gets_a_commit_a_worktree_can_branch_from() {
         let dir = loose_dir("empty");
-        let said = ensure_repository(&dir, None).expect("an empty directory can be made a repository");
-        assert!(git(&dir, &["rev-parse", "--verify", "-q", "HEAD"]), "`git worktree add` needs a commit");
+        let said =
+            ensure_repository(&dir, None).expect("an empty directory can be made a repository");
+        assert!(
+            git(&dir, &["rev-parse", "--verify", "-q", "HEAD"]),
+            "`git worktree add` needs a commit"
+        );
         assert!(said.expect("making one is announced").contains("an empty initial commit"));
-        assert_eq!(ensure_repository(&dir, None), Ok(None), "and the second worker finds a repository");
+        assert_eq!(
+            ensure_repository(&dir, None),
+            Ok(None),
+            "and the second worker finds a repository"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1713,7 +1738,8 @@ mod tests {
 
     fn git_branch(dir: &Path) -> String {
         let out = std::process::Command::new("git")
-            .arg("-C").arg(dir)
+            .arg("-C")
+            .arg(dir)
             .args(["branch", "--show-current"])
             .output()
             .expect("git reports the branch");
@@ -1724,7 +1750,8 @@ mod tests {
     fn the_operators_home_is_never_made_a_repository() {
         let dir = loose_dir("home");
         std::fs::write(dir.join("secrets.txt"), "not for a commit").unwrap();
-        let why = ensure_repository(&dir, Some(&dir)).expect_err("`git add -A` in a home commits a machine");
+        let why = ensure_repository(&dir, Some(&dir))
+            .expect_err("`git add -A` in a home commits a machine");
         assert!(why.contains("your home directory"), "{why}");
         assert!(!dir.join(".git").exists(), "refused before anything was written");
         let _ = std::fs::remove_dir_all(&dir);

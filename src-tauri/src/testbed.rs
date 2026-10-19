@@ -130,7 +130,8 @@ mod tests {
     fn scratch(name: &str) -> PathBuf {
         static N: AtomicU32 = AtomicU32::new(0);
         let n = N.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("fleetor-testbed-{name}-{}-{n}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("fleetor-testbed-{name}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }
@@ -145,7 +146,10 @@ mod tests {
             }
             assert!(!contents.trim().is_empty(), "{rel} is empty");
         }
-        assert!(SEED.iter().any(|(rel, _)| *rel == "src/parser.py"), "the shared record type is the reason to coordinate");
+        assert!(
+            SEED.iter().any(|(rel, _)| *rel == "src/parser.py"),
+            "the shared record type is the reason to coordinate"
+        );
     }
 
     #[test]
