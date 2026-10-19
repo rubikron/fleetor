@@ -63,6 +63,9 @@ npx tsc --noEmit -p tsconfig.json                 # the frontend
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets
 ```
 
+CI (`.github/workflows/ci.yml`, D-124) runs all four, with clippy at `-D warnings` and
+`cargo fmt --check` on both packages.
+
 The shell suite drives **real ptys** in a dozen places and is the slow one; a full run is
 a couple of minutes.
 

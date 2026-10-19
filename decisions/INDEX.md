@@ -130,3 +130,4 @@ Note: D-005 is referenced elsewhere in this file (e.g. D-009, D-011) but has no 
 | [D-121](D-121.md) | meta | alive | the Tasks screens follow the mockups: Open/Closed/All tabs, a run filter, and a full task page |
 | [D-122](D-122.md) | meta | alive | a receipt carries `tail`, the last lines of its check's output |
 | [D-123](D-123.md) | meta | alive | orch's brief names each worker's harness and model for assigning by difficulty and intent; workers still aren't told (M25) |
+| [D-124](D-124.md) | meta | alive | CI on macOS: fmt, clippy -D warnings, both suites, frontend build; guards G1–G4 follow |

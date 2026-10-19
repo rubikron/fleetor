@@ -868,6 +868,7 @@ fn channel_key(pane: PaneId) -> String {
 /// returns, so the tail of a burst would sit unflushed until the pane happened to
 /// print again — the last line of a finished turn, invisible for as long as the
 /// pane stays quiet. The coalescer's `recv_timeout` has no such blind spot.
+#[allow(clippy::too_many_arguments)]
 fn spawn_pump(
     mut reader: Box<dyn Read + Send>,
     emit: Emit,
@@ -896,9 +897,7 @@ fn spawn_pump(
     });
 
     std::thread::spawn(move || {
-        loop {
-            let Ok(first) = rx.recv() else { break };
-            let mut batch = first;
+        while let Ok(mut batch) = rx.recv() {
             let deadline = Instant::now() + COALESCE_WINDOW;
             let mut disconnected = false;
             while batch.len() < COALESCE_MAX {

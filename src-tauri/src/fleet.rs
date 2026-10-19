@@ -164,7 +164,7 @@ impl FleetSeats {
     /// This selection with every seat a past run recorded put back on what it ran
     /// (D-095). A seat the run never placed, or one on a harness this build lacks,
     /// keeps the gate's pick.
-    fn as_recorded(
+    fn with_recorded(
         mut self,
         recorded: &std::collections::BTreeMap<String, runs::PaneRecord>,
     ) -> Self {
@@ -1239,7 +1239,7 @@ fn verdict(
     let (readings, probe_notices) = gate.harnesses.read();
     // A reopen places what the run recorded, not what the gate holds (D-095).
     let asked = match &reopen {
-        Some((_, _, recorded)) => gate.seats().as_recorded(recorded),
+        Some((_, _, recorded)) => gate.seats().with_recorded(recorded),
         None => gate.seats(),
     };
     // Settled first, so a model the vendor no longer lists has already fallen
@@ -1939,7 +1939,7 @@ pub fn fleet_send(
         let fleet = guard.as_ref().ok_or("fleet not bootstrapped")?;
         (fleet.hub.clone(), fleet.rt.handle().clone())
     };
-    Ok(operator_result(handle.block_on(hub.handle(PaneId::Operator, op)))?)
+    operator_result(handle.block_on(hub.handle(PaneId::Operator, op)))
 }
 
 /// The composer's target and text as a wire op. Pure, so the mapping is tested
@@ -3416,7 +3416,7 @@ mod tests {
             ("worker-2".to_string(), record("gamma-cli", Some("g"))),
         ]);
 
-        let seats = seats_on(claude, claude).as_recorded(&recorded);
+        let seats = seats_on(claude, claude).with_recorded(&recorded);
 
         assert_eq!(
             (seats.orch.harness.as_str(), seats.orch.model.as_deref()),

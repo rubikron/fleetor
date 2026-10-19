@@ -79,6 +79,7 @@ pub struct Place {
 ///
 /// Takes `me` rather than reading the environment so the whole verb is testable
 /// without a live pane.
+#[cfg(test)]
 pub fn op(me: PaneId, task: &str, check_command: &str) -> Result<Op> {
     Ok(checked(me, task, check_command)?.0)
 }

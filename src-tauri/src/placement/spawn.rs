@@ -200,6 +200,7 @@ fn args_for(
         .unwrap_or_else(|| harness.command_args(seat))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn orch_command_with(
     harness: &'static dyn Harness,
     model: Option<&str>,
