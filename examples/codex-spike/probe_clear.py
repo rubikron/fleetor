@@ -69,6 +69,7 @@ import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import teardown  # noqa: E402
 import probe  # noqa: E402  — the scratch installation, the build stamp, the PASS/FAIL printer
 
 from probe import BUILD, FAILURES, check  # noqa: E402
@@ -468,6 +469,8 @@ def main():
     arm_flag_carrier(home, wt, argv)
 
     print(f"\n{len(FAILURES)} failed" + (f": {', '.join(FAILURES)}" if FAILURES else ""))
+    teardown.kill_from(ROOT)
+    teardown.kill_from(CAPROOT)
     if FAILURES:
         print(f"  scratch kept at {ROOT} and the numbered requests at {CAPROOT}")
     else:

@@ -39,6 +39,8 @@ when the vendor binary is absent — C13's stated rule.
 
 import glob, json, os, re, shutil, sqlite3, subprocess, sys, time
 
+import teardown
+
 BUILD = "codex-cli 0.153.4"
 ROOT = "/tmp/codex-usage-spike"
 OPERATOR_HOME = os.path.expanduser("~/.codex")
@@ -364,6 +366,7 @@ def main():
     arm_usage_in_rollout(rollout)
 
     print(f"\n{len(FAILURES)} failed" + (f": {', '.join(FAILURES)}" if FAILURES else ""))
+    teardown.kill_from(ROOT)
     return len(FAILURES)
 
 

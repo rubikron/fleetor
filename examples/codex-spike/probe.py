@@ -41,6 +41,8 @@ reporting arms it never ran.
 
 import fcntl, http.server, json, os, pty, select, shutil, signal, subprocess, sys, tempfile, threading, time
 
+import teardown
+
 BUILD = "codex-cli 0.153.4"
 # Assigned by the OS in `serve`, before `build_scratch` writes it into the
 # provider block. A fixed port is how a second run ends up reading the first
@@ -378,6 +380,7 @@ def main():
     arm_typing(home, wt)
 
     print(f"\n{len(FAILURES)} failed" + (f": {', '.join(FAILURES)}" if FAILURES else ""))
+    teardown.kill_from(ROOT)
     if FAILURES:
         print(f"  scratch kept at {ROOT} — the installation and the captured body are in it")
     else:
