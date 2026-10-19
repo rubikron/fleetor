@@ -121,6 +121,27 @@ const ANSWERED: ChainEvent[] = [
   now2(2, "worker-3", { entry: "reviewed", met: false, reason: "depth 3 still fails", requested: true }),
 ];
 
+const MET: ChainEvent[] = [
+  ...REVIEWED,
+  now2(2, "worker-3", { entry: "reviewed", met: true, requested: true }),
+];
+const UNREVIEWED = REVIEWED.filter((e) => e.task !== 2);
+const cardsOf = (chain: ChainEvent[]) =>
+  renderToStaticMarkup(
+    <MissionControl
+      selected="orch"
+      onSelect={() => {}}
+      statuses={{}}
+      panes={{}}
+      gauges={{}}
+      messages={[]}
+      chain={chain}
+      taskStore={LIVE}
+      unreadPanes={new Set()}
+      now={LATER}
+    />,
+  );
+
 // S4: worker-2 opens a destructive task under no goal; two panes flag it,
 // orch removes it, the operator restores it. worker-4's find is attached.
 const CURATED: ChainEvent[] = [
@@ -220,6 +241,9 @@ process.stdout.write(
         now={LATER}
       />,
     ),
+    cardsMet: cardsOf(MET),
+    cardsNotMet: cardsOf(ANSWERED),
+    cardsNoReview: cardsOf(UNREVIEWED),
     homeCards: renderToStaticMarkup(
       <HomeCards
         statuses={{}}
