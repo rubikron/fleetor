@@ -1,0 +1,7 @@
+{
+  "bundle": {
+    "active": true,
+    "targets": ["app"],
+    "externalBin": ["binaries/fleet"]
+  }
+}
