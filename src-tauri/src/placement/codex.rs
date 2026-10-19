@@ -2102,8 +2102,7 @@ fn narrowing_notice(
             .to_string()
     } else {
         format!(
-            "This pane runs on FLEETOR's own provider and the fleet's key, never yours, so it \
-             cannot spend your plan. Four default-on features are off here — {} — because the \
+            "This pane runs on your own codex login, so it spends your plan. Four default-on features are off here — {} — because the \
              sandbox does not bound a pane driving a browser or a desktop, or one fanning out \
              into threads the run manifest never sees.",
             WORKER_FEATURE_OVERRIDES
@@ -3856,8 +3855,10 @@ writable_roots = [{:?}, {:?}]
         // spends — and reciting the entry under the word "containment" would be a
         // sentence that is wrong about the most consequential thing in it (#29, C9).
         assert!(
-            line.1.contains("fleet's key") && line.1.contains("cannot spend your plan"),
-            "the line has to state the cost of a worker running on FLEETOR's provider: {}",
+            line.1.contains("spends your plan")
+                && !line.1.contains("cannot spend your plan")
+                && !line.1.contains("fleet's key"),
+            "the line has to state that a worker spends the operator's plan: {}",
             line.1,
         );
         assert!(
