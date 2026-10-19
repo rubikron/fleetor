@@ -230,7 +230,8 @@ mod tests {
         let mut first = spawn_own_session();
         let mut second = spawn_own_session();
 
-        let dir = std::env::temp_dir().join(format!("fleetor-orphans-two-live-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("fleetor-orphans-two-live-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let registry = dir.join("panes.pids");
@@ -328,7 +329,8 @@ mod tests {
         let mut live_non_claude = command.spawn().unwrap();
         let live_pid = live_non_claude.id();
 
-        let dir = std::env::temp_dir().join(format!("fleetor-orphans-mixed-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("fleetor-orphans-mixed-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let registry = dir.join("panes.pids");
@@ -559,7 +561,8 @@ mod tests {
         let mut child = command.spawn().unwrap();
         let pid = child.id() as i32;
 
-        let dir = std::env::temp_dir().join(format!("fleetor-orphans-notclaude-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("fleetor-orphans-notclaude-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let registry = dir.join("panes.pids");
@@ -567,7 +570,11 @@ mod tests {
 
         sweep_at(&registry);
 
-        assert_eq!(unsafe { libc::kill(pid, 0) }, 0, "swept a live process that was never a claude pane");
+        assert_eq!(
+            unsafe { libc::kill(pid, 0) },
+            0,
+            "swept a live process that was never a claude pane"
+        );
 
         let _ = child.kill();
         let _ = child.wait();

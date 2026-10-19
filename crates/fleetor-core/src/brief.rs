@@ -343,10 +343,20 @@ mod tests {
     fn both_briefs_teach_every_cli_verb() {
         let literals =
             ["send", "broadcast", "reply", "cmd", "task", "done", "handoff", "roster", "whoami"];
-        assert_eq!(literals.to_vec(), VERBS.to_vec(), "VERBS drifted from the verbs the briefs teach");
-        for brief in [orch_brief(&roster(), CWD, BRANCH), worker_brief(PaneId::Worker(1), &roster(), CWD, BRANCH)] {
+        assert_eq!(
+            literals.to_vec(),
+            VERBS.to_vec(),
+            "VERBS drifted from the verbs the briefs teach"
+        );
+        for brief in [
+            orch_brief(&roster(), CWD, BRANCH),
+            worker_brief(PaneId::Worker(1), &roster(), CWD, BRANCH),
+        ] {
             for verb in literals {
-                assert!(brief.contains(&format!("fleet {verb}")), "brief never mentions `fleet {verb}`");
+                assert!(
+                    brief.contains(&format!("fleet {verb}")),
+                    "brief never mentions `fleet {verb}`"
+                );
             }
         }
     }
@@ -354,14 +364,23 @@ mod tests {
     #[test]
     fn the_worker_brief_carries_the_anti_amplification_clause() {
         let brief = worker_brief(PaneId::Worker(2), &roster(), CWD, BRANCH);
-        assert!(brief.contains("Never reply to a broadcast unless it names you"), "L5 clause missing");
+        assert!(
+            brief.contains("Never reply to a broadcast unless it names you"),
+            "L5 clause missing"
+        );
     }
 
     #[test]
     fn both_briefs_state_that_a_nonzero_exit_means_not_delivered() {
-        for brief in [orch_brief(&roster(), CWD, BRANCH), worker_brief(PaneId::Worker(1), &roster(), CWD, BRANCH)] {
+        for brief in [
+            orch_brief(&roster(), CWD, BRANCH),
+            worker_brief(PaneId::Worker(1), &roster(), CWD, BRANCH),
+        ] {
             assert!(brief.contains("exits non-zero"));
-            assert!(brief.contains("not a promise"), "must not let the model read success as delivery (L3)");
+            assert!(
+                brief.contains("not a promise"),
+                "must not let the model read success as delivery (L3)"
+            );
         }
     }
 
@@ -371,9 +390,15 @@ mod tests {
         // framing change cannot leave the briefs describing the old one.
         let direct = crate::message::frame_for_pane(PaneId::Worker(3), "x");
         let prefix = direct.trim_end_matches(" x");
-        assert!(worker_brief(PaneId::Worker(1), &roster(), CWD, BRANCH).contains(prefix), "worker brief shows {prefix}");
+        assert!(
+            worker_brief(PaneId::Worker(1), &roster(), CWD, BRANCH).contains(prefix),
+            "worker brief shows {prefix}"
+        );
         assert!(orch_brief(&roster(), CWD, BRANCH).contains("[fleet · worker-2]"));
-        assert!(orch_brief(&roster(), CWD, BRANCH).contains("→ all"), "orch must be able to spot a broadcast too");
+        assert!(
+            orch_brief(&roster(), CWD, BRANCH).contains("→ all"),
+            "orch must be able to spot a broadcast too"
+        );
     }
 
     #[test]
@@ -402,7 +427,10 @@ mod tests {
     /// reads as a working brief right up until it matters.
     #[test]
     fn a_rendered_brief_has_no_placeholders_left_in_it() {
-        for brief in [orch_brief(&roster(), CWD, BRANCH), worker_brief(PaneId::Worker(3), &roster(), CWD, BRANCH)] {
+        for brief in [
+            orch_brief(&roster(), CWD, BRANCH),
+            worker_brief(PaneId::Worker(3), &roster(), CWD, BRANCH),
+        ] {
             for name in ORCH_PLACEHOLDERS.iter().chain(WORKER_PLACEHOLDERS.iter()) {
                 assert!(!brief.contains(&format!("{{{name}}}")), "unrendered {{{name}}}: {brief}");
             }
@@ -477,12 +505,24 @@ mod tests {
     /// dropped one would still render, still validate, and still look right.
     #[test]
     fn both_briefs_restate_the_posture_the_default_prompt_used_to_supply() {
-        for brief in [orch_brief(&roster(), CWD, BRANCH), worker_brief(PaneId::Worker(1), &roster(), CWD, BRANCH)] {
+        for brief in [
+            orch_brief(&roster(), CWD, BRANCH),
+            worker_brief(PaneId::Worker(1), &roster(), CWD, BRANCH),
+        ] {
             assert!(brief.contains("Report outcomes faithfully"), "a fleet runs on honest reports");
-            assert!(brief.contains("never wrap up early"), "a pane must not abandon work for context");
-            assert!(brief.contains("adapt rather than retrying it verbatim"), "denied means declined");
+            assert!(
+                brief.contains("never wrap up early"),
+                "a pane must not abandon work for context"
+            );
+            assert!(
+                brief.contains("adapt rather than retrying it verbatim"),
+                "denied means declined"
+            );
             assert!(brief.contains("they/them"), "the pronoun default governs user-visible text");
-            assert!(brief.contains("refuse destructive techniques"), "the security posture is not optional");
+            assert!(
+                brief.contains("refuse destructive techniques"),
+                "the security posture is not optional"
+            );
         }
     }
 
@@ -585,7 +625,10 @@ mod tests {
     /// failed `accepted` and resend a question the human already has.
     #[test]
     fn both_briefs_distinguish_recorded_from_accepted() {
-        for brief in [orch_brief(&roster(), CWD, BRANCH), worker_brief(PaneId::Worker(1), &roster(), CWD, BRANCH)] {
+        for brief in [
+            orch_brief(&roster(), CWD, BRANCH),
+            worker_brief(PaneId::Worker(1), &roster(), CWD, BRANCH),
+        ] {
             assert!(brief.contains("**recorded**"), "the third word is taught");
             assert!(
                 brief.contains("the human has no terminal"),
@@ -651,7 +694,9 @@ mod tests {
     #[test]
     fn every_brief_says_where_the_pane_is_working() {
         assert!(orch_brief(&roster(), "/tmp/target", BRANCH).contains("/tmp/target"));
-        assert!(worker_brief(PaneId::Worker(2), &roster(), "/tmp/wt-2", BRANCH).contains("/tmp/wt-2"));
+        assert!(
+            worker_brief(PaneId::Worker(2), &roster(), "/tmp/wt-2", BRANCH).contains("/tmp/wt-2")
+        );
     }
 
     /// The whole point of the fragment split: prose can be rewritten freely and
@@ -666,7 +711,10 @@ mod tests {
 
         let brief = render_worker(rewritten, PaneId::Worker(2), &roster(), CWD, BRANCH);
         assert!(brief.contains("exits non-zero"), "the delivery contract still arrives");
-        assert!(brief.contains("Never reply to a broadcast unless it names you"), "L5 still arrives");
+        assert!(
+            brief.contains("Never reply to a broadcast unless it names you"),
+            "L5 still arrives"
+        );
         assert!(brief.contains("You are `worker-2`") || brief.contains("hi worker-2"));
     }
 
@@ -684,7 +732,10 @@ mod tests {
         let no_rule = format!(
             "# {{me}} in {{cwd}} {branches}\n\npeers: {{peers}}\n\n{{delivery_contract}}\n\n{{scaffolding}}\n"
         );
-        assert!(validate_worker(&no_rule).is_err(), "a worker brief without the L5 rule is not usable");
+        assert!(
+            validate_worker(&no_rule).is_err(),
+            "a worker brief without the L5 rule is not usable"
+        );
 
         let no_workers =
             "# orch in {cwd} {branch_prefix}\n\n{delivery_contract}\n\n{scaffolding}\n\n{vision_tenets}\n";
@@ -716,7 +767,8 @@ mod tests {
     /// drifted from the CLI. That is a pane running commands which exit 2.
     #[test]
     fn a_template_that_forgets_a_verb_is_refused() {
-        let missing_whoami = "# {me} in {cwd} on {branch} under {branch_prefix}\n\npeers: {peers}. \
+        let missing_whoami =
+            "# {me} in {cwd} on {branch} under {branch_prefix}\n\npeers: {peers}. \
              fleet send / fleet broadcast / \
              fleet reply / fleet cmd / fleet task / fleet done / fleet handoff / fleet roster.\n\n\
              {delivery_contract}\n\n{broadcast_rule}\n\n{scaffolding}\n";
@@ -733,7 +785,10 @@ mod tests {
     /// and the log would fill with effects whose reasons were never written down.
     #[test]
     fn both_briefs_teach_the_command_verb_with_its_mandatory_why() {
-        for brief in [orch_brief(&roster(), CWD, BRANCH), worker_brief(PaneId::Worker(1), &roster(), CWD, BRANCH)] {
+        for brief in [
+            orch_brief(&roster(), CWD, BRANCH),
+            worker_brief(PaneId::Worker(1), &roster(), CWD, BRANCH),
+        ] {
             assert!(brief.contains("fleet cmd"), "the verb itself");
             assert!(brief.contains("`--why` is required"), "the why must read as a requirement");
             assert!(
@@ -767,7 +822,8 @@ mod tests {
     #[test]
     fn the_orch_brief_re_briefs_a_worker_it_clears() {
         let brief = orch_brief(&roster(), CWD, BRANCH);
-        assert!(brief.contains("If you clear a worker, immediately `fleet send` it its task context back"));
+        assert!(brief
+            .contains("If you clear a worker, immediately `fleet send` it its task context back"));
         assert!(
             brief.contains("report confident nonsense"),
             "the rule needs its consequence, or it reads as advice",
@@ -856,18 +912,31 @@ mod tests {
         let (ask, resume) = (at(Startup::Ask), at(Startup::Resume));
         assert_eq!(ask, orch_brief(&roster(), CWD, BRANCH), "asking first is the default");
         assert!(ask.contains("ask the operator whether to resume"), "{ask}");
-        assert!(resume.contains("without asking") && resume.contains("which ones you are resuming"));
-        assert!(resume.contains("Hand out no `planned` task at startup") && resume.contains("goal is closed"));
+        assert!(
+            resume.contains("without asking") && resume.contains("which ones you are resuming")
+        );
+        assert!(
+            resume.contains("Hand out no `planned` task at startup")
+                && resume.contains("goal is closed")
+        );
 
         // A reopen follows the same setting; its owners are still there.
         let (asks, continues) = (at(Startup::ReopenedAsk), at(Startup::ReopenedResume));
-        assert!(asks.contains("ask the operator which") && asks.contains("Tell no worker to continue"));
-        assert!(continues.contains("tell each owner to continue") && continues.contains("without asking"));
+        assert!(
+            asks.contains("ask the operator which") && asks.contains("Tell no worker to continue")
+        );
+        assert!(
+            continues.contains("tell each owner to continue")
+                && continues.contains("without asking")
+        );
         assert!(continues.contains("Reassign nothing an owner still holds"));
         assert!(continues.contains("Hand out no `planned` task at startup"));
         for brief in [&ask, &resume, &asks, &continues] {
             assert!(!brief.contains("{startup_tasks}"));
-            assert!(brief.contains("Before anything else"), "it acts on its first message, not at launch");
+            assert!(
+                brief.contains("Before anything else"),
+                "it acts on its first message, not at launch"
+            );
         }
         let without = DEFAULT_ORCH.replace("{startup_tasks}", "");
         validate_orch(&without).expect("a custom brief may drop {startup_tasks}");
@@ -924,7 +993,10 @@ mod tests {
         }
         for brief in [&orch, &worker] {
             assert!(brief.contains("never `#14`"), "the shell-comment trap is named");
-            assert!(!brief.contains("task-id") && !brief.contains("claimed"), "the old spelling survived");
+            assert!(
+                !brief.contains("task-id") && !brief.contains("claimed"),
+                "the old spelling survived"
+            );
         }
     }
 
@@ -932,7 +1004,10 @@ mod tests {
     /// `claimed` gets a refusal instead of an update.
     #[test]
     fn both_briefs_name_every_status_the_board_accepts() {
-        for brief in [orch_brief(&roster(), CWD, BRANCH), worker_brief(PaneId::Worker(1), &roster(), CWD, BRANCH)] {
+        for brief in [
+            orch_brief(&roster(), CWD, BRANCH),
+            worker_brief(PaneId::Worker(1), &roster(), CWD, BRANCH),
+        ] {
             for status in crate::task::TASK_STATUSES {
                 assert!(brief.contains(status), "the brief never names `{status}`");
             }

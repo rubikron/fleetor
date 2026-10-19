@@ -37,8 +37,8 @@ use std::process::{Command, Stdio};
 
 use fleetor_core::pane::PaneId;
 use fleetor_shell::guardrail;
-use fleetor_shell::placement::PaneSpec;
 use fleetor_shell::placement::harness::claude_code;
+use fleetor_shell::placement::PaneSpec;
 /// One whole installation in a scratch directory — the four arguments `place` takes,
 /// shared with `tests/placement.rs` rather than retyped here.
 mod common;
@@ -54,8 +54,7 @@ mod common;
 /// with teeth"), and `allowlist` is the `fleet cmd` allowlist D-045 checks at
 /// accept time. Both are real, both are load-bearing, and matching on them would
 /// make this test fail for a reason that has nothing to do with WP-17.
-const SPELLINGS: [&str; 4] =
-    ["write guardrail", "write_guardrail", "pretooluse", "guardrail::"];
+const SPELLINGS: [&str; 4] = ["write guardrail", "write_guardrail", "pretooluse", "guardrail::"];
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("src-tauri has a parent").to_path_buf()

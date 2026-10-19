@@ -206,7 +206,9 @@ impl Hub {
             Op::Reply { text } => self.reply(from, text).await,
             Op::Cmd { to, command, why } => self.cmd(from, to, command, why).await,
             Op::Task { action } => self.task(from, action),
-            Op::Handoff { built, evidence, open, goal } => self.handoff(from, built, evidence, open, goal),
+            Op::Handoff { built, evidence, open, goal } => {
+                self.handoff(from, built, evidence, open, goal)
+            }
             Op::Roster => self.roster().await,
         }
     }
@@ -677,13 +679,30 @@ impl TaskSide {
                 let entry = find(&self.board()?, task)?.restore(from, reason.as_deref())?;
                 self.append(task, from, entry)
             }
-            TaskAction::Receipt { task, check, status, branch, commit, uncommitted, accepted, tail } => {
+            TaskAction::Receipt {
+                task,
+                check,
+                status,
+                branch,
+                commit,
+                uncommitted,
+                accepted,
+                tail,
+            } => {
                 if find(&self.board()?, task)?.block.kind == Kind::Goal {
                     return Err(format!(
                         "#{task} is a goal, and a receipt belongs on the task that was checked"
                     ));
                 }
-                let entry = ChainEntry::Receipt { check, status, branch, commit, uncommitted, accepted, tail };
+                let entry = ChainEntry::Receipt {
+                    check,
+                    status,
+                    branch,
+                    commit,
+                    uncommitted,
+                    accepted,
+                    tail,
+                };
                 self.append(task, from, entry)
             }
             TaskAction::Show { task } => {
@@ -711,7 +730,9 @@ impl TaskSide {
         self.store
             .append_event(&event)
             .map(|_| OpResult::Recorded { record_id: number.to_string() })
-            .map_err(|e| format!("the task store could not be written to, so nothing was recorded: {e}"))
+            .map_err(|e| {
+                format!("the task store could not be written to, so nothing was recorded: {e}")
+            })
     }
 }
 
@@ -727,7 +748,8 @@ fn a_goal(board: &[TaskRecord], number: u64) -> Result<(), String> {
 }
 
 fn find(board: &[TaskRecord], number: u64) -> Result<&TaskRecord, String> {
-    board.iter().find(|record| record.number == number).ok_or_else(|| {
-        format!("there is no #{number} — `fleet task list` shows the numbers")
-    })
+    board
+        .iter()
+        .find(|record| record.number == number)
+        .ok_or_else(|| format!("there is no #{number} — `fleet task list` shows the numbers"))
 }

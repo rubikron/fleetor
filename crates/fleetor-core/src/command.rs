@@ -142,7 +142,11 @@ fn check_command(raw: &str) -> Result<String, String> {
         ));
     }
     if !ALLOWED_COMMANDS.contains(&command_word(command)) {
-        return Err(format!("`{}` is not an allowed command — {}", command_word(command), allowed()));
+        return Err(format!(
+            "`{}` is not an allowed command — {}",
+            command_word(command),
+            allowed()
+        ));
     }
     Ok(command.to_string())
 }

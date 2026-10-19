@@ -19,8 +19,9 @@ use std::path::{Path, PathBuf};
 
 use fleetor_core::event::NoticeLevel;
 use fleetor_core::pane::PaneId;
+use fleetor_shell::placement::harness::claude_code;
 use fleetor_shell::placement::{self, Host, Layout, PaneSpec};
-use fleetor_shell::placement::harness::claude_code;use fleetor_shell::prompts::PaneContext;
+use fleetor_shell::prompts::PaneContext;
 
 /// The whole-installation fixture, shared with `tests/write_guardrail.rs` rather
 /// than retyped in both.
@@ -51,7 +52,15 @@ impl Scratch {
     /// The shell command Claude Code will run for every matched tool call, read
     /// out of the `settings.json` placement just wrote for this pane.
     fn hook_command(&self, pane: PaneId) -> String {
-        let settings = self.layout.pane_config(&fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), pane).join("settings.json");
+        let settings = self
+            .layout
+            .pane_config(
+                &fleetor_shell::placement::SessionsId::new(
+                    fleetor_shell::placement::UNASSIGNED_SESSIONS,
+                ),
+                pane,
+            )
+            .join("settings.json");
         let value: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
         value["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
@@ -297,10 +306,7 @@ fn the_orchestrator_may_write_in_its_target_and_the_fleets_own_state_root() {
     let roots = scratch.guardrail_roots(PaneId::Orch);
     assert_eq!(
         roots,
-        vec![
-            scratch.target.display().to_string(),
-            scratch.layout.shell().display().to_string(),
-        ],
+        vec![scratch.target.display().to_string(), scratch.layout.shell().display().to_string(),],
         "orch's roots are its cwd and `_shell`, in that order, and nothing else",
     );
 
@@ -379,7 +385,10 @@ fn placing_the_orchestrator_returns_the_notices_the_operator_should_read() {
     // Then the one notice standing between the operator and a pane that looks
     // perfectly healthy while being logged out (WP-14, D-062).
     assert_eq!(placed.notices[1].0, NoticeLevel::Info);
-    let config_dir = scratch.layout.pane_config(&fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), PaneId::Orch);
+    let config_dir = scratch.layout.pane_config(
+        &fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS),
+        PaneId::Orch,
+    );
     assert!(placed.notices[1].1.contains(&config_dir.display().to_string()));
     assert!(placed.notices[1].1.contains("Not logged in"));
     assert!(placed.notices[1].1.contains("/login"));
@@ -413,10 +422,7 @@ fn a_machine_with_no_fleet_binary_is_warned_about_first() {
         (NoticeLevel::Warn, placement::MISSING_FLEET_BIN.to_string()),
         "the warning comes before anything else the operator reads",
     );
-    assert!(
-        placed.notices[0].1.contains("cargo build -p fleetor-cli"),
-        "and it names the fix",
-    );
+    assert!(placed.notices[0].1.contains("cargo build -p fleetor-cli"), "and it names the fix",);
 }
 
 // --- containment ----------------------------------------------------------------
@@ -477,14 +483,20 @@ fn placing_against_a_scratch_layout_writes_inside_it_and_nowhere_else() {
 
     // The seed and the policy really did land, so the check above is not passing
     // by virtue of placement having done nothing.
-    let config_dir = scratch.layout.pane_config(&fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), PaneId::Orch);
+    let config_dir = scratch.layout.pane_config(
+        &fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS),
+        PaneId::Orch,
+    );
     assert!(config_dir.join(".claude.json").is_file(), "the L1 config seed");
     assert!(config_dir.join("settings.json").is_file(), "the guardrail policy");
     assert!(config_dir.join("write-guardrail.py").is_file(), "the guardrail hook itself");
 
     // The worker's own three, so its half of the walk above is not passing by
     // virtue of the worker having done nothing either.
-    let worker_config = scratch.layout.pane_config(&fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), PaneId::Worker(1));
+    let worker_config = scratch.layout.pane_config(
+        &fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS),
+        PaneId::Worker(1),
+    );
     assert!(worker_config.join(".claude.json").is_file(), "the worker's L1 config seed");
     assert!(worker_config.join("settings.json").is_file(), "the worker's guardrail policy");
     assert!(
@@ -492,13 +504,24 @@ fn placing_against_a_scratch_layout_writes_inside_it_and_nowhere_else() {
         "the Fence's seeded git identity",
     );
     assert!(
-        scratch.layout.worktree(&scratch.target, &fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), 1).join(".git").exists(),
+        scratch
+            .layout
+            .worktree(
+                &scratch.target,
+                &fleetor_shell::placement::SessionsId::new(
+                    fleetor_shell::placement::UNASSIGNED_SESSIONS
+                ),
+                1
+            )
+            .join(".git")
+            .exists(),
         "the worker's own checkout",
     );
 
     // And every path it pointed the pane at is the scratch layout's.
     let command = scratch.hook_command(PaneId::Orch);
-    for named in [scratch.layout.shell().join("pane-config"), scratch.layout.shell().join("guardrail.jsonl")]
+    for named in
+        [scratch.layout.shell().join("pane-config"), scratch.layout.shell().join("guardrail.jsonl")]
     {
         assert!(
             command.contains(&named.display().to_string()),
@@ -555,7 +578,15 @@ fn switching_targets_re_seeds_the_worker_and_keeps_the_first_targets_trust() {
     let second_cwd = two.gauge.expect("a worker records a gauge source").cwd;
     assert_ne!(first_cwd, second_cwd, "a target switch must move the worker's checkout");
 
-    let seed = scratch.layout.pane_config(&fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), PaneId::Worker(1)).join(".claude.json");
+    let seed = scratch
+        .layout
+        .pane_config(
+            &fleetor_shell::placement::SessionsId::new(
+                fleetor_shell::placement::UNASSIGNED_SESSIONS,
+            ),
+            PaneId::Worker(1),
+        )
+        .join(".claude.json");
     let value: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&seed).unwrap()).unwrap();
 
@@ -702,7 +733,11 @@ fn a_target_that_is_not_a_repository_is_initialized_and_the_worker_gets_a_worktr
     )
     .expect("a target that is not a repository still places a worker");
 
-    let worktree = scratch.layout.worktree(&scratch.target, &fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), 4);
+    let worktree = scratch.layout.worktree(
+        &scratch.target,
+        &fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS),
+        4,
+    );
     assert!(
         worktree.join("notes.txt").exists(),
         "the worktree carries the files that were in the target: {}",
@@ -737,7 +772,11 @@ fn a_target_that_is_not_a_repository_is_initialized_and_the_worker_gets_a_worktr
         &PaneContext::baked(),
     )
     .expect("the second worker places");
-    assert!(!second.notices.iter().any(|(_, text)| text.contains("git init")), "{:?}", second.notices);
+    assert!(
+        !second.notices.iter().any(|(_, text)| text.contains("git init")),
+        "{:?}",
+        second.notices
+    );
     let log = std::process::Command::new("git")
         .arg("-C")
         .arg(&scratch.target)
@@ -785,10 +824,7 @@ fn a_target_that_cannot_be_made_a_repository_falls_back_and_says_what_review_los
         warning.contains("Peer review is degraded"),
         "what is degraded — the point of the notice: {warning}",
     );
-    assert!(
-        warning.contains("git diff fleet/worker-N"),
-        "the move that stops working: {warning}",
-    );
+    assert!(warning.contains("git diff fleet/worker-N"), "the move that stops working: {warning}",);
     assert!(
         warning.contains("treat a reviewed `done` as unreviewed"),
         "and what the operator should do about it: {warning}",
@@ -802,7 +838,16 @@ fn a_target_that_cannot_be_made_a_repository_falls_back_and_says_what_review_los
         "the fallback cwd is the target itself",
     );
     assert!(
-        !scratch.layout.worktree(&scratch.target, &fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), 4).exists(),
+        !scratch
+            .layout
+            .worktree(
+                &scratch.target,
+                &fleetor_shell::placement::SessionsId::new(
+                    fleetor_shell::placement::UNASSIGNED_SESSIONS
+                ),
+                4
+            )
+            .exists(),
         "no worktree is created when git could not oblige",
     );
     assert_eq!(
@@ -832,7 +877,11 @@ fn a_worker_gets_its_own_worktree_and_branch_in_a_real_repository() {
     )
     .expect("placing worker-1 in a real repository");
 
-    let worktree = scratch.layout.worktree(&scratch.target, &fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), 1);
+    let worktree = scratch.layout.worktree(
+        &scratch.target,
+        &fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS),
+        1,
+    );
     assert!(worktree.join(".git").exists(), "a real checkout at {}", worktree.display());
     assert!(
         placed.notices.iter().all(|(level, _)| *level != NoticeLevel::Warn),
@@ -854,7 +903,15 @@ fn a_worker_gets_its_own_worktree_and_branch_in_a_real_repository() {
     // placement, which is strictly earlier than the pty the caller has yet to spawn.
     let gauge = placed.gauge.expect("a worker records a gauge source");
     assert_eq!(gauge.cwd, worktree, "the gauge samples the worker's own checkout");
-    assert_eq!(gauge.config_dir, scratch.layout.pane_config(&fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), PaneId::Worker(1)));
+    assert_eq!(
+        gauge.config_dir,
+        scratch.layout.pane_config(
+            &fleetor_shell::placement::SessionsId::new(
+                fleetor_shell::placement::UNASSIGNED_SESSIONS
+            ),
+            PaneId::Worker(1)
+        )
+    );
 
     // Everything downstream followed the worktree rather than the target.
     assert_eq!(
@@ -864,7 +921,19 @@ fn a_worker_gets_its_own_worktree_and_branch_in_a_real_repository() {
     );
     assert_eq!(
         env_on(&placed.command, "CLAUDE_CONFIG_DIR").as_deref(),
-        Some(scratch.layout.pane_config(&fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), PaneId::Worker(1)).display().to_string().as_str()),
+        Some(
+            scratch
+                .layout
+                .pane_config(
+                    &fleetor_shell::placement::SessionsId::new(
+                        fleetor_shell::placement::UNASSIGNED_SESSIONS
+                    ),
+                    PaneId::Worker(1)
+                )
+                .display()
+                .to_string()
+                .as_str()
+        ),
     );
 }
 
@@ -885,7 +954,15 @@ fn the_config_seed_is_keyed_to_the_target_the_pane_will_run_in() {
     )
     .expect("placing orch against a scratch layout");
 
-    let seed = scratch.layout.pane_config(&fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), PaneId::Orch).join(".claude.json");
+    let seed = scratch
+        .layout
+        .pane_config(
+            &fleetor_shell::placement::SessionsId::new(
+                fleetor_shell::placement::UNASSIGNED_SESSIONS,
+            ),
+            PaneId::Orch,
+        )
+        .join(".claude.json");
     let value: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&seed).unwrap()).unwrap();
     assert_eq!(value["hasCompletedOnboarding"], serde_json::json!(true));

@@ -164,7 +164,10 @@ impl FleetSeats {
     /// This selection with every seat a past run recorded put back on what it ran
     /// (D-095). A seat the run never placed, or one on a harness this build lacks,
     /// keeps the gate's pick.
-    fn as_recorded(mut self, recorded: &std::collections::BTreeMap<String, runs::PaneRecord>) -> Self {
+    fn with_recorded(
+        mut self,
+        recorded: &std::collections::BTreeMap<String, runs::PaneRecord>,
+    ) -> Self {
         let slots = fleetor_core::pane::WORKER_SLOTS.iter().map(|&slot| PaneId::Worker(slot));
         let seats = std::iter::once(&mut self.orch).chain(&mut self.workers);
         for (pane, seat) in std::iter::once(PaneId::Orch).chain(slots).zip(seats) {
@@ -430,12 +433,11 @@ impl StartVerdict {
         let orch_reading = reading_for(readings, &orch.harness);
         let mut refusals = Vec::new();
         let mut plan_slots: Vec<u8> = Vec::new();
-        let mut cost =
-            vec![CostLine {
-                seats: seat_label(PaneId::Orch),
-                harness: orch.harness.clone(),
-                sentence: orchestrator_cost(&orch.harness, orch_reading),
-            }];
+        let mut cost = vec![CostLine {
+            seats: seat_label(PaneId::Orch),
+            harness: orch.harness.clone(),
+            sentence: orchestrator_cost(&orch.harness, orch_reading),
+        }];
         for reason in refusal_for(orch_reading).into_iter().chain(posture_refusal(orch_reading)) {
             refusals.push(StartRefusal {
                 seat: seat_label(PaneId::Orch),
@@ -459,7 +461,8 @@ impl StartVerdict {
                 Some(_) => None,
                 None => offer.gap_for(&seat.harness).map(|gap| credential_gap(&seat.harness, gap)),
             };
-            for reason in cannot_log_in.into_iter().chain(posture_refusal(reading)).chain(no_login) {
+            for reason in cannot_log_in.into_iter().chain(posture_refusal(reading)).chain(no_login)
+            {
                 refusals.push(StartRefusal {
                     seat: seat_label(PaneId::Worker(slot)),
                     harness: seat.harness.clone(),
@@ -879,20 +882,16 @@ impl HarnessOffer {
         use harness::LoginState;
         let (status, account, reason) = match &readiness.login {
             LoginState::LoggedIn(shape) => ("logged-in", Some(shape.display()), None),
-            LoginState::NoCredential { summary, .. } => (
-                "no-credential",
-                None,
-                Some(summary.clone()),
-            ),
+            LoginState::NoCredential { summary, .. } => {
+                ("no-credential", None, Some(summary.clone()))
+            }
             // The sentence is `harness::not_on_the_path`'s rather than this file's,
             // because the start refusal says the same thing about the same machine
             // (#36) and an operator told two different things about one installation
             // trusts neither.
-            LoginState::NotInstalled => (
-                "not-installed",
-                None,
-                Some(harness::not_on_the_path(&readiness.invoked)),
-            ),
+            LoginState::NotInstalled => {
+                ("not-installed", None, Some(harness::not_on_the_path(&readiness.invoked)))
+            }
             LoginState::Unreadable { why } => ("unreadable", None, Some(why.clone())),
         };
         let models = readiness
@@ -1172,7 +1171,8 @@ fn launch(
     let (staged, staging) = runs::stage(&shell, &runs_dir, started_ms);
     let built = build(layout, registry, gate, plan, started_ms, staging, emit.clone())
         .and_then(|fleet| snapshot(&fleet.store).map(|snap| (fleet, snap)));
-    let feed = built.as_ref().ok().map(|(fleet, _)| (fleet.rt.handle().clone(), fleet.store.clone()));
+    let feed =
+        built.as_ref().ok().map(|(fleet, _)| (fleet.rt.handle().clone(), fleet.store.clone()));
     if let Some(id) = staged {
         finish_in_background(shell, runs_dir, id, feed, emit);
     }
@@ -1217,7 +1217,8 @@ fn verdict(
     source: &LaunchSource,
 ) -> Result<LaunchPlan, String> {
     let runs_dir = runs::runs_dir(layout.root());
-    let cannot_open = |id: &str, why: String| format!("\u{201c}{id}\u{201d} can\u{2019}t be opened: {why}");
+    let cannot_open =
+        |id: &str, why: String| format!("\u{201c}{id}\u{201d} can\u{2019}t be opened: {why}");
     let reopen = match source {
         LaunchSource::Fresh => None,
         LaunchSource::Reopen { id } => {
@@ -1238,7 +1239,7 @@ fn verdict(
     let (readings, probe_notices) = gate.harnesses.read();
     // A reopen places what the run recorded, not what the gate holds (D-095).
     let asked = match &reopen {
-        Some((_, _, recorded)) => gate.seats().as_recorded(recorded),
+        Some((_, _, recorded)) => gate.seats().with_recorded(recorded),
         None => gate.seats(),
     };
     // Settled first, so a model the vendor no longer lists has already fallen
@@ -1254,11 +1255,7 @@ fn verdict(
             LaunchSource::Reopen { id } => cannot_open(id, why),
         });
     }
-    Ok(LaunchPlan {
-        seats,
-        reopen: reopen.map(|(id, target, _)| (id, target)),
-        probe_notices,
-    })
+    Ok(LaunchPlan { seats, reopen: reopen.map(|(id, target, _)| (id, target)), probe_notices })
 }
 
 /// Kill every pane and drop the live fleet, which closes its store and frees
@@ -1404,8 +1401,13 @@ fn build(
         tasks as Arc<dyn Store>
     });
     let ctx = TaskContext { run: run_id.clone(), lineage: sessions.to_string() };
-    let (hub, shutdown) =
-        spawn_hub(&rt, store.clone(), tasks.clone().map(|t| (t, ctx)), app_tx.clone(), layout.socket());
+    let (hub, shutdown) = spawn_hub(
+        &rt,
+        store.clone(),
+        tasks.clone().map(|t| (t, ctx)),
+        app_tx.clone(),
+        layout.socket(),
+    );
 
     // The write guardrail's own feed (WP-17), started with the run and emptied by it.
     spawn_guardrail_feed(&rt, store.clone(), &dir);
@@ -1666,12 +1668,19 @@ fn fall_back_to_testbed(
 /// Open the target's `tasks.db` and note the target's path beside it, so a
 /// moved repo can be re-linked. A store that will not open is reported and the
 /// fleet comes up without one: `fleet task` then refuses and says why.
-fn open_task_store(layout: &Layout, target: &Path, feed: &Arc<dyn Store>) -> Option<Arc<BroadcastStore>> {
+fn open_task_store(
+    layout: &Layout,
+    target: &Path,
+    feed: &Arc<dyn Store>,
+) -> Option<Arc<BroadcastStore>> {
     let path = layout.task_store(target);
     match SqliteStore::open(&path) {
         Ok(store) => {
             let canonical = target.canonicalize().unwrap_or_else(|_| target.to_path_buf());
-            let _ = std::fs::write(layout.target_dir(target).join("target.txt"), canonical.to_string_lossy().as_bytes());
+            let _ = std::fs::write(
+                layout.target_dir(target).join("target.txt"),
+                canonical.to_string_lossy().as_bytes(),
+            );
             Some(Arc::new(BroadcastStore::new(Arc::new(store))))
         }
         Err(e) => {
@@ -1683,7 +1692,12 @@ fn open_task_store(layout: &Layout, target: &Path, feed: &Arc<dyn Store>) -> Opt
 
 /// Pump every appended event of one store to the webview, oldest-first then
 /// live, for the fleet's lifetime.
-fn spawn_follower(rt: &Runtime, bcast: Arc<BroadcastStore>, emit: FeedEmit, signal: fn(WireEvent) -> Signal) {
+fn spawn_follower(
+    rt: &Runtime,
+    bcast: Arc<BroadcastStore>,
+    emit: FeedEmit,
+    signal: fn(WireEvent) -> Signal,
+) {
     rt.spawn(async move {
         let mut follower = match bcast.follow(0) {
             Ok(f) => f,
@@ -1867,8 +1881,9 @@ pub fn fleet_roster(state: State<'_, FleetState>) -> Result<Vec<PaneEntry>, Stri
         fleet.app.clone()
     };
     let (ack, rx) = oneshot::channel();
-    app.send(AppCommand::Roster { ack })
-        .map_err(|_| "the fleet app is not accepting commands — its window may have closed".to_string())?;
+    app.send(AppCommand::Roster { ack }).map_err(|_| {
+        "the fleet app is not accepting commands — its window may have closed".to_string()
+    })?;
     rx.blocking_recv()
         .map_err(|_| "the fleet app took the roster request but never answered".to_string())
 }
@@ -1924,7 +1939,7 @@ pub fn fleet_send(
         let fleet = guard.as_ref().ok_or("fleet not bootstrapped")?;
         (fleet.hub.clone(), fleet.rt.handle().clone())
     };
-    Ok(operator_result(handle.block_on(hub.handle(PaneId::Operator, op)))?)
+    operator_result(handle.block_on(hub.handle(PaneId::Operator, op)))
 }
 
 /// The composer's target and text as a wire op. Pure, so the mapping is tested
@@ -1976,7 +1991,11 @@ fn operator_result(result: OpResult) -> Result<OperatorSend, String> {
 /// The harness reading is forgotten because it is about a machine *in a
 /// directory* (C34): codex resolves trust and project identity against one.
 fn adopt_target(layout: &Layout, gate: &GateHold, target: &Path) -> Result<(), String> {
-    write_config_key_at(&layout.config_file(), "target", target.to_string_lossy().into_owned().into())?;
+    write_config_key_at(
+        &layout.config_file(),
+        "target",
+        target.to_string_lossy().into_owned().into(),
+    )?;
     gate.harnesses.invalidate();
     Ok(())
 }
@@ -1985,13 +2004,14 @@ fn adopt_target(layout: &Layout, gate: &GateHold, target: &Path) -> Result<(), S
 /// `Ok(None)` when the picker was dismissed.
 // Off the main thread: a blocking dialog there hangs the app.
 #[tauri::command(async)]
-pub fn fleet_pick_target(app: AppHandle, gate: State<'_, Arc<GateHold>>) -> Result<Option<String>, String> {
+pub fn fleet_pick_target(
+    app: AppHandle,
+    gate: State<'_, Arc<GateHold>>,
+) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
 
     let Some(picked) = app.dialog().file().blocking_pick_folder() else { return Ok(None) };
-    let path = picked
-        .into_path()
-        .map_err(|e| format!("that folder has no usable path: {e}"))?;
+    let path = picked.into_path().map_err(|e| format!("that folder has no usable path: {e}"))?;
     if !path.is_dir() {
         return Err(format!("{} is not a directory", path.display()));
     }
@@ -2025,9 +2045,8 @@ pub fn fleet_set_target(path: String, gate: State<'_, Arc<GateHold>>) -> Result<
     }
     // Resolves `..`, symlinks and relative segments, so the config records one
     // canonical spelling of a directory rather than however it was reached.
-    let canonical = expanded
-        .canonicalize()
-        .map_err(|e| format!("resolve {}: {e}", expanded.display()))?;
+    let canonical =
+        expanded.canonicalize().map_err(|e| format!("resolve {}: {e}", expanded.display()))?;
 
     adopt_target(&layout(), &gate, &canonical)?;
     Ok(canonical.to_string_lossy().into_owned())
@@ -2165,7 +2184,8 @@ fn history(state: &FleetState, layout: &Layout) -> Vec<runs::RunRecord> {
     // The Running now row counts its tasks from the live store (Coordination C).
     let live_tasks = state.0.lock().ok().and_then(|slot| {
         let fleet = slot.as_ref()?;
-        let events = fleet.tasks.as_ref().and_then(|tasks| tasks.events_since(0).ok()).unwrap_or_default();
+        let events =
+            fleet.tasks.as_ref().and_then(|tasks| tasks.events_since(0).ok()).unwrap_or_default();
         Some(runs::tasks_touched(&events, &fleet.run_id))
     });
     runs::list_all(&layout.shell(), &runs::runs_dir(layout.root()), live_tasks)
@@ -2440,7 +2460,8 @@ mod tests {
     /// fallback `archive::freeze` forces while anything still holds the database.
     #[test]
     fn quitting_closes_the_live_log_before_archiving_it_so_the_archive_is_one_file() {
-        let root = std::env::temp_dir().join(format!("fleetor-quit-archive-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("fleetor-quit-archive-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let shell = root.join("_shell");
         let runs_dir = runs::runs_dir(&root);
@@ -2457,7 +2478,10 @@ mod tests {
                 detail: None,
             })
             .unwrap();
-        assert!(shell.join("state.db-wal").exists(), "precondition: a live WAL-mode log, as a running fleet has");
+        assert!(
+            shell.join("state.db-wal").exists(),
+            "precondition: a live WAL-mode log, as a running fleet has"
+        );
         let mut live = Some(store);
 
         archive_after_teardown(&shell, &runs_dir, &GateHold::default(), || drop(live.take()));
@@ -2470,7 +2494,10 @@ mod tests {
             !archive.join("state.db-wal").exists(),
             "frozen into one file, which only works once the fleet's connection is closed",
         );
-        assert!(!shell.join("state.db").exists(), "and nothing is left live for the next launch to archive");
+        assert!(
+            !shell.join("state.db").exists(),
+            "and nothing is left live for the next launch to archive"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -2478,7 +2505,8 @@ mod tests {
     /// so on the feed the next fleet opens rather than into the void.
     #[test]
     fn the_session_left_in_the_live_slot_is_archived_at_launch_and_announced_later() {
-        let root = std::env::temp_dir().join(format!("fleetor-launch-archive-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("fleetor-launch-archive-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let shell = root.join("_shell");
         let runs_dir = runs::runs_dir(&root);
@@ -2502,9 +2530,16 @@ mod tests {
         archive_previous_run_under(&shell, &runs_dir, &gate);
 
         assert!(!shell.join("state.db").exists(), "the live slot is empty for the next fleet");
-        assert_eq!(runs::list(&runs_dir).len(), 1, "and the session is a History row before any fleet starts");
+        assert_eq!(
+            runs::list(&runs_dir).len(),
+            1,
+            "and the session is a History row before any fleet starts"
+        );
         let held = gate.take_pending();
-        assert!(held.iter().any(|(_, text)| text.contains("see History")), "held for the feed: {held:?}");
+        assert!(
+            held.iter().any(|(_, text)| text.contains("see History")),
+            "held for the feed: {held:?}"
+        );
 
         // A second launch with nothing live archives nothing and says nothing.
         archive_previous_run_under(&shell, &runs_dir, &gate);
@@ -2528,12 +2563,17 @@ mod tests {
         let sock = dir.join("fleet.sock");
 
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-        let store: Arc<dyn Store> =
-            Arc::new(SqliteStore::open(&dir.join("state.db")).unwrap());
+        let store: Arc<dyn Store> = Arc::new(SqliteStore::open(&dir.join("state.db")).unwrap());
 
         let (app_tx, app_rx) = mpsc::unbounded_channel();
         let registry = Arc::new(PaneRegistry::new(Arc::new(|_, _| {}), dir.join("panes.pids")));
-        deliver::spawn_delivery(&rt, registry, app_rx, store.clone(), Arc::new(GaugeSources::default()));
+        deliver::spawn_delivery(
+            &rt,
+            registry,
+            app_rx,
+            store.clone(),
+            Arc::new(GaugeSources::default()),
+        );
         let (_hub, shutdown) = spawn_hub(&rt, store.clone(), None, app_tx, sock.clone());
 
         let result = rt.block_on(async {
@@ -2581,13 +2621,20 @@ mod tests {
         std::fs::create_dir_all(&repo_b).unwrap();
         adopt_target(&bench.layout, &bench.gate, &repo_b).expect("accepted with a pane up");
 
-        assert_eq!(configured_target(&bench.layout).unwrap(), Some(repo_b.clone()), "the gate moved");
+        assert_eq!(
+            configured_target(&bench.layout).unwrap(),
+            Some(repo_b.clone()),
+            "the gate moved"
+        );
         assert_eq!(bench.placing().unwrap().2, repo_a, "the running fleet did not");
         assert!(bench.registry.any_pane(), "and its pane is still up");
         assert!(bench.gate.harnesses.held().is_none(), "the reading was about repo-a");
 
         assert_eq!(bench.open_goal("one grammar"), OpResult::Recorded { record_id: "1".into() });
-        assert!(bench.layout.task_store(&repo_a).is_file(), "the task store stayed with the fleet's target");
+        assert!(
+            bench.layout.task_store(&repo_a).is_file(),
+            "the task store stayed with the fleet's target"
+        );
         assert!(!bench.layout.task_store(&repo_b).exists());
 
         *bench.gate.harnesses.held() = Some(vec![logged_in("claude-code", AccountShape::ApiKey)]);
@@ -2692,7 +2739,10 @@ mod tests {
     #[test]
     fn a_malformed_config_is_reported_rather_than_ignored() {
         assert!(parse_target("not json at all").is_err());
-        assert!(parse_target(r#"{"target": 7}"#).is_err(), "a non-string target is a mistake, not an absence");
+        assert!(
+            parse_target(r#"{"target": 7}"#).is_err(),
+            "a non-string target is a mistake, not an absence"
+        );
     }
 
     // --- the operator's composer (WP-07) ---------------------------------------
@@ -2711,7 +2761,10 @@ mod tests {
             Op::Send { to: PaneId::Worker(2), text: "ship it".into() },
             "every spelling the CLI takes, the composer takes",
         );
-        assert_eq!(operator_op("orch", "hi").unwrap(), Op::Send { to: PaneId::Orch, text: "hi".into() });
+        assert_eq!(
+            operator_op("orch", "hi").unwrap(),
+            Op::Send { to: PaneId::Orch, text: "hi".into() }
+        );
         assert_eq!(operator_op("all", "stop").unwrap(), Op::Broadcast { text: "stop".into() });
         assert_eq!(operator_op("reply", "yes").unwrap(), Op::Reply { text: "yes".into() });
     }
@@ -2731,9 +2784,12 @@ mod tests {
     /// one that does not exist is `delivered`.
     #[test]
     fn the_composer_reports_the_fleets_three_words_and_no_others() {
-        let accepted =
-            operator_result(OpResult::Delivered { msg_id: "msg-1".into(), accepted: true, detail: None })
-                .unwrap();
+        let accepted = operator_result(OpResult::Delivered {
+            msg_id: "msg-1".into(),
+            accepted: true,
+            detail: None,
+        })
+        .unwrap();
         assert_eq!(accepted.outcome, "accepted");
         assert_eq!(accepted.detail, None);
 
@@ -2746,10 +2802,14 @@ mod tests {
         assert_eq!(refused.outcome, "undelivered", "the send happened; the arrival did not");
         assert!(refused.detail.unwrap().contains("worker-3"));
 
-        assert_eq!(operator_result(OpResult::Recorded { record_id: "msg-2".into() }).unwrap().outcome, "recorded");
+        assert_eq!(
+            operator_result(OpResult::Recorded { record_id: "msg-2".into() }).unwrap().outcome,
+            "recorded"
+        );
 
-        let error = operator_result(OpResult::Error { message: "nobody has messaged operator yet".into() })
-            .expect_err("an error is an error");
+        let error =
+            operator_result(OpResult::Error { message: "nobody has messaged operator yet".into() })
+                .expect_err("an error is an error");
         assert!(error.contains("nobody has messaged operator"), "{error}");
     }
 
@@ -2835,7 +2895,8 @@ mod tests {
                 task_events: Arc::default(),
                 root,
             };
-            *bench.gate.harnesses.held() = Some(vec![logged_in("claude-code", AccountShape::ApiKey)]);
+            *bench.gate.harnesses.held() =
+                Some(vec![logged_in("claude-code", AccountShape::ApiKey)]);
             bench.pick("m");
             bench.point_at("repo-a");
             bench
@@ -2885,7 +2946,15 @@ mod tests {
                 }
                 true
             });
-            launch(&self.state, &self.registry, &self.gate, self.layout.clone(), &offer, source, emit)
+            launch(
+                &self.state,
+                &self.registry,
+                &self.gate,
+                self.layout.clone(),
+                &offer,
+                source,
+                emit,
+            )
         }
 
         fn fresh(&self) {
@@ -2963,8 +3032,11 @@ mod tests {
         /// Every archived run folder, lineage members included.
         fn archives(&self) -> Vec<PathBuf> {
             let Ok(entries) = std::fs::read_dir(self.runs_dir()) else { return Vec::new() };
-            let mut dirs: Vec<_> =
-                entries.flatten().map(|e| e.path()).filter(|p| p.join("state.db").is_file()).collect();
+            let mut dirs: Vec<_> = entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.join("state.db").is_file())
+                .collect();
             dirs.sort();
             dirs
         }
@@ -2996,7 +3068,11 @@ mod tests {
         assert_eq!(orch.as_deref(), Some("recorded"), "a reopen places what the run recorded");
         assert_eq!(workers.as_deref(), Some("gate"), "a seat with no record keeps the gate's pick");
         assert_eq!(target, repo_a);
-        assert_eq!(bench.gate.seats().orch.model, None, "and the gate is left for the next new fleet");
+        assert_eq!(
+            bench.gate.seats().orch.model,
+            None,
+            "and the gate is left for the next new fleet"
+        );
         bench.bring_up_orch("recorded");
 
         bench.fresh();
@@ -3004,7 +3080,11 @@ mod tests {
         let (orch, workers, _) = bench.placing().expect("a new fleet");
         assert_eq!((orch, workers.as_deref()), (None, Some("gate")), "the new fleet is the gate's");
         assert!(!bench.registry.any_pane(), "the reopened run's pane is gone");
-        assert_eq!(bench.archives().len(), 3, "the first run, the empty second, and the reopened sitting");
+        assert_eq!(
+            bench.archives().len(),
+            3,
+            "the first run, the empty second, and the reopened sitting"
+        );
     }
 
     /// The startup setting is one key in `config.json`, read at each launch,
@@ -3051,7 +3131,8 @@ mod tests {
             !bench.layout.task_store(&repo_a).starts_with(bench.layout.shell()),
             "and outside the shell the panes may write to",
         );
-        let noted = std::fs::read_to_string(bench.layout.target_dir(&repo_a).join("target.txt")).unwrap();
+        let noted =
+            std::fs::read_to_string(bench.layout.target_dir(&repo_a).join("target.txt")).unwrap();
         assert_eq!(PathBuf::from(noted), repo_a.canonicalize().unwrap());
 
         let piped = || bench.task_events.lock().unwrap().len();
@@ -3066,7 +3147,8 @@ mod tests {
             let slot = bench.state.0.lock().unwrap();
             let log = slot.as_ref().unwrap().store.events_since(0).unwrap();
             assert!(
-                !log.iter().any(|(_, e)| matches!(e, FleetEvent::Chain { .. } | FleetEvent::Task { .. })),
+                !log.iter()
+                    .any(|(_, e)| matches!(e, FleetEvent::Chain { .. } | FleetEvent::Task { .. })),
                 "no task entry is in the run log",
             );
         }
@@ -3082,7 +3164,8 @@ mod tests {
 
         // The first run is archived by now, with the one goal it touched.
         let tasks_json = |run: &str| -> serde_json::Value {
-            let text = std::fs::read_to_string(bench.runs_dir().join(run).join("tasks.json")).unwrap();
+            let text =
+                std::fs::read_to_string(bench.runs_dir().join(run).join("tasks.json")).unwrap();
             serde_json::from_str(&text).unwrap()
         };
         let archived = tasks_json(&first_run);
@@ -3091,7 +3174,11 @@ mod tests {
         assert_eq!(archived["tasks"][0]["number"], 1);
         assert_eq!(archived["tasks"][0]["chain"][0]["entry"], "opened");
         let history = runs::list(&bench.runs_dir());
-        assert_eq!(history.iter().find(|r| r.id == first_run).unwrap().tasks, 1, "History counts from tasks.json");
+        assert_eq!(
+            history.iter().find(|r| r.id == first_run).unwrap().tasks,
+            1,
+            "History counts from tasks.json"
+        );
 
         let live = task_snapshot(&bench.state, &bench.layout).unwrap();
         assert!(live.live);
@@ -3102,8 +3189,13 @@ mod tests {
         bench.fresh();
         assert!(bench.task_list().is_empty(), "another target has its own store");
         let second = tasks_json(&second_run);
-        let numbers: Vec<_> = second["tasks"].as_array().unwrap().iter().map(|t| t["number"].clone()).collect();
-        assert_eq!(numbers, vec![serde_json::json!(2)], "only what that run touched, not the whole store");
+        let numbers: Vec<_> =
+            second["tasks"].as_array().unwrap().iter().map(|t| t["number"].clone()).collect();
+        assert_eq!(
+            numbers,
+            vec![serde_json::json!(2)],
+            "only what that run touched, not the whole store"
+        );
 
         // With no fleet no tasks are shown (D-117), and a target that never
         // had a store is not given one.
@@ -3130,14 +3222,21 @@ mod tests {
         let rows = || -> Vec<(String, runs::RunState)> {
             history(&bench.state, &bench.layout).into_iter().map(|r| (r.id, r.state)).collect()
         };
-        assert_eq!(rows(), vec![(first.clone(), runs::RunState::Running)], "the live run is a History row");
+        assert_eq!(
+            rows(),
+            vec![(first.clone(), runs::RunState::Running)],
+            "the live run is a History row"
+        );
 
         let held = runs::hold_finishes();
         bench.launch_unsettled(LaunchSource::Fresh).expect("a second fleet");
         let (second, _) = bench.ids();
         assert_eq!(
             rows(),
-            vec![(second.clone(), runs::RunState::Running), (first.clone(), runs::RunState::Archiving)],
+            vec![
+                (second.clone(), runs::RunState::Running),
+                (first.clone(), runs::RunState::Archiving)
+            ],
             "the launch returned with the old run still staged",
         );
         assert!(bench.archives().is_empty());
@@ -3174,7 +3273,11 @@ mod tests {
     fn a_launch_refused_at_the_verdict_leaves_the_running_fleet_untouched() {
         let bench = Bench::new("refused");
         bench.fresh();
-        assert_eq!(bench.launchings(), 1, "a first launch, with nothing to tear down, still says so");
+        assert_eq!(
+            bench.launchings(),
+            1,
+            "a first launch, with nothing to tear down, still says so"
+        );
         bench.bring_up_orch("m");
 
         let unknown = bench.reopen("2020-01-01T00-00-00Z").expect_err("no such run");
@@ -3184,12 +3287,19 @@ mod tests {
             "claude-code",
             LoginState::NoCredential { summary: "records no login".into(), provider_key: None },
         )]);
-        let logged_out = bench.launch(LaunchSource::Fresh).expect_err("a logged-out fleet may not start");
-        assert!(!logged_out.torn_down && logged_out.reason.contains("records no login"), "{logged_out:?}");
+        let logged_out =
+            bench.launch(LaunchSource::Fresh).expect_err("a logged-out fleet may not start");
+        assert!(
+            !logged_out.torn_down && logged_out.reason.contains("records no login"),
+            "{logged_out:?}"
+        );
 
         assert!(bench.registry.any_pane(), "the running fleet's pane is still up");
         assert!(bench.placing().is_some(), "and so is the fleet");
-        assert!(bench.archives().is_empty(), "nothing was archived for a launch that never started");
+        assert!(
+            bench.archives().is_empty(),
+            "nothing was archived for a launch that never started"
+        );
         assert_eq!(bench.launchings(), 1, "and the webview was told nothing, so it resets nothing");
     }
 
@@ -3208,12 +3318,20 @@ mod tests {
 
         bench.reopen(&on_a).expect("repo A's session reopens while the gate is on repo B");
         assert_eq!(bench.placing().unwrap().2, repo_a);
-        assert_eq!(configured_target(&bench.layout).unwrap(), Some(repo_b.clone()), "config is not written");
+        assert_eq!(
+            configured_target(&bench.layout).unwrap(),
+            Some(repo_b.clone()),
+            "config is not written"
+        );
 
         std::fs::remove_dir_all(&repo_a).unwrap();
         let gone = bench.reopen(&on_a).expect_err("its folder is gone");
         assert!(!gone.torn_down && gone.reason.contains("no longer a folder"), "{gone:?}");
-        assert_eq!(bench.placing().unwrap().2, repo_a, "the live fleet is the one that was running");
+        assert_eq!(
+            bench.placing().unwrap().2,
+            repo_a,
+            "the live fleet is the one that was running"
+        );
     }
 
     /// A run archived before targets were recorded reopens on the gate's, and
@@ -3259,13 +3377,24 @@ mod tests {
         let archives = bench.archives();
         assert_eq!(archives.len(), 2, "two runs were left; the third is live");
         for (archive, id) in archives.iter().zip(&ids) {
-            assert_eq!(archive.file_name().unwrap().to_string_lossy(), *id, "archived under the id it ran as");
+            assert_eq!(
+                archive.file_name().unwrap().to_string_lossy(),
+                *id,
+                "archived under the id it ran as"
+            );
             let manifest = std::fs::read_to_string(archive.join("manifest.json")).unwrap();
             assert!(manifest.contains(&format!("\"sessions\": \"{id}\"")), "{manifest}");
             assert!(!archive.join("state.db-wal").exists(), "{} was not frozen", archive.display());
-            assert!(archive.join("manifest.json").is_file(), "{} has no manifest", archive.display());
+            assert!(
+                archive.join("manifest.json").is_file(),
+                "{} has no manifest",
+                archive.display()
+            );
         }
-        assert!(bench.layout.shell().join("state.db").is_file(), "and the live slot holds the third");
+        assert!(
+            bench.layout.shell().join("state.db").is_file(),
+            "and the live slot holds the third"
+        );
     }
 
     /// **A reopen places what the run recorded** (D-095): harness and model come
@@ -3287,9 +3416,12 @@ mod tests {
             ("worker-2".to_string(), record("gamma-cli", Some("g"))),
         ]);
 
-        let seats = seats_on(claude, claude).as_recorded(&recorded);
+        let seats = seats_on(claude, claude).with_recorded(&recorded);
 
-        assert_eq!((seats.orch.harness.as_str(), seats.orch.model.as_deref()), (codex, Some("gpt-x")));
+        assert_eq!(
+            (seats.orch.harness.as_str(), seats.orch.model.as_deref()),
+            (codex, Some("gpt-x"))
+        );
         let w1 = &seats.workers[0];
         assert_eq!((w1.harness.as_str(), w1.model.as_deref()), (codex, None));
         for kept in &seats.workers[1..] {
@@ -3314,7 +3446,10 @@ mod tests {
         let seats = seats_on("claude-code", "claude-code");
         let out = vec![reading(
             "claude-code",
-            LoginState::NoCredential { summary: "records no login in ~/.claude.json".into(), provider_key: None },
+            LoginState::NoCredential {
+                summary: "records no login in ~/.claude.json".into(),
+                provider_key: None,
+            },
         )];
 
         let refused = StartVerdict::for_seats(&seats, &out, Vec::new(), &logins());
@@ -3399,8 +3534,16 @@ mod tests {
         let orch = verdict.cost.iter().find(|line| line.seats == "orchestrator").expect("a line");
         assert_eq!(orch.harness, "codex");
         assert!(orch.sentence.contains("your own login"), "{}", orch.sentence);
-        assert!(orch.sentence.contains("subscription plan"), "the shape is named: {}", orch.sentence);
-        assert!(orch.sentence.contains("on openai"), "and the provider it resolved: {}", orch.sentence);
+        assert!(
+            orch.sentence.contains("subscription plan"),
+            "the shape is named: {}",
+            orch.sentence
+        );
+        assert!(
+            orch.sentence.contains("on openai"),
+            "and the provider it resolved: {}",
+            orch.sentence
+        );
         assert!(
             orch.sentence.contains("your own subscription quota"),
             "\"it will spend tokens\" is not the warning when it spends a plan: {}",
@@ -3452,7 +3595,10 @@ mod tests {
         // A harness this build does not have claims to read a shape it never read.
         let unknown = orchestrator_cost("nobody", None);
         assert!(unknown.contains("credential unread"), "{unknown}");
-        assert!(unknown.contains("runs your own login"), "the seat is still the operator's: {unknown}");
+        assert!(
+            unknown.contains("runs your own login"),
+            "the seat is still the operator's: {unknown}"
+        );
     }
 
     /// The four workers on one harness are one sentence; a mixed fleet is as many as
@@ -3469,7 +3615,12 @@ mod tests {
             Vec::new(),
             &logins(),
         );
-        assert_eq!(same.cost.len(), 2, "one orchestrator line and one worker line: {:?}", same.cost);
+        assert_eq!(
+            same.cost.len(),
+            2,
+            "one orchestrator line and one worker line: {:?}",
+            same.cost
+        );
         assert!(same.cost[1].seats.contains("all 4 worker seats"), "{:?}", same.cost[1]);
 
         let mut mixed = seats_on("claude-code", "claude-code");
@@ -3485,10 +3636,8 @@ mod tests {
     /// is reported rather than done quietly.
     #[test]
     fn a_model_the_catalog_no_longer_lists_falls_back_instead_of_spawning() {
-        let listed = |slug: &str| ModelChoice {
-            slug: slug.to_string(),
-            display_name: slug.to_uppercase(),
-        };
+        let listed =
+            |slug: &str| ModelChoice { slug: slug.to_string(), display_name: slug.to_uppercase() };
         let catalog = vec![HarnessReadiness {
             models: vec![listed("gpt-6-astra"), listed("gpt-6-sol")],
             ..logged_in("codex", AccountShape::ApiKey)
@@ -3628,7 +3777,8 @@ mod tests {
                  that one did: {why}",
             );
             assert!(
-                why.contains(expectation.resolved) && why.contains(&format!("not-{}", expectation.resolved)),
+                why.contains(expectation.resolved)
+                    && why.contains(&format!("not-{}", expectation.resolved)),
                 "and it has to say both what was expected and what the vendor said: {why}",
             );
             assert_eq!(

@@ -55,7 +55,8 @@ const MANIFEST_JSON: &str = "manifest.json";
 /// evidence is missing rather than that the sentence is. It now says what is
 /// invariant (one directory per pane, raw, this run only) and points at `panes`
 /// for what varies.
-const TRANSCRIPTS_ARE: &str = "one directory per pane — orch and each worker — holding that pane's \
+const TRANSCRIPTS_ARE: &str =
+    "one directory per pane — orch and each worker — holding that pane's \
      own transcripts for this run only, exactly as its harness wrote them. Nothing here is \
      converted or normalized: `panes` below says which harness ran in each seat and what format \
      its transcripts are in.";
@@ -264,7 +265,13 @@ fn staging_dir(shell: &Path) -> PathBuf {
 ///
 /// Best-effort on purpose: a failure here costs one row's target column, and is
 /// not worth failing a boot over.
-pub fn begin(shell: &Path, started_ms: i64, target: &Path, sessions: &SessionsId, parent: Option<&str>) {
+pub fn begin(
+    shell: &Path,
+    started_ms: i64,
+    target: &Path,
+    sessions: &SessionsId,
+    parent: Option<&str>,
+) {
     begin_run(shell, None, started_ms, target, sessions, parent);
 }
 
@@ -335,12 +342,7 @@ fn begin_run(
 /// it could not describe it would be trading the run for the record of it. A pane
 /// missing here is a pane the manifest does not name; its transcripts are still
 /// harvested and still filed under its seat.
-pub fn record_pane(
-    shell: &Path,
-    pane: &str,
-    harness: &'static HarnessSpec,
-    model: Option<&str>,
-) {
+pub fn record_pane(shell: &Path, pane: &str, harness: &'static HarnessSpec, model: Option<&str>) {
     let mut meta = read_live_meta(shell);
     meta.panes.insert(
         pane.to_string(),
@@ -477,7 +479,11 @@ pub fn rotate(shell: &Path, runs: &Path, now_ms: i64) -> Vec<(NoticeLevel, Strin
 ///
 /// The log moves last: a folder without one was interrupted before anything
 /// left the live slot, and [`sweep`] discards it.
-pub fn stage(shell: &Path, runs: &Path, now_ms: i64) -> (Option<String>, Vec<(NoticeLevel, String)>) {
+pub fn stage(
+    shell: &Path,
+    runs: &Path,
+    now_ms: i64,
+) -> (Option<String>, Vec<(NoticeLevel, String)>) {
     let live = live_db(shell);
     if !live.is_file() {
         return (None, Vec::new()); // first run on this machine — nothing to archive
@@ -594,7 +600,10 @@ pub fn finish(shell: &Path, runs: &Path, id: &str) -> Vec<(NoticeLevel, String)>
             Some(record)
         }
         Err(e) => {
-            notices.push((NoticeLevel::Warn, format!("archived run {id}, but could not read it back: {e}")));
+            notices.push((
+                NoticeLevel::Warn,
+                format!("archived run {id}, but could not read it back: {e}"),
+            ));
             None
         }
     };
@@ -602,7 +611,10 @@ pub fn finish(shell: &Path, runs: &Path, id: &str) -> Vec<(NoticeLevel, String)>
     if let Err(e) = std::fs::rename(&dir, &dest) {
         notices.push((
             NoticeLevel::Warn,
-            format!("run {id} is staged at {} and could not be moved into History: {e}", dir.display()),
+            format!(
+                "run {id} is staged at {} and could not be moved into History: {e}",
+                dir.display()
+            ),
         ));
         return notices;
     }
@@ -611,9 +623,15 @@ pub fn finish(shell: &Path, runs: &Path, id: &str) -> Vec<(NoticeLevel, String)>
         record.bytes = dir_bytes(&dest);
         let label = record.label.clone();
         if let Err(e) = upsert(runs, record) {
-            notices.push((NoticeLevel::Warn, format!("archived run {id}, but its index entry did not save: {e}")));
+            notices.push((
+                NoticeLevel::Warn,
+                format!("archived run {id}, but its index entry did not save: {e}"),
+            ));
         } else {
-            notices.push((NoticeLevel::Info, format!("previous run archived as “{label}” — see History")));
+            notices.push((
+                NoticeLevel::Info,
+                format!("previous run archived as “{label}” — see History"),
+            ));
         }
     }
     notices
@@ -630,12 +648,20 @@ pub fn sweep(shell: &Path, runs: &Path) -> Vec<(NoticeLevel, String)> {
 
 /// The `tasks.json` hook (D-099, Coordination C): written at stage, and by a
 /// finish for a staged folder that lacks it.
-fn stage_tasks(shell: &Path, dir: &Path, id: &str, target: Option<&str>) -> Option<(NoticeLevel, String)> {
+fn stage_tasks(
+    shell: &Path,
+    dir: &Path,
+    id: &str,
+    target: Option<&str>,
+) -> Option<(NoticeLevel, String)> {
     match target {
-        Some(target) => archive_tasks(shell, dir, id, Path::new(target))
-            .err()
-            .map(|e| (NoticeLevel::Warn, format!("archived run {id}, but its tasks.json did not write: {e}"))),
-        None => Some((NoticeLevel::Info, format!("run {id} recorded no target, so its archive has no tasks.json"))),
+        Some(target) => archive_tasks(shell, dir, id, Path::new(target)).err().map(|e| {
+            (NoticeLevel::Warn, format!("archived run {id}, but its tasks.json did not write: {e}"))
+        }),
+        None => Some((
+            NoticeLevel::Info,
+            format!("run {id} recorded no target, so its archive has no tasks.json"),
+        )),
     }
 }
 
@@ -655,8 +681,11 @@ fn archive_tasks(shell: &Path, dest: &Path, run_id: &str, target: &Path) -> Resu
         .filter(|record| record.chain.iter().any(|line| line.run == run_id))
         .collect();
     let json = serde_json::json!({ "run": run_id, "target": target, "tasks": touched });
-    std::fs::write(dest.join(TASKS_JSON), serde_json::to_string_pretty(&json).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())
+    std::fs::write(
+        dest.join(TASKS_JSON),
+        serde_json::to_string_pretty(&json).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// How many tasks an archived run touched, from its `tasks.json`. `None` for a
@@ -695,7 +724,8 @@ fn take_transcript(from: &Path, to: &Path, transport: Transport) -> bool {
 /// INTO` is read-only with respect to the source in any case.
 fn sqlite_backup(from: &Path, to: &Path) -> Result<(), String> {
     let to = to.to_str().ok_or_else(|| format!("{} is not utf-8", to.display()))?;
-    let conn = rusqlite::Connection::open(from).map_err(|e| format!("open {}: {e}", from.display()))?;
+    let conn =
+        rusqlite::Connection::open(from).map_err(|e| format!("open {}: {e}", from.display()))?;
     conn.execute("VACUUM INTO ?1", [to]).map_err(|e| format!("VACUUM INTO {to}: {e}"))?;
     Ok(())
 }
@@ -746,7 +776,11 @@ fn walk_transcripts(shell: &Path, sessions: &SessionsId, dest: &Path) -> u32 {
 /// registered harness — this runs *after* `record_pane` has said what each seat
 /// ran, so it can ask that harness and no other. A seat whose harness is not
 /// registered in this build, or that opened no resumable session, keeps `None`.
-fn capture_session_ids(shell: &Path, sessions: &SessionsId, panes: &mut BTreeMap<String, PaneRecord>) {
+fn capture_session_ids(
+    shell: &Path,
+    sessions: &SessionsId,
+    panes: &mut BTreeMap<String, PaneRecord>,
+) {
     let root = crate::placement::pane_config_run(shell, sessions);
     for (seat, record) in panes.iter_mut() {
         let Some(harness) = crate::placement::harness::by_name(&record.harness) else { continue };
@@ -868,7 +902,8 @@ fn write_agent_view(
     });
     std::fs::write(
         dest.join(MANIFEST_JSON),
-        serde_json::to_string_pretty(&manifest).map_err(|e| std::io::Error::other(e.to_string()))?,
+        serde_json::to_string_pretty(&manifest)
+            .map_err(|e| std::io::Error::other(e.to_string()))?,
     )
 }
 
@@ -1013,7 +1048,8 @@ fn running(shell: &Path, tasks: i64) -> Option<RunRecord> {
     let meta = read_live_meta(shell);
     let id = meta.id.clone()?;
     let db = live_db(shell);
-    let mut record = digest_record(&db, &id, meta.target.as_deref()).unwrap_or_else(|_| bare_record(&id, &meta));
+    let mut record =
+        digest_record(&db, &id, meta.target.as_deref()).unwrap_or_else(|_| bare_record(&id, &meta));
     record.tasks = tasks;
     record.bytes = std::fs::metadata(&db).map(|m| m.len()).unwrap_or(0);
     record.sessions = meta.sessions;
@@ -1067,8 +1103,8 @@ pub fn rename(runs: &Path, id: &str, label: &str) -> Result<(), String> {
 /// remains (R15).
 pub fn delete(runs: &Path, shell: &Path, id: &str) -> Result<(), String> {
     let dir = run_dir(runs, id)?;
-    let sessions = manifest_of(&dir)
-        .and_then(|m| m.get("run")?.get("sessions")?.as_str().map(str::to_string));
+    let sessions =
+        manifest_of(&dir).and_then(|m| m.get("run")?.get("sessions")?.as_str().map(str::to_string));
 
     std::fs::remove_dir_all(&dir).map_err(|e| format!("removing {}: {e}", dir.display()))?;
     let remaining = list(runs);
@@ -1077,9 +1113,10 @@ pub fn delete(runs: &Path, shell: &Path, id: &str) -> Result<(), String> {
     if let Some(ref sid) = sessions {
         let still_used = remaining.iter().any(|r| r.sessions.as_deref() == Some(sid.as_str()));
         if !still_used {
-            let _ = std::fs::remove_dir_all(
-                crate::placement::pane_config_run(shell, &SessionsId::new(sid)),
-            );
+            let _ = std::fs::remove_dir_all(crate::placement::pane_config_run(
+                shell,
+                &SessionsId::new(sid),
+            ));
         }
     }
     Ok(())
@@ -1206,7 +1243,8 @@ fn lineage_panes(runs: &Path, id: &str) -> Option<serde_json::Map<String, serde_
             // A record that names a session beats a nearer one that does not
             // (D-095): a seat that came up without resuming must not hide the
             // session its ancestor left.
-            let has_session = |r: &serde_json::Value| r.get("session_id").is_some_and(|v| v.is_string());
+            let has_session =
+                |r: &serde_json::Value| r.get("session_id").is_some_and(|v| v.is_string());
             for (seat, record) in panes {
                 match into.get(seat) {
                     Some(held) if has_session(held) || !has_session(record) => {}
@@ -1291,7 +1329,9 @@ fn reopen_blocker(runs: &Path, id: &str) -> Option<String> {
         // rotation; a seat directory deleted since leaves the id behind, and the
         // vendor's resume would then fail in a pane the live fleet was killed for.
         if !harness.has_session(&seats.join(seat), session) {
-            return Some(format!("{seat}\u{2019}s session is no longer on disk, so there is nothing to resume"));
+            return Some(format!(
+                "{seat}\u{2019}s session is no longer on disk, so there is nothing to resume"
+            ));
         }
     }
     None
@@ -1314,10 +1354,8 @@ fn count_transcripts(dir: &Path) -> u32 {
 /// plausible title — the counts in the list are what make it obviously
 /// deletable, and inventing a name for an empty run hides that.
 fn suggest_label(target: Option<&str>, headline: Option<&str>) -> String {
-    let repo = target
-        .map(Path::new)
-        .and_then(|p| p.file_name())
-        .map(|n| n.to_string_lossy().to_string());
+    let repo =
+        target.map(Path::new).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string());
     match (repo, headline) {
         (Some(repo), Some(head)) => format!("{repo} — {head}"),
         (Some(repo), None) => format!("{repo} — no activity"),
@@ -1346,8 +1384,8 @@ fn upsert(runs: &Path, record: RunRecord) -> std::io::Result<()> {
 
 fn write_index(runs: &Path, records: &[RunRecord]) -> std::io::Result<()> {
     std::fs::create_dir_all(runs)?;
-    let text = serde_json::to_string_pretty(records)
-        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    let text =
+        serde_json::to_string_pretty(records).map_err(|e| std::io::Error::other(e.to_string()))?;
     std::fs::write(index_path(runs), text)
 }
 
@@ -1376,12 +1414,11 @@ pub fn export(runs: &Path, id: &str, to: &Path) -> Result<(), String> {
     // A run archived before the export existed has no events.json; generate it
     // once, into the archive, so the next reader finds it there too.
     if !source.is_file() {
-        let json = fleetor_db::archive::to_json(&dir.join("state.db")).map_err(|e| e.to_string())?;
+        let json =
+            fleetor_db::archive::to_json(&dir.join("state.db")).map_err(|e| e.to_string())?;
         std::fs::write(&source, json).map_err(|e| format!("writing {}: {e}", source.display()))?;
     }
-    std::fs::copy(&source, to)
-        .map(|_| ())
-        .map_err(|e| format!("writing {}: {e}", to.display()))
+    std::fs::copy(&source, to).map(|_| ()).map_err(|e| format!("writing {}: {e}", to.display()))
 }
 
 fn read_live_meta(shell: &Path) -> LiveMeta {
@@ -1421,12 +1458,7 @@ pub fn timestamp_id_for(ms: i64) -> String {
     let ms_of_day = ms.rem_euclid(MS_PER_DAY);
     let (y, m, d) = civil_from_days(days);
     let secs = ms_of_day / 1000;
-    format!(
-        "{y:04}-{m:02}-{d:02}T{:02}-{:02}-{:02}Z",
-        secs / 3600,
-        (secs / 60) % 60,
-        secs % 60
-    )
+    format!("{y:04}-{m:02}-{d:02}T{:02}-{:02}-{:02}Z", secs / 3600, (secs / 60) % 60, secs % 60)
 }
 
 /// Days since the Unix epoch → (year, month, day). Howard Hinnant's `civil_from_days`.
@@ -1489,7 +1521,13 @@ mod tests {
     fn a_run_is_archived_and_the_live_slot_is_left_empty_for_the_next_one() {
         let root = scratch("rotate");
         let shell = root.join("_shell");
-        begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("run-1"), None);
+        begin(
+            &shell,
+            1_800_000_000_000,
+            Path::new("/tmp/logstat"),
+            &SessionsId::new("run-1"),
+            None,
+        );
         write_live(&shell, &["take the parser", "on it"]);
 
         let notices = rotate(&shell, &runs_dir(&root), 1_800_000_100_000);
@@ -1512,11 +1550,23 @@ mod tests {
         let shell = root.join("_shell");
         let runs = runs_dir(&root);
 
-        begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("run-1"), None);
+        begin(
+            &shell,
+            1_800_000_000_000,
+            Path::new("/tmp/logstat"),
+            &SessionsId::new("run-1"),
+            None,
+        );
         write_live(&shell, &["first run"]);
         rotate(&shell, &runs, 0);
 
-        begin(&shell, 1_900_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("run-1"), None);
+        begin(
+            &shell,
+            1_900_000_000_000,
+            Path::new("/tmp/logstat"),
+            &SessionsId::new("run-1"),
+            None,
+        );
         write_live(&shell, &["second run", "and more"]);
         rotate(&shell, &runs, 0);
 
@@ -1533,7 +1583,13 @@ mod tests {
         let root = scratch("index");
         let shell = root.join("_shell");
         let runs = runs_dir(&root);
-        begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("run-1"), None);
+        begin(
+            &shell,
+            1_800_000_000_000,
+            Path::new("/tmp/logstat"),
+            &SessionsId::new("run-1"),
+            None,
+        );
         write_live(&shell, &["take the parser"]);
         rotate(&shell, &runs, 0);
 
@@ -1552,7 +1608,13 @@ mod tests {
     fn a_run_that_started_and_did_nothing_is_labelled_as_such() {
         let root = scratch("empty");
         let shell = root.join("_shell");
-        begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("run-1"), None);
+        begin(
+            &shell,
+            1_800_000_000_000,
+            Path::new("/tmp/logstat"),
+            &SessionsId::new("run-1"),
+            None,
+        );
         SqliteStore::open(&shell.join("state.db")).unwrap();
         rotate(&shell, &runs_dir(&root), 0);
 
@@ -1592,7 +1654,13 @@ mod tests {
             }
             std::fs::write(project.join("not-a-transcript.txt"), "ignore me").unwrap();
         }
-        begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("run-1"), None);
+        begin(
+            &shell,
+            1_800_000_000_000,
+            Path::new("/tmp/logstat"),
+            &SessionsId::new("run-1"),
+            None,
+        );
         write_live(&shell, &["take the parser"]);
 
         rotate(&shell, &runs, 0);
@@ -1609,14 +1677,20 @@ mod tests {
         // now does that job, and leaving the session where the vendor keeps it is
         // what makes reopening `--resume <id>` against a file that never moved.
         let left = shell.join("pane-config/run-1/worker-1/projects/-tmp-slug");
-        assert!(left.join("a.jsonl").is_file(), "the vendor's own session must survive the archive");
+        assert!(
+            left.join("a.jsonl").is_file(),
+            "the vendor's own session must survive the archive"
+        );
         assert!(left.join("not-a-transcript.txt").is_file(), "only .jsonl is archived");
         // And the accumulation D-059 feared is answered by the directory, not the
         // move: another run's sessions are simply not in this run's walk.
         let other = shell.join("pane-config/run-2/worker-1/projects/-tmp-slug");
         std::fs::create_dir_all(&other).unwrap();
         std::fs::write(other.join("z.jsonl"), r#"{"type":"user"}"#).unwrap();
-        assert!(!dir.join("transcripts/worker-1/z.jsonl").exists(), "another run's session is not this run's evidence");
+        assert!(
+            !dir.join("transcripts/worker-1/z.jsonl").exists(),
+            "another run's session is not this run's evidence"
+        );
     }
 
     /// WP-14, D-062: the pane that makes the decisions is archived like every
@@ -1635,7 +1709,13 @@ mod tests {
             std::fs::create_dir_all(&project).unwrap();
             std::fs::write(project.join(format!("{session}.jsonl")), r#"{"type":"user"}"#).unwrap();
         }
-        begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("run-1"), None);
+        begin(
+            &shell,
+            1_800_000_000_000,
+            Path::new("/tmp/logstat"),
+            &SessionsId::new("run-1"),
+            None,
+        );
         write_live(&shell, &["take the parser"]);
 
         rotate(&shell, &runs, 0);
@@ -1650,7 +1730,8 @@ mod tests {
         assert!(shell.join("pane-config/run-1/orch/projects/-tmp-slug/o1.jsonl").is_file());
 
         let manifest: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(dir.join(MANIFEST_JSON)).unwrap()).unwrap();
+            serde_json::from_str(&std::fs::read_to_string(dir.join(MANIFEST_JSON)).unwrap())
+                .unwrap();
         let layout = manifest["layout"]["transcripts/"].as_str().unwrap();
         assert!(layout.contains("orch"), "a cold reader is told orch is in there: {layout}");
     }
@@ -1675,7 +1756,13 @@ mod tests {
             std::fs::create_dir_all(&project).unwrap();
             std::fs::write(project.join(format!("{session}.jsonl")), r#"{"type":"user"}"#).unwrap();
         }
-        begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("run-1"), None);
+        begin(
+            &shell,
+            1_800_000_000_000,
+            Path::new("/tmp/logstat"),
+            &SessionsId::new("run-1"),
+            None,
+        );
         record_pane(&shell, "orch", crate::placement::harness::claude_code().spec(), None);
         record_pane(&shell, "worker-1", crate::placement::harness::claude_code().spec(), None);
         write_live(&shell, &["take the parser"]);
@@ -1717,7 +1804,13 @@ mod tests {
         let project = shell.join("pane-config/run-1/orch/projects/-tmp-slug");
         std::fs::create_dir_all(&project).unwrap();
         std::fs::write(project.join("abc.jsonl"), r#"{"type":"user"}"#).unwrap();
-        begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("run-1"), None);
+        begin(
+            &shell,
+            1_800_000_000_000,
+            Path::new("/tmp/logstat"),
+            &SessionsId::new("run-1"),
+            None,
+        );
         record_pane(&shell, "orch", crate::placement::harness::claude_code().spec(), None);
         record_pane(&shell, "worker-1", crate::placement::harness::claude_code().spec(), None);
         write_live(&shell, &["take the parser"]);
@@ -1725,7 +1818,11 @@ mod tests {
         rotate(&shell, &runs, 0);
 
         let all = list(&runs);
-        assert_eq!(all[0].cannot_reopen, None, "an untouched worker is not a refusal: {:?}", all[0]);
+        assert_eq!(
+            all[0].cannot_reopen, None,
+            "an untouched worker is not a refusal: {:?}",
+            all[0]
+        );
         // And the gate a caller actually consults agrees with the row.
         assert_eq!(reopen_blocker_for(&runs, &all[0].id), None);
 
@@ -1773,7 +1870,13 @@ mod tests {
         let project = shell.join("pane-config/root-run/orch/projects/-tmp-slug");
         std::fs::create_dir_all(&project).unwrap();
         std::fs::write(project.join("sess-a.jsonl"), r#"{"type":"user"}"#).unwrap();
-        begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("root-run"), None);
+        begin(
+            &shell,
+            1_800_000_000_000,
+            Path::new("/tmp/logstat"),
+            &SessionsId::new("root-run"),
+            None,
+        );
         record_pane(&shell, "orch", crate::placement::harness::claude_code().spec(), None);
         write_live(&shell, &["take the parser"]);
         rotate(&shell, &runs, 0);
@@ -1830,14 +1933,22 @@ mod tests {
         let shell = root.join("_shell");
         let runs = runs_dir(&root);
         let id = an_archived_one_seat_run(&shell, &runs);
-        assert_eq!(list(&runs)[0].cannot_reopen, None, "the control: with its session present it opens");
+        assert_eq!(
+            list(&runs)[0].cannot_reopen,
+            None,
+            "the control: with its session present it opens"
+        );
 
         std::fs::remove_dir_all(shell.join("pane-config")).unwrap();
 
-        let why = list(&runs)[0].cannot_reopen.clone().expect("a session gone from disk blocks the row");
+        let why =
+            list(&runs)[0].cannot_reopen.clone().expect("a session gone from disk blocks the row");
         assert!(why.contains("orch") && why.contains("no longer on disk"), "{why}");
 
-        assert!(reopen_blocker_for(&runs, &id).is_some(), "and the launch's verdict is asked the same question");
+        assert!(
+            reopen_blocker_for(&runs, &id).is_some(),
+            "and the launch's verdict is asked the same question"
+        );
     }
 
     /// **A seat on a harness this build does not have names the seat and the
@@ -1880,7 +1991,13 @@ mod tests {
             std::fs::create_dir_all(&project).unwrap();
             std::fs::write(project.join(format!("{session}.jsonl")), r#"{"type":"user"}"#).unwrap();
         }
-        begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("root-run"), None);
+        begin(
+            &shell,
+            1_800_000_000_000,
+            Path::new("/tmp/logstat"),
+            &SessionsId::new("root-run"),
+            None,
+        );
         record_pane(&shell, "orch", cc, None);
         record_pane(&shell, "worker-1", cc, None);
         write_live(&shell, &["take the parser"]);
@@ -1923,7 +2040,13 @@ mod tests {
         let project = shell.join("pane-config/root-run/worker-1/projects/-tmp-slug");
         std::fs::create_dir_all(&project).unwrap();
         std::fs::write(project.join("sess-w1.jsonl"), r#"{"type":"user"}"#).unwrap();
-        begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("root-run"), None);
+        begin(
+            &shell,
+            1_800_000_000_000,
+            Path::new("/tmp/logstat"),
+            &SessionsId::new("root-run"),
+            None,
+        );
         record_pane(&shell, "worker-1", cc, Some("a-model"));
         write_live(&shell, &["take the parser"]);
         rotate(&shell, &runs, 0);
@@ -1942,7 +2065,8 @@ mod tests {
         let child_id = list(&runs)[0].id.clone();
         assert_ne!(child_id, parent_id);
 
-        let seat = recorded_panes(&runs, &child_id).remove("worker-1").expect("the seat is recorded");
+        let seat =
+            recorded_panes(&runs, &child_id).remove("worker-1").expect("the seat is recorded");
         assert_eq!(seat.harness, cc.name);
         assert_eq!(seat.model.as_deref(), Some("a-model"));
         assert_eq!(seat.session_id.as_deref(), Some("sess-w1"));
@@ -1961,14 +2085,21 @@ mod tests {
             let run_json = root.join(format!("{id}.json"));
             std::fs::write(&run_json, &text).unwrap();
             let live = read_meta(&run_json);
-            assert_eq!(live.panes["worker-1"].model.as_deref(), Some("a-model"), "run.json: {text}");
+            assert_eq!(
+                live.panes["worker-1"].model.as_deref(),
+                Some("a-model"),
+                "run.json: {text}"
+            );
 
             let dir = runs.join(id);
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join("state.db"), "").unwrap();
             std::fs::write(dir.join(MANIFEST_JSON), &text).unwrap();
             let seat = recorded_panes(&runs, id).remove("worker-1").expect("manifest.json parses");
-            assert_eq!((seat.harness.as_str(), seat.model.as_deref()), ("claude-code", Some("a-model")));
+            assert_eq!(
+                (seat.harness.as_str(), seat.model.as_deref()),
+                ("claude-code", Some("a-model"))
+            );
             assert!(!serde_json::to_string(&seat).unwrap().contains("credential"));
         }
     }
@@ -1991,8 +2122,7 @@ mod tests {
     }
 
     fn holds(path: &Path, mark: &str) -> bool {
-        std::fs::read(path)
-            .is_ok_and(|b| b.windows(mark.len()).any(|w| w == mark.as_bytes()))
+        std::fs::read(path).is_ok_and(|b| b.windows(mark.len()).any(|w| w == mark.as_bytes()))
     }
 
     /// **The mechanism, and the control that says it is a mechanism** (#39, C12,
@@ -2033,7 +2163,9 @@ mod tests {
         assert!(holds(&into, MARK), "the archived database lost the committed item");
         let archived = rusqlite::Connection::open(&into).unwrap();
         let rows: i64 = archived
-            .query_row("SELECT count(*) FROM thread_items WHERE item_json = ?1", [MARK], |r| r.get(0))
+            .query_row("SELECT count(*) FROM thread_items WHERE item_json = ?1", [MARK], |r| {
+                r.get(0)
+            })
             .expect("the archived database is readable");
         assert_eq!(rows, 1);
 
@@ -2090,7 +2222,13 @@ mod tests {
         let root = scratch("mixed-manifest");
         let shell = root.join("_shell");
         let runs = runs_dir(&root);
-        begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("run-1"), None);
+        begin(
+            &shell,
+            1_800_000_000_000,
+            Path::new("/tmp/logstat"),
+            &SessionsId::new("run-1"),
+            None,
+        );
         write_live(&shell, &["take the parser"]);
 
         // Two seats placed as two different harnesses — the run the old sentence
@@ -2103,7 +2241,8 @@ mod tests {
 
         let dir = runs.join(&list(&runs)[0].id);
         let manifest: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(dir.join(MANIFEST_JSON)).unwrap()).unwrap();
+            serde_json::from_str(&std::fs::read_to_string(dir.join(MANIFEST_JSON)).unwrap())
+                .unwrap();
 
         assert_eq!(manifest["panes"]["orch"]["harness"], "claude-code");
         assert_eq!(manifest["panes"]["orch"]["transcript_format"], "claude-code-jsonl");
@@ -2133,7 +2272,13 @@ mod tests {
         let root = scratch("agentview");
         let shell = root.join("_shell");
         let runs = runs_dir(&root);
-        begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("run-1"), None);
+        begin(
+            &shell,
+            1_800_000_000_000,
+            Path::new("/tmp/logstat"),
+            &SessionsId::new("run-1"),
+            None,
+        );
         write_live(&shell, &["take the parser", "on it"]);
         rotate(&shell, &runs, 0);
 
@@ -2157,7 +2302,13 @@ mod tests {
         let root = scratch("export");
         let shell = root.join("_shell");
         let runs = runs_dir(&root);
-        begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("run-1"), None);
+        begin(
+            &shell,
+            1_800_000_000_000,
+            Path::new("/tmp/logstat"),
+            &SessionsId::new("run-1"),
+            None,
+        );
         write_live(&shell, &["take the parser"]);
         rotate(&shell, &runs, 0);
         let id = list(&runs)[0].id.clone();
@@ -2192,7 +2343,13 @@ mod tests {
         let root = scratch("delete");
         let shell = root.join("_shell");
         let runs = runs_dir(&root);
-        begin(&shell, 1_800_000_000_000, Path::new("/tmp/logstat"), &SessionsId::new("run-1"), None);
+        begin(
+            &shell,
+            1_800_000_000_000,
+            Path::new("/tmp/logstat"),
+            &SessionsId::new("run-1"),
+            None,
+        );
         write_live(&shell, &["take the parser"]);
         rotate(&shell, &runs, 0);
 
@@ -2249,7 +2406,13 @@ mod tests {
         let parent_id = list(&runs)[0].id.clone();
 
         // Child (reopened) — same sessions id, parent link.
-        begin(&shell, 1_800_000_001_000, Path::new("/tmp/c"), &SessionsId::new("sess-c"), Some(&parent_id));
+        begin(
+            &shell,
+            1_800_000_001_000,
+            Path::new("/tmp/c"),
+            &SessionsId::new("sess-c"),
+            Some(&parent_id),
+        );
         write_live(&shell, &["child"]);
         rotate(&shell, &runs, 0);
 
@@ -2303,12 +2466,18 @@ mod tests {
         assert!(!shell.join("state.db").exists(), "the live slot is free for the next fleet");
         assert!(list(&runs).is_empty(), "nothing is in History yet");
         let rows = list_all(&shell, &runs, None);
-        assert_eq!((rows.len(), rows[0].id.as_str(), rows[0].state), (1, id.as_str(), RunState::Archiving));
+        assert_eq!(
+            (rows.len(), rows[0].id.as_str(), rows[0].state),
+            (1, id.as_str(), RunState::Archiving)
+        );
 
         let notices = sweep(&shell, &runs);
         assert!(notices.iter().any(|(_, text)| text.contains("archived as")), "{notices:?}");
         let rows = list_all(&shell, &runs, None);
-        assert_eq!((rows.len(), rows[0].id.as_str(), rows[0].state), (1, id.as_str(), RunState::Archived));
+        assert_eq!(
+            (rows.len(), rows[0].id.as_str(), rows[0].state),
+            (1, id.as_str(), RunState::Archived)
+        );
         assert!(!staging_dir(&shell).join(&id).exists());
         assert!(sweep(&shell, &runs).is_empty(), "and a second sweep finds nothing");
     }
@@ -2335,19 +2504,28 @@ mod tests {
         let (shell, runs) = (root.join("_shell"), runs_dir(&root));
         // A log abandoned mid-write: its rows are still in the journal.
         let held = a_live_thread_store(&shell.join("state.db"), "kept");
-        assert!(shell.join("state.db-wal").is_file(), "the fixture is a database with a live journal");
+        assert!(
+            shell.join("state.db-wal").is_file(),
+            "the fixture is a database with a live journal"
+        );
 
         let (staged, _) = stage(&shell, &runs, 0);
         let id = staged.unwrap();
         let staged_dir = staging_dir(&shell).join(&id);
-        assert!(staged_dir.join("state.db-wal").is_file(), "the journal is staged with its database");
+        assert!(
+            staged_dir.join("state.db-wal").is_file(),
+            "the journal is staged with its database"
+        );
         drop(held);
         finish(&shell, &runs, &id);
 
         let dest = runs.join(&id);
         assert!(holds(&dest.join("state.db"), "kept"), "the journal's rows are in the one file");
         for suffix in ["-wal", "-shm"] {
-            assert!(!dest.join(format!("state.db{suffix}")).exists(), "no state.db{suffix} in the archive");
+            assert!(
+                !dest.join(format!("state.db{suffix}")).exists(),
+                "no state.db{suffix} in the archive"
+            );
             assert!(!shell.join(format!("state.db{suffix}")).exists());
         }
     }

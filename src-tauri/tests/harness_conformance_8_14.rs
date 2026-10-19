@@ -130,9 +130,9 @@ fn checkpoint_8_every_seat_is_given_the_fleets_own_socket_and_a_fleet_binary_to_
             // itself: nothing is listening yet, so the socket is a path that does
             // not exist, and an unresolvable path cannot be compared against a
             // resolved root.
-            let holding = Path::new(&named)
-                .parent()
-                .unwrap_or_else(|| panic!("{}/{seat}: the socket has no directory", pass.spec.name));
+            let holding = Path::new(&named).parent().unwrap_or_else(|| {
+                panic!("{}/{seat}: the socket has no directory", pass.spec.name)
+            });
             assert!(
                 pass.is_contained(holding),
                 "{}/{seat}: the socket named on the command is outside the layout \
@@ -332,7 +332,10 @@ fn checkpoint_10_every_allowlisted_command_has_a_spelling_and_it_is_typed_unfram
                 "the conformance suite is checking the command channel",
             )
             .unwrap_or_else(|why| {
-                panic!("{}: the fleet refused its own allowlisted {canonical}: {why}", pass.spec.name)
+                panic!(
+                    "{}: the fleet refused its own allowlisted {canonical}: {why}",
+                    pass.spec.name
+                )
             });
 
             // What the far end must have read: the harness's *spelling*, its
@@ -738,7 +741,6 @@ fn checkpoint_13_transcripts_live_under_the_panes_config_dir_and_the_archive_cop
                 transcript.file_ext,
             );
 
-
             // **The database half, and it is three claims rather than one.** That
             // the archived file contains the mark is already asserted above, by
             // the same count every harness gets; what is specific here is *how* it
@@ -752,17 +754,31 @@ fn checkpoint_13_transcripts_live_under_the_panes_config_dir_and_the_archive_cop
             // directory would be harvested into the *next* run's archive.
             if transcript.transport == Transport::SqliteBackup {
                 let conn = rusqlite::Connection::open(&filed).unwrap_or_else(|e| {
-                    panic!("{}/{seat}: the archived transcript is not a database SQLite \
-                            will open, so the harvest did not back it up: {e}", pass.spec.name)
+                    panic!(
+                        "{}/{seat}: the archived transcript is not a database SQLite \
+                            will open, so the harvest did not back it up: {e}",
+                        pass.spec.name
+                    )
                 });
                 let rows: i64 = conn
-                    .query_row("SELECT count(*) FROM thread_items WHERE item_json = ?1", [TRANSCRIPT_MARK], |r| r.get(0))
+                    .query_row(
+                        "SELECT count(*) FROM thread_items WHERE item_json = ?1",
+                        [TRANSCRIPT_MARK],
+                        |r| r.get(0),
+                    )
                     .unwrap_or_else(|e| {
-                        panic!("{}/{seat}: the archived database has no readable item — a \
+                        panic!(
+                            "{}/{seat}: the archived database has no readable item — a \
                                 rename of the main file alone would look exactly like \
-                                this: {e}", pass.spec.name)
+                                this: {e}",
+                            pass.spec.name
+                        )
                     });
-                assert_eq!(rows, 1, "{}/{seat}: the archived database lost the committed item", pass.spec.name);
+                assert_eq!(
+                    rows, 1,
+                    "{}/{seat}: the archived database lost the committed item",
+                    pass.spec.name
+                );
 
                 for suffix in ["-wal", "-shm"] {
                     let beside = filed.with_file_name(format!(
@@ -965,8 +981,9 @@ fn document(text: &str) -> Result<serde_json::Value, String> {
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
         return Ok(value);
     }
-    let doc =
-        text.parse::<toml_edit::DocumentMut>().map_err(|e| format!("neither JSON nor TOML: {e}"))?;
+    let doc = text
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|e| format!("neither JSON nor TOML: {e}"))?;
     Ok(as_value(doc.as_item()))
 }
 
@@ -1101,8 +1118,11 @@ fn checkpoint_15_a_harness_that_claims_it_resumes_can_build_the_argv_that_does_i
         // fleet was already killed for (R19). What a *present* session looks like
         // is each vendor's own, and is asserted beside each harness.
         if claimed {
-            let empty = std::env::temp_dir()
-                .join(format!("fleetor-cp15-{}-{}", pass.spec.name, std::process::id()));
+            let empty = std::env::temp_dir().join(format!(
+                "fleetor-cp15-{}-{}",
+                pass.spec.name,
+                std::process::id()
+            ));
             std::fs::create_dir_all(&empty).expect("an empty seat directory");
             assert!(
                 !pass.harness.has_session(&empty, "SESSION-XYZ"),

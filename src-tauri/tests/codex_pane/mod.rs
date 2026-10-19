@@ -211,12 +211,7 @@ impl Capture {
     /// multi-line message that arrived as N turns puts its lines in N bodies and
     /// the first of them carries only the first line.
     pub fn body_carrying(&self, needle: &str) -> Option<String> {
-        self.bodies
-            .lock()
-            .expect("the capture lock")
-            .iter()
-            .find(|b| b.contains(needle))
-            .cloned()
+        self.bodies.lock().expect("the capture lock").iter().find(|b| b.contains(needle)).cloned()
     }
 }
 
@@ -278,7 +273,12 @@ impl CodexPane {
 
     /// `themed` is whether the registry was told the terminal's colours, which the
     /// shell always does at launch (D-097). `false` is the control arm.
-    pub fn brought_up_in(vendor: &Path, spec: &'static HarnessSpec, tag: &str, themed: bool) -> Self {
+    pub fn brought_up_in(
+        vendor: &Path,
+        spec: &'static HarnessSpec,
+        tag: &str,
+        themed: bool,
+    ) -> Self {
         let root = scratch(tag);
         let operator_home = root.join("operator");
         let pane_home = root.join("pane-home");

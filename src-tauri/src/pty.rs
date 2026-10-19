@@ -541,9 +541,7 @@ impl PaneRegistry {
         // thing that knows this pane's cwd is the child (#47).
         let context = BringUpContext {
             cwd: cmd.get_cwd().map(std::path::PathBuf::from),
-            config_dir: cmd
-                .get_env(harness.config_dir.env_var)
-                .map(std::path::PathBuf::from),
+            config_dir: cmd.get_env(harness.config_dir.env_var).map(std::path::PathBuf::from),
             config_env_var: harness.config_dir.env_var,
             trust_file: harness.project_identity.trust_file,
         };
@@ -581,14 +579,7 @@ impl PaneRegistry {
             ColorQueries::answering(self.colors.clone(), writer.clone()),
         );
 
-        let entry = Pane {
-            master: pair.master,
-            harness,
-            writer,
-            child,
-            state,
-            painted,
-        };
+        let entry = Pane { master: pair.master, harness, writer, child, state, painted };
 
         match harness.bring_up {
             BringUp::AtOnce => {
@@ -799,10 +790,7 @@ impl PaneRegistry {
     /// TUI starts reading; that is the failure we can live with.
     /// The harness comes back beside the writer, from the same entry, so a write
     /// is framed by the spec of the process it is actually going to.
-    fn writable(
-        &self,
-        pane: PaneId,
-    ) -> Result<(PaneWriter, &'static HarnessSpec), String> {
+    fn writable(&self, pane: PaneId) -> Result<(PaneWriter, &'static HarnessSpec), String> {
         let panes = self.lock()?;
         let entry = panes.get(&pane).ok_or_else(|| format!("{pane} is not running"))?;
         let state = decode_state(entry.state.load(Ordering::Relaxed));
@@ -880,6 +868,7 @@ fn channel_key(pane: PaneId) -> String {
 /// returns, so the tail of a burst would sit unflushed until the pane happened to
 /// print again — the last line of a finished turn, invisible for as long as the
 /// pane stays quiet. The coalescer's `recv_timeout` has no such blind spot.
+#[allow(clippy::too_many_arguments)]
 fn spawn_pump(
     mut reader: Box<dyn Read + Send>,
     emit: Emit,
@@ -908,9 +897,7 @@ fn spawn_pump(
     });
 
     std::thread::spawn(move || {
-        loop {
-            let Ok(first) = rx.recv() else { break };
-            let mut batch = first;
+        while let Ok(mut batch) = rx.recv() {
             let deadline = Instant::now() + COALESCE_WINDOW;
             let mut disconnected = false;
             while batch.len() < COALESCE_MAX {
@@ -1183,7 +1170,12 @@ fn terminate_all(panes: &mut [Pane]) {
 /// this call for seconds, and five of them in a row froze the window while each
 /// waited its turn (D-096).
 #[tauri::command]
-pub async fn pty_spawn(app: tauri::AppHandle, pane: PaneId, rows: u16, cols: u16) -> Result<(), String> {
+pub async fn pty_spawn(
+    app: tauri::AppHandle,
+    pane: PaneId,
+    rows: u16,
+    cols: u16,
+) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let registry = app.state::<Arc<PaneRegistry>>();
         let fleet = app.state::<crate::fleet::FleetState>();
@@ -1195,7 +1187,11 @@ pub async fn pty_spawn(app: tauri::AppHandle, pane: PaneId, rows: u16, cols: u16
 
 /// Tell the registry what the terminal's theme is, so panes can be answered.
 #[tauri::command]
-pub fn pty_colors(state: State<'_, Arc<PaneRegistry>>, fg: String, bg: String) -> Result<(), String> {
+pub fn pty_colors(
+    state: State<'_, Arc<PaneRegistry>>,
+    fg: String,
+    bg: String,
+) -> Result<(), String> {
     state.set_colors(&fg, &bg)
 }
 
@@ -1261,7 +1257,8 @@ mod tests {
     /// D-045 and Tier 1.4 both ban.
     #[test]
     fn a_commands_word_is_respelled_and_its_arguments_are_not() {
-        let channel = CommandChannel { spellings: &[("/clear", "/reset"), ("/compact", "/squash")] };
+        let channel =
+            CommandChannel { spellings: &[("/clear", "/reset"), ("/compact", "/squash")] };
         assert_eq!(spell(&channel, "/clear"), "/reset");
         assert_eq!(spell(&channel, "/compact keep the parser"), "/squash keep the parser");
         assert_eq!(

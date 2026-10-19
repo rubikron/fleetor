@@ -153,9 +153,8 @@ pub fn spawn_delivery(
                     let _ = ack.send(augmented);
                 }
                 AppCommand::Deliver { to, text, ack } => {
-                    let outbox = outboxes
-                        .entry(to)
-                        .or_insert_with(|| spawn_writer(registry.clone(), to));
+                    let outbox =
+                        outboxes.entry(to).or_insert_with(|| spawn_writer(registry.clone(), to));
                     // Handing off is instant — the queue is unbounded, so this
                     // loop can never be the thing that stalls a busy fleet.
                     if let Err(returned) = outbox.send(Pending::Message { text, ack }) {
@@ -165,9 +164,8 @@ pub fn spawn_delivery(
                 // Same queue, same writer task, same refusal — only the framing
                 // and the batching differ, and both of those are `Pending`'s job.
                 AppCommand::Command { to, command, ack } => {
-                    let outbox = outboxes
-                        .entry(to)
-                        .or_insert_with(|| spawn_writer(registry.clone(), to));
+                    let outbox =
+                        outboxes.entry(to).or_insert_with(|| spawn_writer(registry.clone(), to));
                     if let Err(returned) = outbox.send(Pending::Command { text: command, ack }) {
                         let _ = returned.0.into_ack().send(DeliveryResult::rejected(WRITER_GONE));
                     }
@@ -387,7 +385,8 @@ mod tests {
         spawn_delivery(&rt, registry(), rx, store(), gauges());
 
         let (ack, answer) = oneshot::channel();
-        tx.send(AppCommand::Deliver { to: PaneId::Worker(2), text: "take T-4".into(), ack }).unwrap();
+        tx.send(AppCommand::Deliver { to: PaneId::Worker(2), text: "take T-4".into(), ack })
+            .unwrap();
 
         let result = rt.block_on(answer).expect("the ack must arrive — silence is a hang");
         assert!(!result.accepted);
@@ -421,7 +420,8 @@ mod tests {
             .collect();
 
         for (i, answer) in answers.into_iter().enumerate() {
-            let result = rt.block_on(answer).unwrap_or_else(|_| panic!("message {i} went unanswered"));
+            let result =
+                rt.block_on(answer).unwrap_or_else(|_| panic!("message {i} went unanswered"));
             assert!(!result.accepted, "no pane is running, so all four are refused");
         }
     }
@@ -632,13 +632,19 @@ mod tests {
     fn a_pane_with_a_sampled_transcript_carries_its_gauge_on_the_roster() {
         let cwd = temp_dir("cwd");
         let config_dir = temp_dir("cfg");
-        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir: config_dir.clone(), cwd: cwd.clone(), window_tokens: None };
+        let source = TranscriptSource {
+            harness: crate::placement::harness::claude_code(),
+            config_dir: config_dir.clone(),
+            cwd: cwd.clone(),
+            window_tokens: None,
+        };
 
         // Seed a transcript with usage well under the notice threshold —
         // `crate::placement::spawn::project_key` canonicalizes the same way
         // `context_gauge::project_dir` does, so this mirrors a real spawn.
         let resolved = crate::placement::spawn::project_key(&cwd);
-        let slug: String = resolved.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+        let slug: String =
+            resolved.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
         let project_dir = config_dir.join("projects").join(slug);
         std::fs::create_dir_all(&project_dir).unwrap();
         // A twentieth of the window constant — derived, so 5% stays 5% if
@@ -677,7 +683,8 @@ mod tests {
         let cwd = temp_dir("hot-cwd");
         let config_dir = temp_dir("hot-cfg");
         let resolved = crate::placement::spawn::project_key(&cwd);
-        let slug: String = resolved.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+        let slug: String =
+            resolved.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
         let project_dir = config_dir.join("projects").join(slug);
         std::fs::create_dir_all(&project_dir).unwrap();
         // 85% of the window constant — derived, over the 80% threshold
@@ -694,7 +701,15 @@ mod tests {
         .unwrap();
 
         let sources = gauges();
-        sources.record(PaneId::Worker(3), TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir, cwd, window_tokens: None });
+        sources.record(
+            PaneId::Worker(3),
+            TranscriptSource {
+                harness: crate::placement::harness::claude_code(),
+                config_dir,
+                cwd,
+                window_tokens: None,
+            },
+        );
         let shared_store = store();
         let mut notified = HashSet::new();
 
@@ -710,7 +725,11 @@ mod tests {
             .into_iter()
             .filter(|(_, e)| matches!(e, FleetEvent::Notice { .. }))
             .collect();
-        assert_eq!(notices.len(), 1, "three over-threshold asks must produce exactly one Notice: {notices:?}");
+        assert_eq!(
+            notices.len(),
+            1,
+            "three over-threshold asks must produce exactly one Notice: {notices:?}"
+        );
         let (_, FleetEvent::Notice { text, .. }) = &notices[0] else { unreachable!() };
         assert!(text.contains("worker-3"));
         assert!(text.contains("consider"), "informs, does not act: {text}");

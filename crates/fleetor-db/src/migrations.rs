@@ -105,9 +105,8 @@ pub const MIGRATIONS: &[&str] = &[
 
 /// Bring `conn` up to the latest schema version. Idempotent.
 pub fn migrate(conn: &Connection) -> Result<()> {
-    let current: i64 = conn
-        .query_row("PRAGMA user_version", [], |r| r.get(0))
-        .context("reading user_version")?;
+    let current: i64 =
+        conn.query_row("PRAGMA user_version", [], |r| r.get(0)).context("reading user_version")?;
     let current = current.max(0) as usize;
 
     for (i, sql) in MIGRATIONS.iter().enumerate().skip(current) {

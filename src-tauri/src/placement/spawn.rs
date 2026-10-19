@@ -200,6 +200,7 @@ fn args_for(
         .unwrap_or_else(|| harness.command_args(seat))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn orch_command_with(
     harness: &'static dyn Harness,
     model: Option<&str>,
@@ -224,8 +225,7 @@ pub(super) fn orch_command_with(
     // moment this seat could be a different vendor; `None` is the gate's
     // `default (your login)` sentinel, and it is what every caller but the picker
     // passes.
-    let brief =
-        render_orch_at(
+    let brief = render_orch_at(
         &ctx.orch_template,
         &roster(),
         &ctx.worker_seats,
@@ -431,7 +431,8 @@ pub(super) fn worker_command_with(
     // number belonging to a different provider — the WP-02 failure this export
     // exists to prevent, caused by the export itself.
     if !credential_source.is_the_operators_plan() {
-        let effective_window = Some(crate::context_gauge::model_window_tokens(model)).or(spec.gauge.window_tokens);
+        let effective_window =
+            Some(crate::context_gauge::model_window_tokens(model)).or(spec.gauge.window_tokens);
         if let (Some(var), Some(window)) = (spec.gauge.window_env, effective_window) {
             cmd.env(var, window.to_string());
         }
@@ -685,7 +686,8 @@ pub(super) fn seed_config_dir(harness: &dyn Harness, seed: &Seed<'_>) -> Result<
         "this seeder writes one document; a harness whose trust file differs needs its own",
     );
 
-    std::fs::create_dir_all(dir).map_err(|e| format!("create config dir {}: {e}", dir.display()))?;
+    std::fs::create_dir_all(dir)
+        .map_err(|e| format!("create config dir {}: {e}", dir.display()))?;
     let file = dir.join(spec.config_dir.seed_file);
 
     let mut root = match (spec.config_dir.seed_merges, std::fs::read_to_string(&file)) {
@@ -709,19 +711,16 @@ pub(super) fn seed_config_dir(harness: &dyn Harness, seed: &Seed<'_>) -> Result<
     // one shared function — which is what has to be true before a second harness
     // gives a different answer.
     let project = harness.project_key(cwd);
-    let projects = object
-        .entry("projects")
-        .or_insert_with(json_object)
-        .as_object_mut()
-        .ok_or_else(|| {
+    let projects =
+        object.entry("projects").or_insert_with(json_object).as_object_mut().ok_or_else(|| {
             format!("existing \"projects\" in {} is not an object", spec.config_dir.seed_file)
         })?;
-    let entry = projects
-        .entry(project)
-        .or_insert_with(json_object)
-        .as_object_mut()
-        .ok_or_else(|| {
-            format!("existing project entry in {} is not an object", spec.project_identity.trust_file)
+    let entry =
+        projects.entry(project).or_insert_with(json_object).as_object_mut().ok_or_else(|| {
+            format!(
+                "existing project entry in {} is not an object",
+                spec.project_identity.trust_file
+            )
         })?;
     for key in spec.project_identity.trust_keys {
         entry.insert((*key).into(), true.into());
@@ -748,10 +747,7 @@ pub(super) fn seed_config_dir(harness: &dyn Harness, seed: &Seed<'_>) -> Result<
 /// implementation behind that method, kept reachable for the delivery and gauge
 /// tests that pin the slug rule against it until their own batches move.
 pub fn project_key(cwd: &Path) -> String {
-    std::fs::canonicalize(cwd)
-        .unwrap_or_else(|_| cwd.to_path_buf())
-        .to_string_lossy()
-        .into_owned()
+    std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf()).to_string_lossy().into_owned()
 }
 
 fn json_object() -> serde_json::Value {
@@ -776,12 +772,14 @@ fn json_object() -> serde_json::Value {
 /// something a future breakage-catalogue entry seeded on purpose. Written once,
 /// left alone after that.
 pub(super) fn seed_worker_home(dir: &Path, slot: u8) -> Result<(), String> {
-    std::fs::create_dir_all(dir).map_err(|e| format!("create worker home {}: {e}", dir.display()))?;
+    std::fs::create_dir_all(dir)
+        .map_err(|e| format!("create worker home {}: {e}", dir.display()))?;
     let file = dir.join(".gitconfig");
     if file.exists() {
         return Ok(());
     }
-    let text = format!("[user]\n\tname = fleet worker-{slot}\n\temail = worker-{slot}@fleetor.local\n");
+    let text =
+        format!("[user]\n\tname = fleet worker-{slot}\n\temail = worker-{slot}@fleetor.local\n");
     let tmp = dir.join(".gitconfig.tmp");
     std::fs::write(&tmp, text).map_err(|e| format!("write {}: {e}", tmp.display()))?;
     std::fs::rename(&tmp, &file).map_err(|e| format!("install {}: {e}", file.display()))
@@ -875,7 +873,8 @@ pub(super) fn seed_fleet_toolchain(
 /// would buy is a duplicated registry.
 fn seed_fleet_cargo_home(dir: &Path, operator: &OperatorToolchain) -> Result<(), String> {
     let bin = dir.join("bin");
-    std::fs::create_dir_all(&bin).map_err(|e| format!("create fleet cargo bin {}: {e}", bin.display()))?;
+    std::fs::create_dir_all(&bin)
+        .map_err(|e| format!("create fleet cargo bin {}: {e}", bin.display()))?;
     for shim in TOOLCHAIN_SHIMS {
         link(&operator.rustup_bin, &bin.join(shim))?;
     }
@@ -1032,8 +1031,11 @@ mod tests {
     }
 
     fn temp_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir()
-            .join(format!("fleetor-spawn-{tag}-{}-{:?}", std::process::id(), std::thread::current().id()));
+        let dir = std::env::temp_dir().join(format!(
+            "fleetor-spawn-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -1089,7 +1091,10 @@ mod tests {
             serde_json::json!(true),
             "an unrelated project's trust flag survived"
         );
-        assert_eq!(config["projects"][project_key(&cwd)]["hasTrustDialogAccepted"], serde_json::json!(true));
+        assert_eq!(
+            config["projects"][project_key(&cwd)]["hasTrustDialogAccepted"],
+            serde_json::json!(true)
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&cwd);
@@ -1150,9 +1155,16 @@ mod tests {
         assert_eq!(orch.get_env("FLEET_SOCKET").unwrap(), socket.as_os_str());
         assert!(orch.get_env("CLAUDE_CODE_CHILD_SESSION").is_none());
 
-        let worker =
-            worker_command(3, &cwd, Path::new("/tmp/home"), Path::new("/tmp/cfg"), &socket, "sk-test", None,
-            &ctx);
+        let worker = worker_command(
+            3,
+            &cwd,
+            Path::new("/tmp/home"),
+            Path::new("/tmp/cfg"),
+            &socket,
+            "sk-test",
+            None,
+            &ctx,
+        );
         assert_eq!(worker.get_env("FLEETOR_PANE").unwrap(), "worker-3");
         assert_eq!(worker.get_env("FLEET_SOCKET").unwrap(), socket.as_os_str());
         assert!(worker.get_env("CLAUDE_CODE_CHILD_SESSION").is_none());
@@ -1173,7 +1185,10 @@ mod tests {
             &PaneContext::baked(),
         );
         assert_eq!(worker.get_env("ANTHROPIC_AUTH_TOKEN").unwrap(), "sk-secret");
-        assert!(worker.get_env("ANTHROPIC_API_KEY").is_none(), "L2: this wedges the pane on approval");
+        assert!(
+            worker.get_env("ANTHROPIC_API_KEY").is_none(),
+            "L2: this wedges the pane on approval"
+        );
         assert_eq!(
             worker.get_env("ANTHROPIC_BASE_URL").unwrap(),
             PaneContext::baked().launch.worker_base_url.as_str(),
@@ -1201,8 +1216,12 @@ mod tests {
             worker.get_env("CLAUDE_CODE_MAX_CONTEXT_TOKENS").unwrap(),
             crate::context_gauge::WORKER_WINDOW_TOKENS.to_string().as_str(),
         );
-        let orch =
-            orch_command(Path::new("/tmp"), Path::new("/tmp/s.sock"), Path::new("/tmp/orch-cfg"), &ctx);
+        let orch = orch_command(
+            Path::new("/tmp"),
+            Path::new("/tmp/s.sock"),
+            Path::new("/tmp/orch-cfg"),
+            &ctx,
+        );
         assert!(orch.get_env("CLAUDE_CODE_MAX_CONTEXT_TOKENS").is_none());
     }
 
@@ -1330,8 +1349,12 @@ mod tests {
         let worker_path = worker_augmented_path(Some(&fleet_cargo_bin));
         let rungs: Vec<&str> = worker_path.split(':').collect();
 
-        for forbidden in ["/Users/operator/.local/bin", "/Users/operator/.bun/bin",
-                          "/Users/operator/.cargo/bin", "/Users/operator/.rustup"] {
+        for forbidden in [
+            "/Users/operator/.local/bin",
+            "/Users/operator/.bun/bin",
+            "/Users/operator/.cargo/bin",
+            "/Users/operator/.rustup",
+        ] {
             assert!(
                 !rungs.contains(&forbidden),
                 "a worker's PATH must not reach the operator's own tooling: {forbidden} in {worker_path}"
@@ -1351,7 +1374,10 @@ mod tests {
 
         // And with no toolchain on the machine, the string is what it always was.
         assert_eq!(
-            worker_augmented_path(None).split(':').filter(|r| r.starts_with("/Users/operator/")).count(),
+            worker_augmented_path(None)
+                .split(':')
+                .filter(|r| r.starts_with("/Users/operator/"))
+                .count(),
             0,
             "no rustup means no new rung at all",
         );
@@ -1397,7 +1423,8 @@ mod tests {
         );
         assert_eq!(orch.get_env("CLAUDE_CONFIG_DIR").unwrap(), "/tmp/fleetor/pane-config/orch");
         assert_eq!(
-            orch.get_env(ENV_CC_SECURESTORAGE_DIR).expect("without this orch is silently logged out"),
+            orch.get_env(ENV_CC_SECURESTORAGE_DIR)
+                .expect("without this orch is silently logged out"),
             "",
             "defined and EMPTY selects the operator's own keychain entry; any value is a namespace",
         );
@@ -1410,8 +1437,12 @@ mod tests {
     #[test]
     fn orch_takes_a_config_dir_and_none_of_the_worker_isolation() {
         let ctx = PaneContext::baked();
-        let orch =
-            orch_command(Path::new("/tmp"), Path::new("/tmp/s.sock"), Path::new("/tmp/orch-cfg"), &ctx);
+        let orch = orch_command(
+            Path::new("/tmp"),
+            Path::new("/tmp/s.sock"),
+            Path::new("/tmp/orch-cfg"),
+            &ctx,
+        );
 
         for key in [
             "ANTHROPIC_BASE_URL",
@@ -1487,7 +1518,10 @@ mod tests {
         seed_worker_home(&dir, 4).unwrap();
 
         let text = std::fs::read_to_string(dir.join(".gitconfig")).unwrap();
-        assert_eq!(text, "[user]\n\tname = hand-edited\n", "an existing gitconfig must survive re-seeding");
+        assert_eq!(
+            text, "[user]\n\tname = hand-edited\n",
+            "an existing gitconfig must survive re-seeding"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1502,14 +1536,20 @@ mod tests {
         std::fs::create_dir_all(rustup_bin.parent().unwrap()).unwrap();
         std::fs::write(&rustup_bin, "#!/bin/sh\n").unwrap();
         let rustup_home = root.join("rustup");
-        std::fs::create_dir_all(rustup_home.join("toolchains").join("stable-aarch64-apple-darwin")).unwrap();
-        std::fs::create_dir_all(rustup_home.join("toolchains").join("1.95.0-aarch64-apple-darwin")).unwrap();
-        std::fs::write(rustup_home.join("settings.toml"), "default_toolchain = \"stable\"\n").unwrap();
+        std::fs::create_dir_all(rustup_home.join("toolchains").join("stable-aarch64-apple-darwin"))
+            .unwrap();
+        std::fs::create_dir_all(rustup_home.join("toolchains").join("1.95.0-aarch64-apple-darwin"))
+            .unwrap();
+        std::fs::write(rustup_home.join("settings.toml"), "default_toolchain = \"stable\"\n")
+            .unwrap();
         (root.clone(), OperatorToolchain { rustup_bin, rustup_home })
     }
 
     fn fleet_dirs(root: &Path) -> FleetToolchain {
-        FleetToolchain { cargo_home: root.join("_shell/cargo"), rustup_home: root.join("_shell/rustup") }
+        FleetToolchain {
+            cargo_home: root.join("_shell/cargo"),
+            rustup_home: root.join("_shell/rustup"),
+        }
     }
 
     /// The decision itself: a worker is handed *the fleet's* two toolchain homes,
@@ -1545,7 +1585,8 @@ mod tests {
     /// `~/.cargo/bin`, on the operator's login PATH. Fleet-owned, the same install
     /// lands somewhere `rm -rf ~/.fleetor` reaches (Tier 1.1).
     #[test]
-    fn a_workers_cargo_home_is_never_the_operators_own_so_a_cargo_install_lands_where_rm_rf_reaches() {
+    fn a_workers_cargo_home_is_never_the_operators_own_so_a_cargo_install_lands_where_rm_rf_reaches(
+    ) {
         let previous = std::env::var("HOME").ok();
         std::env::set_var("HOME", "/Users/operator");
         let fleet = FleetToolchain {
@@ -1553,8 +1594,14 @@ mod tests {
             rustup_home: PathBuf::from("/Users/operator/.fleetor/_shell/rustup"),
         };
         let worker = worker_command(
-            1, Path::new("/tmp"), Path::new("/tmp/home"), Path::new("/tmp/cfg"),
-            Path::new("/tmp/s.sock"), "k", Some(&fleet), &PaneContext::baked(),
+            1,
+            Path::new("/tmp"),
+            Path::new("/tmp/home"),
+            Path::new("/tmp/cfg"),
+            Path::new("/tmp/s.sock"),
+            "k",
+            Some(&fleet),
+            &PaneContext::baked(),
         );
         for key in ["CARGO_HOME", "RUSTUP_HOME"] {
             let value = worker.get_env(key).unwrap().to_string_lossy().into_owned();
@@ -1575,27 +1622,50 @@ mod tests {
     /// toolchain — overriding either variable for it would move its builds into
     /// the fleet's cache for no reason and break the asymmetry D-052 exists for.
     #[test]
-    fn orch_is_told_nothing_about_cargo_or_rustup_because_it_already_has_the_operators_environment() {
+    fn orch_is_told_nothing_about_cargo_or_rustup_because_it_already_has_the_operators_environment()
+    {
         let orch = orch_command(
-            Path::new("/tmp"), Path::new("/tmp/s.sock"), Path::new("/tmp/orch-cfg"), &PaneContext::baked(),
+            Path::new("/tmp"),
+            Path::new("/tmp/s.sock"),
+            Path::new("/tmp/orch-cfg"),
+            &PaneContext::baked(),
         );
         // `CommandBuilder` seeds the parent env, so "not overridden" means equal to
         // this process's own — absent here, since the test runner has neither set.
-        assert_eq!(orch.get_env("CARGO_HOME").map(|s| s.to_os_string()), std::env::var_os("CARGO_HOME"));
-        assert_eq!(orch.get_env("RUSTUP_HOME").map(|s| s.to_os_string()), std::env::var_os("RUSTUP_HOME"));
+        assert_eq!(
+            orch.get_env("CARGO_HOME").map(|s| s.to_os_string()),
+            std::env::var_os("CARGO_HOME")
+        );
+        assert_eq!(
+            orch.get_env("RUSTUP_HOME").map(|s| s.to_os_string()),
+            std::env::var_os("RUSTUP_HOME")
+        );
     }
 
     /// Absent, not pointing at nothing. A `RUSTUP_HOME` naming a directory that
     /// does not exist makes rustup try to *install* there — a worse failure than
     /// the `command not found` a worker gets with no toolchain at all.
     #[test]
-    fn the_toolchain_vars_are_absent_rather_than_pointing_at_nothing_when_the_operator_has_no_rustup() {
+    fn the_toolchain_vars_are_absent_rather_than_pointing_at_nothing_when_the_operator_has_no_rustup(
+    ) {
         let worker = worker_command(
-            1, Path::new("/tmp"), Path::new("/tmp/home"), Path::new("/tmp/cfg"),
-            Path::new("/tmp/s.sock"), "k", None, &PaneContext::baked(),
+            1,
+            Path::new("/tmp"),
+            Path::new("/tmp/home"),
+            Path::new("/tmp/cfg"),
+            Path::new("/tmp/s.sock"),
+            "k",
+            None,
+            &PaneContext::baked(),
         );
-        assert_eq!(worker.get_env("CARGO_HOME").map(|s| s.to_os_string()), std::env::var_os("CARGO_HOME"));
-        assert_eq!(worker.get_env("RUSTUP_HOME").map(|s| s.to_os_string()), std::env::var_os("RUSTUP_HOME"));
+        assert_eq!(
+            worker.get_env("CARGO_HOME").map(|s| s.to_os_string()),
+            std::env::var_os("CARGO_HOME")
+        );
+        assert_eq!(
+            worker.get_env("RUSTUP_HOME").map(|s| s.to_os_string()),
+            std::env::var_os("RUSTUP_HOME")
+        );
     }
 
     /// rustup's own documented overrides come first: an operator who moved their
@@ -1610,8 +1680,14 @@ mod tests {
         let found = operator_toolchain().expect("a moved toolchain is still a toolchain");
         assert_eq!(found, expected);
 
-        match previous.0 { Some(v) => std::env::set_var("RUSTUP_HOME", v), None => std::env::remove_var("RUSTUP_HOME") }
-        match previous.1 { Some(v) => std::env::set_var("CARGO_HOME", v), None => std::env::remove_var("CARGO_HOME") }
+        match previous.0 {
+            Some(v) => std::env::set_var("RUSTUP_HOME", v),
+            None => std::env::remove_var("RUSTUP_HOME"),
+        }
+        match previous.1 {
+            Some(v) => std::env::set_var("CARGO_HOME", v),
+            None => std::env::remove_var("CARGO_HOME"),
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1670,7 +1746,10 @@ mod tests {
 
         let cargo = fleet.cargo_home.join("bin").join("cargo");
         assert_eq!(std::fs::read_link(&cargo).unwrap(), operator.rustup_bin);
-        assert_eq!(std::fs::read_dir(fleet.cargo_home.join("bin")).unwrap().count(), TOOLCHAIN_SHIMS.len());
+        assert_eq!(
+            std::fs::read_dir(fleet.cargo_home.join("bin")).unwrap().count(),
+            TOOLCHAIN_SHIMS.len()
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

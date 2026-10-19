@@ -22,13 +22,14 @@ use fleetor_core::message::frame_for_pane;
 use fleetor_core::pane::{PaneId, WORKER_SLOTS};
 use fleetor_core::Store;
 use fleetor_db::SqliteStore;
+use fleetor_server::AppCommand;
 use fleetor_shell::context_gauge::GaugeSources;
 use fleetor_shell::deliver::spawn_delivery;
-use fleetor_shell::pty::{exit_channel, out_channel, Emit, PaneRegistry};
+use fleetor_shell::placement::harness::claude_code;
 use fleetor_shell::placement::spawn;
 use fleetor_shell::placement::{self, Host, Layout, PaneSpec};
-use fleetor_shell::placement::harness::claude_code;use fleetor_shell::prompts::PaneContext;
-use fleetor_server::AppCommand;
+use fleetor_shell::prompts::PaneContext;
+use fleetor_shell::pty::{exit_channel, out_channel, Emit, PaneRegistry};
 use portable_pty::CommandBuilder;
 use tokio::sync::{mpsc, oneshot};
 
@@ -52,9 +53,7 @@ impl Transcript {
         Arc::new(move |channel: &str, payload: String| {
             let bytes = STANDARD.decode(&payload).unwrap_or_default();
             let mut map = sink.0.lock().unwrap();
-            map.entry(channel.to_string())
-                .or_default()
-                .push_str(&String::from_utf8_lossy(&bytes));
+            map.entry(channel.to_string()).or_default().push_str(&String::from_utf8_lossy(&bytes));
         })
     }
 
@@ -332,7 +331,8 @@ fn a_dead_pane_refuses_rather_than_swallowing_a_message() {
     registry.kill(target).unwrap();
     transcript.wait_until_fired(&exit_channel(target));
 
-    let error = registry.write_paste(target, "anyone there?").expect_err("a dead pane cannot accept");
+    let error =
+        registry.write_paste(target, "anyone there?").expect_err("a dead pane cannot accept");
     assert!(error.contains("worker-3"), "the refusal must name the pane: {error}");
 
     // Its peers are untouched — killing one tab does not take the fleet down.
@@ -453,7 +453,8 @@ fn kill_all_reaps_a_panes_background_grandchild_too() {
     );
 
     let pane = PaneId::Worker(1);
-    registry.spawn(pane, cmd, fleetor_shell::placement::harness::claude_code().spec(), 24, 80)
+    registry
+        .spawn(pane, cmd, fleetor_shell::placement::harness::claude_code().spec(), 24, 80)
         .unwrap();
 
     let seen = transcript.wait_for(&out_channel(pane), "grandchild-pid:");
@@ -578,7 +579,8 @@ fn a_roster_ask_surfaces_a_workers_sampled_context_gauge() {
     ));
     let _ = std::fs::remove_dir_all(&config_dir);
     let resolved = spawn::project_key(&cwd);
-    let slug: String = resolved.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    let slug: String =
+        resolved.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
     let project_dir = config_dir.join("projects").join(slug);
     std::fs::create_dir_all(&project_dir).unwrap();
     // A fifth of the window constant — derived, so this stays 20% if D-054's
@@ -621,7 +623,8 @@ fn a_roster_ask_surfaces_a_workers_sampled_context_gauge() {
     let orch = panes.iter().find(|e| e.pane == PaneId::Orch).expect("orch is on the roster");
     assert_eq!(orch.context, None, "orch is never sampled, even when it is live");
 
-    let other_worker = panes.iter().find(|e| e.pane == PaneId::Worker(2)).expect("worker-2 is on the roster");
+    let other_worker =
+        panes.iter().find(|e| e.pane == PaneId::Worker(2)).expect("worker-2 is on the roster");
     assert_eq!(other_worker.context, None, "a worker nobody recorded a source for stays absent");
 
     registry.kill_all();

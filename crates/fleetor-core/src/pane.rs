@@ -393,7 +393,7 @@ mod tests {
     #[test]
     fn the_operators_state_is_its_own_word_end_to_end() {
         let entry = PaneEntry::new(PaneId::Operator, PaneState::Present);
-        let json = serde_json::to_value(&entry).unwrap();
+        let json = serde_json::to_value(entry).unwrap();
         assert_eq!(json["pane"], serde_json::json!("operator"));
         assert_eq!(json["state"], serde_json::json!("present"));
         assert_eq!(serde_json::from_str::<PaneEntry>(&json.to_string()).unwrap(), entry);
@@ -431,7 +431,7 @@ mod tests {
     #[test]
     fn an_unsampled_pane_entry_omits_the_context_key_entirely() {
         let entry = PaneEntry::new(PaneId::Worker(2), PaneState::Live);
-        let json = serde_json::to_value(&entry).unwrap();
+        let json = serde_json::to_value(entry).unwrap();
         assert!(!json.as_object().unwrap().contains_key("context"), "{json}");
         assert_eq!(serde_json::from_str::<PaneEntry>(&json.to_string()).unwrap(), entry);
     }
@@ -441,7 +441,7 @@ mod tests {
     fn a_sampled_pane_entry_carries_its_gauge_through_json() {
         let entry = PaneEntry::new(PaneId::Worker(3), PaneState::Live)
             .with_context(ContextGauge::new(9_000, 128_000));
-        let json = serde_json::to_value(&entry).unwrap();
+        let json = serde_json::to_value(entry).unwrap();
         assert_eq!(json["context"]["used_tokens"], serde_json::json!(9_000));
         assert_eq!(json["context"]["pct"], serde_json::json!(7));
         assert_eq!(serde_json::from_str::<PaneEntry>(&json.to_string()).unwrap(), entry);

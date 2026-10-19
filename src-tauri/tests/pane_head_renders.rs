@@ -94,7 +94,8 @@ fn rendered() -> Option<serde_json::Value> {
         return None;
     }
 
-    let bundle = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("pane_probe.cjs");
+    let bundle = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("pane_probe-{:?}.cjs", std::thread::current().id()));
     let built = Command::new(&bundler)
         .arg(root.join(PROBE))
         .args(["--bundle", "--platform=node", "--format=cjs", "--jsx=automatic"])
@@ -161,19 +162,13 @@ fn markup(all: &serde_json::Value, key: &str) -> String {
 fn the_head_states_the_harness_and_model_the_pane_was_placed_as() {
     let Some(all) = rendered() else { return };
     let head = markup(&all, "spawned");
-    assert!(
-        head.contains(">worker-2<"),
-        "the head no longer names the pane it describes:\n{head}"
-    );
+    assert!(head.contains(">worker-2<"), "the head no longer names the pane it describes:\n{head}");
     assert!(
         head.contains(">alpha-cli<"),
         "the head no longer states the harness the pane was placed as — the fact this \
          ticket exists to put on screen:\n{head}"
     );
-    assert!(
-        head.contains(">deepseek-v4-flash<"),
-        "the head no longer states the model:\n{head}"
-    );
+    assert!(head.contains(">deepseek-v4-flash<"), "the head no longer states the model:\n{head}");
     assert!(
         head.contains(">AC<"),
         "the head carries no mark, so a mixed fleet is told apart by reading:\n{head}"
@@ -207,10 +202,7 @@ fn a_pane_that_has_not_spawned_names_no_harness() {
          head that fills it in is the bug #50 closed with a different value in it:\n{head}"
     );
     let bare = markup(&all, "card_mark_unspawned");
-    assert!(
-        bare.is_empty(),
-        "the card renders a mark for a pane that has not spawned:\n{bare}"
-    );
+    assert!(bare.is_empty(), "the card renders a mark for a pane that has not spawned:\n{bare}");
 }
 
 /// **A harness the build has never registered renders exactly like the ones it
@@ -226,7 +218,8 @@ fn a_harness_this_build_never_registered_renders_the_same_way() {
     let known = markup(&all, "spawned");
     let third = markup(&all, "third_harness");
     assert!(
-        third.contains(">gamma-cli<") && third.contains(">GC<")
+        third.contains(">gamma-cli<")
+            && third.contains(">GC<")
             && third.contains(">orion-2-thinking<"),
         "a harness this build does not know renders without its name, mark or model — which \
          is a branch in the component, and the archaeology C57 says this seam ends:\n{third}"

@@ -86,7 +86,8 @@ impl Store for SqliteStore {
 
     fn latest_seq(&self) -> Result<i64> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let seq: i64 = conn.query_row("SELECT COALESCE(MAX(seq), 0) FROM events", [], |r| r.get(0))?;
+        let seq: i64 =
+            conn.query_row("SELECT COALESCE(MAX(seq), 0) FROM events", [], |r| r.get(0))?;
         Ok(seq)
     }
 }
@@ -137,7 +138,9 @@ mod tests {
             let conn = store.conn.lock().unwrap();
             conn.execute(
                 "INSERT INTO events (ts, kind, payload) VALUES (1, 'worker-state', ?1)",
-                rusqlite::params![r#"{"type":"worker-state","slot":1,"from":"idle","to":"working"}"#],
+                rusqlite::params![
+                    r#"{"type":"worker-state","slot":1,"from":"idle","to":"working"}"#
+                ],
             )
             .unwrap();
         }
@@ -162,7 +165,9 @@ mod tests {
         let store = SqliteStore::open_in_memory().unwrap();
         let conn = store.conn.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+            )
             .unwrap();
         let tables: Vec<String> =
             stmt.query_map([], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();

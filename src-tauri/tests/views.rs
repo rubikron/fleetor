@@ -57,10 +57,7 @@ fn rail_views() -> Vec<String> {
 /// at launch, so a restored Terminals or Feed would open on nothing.
 #[test]
 fn the_app_opens_on_home() {
-    assert!(
-        read(STAGE).contains(r#"useState<View>("home")"#),
-        "{STAGE} no longer starts on Home",
-    );
+    assert!(read(STAGE).contains(r#"useState<View>("home")"#), "{STAGE} no longer starts on Home",);
     assert!(
         !repo_root().join("ui/src/ui/usePersistedNav.ts").exists(),
         "the view is being restored from storage again",

@@ -112,7 +112,12 @@ impl Bench {
     /// Where placement seeds this pane's Claude Code configuration — and therefore
     /// where it installed its write guardrail.
     pub fn config_dir(&self, pane: PaneId) -> PathBuf {
-        self.layout.pane_config(&fleetor_shell::placement::SessionsId::new(fleetor_shell::placement::UNASSIGNED_SESSIONS), pane)
+        self.layout.pane_config(
+            &fleetor_shell::placement::SessionsId::new(
+                fleetor_shell::placement::UNASSIGNED_SESSIONS,
+            ),
+            pane,
+        )
     }
 
     /// Every `--root` the hook placement installed for `pane` was given, in order.

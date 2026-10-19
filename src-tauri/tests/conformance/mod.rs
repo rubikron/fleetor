@@ -192,9 +192,14 @@ impl Pass {
 
         let orch = placement::place(PaneSpec::orch(harness), &layout, &host, &target, &context)
             .expect("placing the operator's own seat against a scratch layout");
-        let worker =
-            placement::place(PaneSpec::worker(WORKER_SLOT, harness), &layout, &host, &target, &context)
-                .expect("placing a fenced worker against the same scratch layout");
+        let worker = placement::place(
+            PaneSpec::worker(WORKER_SLOT, harness),
+            &layout,
+            &host,
+            &target,
+            &context,
+        )
+        .expect("placing a fenced worker against the same scratch layout");
 
         // The worker really is in its own checkout rather than the announced
         // fallback — otherwise every containment claim below would be about the
@@ -276,8 +281,7 @@ impl Pass {
     /// the file format.
     pub fn config_text(&self, placed: &Placed, file: &str) -> String {
         let path = self.config_dir(placed).join(file);
-        std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
     }
 
     /// Whether `path` is inside the layout this pass handed placement, or inside
@@ -297,9 +301,14 @@ impl Pass {
     pub fn place_worker_against(&self, name: &str) -> (PathBuf, Placed) {
         let other = self.root.join(name);
         init_repo(&other);
-        let placed =
-            placement::place(PaneSpec::worker(WORKER_SLOT, self.harness), &self.layout, &self.host, &other, &self.context)
-                .expect("placing the same worker after a target switch");
+        let placed = placement::place(
+            PaneSpec::worker(WORKER_SLOT, self.harness),
+            &self.layout,
+            &self.host,
+            &other,
+            &self.context,
+        )
+        .expect("placing the same worker after a target switch");
         (other, placed)
     }
 
@@ -312,13 +321,15 @@ impl Pass {
     /// that can differ between this placement and [`Pass::orch`] is the one fact
     /// being varied.
     pub fn place_orch_without_fleet_bin(&self) -> Placed {
-        let host = Host {
-            fleet_bin: None,
-            api_key: Some(WORKER_KEY.to_string()),
-            ..Host::bare()
-        };
-        placement::place(PaneSpec::orch(self.harness), &self.layout, &host, &self.target, &self.context)
-            .expect("placing the operator's own seat on a machine with no fleet binary")
+        let host = Host { fleet_bin: None, api_key: Some(WORKER_KEY.to_string()), ..Host::bare() };
+        placement::place(
+            PaneSpec::orch(self.harness),
+            &self.layout,
+            &host,
+            &self.target,
+            &self.context,
+        )
+        .expect("placing the operator's own seat on a machine with no fleet binary")
     }
 
     /// Place both seats against a machine that **has** an operator installation,
@@ -345,9 +356,14 @@ impl Pass {
             operator_home: Some(home.clone()),
             ..Host::bare()
         };
-        let orch =
-            placement::place(PaneSpec::orch(self.harness), &self.layout, &host, &self.target, &self.context)
-                .expect("placing the attended seat against a machine with an operator home");
+        let orch = placement::place(
+            PaneSpec::orch(self.harness),
+            &self.layout,
+            &host,
+            &self.target,
+            &self.context,
+        )
+        .expect("placing the attended seat against a machine with an operator home");
         let worker = placement::place(
             PaneSpec::worker(WORKER_SLOT, self.harness),
             &self.layout,
@@ -446,13 +462,7 @@ impl Pass {
         // run that records no session directory and correctly archives none — so
         // the harness has to do what a boot does, or checkpoint 13 asserts against
         // a harvest that was never asked to run.
-        runs::begin(
-            &shell,
-            1_700_000_000_000,
-            &self.target,
-            &self.context.sessions,
-            None,
-        );
+        runs::begin(&shell, 1_700_000_000_000, &self.target, &self.context.sessions, None);
 
         let runs_root = self.root.join("runs");
         runs::rotate(&shell, &runs_root, 1_700_000_000_000);
@@ -555,7 +565,9 @@ impl Pass {
 
         let pane = PaneId::Worker(WORKER_SLOT);
         let registry = PaneRegistry::new(emit, self.root.join("pane-pids.json"));
-        registry.spawn(pane, placed.command, placed.harness, 24, 80).expect("a real pty for the stand-in");
+        registry
+            .spawn(pane, placed.command, placed.harness, 24, 80)
+            .expect("a real pty for the stand-in");
         wait_until(&seen, "ready", 0);
 
         // **Everything already on the far end is the *previous* conversation, and a
@@ -609,7 +621,10 @@ fn stand_in_pane_program() -> PathBuf {
 fn wait_until(seen: &Arc<Mutex<String>>, needle: &str, from: usize) {
     let deadline = Instant::now() + PATIENCE;
     while Instant::now() < deadline {
-        if seen.lock().is_ok_and(|text| text.len() > from && text[from.min(text.len())..].contains(needle)) {
+        if seen
+            .lock()
+            .is_ok_and(|text| text.len() > from && text[from.min(text.len())..].contains(needle))
+        {
             return;
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -744,9 +759,9 @@ pub fn files_containing(dir: &Path, needle: &str) -> Vec<PathBuf> {
             // columns unencoded inside a file that is not valid UTF-8 anywhere
             // else, so `read_to_string` used to answer "this archive does not
             // contain the transcript" for the one transport that needed asserting.
-            if std::fs::read(&path).is_ok_and(|bytes| {
-                bytes.windows(needle.len()).any(|w| w == needle.as_bytes())
-            }) {
+            if std::fs::read(&path)
+                .is_ok_and(|bytes| bytes.windows(needle.len()).any(|w| w == needle.as_bytes()))
+            {
                 found.push(path.strip_prefix(dir).unwrap_or(&path).to_path_buf());
             }
         }

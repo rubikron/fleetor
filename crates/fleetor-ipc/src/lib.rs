@@ -44,11 +44,7 @@ impl Conn {
     /// Read one JSON line into `T`. `Ok(None)` on clean EOF (peer hung up).
     pub async fn read_json<T: DeserializeOwned>(&mut self) -> Result<Option<T>> {
         self.line.clear();
-        let n = self
-            .reader
-            .read_line(&mut self.line)
-            .await
-            .context("reading frame")?;
+        let n = self.reader.read_line(&mut self.line).await.context("reading frame")?;
         if n == 0 {
             return Ok(None);
         }
@@ -146,11 +142,7 @@ impl Client {
             .read_json()
             .await?
             .context("server closed the connection before responding")?;
-        anyhow::ensure!(
-            resp.id == id,
-            "response id {} does not match request id {id}",
-            resp.id
-        );
+        anyhow::ensure!(resp.id == id, "response id {} does not match request id {id}", resp.id);
         Ok(resp.result)
     }
 }
@@ -187,13 +179,10 @@ mod tests {
             conn.write_json(&Response::new(req.id, result)).await.unwrap();
         });
 
-        let mut client = Client::connect(&transport, Hello::for_pane(PaneId::Worker(2)))
-            .await
-            .unwrap();
-        let result = client
-            .call(Op::Send { to: PaneId::Orch, text: "hi orch".into() })
-            .await
-            .unwrap();
+        let mut client =
+            Client::connect(&transport, Hello::for_pane(PaneId::Worker(2))).await.unwrap();
+        let result =
+            client.call(Op::Send { to: PaneId::Orch, text: "hi orch".into() }).await.unwrap();
         assert!(matches!(result, OpResult::Delivered { accepted: true, .. }));
         server.await.unwrap();
         let _ = std::fs::remove_dir_all(&dir);

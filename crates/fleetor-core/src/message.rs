@@ -38,7 +38,12 @@ impl Message {
     }
 
     /// One leg of a fan-out (`fleet broadcast`); every leg shares `group`.
-    pub fn in_group(from: PaneId, to: PaneId, body: impl Into<String>, group: impl Into<String>) -> Self {
+    pub fn in_group(
+        from: PaneId,
+        to: PaneId,
+        body: impl Into<String>,
+        group: impl Into<String>,
+    ) -> Self {
         Self::build(from, to, body, Some(group.into()))
     }
 
@@ -154,7 +159,10 @@ mod tests {
 
     #[test]
     fn direct_framing_names_the_sender() {
-        assert_eq!(frame_for_pane(PaneId::Worker(1), "rebasing now"), "[fleet · worker-1] rebasing now");
+        assert_eq!(
+            frame_for_pane(PaneId::Worker(1), "rebasing now"),
+            "[fleet · worker-1] rebasing now"
+        );
         assert_eq!(frame_for_pane(PaneId::Orch, "take T-4"), "[fleet · orch] take T-4");
     }
 
@@ -262,7 +270,8 @@ mod tests {
     /// it from the addressee.
     #[test]
     fn a_message_to_the_operator_is_never_accepted_and_carries_no_failure() {
-        let msg = Message::direct(PaneId::Worker(2), PaneId::Operator, "which schema did you mean?");
+        let msg =
+            Message::direct(PaneId::Worker(2), PaneId::Operator, "which schema did you mean?");
         let body = msg.body.clone();
         let event = msg.into_recorded_event();
         let FleetEvent::Message { to, body: got, accepted, detail, .. } = event else {

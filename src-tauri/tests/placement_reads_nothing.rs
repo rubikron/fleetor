@@ -209,7 +209,8 @@ fn the_hosts_own_readers_are_reached_from_nowhere_else() {
         let file = root.join(rel);
         for (n, function, line) in enclosing_functions(&production_lines(&file)) {
             // The definitions themselves, and the one constructor that calls them.
-            if function == "pub fn discover" || CONSTRUCTORS[3..].iter().any(|(f, _)| function == *f)
+            if function == "pub fn discover"
+                || CONSTRUCTORS[3..].iter().any(|(f, _)| function == *f)
             {
                 continue;
             }

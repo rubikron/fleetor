@@ -1,0 +1,17 @@
+name: Guards
+
+on:
+  pull_request:
+    branches: [master]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+jobs:
+  guards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: >-
+          python3 scripts/ci/guards.py origin/${{ github.base_ref }}
+          ${{ contains(github.event.pull_request.labels.*.name, 'ci-reviewed') && '--reviewed' || '' }}

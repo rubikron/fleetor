@@ -20,8 +20,8 @@
 //! held to exactly that test: `orch` saying the goal is met is a claim in the
 //! log, and no delivery, spawn or verb behaves differently once one exists.
 
-use crate::pane::{PaneId, PaneState};
 use crate::legacy_task::TaskChange;
+use crate::pane::{PaneId, PaneState};
 use crate::task::ChainEntry;
 use serde::{Deserialize, Serialize};
 
@@ -226,8 +226,12 @@ mod tests {
                     note: Some("starting now".into()),
                 },
             },
-            crate::task::ChainEntry::status(crate::task::TaskStatus::Done, None)
-                .into_event(14, PaneId::Worker(2), "run-1", "lin-1"),
+            crate::task::ChainEntry::status(crate::task::TaskStatus::Done, None).into_event(
+                14,
+                PaneId::Worker(2),
+                "run-1",
+                "lin-1",
+            ),
             FleetEvent::Handoff {
                 id: "handoff-1".into(),
                 from: PaneId::Orch,

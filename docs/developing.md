@@ -63,6 +63,14 @@ npx tsc --noEmit -p tsconfig.json                 # the frontend
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets
 ```
 
+CI (`.github/workflows/ci.yml`, D-124) runs all four, with clippy at `-D warnings` and
+`cargo fmt --check` on both packages.
+
+A PR that changes the CI surface (D-124: workflows, `scripts/ci/`, the toolchain and fmt
+config, and any test a decision names in `guard:`) needs a decision in the same PR and the
+`ci-reviewed` label. So does editing an old migration or an old decision's body. Deleting a
+decision always fails; supersede it instead.
+
 The shell suite drives **real ptys** in a dozen places and is the slow one; a full run is
 a couple of minutes.
 

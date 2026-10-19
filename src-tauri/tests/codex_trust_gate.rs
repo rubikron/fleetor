@@ -461,9 +461,11 @@ fn a_codex_pane_booted_below_its_worktree_is_trusted_and_show_toplevel_alone_gat
     if readings.is_empty() {
         announce(&[
             format!("SKIP: no `{VENDOR_BIN}` on this machine ({RECORDED_BUILD} expected)."),
-            "  Checkpoint 14's artifact half still runs — `placement::codex`'s unit tests read".into(),
+            "  Checkpoint 14's artifact half still runs — `placement::codex`'s unit tests read"
+                .into(),
             "  both keys out of the seeded config.toml. What is skipped is the half that".into(),
-            "  matters most: that the vendor honours them and a pane below its worktree root".into(),
+            "  matters most: that the vendor honours them and a pane below its worktree root"
+                .into(),
             "  renders no first-run trust gate. This machine runs the weaker suite (C13).".into(),
         ]);
         return;
@@ -531,7 +533,10 @@ fn a_codex_pane_booted_below_its_worktree_is_trusted_and_show_toplevel_alone_gat
         assert!(
             refusal.contains(&fixture.deep.display().to_string())
                 || refusal.contains(
-                    &std::fs::canonicalize(&fixture.deep).expect("the cwd resolves").display().to_string()
+                    &std::fs::canonicalize(&fixture.deep)
+                        .expect("the cwd resolves")
+                        .display()
+                        .to_string()
                 ),
             "{name}: the refusal did not name the directory that was not trusted: {refusal}",
         );

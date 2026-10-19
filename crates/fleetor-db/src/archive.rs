@@ -237,8 +237,8 @@ mod tests {
     use super::*;
     use crate::SqliteStore;
     use fleetor_core::event::NoticeLevel;
-    use fleetor_core::pane::PaneId;
     use fleetor_core::legacy_task::TaskBlock;
+    use fleetor_core::pane::PaneId;
     use fleetor_core::Store;
 
     fn message(body: &str) -> FleetEvent {
@@ -348,7 +348,11 @@ mod tests {
         let replayed = events(&db, 0).unwrap();
         assert_eq!(replayed.len(), 3);
         for ((_, event), payload) in replayed[1..].iter().zip(old) {
-            assert_eq!(serde_json::to_string(event).unwrap(), payload, "replayed as it was written");
+            assert_eq!(
+                serde_json::to_string(event).unwrap(),
+                payload,
+                "replayed as it was written"
+            );
         }
     }
 
@@ -365,7 +369,10 @@ mod tests {
         let d = digest(&db).unwrap();
         assert_eq!(d.events, 1);
         assert_eq!(d.messages, 0);
-        assert_eq!(d.headline, None, "a start-then-quit must be labellable as empty, not guessed at");
+        assert_eq!(
+            d.headline, None,
+            "a start-then-quit must be labellable as empty, not guessed at"
+        );
     }
 
     #[test]

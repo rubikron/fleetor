@@ -266,8 +266,7 @@ fn latest_transcript(dir: &Path, file_ext: &str) -> Option<PathBuf> {
 /// back to the window its spec asserts rather than to one this function
 /// invented.
 pub fn transcript_usage(source: &TranscriptSource) -> Option<UsageReading> {
-    let path =
-        latest_transcript(&project_dir(source), source.harness.spec().transcript.file_ext)?;
+    let path = latest_transcript(&project_dir(source), source.harness.spec().transcript.file_ext)?;
     let text = std::fs::read_to_string(&path).ok()?;
     Some(UsageReading { used_tokens: last_turn_usage(&text)?, window_tokens: None })
 }
@@ -505,7 +504,11 @@ pub fn estimate_tokens(text: &str) -> u32 {
 /// Pure — returns the sentence; `crate::fleet` appends it as a `Notice`
 /// through the same `note()` helper every other bootstrap/spawn announcement
 /// already uses, so this module needs no `Store` of its own.
-pub fn spawn_estimate_notice_text(pane: PaneId, rendered_brief: &str, window_tokens: Option<u32>) -> String {
+pub fn spawn_estimate_notice_text(
+    pane: PaneId,
+    rendered_brief: &str,
+    window_tokens: Option<u32>,
+) -> String {
     let tokens = estimate_tokens(rendered_brief);
     match window_tokens {
         Some(window) => {
@@ -575,11 +578,17 @@ mod tests {
     }
 
     fn user_line(text: &str) -> String {
-        serde_json::json!({"type": "user", "message": {"role": "user", "content": text}}).to_string()
+        serde_json::json!({"type": "user", "message": {"role": "user", "content": text}})
+            .to_string()
     }
 
     fn seed_transcript(config_dir: &Path, cwd: &Path, lines: &[String]) {
-        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir: config_dir.to_path_buf(), cwd: cwd.to_path_buf(), window_tokens: None };
+        let source = TranscriptSource {
+            harness: crate::placement::harness::claude_code(),
+            config_dir: config_dir.to_path_buf(),
+            cwd: cwd.to_path_buf(),
+            window_tokens: None,
+        };
         let dir = project_dir(&source);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("session-a.jsonl"), lines.join("\n")).unwrap();
@@ -605,8 +614,14 @@ mod tests {
         let after_turn_two = last_turn_usage(&[turn_one, turn_two].join("\n")).unwrap();
 
         assert_eq!(after_turn_one, 27_723);
-        assert_eq!(after_turn_two, 27_744, "must track the growing conversation, not just input_tokens (96)");
-        assert!(after_turn_two > after_turn_one, "a second turn must never look like it shrank the context");
+        assert_eq!(
+            after_turn_two, 27_744,
+            "must track the growing conversation, not just input_tokens (96)"
+        );
+        assert!(
+            after_turn_two > after_turn_one,
+            "a second turn must never look like it shrank the context"
+        );
     }
 
     /// Two identical usage lines per real turn (same content, as Claude Code
@@ -625,7 +640,8 @@ mod tests {
     #[test]
     fn only_the_last_assistant_lines_usage_is_read() {
         let transcript =
-            [assistant_line(1_000, 0, 0), user_line("more"), assistant_line(1_200, 0, 800)].join("\n");
+            [assistant_line(1_000, 0, 0), user_line("more"), assistant_line(1_200, 0, 800)]
+                .join("\n");
         assert_eq!(last_turn_usage(&transcript), Some(2_000));
     }
 
@@ -639,8 +655,12 @@ mod tests {
 
     #[test]
     fn no_transcript_directory_at_all_samples_as_absent() {
-        let source =
-            TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir: temp_dir("no-dir-cfg"), cwd: temp_dir("no-dir-cwd"), window_tokens: None };
+        let source = TranscriptSource {
+            harness: crate::placement::harness::claude_code(),
+            config_dir: temp_dir("no-dir-cfg"),
+            cwd: temp_dir("no-dir-cwd"),
+            window_tokens: None,
+        };
         assert_eq!(sample_transcript(&source, WORKER_WINDOW_TOKENS), None);
     }
 
@@ -650,8 +670,17 @@ mod tests {
         let config_dir = temp_dir("empty-turn-cfg");
         seed_transcript(&config_dir, &cwd, &[user_line("are you there")]);
 
-        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir, cwd, window_tokens: None };
-        assert_eq!(sample_transcript(&source, WORKER_WINDOW_TOKENS), None, "no assistant reply yet");
+        let source = TranscriptSource {
+            harness: crate::placement::harness::claude_code(),
+            config_dir,
+            cwd,
+            window_tokens: None,
+        };
+        assert_eq!(
+            sample_transcript(&source, WORKER_WINDOW_TOKENS),
+            None,
+            "no assistant reply yet"
+        );
     }
 
     #[test]
@@ -661,10 +690,20 @@ mod tests {
         // A tenth of whatever the window constant says — derived, so the pct
         // assertion below stays meaningful if D-054's number moves again.
         let tenth = WORKER_WINDOW_TOKENS / 10;
-        seed_transcript(&config_dir, &cwd, &[user_line("hi"), assistant_line(u64::from(tenth), 0, 0)]);
+        seed_transcript(
+            &config_dir,
+            &cwd,
+            &[user_line("hi"), assistant_line(u64::from(tenth), 0, 0)],
+        );
 
-        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir, cwd, window_tokens: None };
-        let gauge = sample_transcript(&source, WORKER_WINDOW_TOKENS).expect("a completed turn exists");
+        let source = TranscriptSource {
+            harness: crate::placement::harness::claude_code(),
+            config_dir,
+            cwd,
+            window_tokens: None,
+        };
+        let gauge =
+            sample_transcript(&source, WORKER_WINDOW_TOKENS).expect("a completed turn exists");
         assert_eq!(gauge.used_tokens, tenth);
         assert_eq!(gauge.window_tokens, WORKER_WINDOW_TOKENS);
         assert_eq!(gauge.pct, 10);
@@ -677,7 +716,12 @@ mod tests {
     fn the_most_recently_modified_transcript_file_wins() {
         let cwd = temp_dir("multi-cwd");
         let config_dir = temp_dir("multi-cfg");
-        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir: config_dir.clone(), cwd: cwd.clone(), window_tokens: None };
+        let source = TranscriptSource {
+            harness: crate::placement::harness::claude_code(),
+            config_dir: config_dir.clone(),
+            cwd: cwd.clone(),
+            window_tokens: None,
+        };
         let dir = project_dir(&source);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -686,14 +730,22 @@ mod tests {
         std::fs::write(dir.join("newer.jsonl"), assistant_line(1_000, 0, 0)).unwrap();
 
         let gauge = sample_transcript(&source, WORKER_WINDOW_TOKENS).expect("a transcript exists");
-        assert_eq!(gauge.used_tokens, 1_000, "the newer session's usage must win, not the larger older one");
+        assert_eq!(
+            gauge.used_tokens, 1_000,
+            "the newer session's usage must win, not the larger older one"
+        );
     }
 
     #[test]
     fn a_non_jsonl_file_in_the_project_dir_is_ignored() {
         let cwd = temp_dir("stray-cwd");
         let config_dir = temp_dir("stray-cfg");
-        let source = TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir: config_dir.clone(), cwd: cwd.clone(), window_tokens: None };
+        let source = TranscriptSource {
+            harness: crate::placement::harness::claude_code(),
+            config_dir: config_dir.clone(),
+            cwd: cwd.clone(),
+            window_tokens: None,
+        };
         let dir = project_dir(&source);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("notes.txt"), "not a transcript").unwrap();
@@ -728,11 +780,7 @@ mod tests {
         pub struct PublishesItsOwnWindow;
         static NO_ASSERTED_WINDOW: LazyLock<HarnessSpec> = LazyLock::new(|| HarnessSpec {
             name: "stand-in-publishes-its-own-window",
-            gauge: GaugeSource {
-                reads_transcript: true,
-                window_tokens: None,
-                window_env: None,
-            },
+            gauge: GaugeSource { reads_transcript: true, window_tokens: None, window_env: None },
             ..CLAUDE_CODE_SPEC
         });
 
@@ -858,7 +906,11 @@ mod tests {
     fn a_harness_that_keeps_usage_elsewhere_samples_as_absent_rather_than_reading_a_transcript() {
         let cwd = temp_dir("elsewhere-cwd");
         let config_dir = temp_dir("elsewhere-cfg");
-        seed_transcript(&config_dir, &cwd, &[assistant_line(u64::from(WORKER_WINDOW_TOKENS / 10), 0, 0)]);
+        seed_transcript(
+            &config_dir,
+            &cwd,
+            &[assistant_line(u64::from(WORKER_WINDOW_TOKENS / 10), 0, 0)],
+        );
 
         let sources = GaugeSources::default();
         sources.record(
@@ -890,10 +942,22 @@ mod tests {
     fn a_recorded_pane_samples_its_own_transcript_and_no_other_panes() {
         let cwd = temp_dir("gs-cwd");
         let config_dir = temp_dir("gs-cfg");
-        seed_transcript(&config_dir, &cwd, &[assistant_line(u64::from(WORKER_WINDOW_TOKENS / 20), 0, 0)]);
+        seed_transcript(
+            &config_dir,
+            &cwd,
+            &[assistant_line(u64::from(WORKER_WINDOW_TOKENS / 20), 0, 0)],
+        );
 
         let sources = GaugeSources::default();
-        sources.record(PaneId::Worker(2), TranscriptSource { harness: crate::placement::harness::claude_code(), config_dir, cwd, window_tokens: None });
+        sources.record(
+            PaneId::Worker(2),
+            TranscriptSource {
+                harness: crate::placement::harness::claude_code(),
+                config_dir,
+                cwd,
+                window_tokens: None,
+            },
+        );
 
         assert_eq!(sources.sample(PaneId::Worker(2)).map(|g| g.pct), Some(5));
         assert_eq!(sources.sample(PaneId::Worker(3)), None, "an unrecorded peer stays absent");
@@ -924,11 +988,8 @@ mod tests {
     fn plant_state_db(home: &Path, rollout: &Path, running_total: u64) -> rusqlite::Connection {
         let conn = rusqlite::Connection::open(home.join("state_5.sqlite")).unwrap();
         conn.pragma_update(None, "journal_mode", "WAL").unwrap();
-        conn.execute(
-            "CREATE TABLE threads (id TEXT, tokens_used INTEGER, rollout_path TEXT)",
-            [],
-        )
-        .unwrap();
+        conn.execute("CREATE TABLE threads (id TEXT, tokens_used INTEGER, rollout_path TEXT)", [])
+            .unwrap();
         conn.execute(
             "INSERT INTO threads (id, tokens_used, rollout_path) VALUES (?1, ?2, ?3)",
             rusqlite::params![
@@ -1059,7 +1120,8 @@ mod tests {
         plant_catalog(&home, &[CATALOG_WINDOW, CATALOG_WINDOW]);
         let _state = plant_state_db(&home, &rollout, 500_000);
 
-        let gauge = codex_pane(&home).sample(PaneId::Worker(1)).expect("a turn with no token_count");
+        let gauge =
+            codex_pane(&home).sample(PaneId::Worker(1)).expect("a turn with no token_count");
         assert_eq!(gauge.window_tokens, CATALOG_WINDOW);
         assert_eq!(gauge.pct, 47);
         assert_ne!(
@@ -1224,7 +1286,11 @@ mod tests {
 
     #[test]
     fn a_worker_spawn_notice_names_the_pane_the_tokens_and_the_window_percent() {
-        let text = spawn_estimate_notice_text(PaneId::Worker(2), &"x".repeat(4_000), Some(WORKER_WINDOW_TOKENS));
+        let text = spawn_estimate_notice_text(
+            PaneId::Worker(2),
+            &"x".repeat(4_000),
+            Some(WORKER_WINDOW_TOKENS),
+        );
         assert!(text.contains("worker-2"));
         assert!(text.contains("≈1000-token brief") || text.contains("1000-token"), "{text}");
         assert!(text.contains('%'), "a worker's notice states a window percent: {text}");
@@ -1236,7 +1302,10 @@ mod tests {
     fn an_orch_spawn_notice_has_no_window_percent() {
         let text = spawn_estimate_notice_text(PaneId::Orch, &"x".repeat(400), None);
         assert!(text.contains("orch"));
-        assert!(!text.contains('%'), "orch's window is not tracked, so no percent may appear: {text}");
+        assert!(
+            !text.contains('%'),
+            "orch's window is not tracked, so no percent may appear: {text}"
+        );
     }
 
     // --- the 80% notice ------------------------------------------------------------
@@ -1258,7 +1327,10 @@ mod tests {
         assert!(text.contains("worker-4"));
         assert!(text.contains("80%") || text.contains(&gauge.pct.to_string()));
         assert!(text.contains("consider"), "it proposes, it does not command: {text}");
-        assert!(text.contains("may lag"), "the honesty label the requirements doc requires: {text}");
+        assert!(
+            text.contains("may lag"),
+            "the honesty label the requirements doc requires: {text}"
+        );
     }
 
     /// Claude Code names a transcript directory by replacing every character
@@ -1291,7 +1363,11 @@ mod tests {
         let compacted = [assistant_line(96, 0, 588_560), boundary.clone()].join("\n");
         assert_eq!(last_turn_usage(&compacted), Some(11_284));
         let then_a_call = [compacted, assistant_line(40, 0, 48_542)].join("\n");
-        assert_eq!(last_turn_usage(&then_a_call), Some(48_582), "the next call is the newer reading");
+        assert_eq!(
+            last_turn_usage(&then_a_call),
+            Some(48_582),
+            "the next call is the newer reading"
+        );
     }
 
     #[test]
@@ -1324,10 +1400,25 @@ mod tests {
 
     #[test]
     fn aliases_and_current_models_get_the_window_claude_code_runs_them_at() {
-        for large in ["sonnet", "opus", "default", "opusplan", "haiku", "fable", "claude-sonnet-5-5", "claude-opus-5", "claude-opus-5-5", "claude-opus-4-7", "claude-fable-5-1", "claude-haiku-5-5"] {
+        for large in [
+            "sonnet",
+            "opus",
+            "default",
+            "opusplan",
+            "haiku",
+            "fable",
+            "claude-sonnet-5-5",
+            "claude-opus-5",
+            "claude-opus-5-5",
+            "claude-opus-4-7",
+            "claude-fable-5-1",
+            "claude-haiku-5-5",
+        ] {
             assert_eq!(model_window_tokens(Some(large)), 1_000_000, "{large}");
         }
-        for standard in ["claude-opus-4-6", "claude-sonnet-4-6", "claude-sonnet-4-5", "claude-haiku-4-5"] {
+        for standard in
+            ["claude-opus-4-6", "claude-sonnet-4-6", "claude-sonnet-4-5", "claude-haiku-4-5"]
+        {
             assert_eq!(model_window_tokens(Some(standard)), 200_000, "{standard}");
         }
     }
@@ -1359,12 +1450,15 @@ mod tests {
         seed_transcript(&config_dir, &cwd, &[assistant_line(u64::from(used), 0, 0)]);
 
         let sources = GaugeSources::default();
-        sources.record(PaneId::Worker(1), TranscriptSource {
-            harness: crate::placement::harness::claude_code(),
-            config_dir,
-            cwd,
-            window_tokens: Some(tokens),
-        });
+        sources.record(
+            PaneId::Worker(1),
+            TranscriptSource {
+                harness: crate::placement::harness::claude_code(),
+                config_dir,
+                cwd,
+                window_tokens: Some(tokens),
+            },
+        );
 
         let gauge = sources.sample(PaneId::Worker(1)).expect("a completed turn");
         assert_eq!(gauge.window_tokens, tokens);

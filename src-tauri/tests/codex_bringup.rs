@@ -62,9 +62,7 @@ use portable_pty::CommandBuilder;
 /// one file's control cannot vouch for the other file's arm through a second,
 /// drifted copy of the instrument.
 mod codex_pane;
-use codex_pane::{
-    announce, on_path, scratch, CodexPane, Painted, RECORDED_BUILD, VENDOR_BIN,
-};
+use codex_pane::{announce, on_path, scratch, CodexPane, Painted, RECORDED_BUILD, VENDOR_BIN};
 
 /// How long a delivered message is given to reach the wire.
 ///
@@ -460,7 +458,8 @@ fn a_wake_holds_neither_the_main_thread_nor_the_placing_lock() {
     );
     let fleet = src("src/fleet.rs");
     let released = fleet.find("drop(placing);").expect("`spawn_pane` releases the placing lock");
-    let woken = fleet.find("registry.spawn(pane,").expect("`spawn_pane` hands the pane to the registry");
+    let woken =
+        fleet.find("registry.spawn(pane,").expect("`spawn_pane` hands the pane to the registry");
     assert!(released < woken, "the placing lock is held across the wake");
 }
 
@@ -511,7 +510,8 @@ fn codex_draws_its_composer_background_only_when_the_registry_answers() {
         )]);
         return;
     };
-    let background = |pane: &CodexPane| pane.painted.carries(b"48;2;") || pane.painted.carries(b"48;5;");
+    let background =
+        |pane: &CodexPane| pane.painted.carries(b"48;2;") || pane.painted.carries(b"48;5;");
 
     let themed = CodexPane::brought_up_in(&vendor, &CODEX_SPEC, "themed", true);
     assert!(
@@ -536,7 +536,9 @@ fn codex_draws_its_composer_background_only_when_the_registry_answers() {
 #[test]
 fn a_woken_codex_pane_is_left_on_an_empty_composer() {
     let Some(vendor) = on_path(VENDOR_BIN) else {
-        announce(&[format!("SKIPPED: codex wake keypress (D-098) — `{VENDOR_BIN}` is not on PATH.")]);
+        announce(&[format!(
+            "SKIPPED: codex wake keypress (D-098) — `{VENDOR_BIN}` is not on PATH."
+        )]);
         return;
     };
     let pane = CodexPane::brought_up(&vendor, &CODEX_SPEC, "clean");

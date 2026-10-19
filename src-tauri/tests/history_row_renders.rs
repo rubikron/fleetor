@@ -61,7 +61,8 @@ fn rendered() -> Option<serde_json::Value> {
         return None;
     }
 
-    let bundle = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("history_probe.cjs");
+    let bundle = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("history_probe-{:?}.cjs", std::thread::current().id()));
     let built = Command::new(&bundler)
         .arg(root.join(PROBE))
         .args(["--bundle", "--platform=node", "--format=cjs", "--jsx=automatic"])
@@ -186,9 +187,12 @@ fn a_row_offers_what_its_state_allows() {
     let rows = rows(&list);
     assert_eq!(rows.len(), 3, "{list}");
     let row = |label: &str| {
-        rows.iter().find(|r| r.contains(label)).unwrap_or_else(|| panic!("no row for {label}:\n{list}"))
+        rows.iter()
+            .find(|r| r.contains(label))
+            .unwrap_or_else(|| panic!("no row for {label}:\n{list}"))
     };
-    let has_actions = |r: &str| r.contains(">Export<") || r.contains(">Rename<") || r.contains(">Delete<");
+    let has_actions =
+        |r: &str| r.contains(">Export<") || r.contains(">Rename<") || r.contains(">Delete<");
 
     let running = row("live work");
     assert!(running.contains("Running now"), "{running}");

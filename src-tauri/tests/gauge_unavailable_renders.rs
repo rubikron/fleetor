@@ -125,7 +125,8 @@ fn rendered() -> Option<serde_json::Value> {
 
     // CARGO_TARGET_TMPDIR is cargo's own per-integration-test scratch, so nothing
     // is written into the source tree and two test binaries cannot collide.
-    let bundle = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gauge_probe.cjs");
+    let bundle = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("gauge_probe-{:?}.cjs", std::thread::current().id()));
     let built = Command::new(&bundler)
         .arg(root.join(PROBE))
         .args(["--bundle", "--platform=node", "--format=cjs", "--jsx=automatic"])
@@ -281,10 +282,7 @@ fn an_unavailable_rail_carries_no_figure_at_all() {
 
     for key in ["pane_unavailable", "card_unavailable", "pane_pending"] {
         let m = as_read(&markup(&all, key));
-        assert!(
-            !m.contains('%'),
-            "`{key}` shows a percent for a reading that has none: {m}"
-        );
+        assert!(!m.contains('%'), "`{key}` shows a percent for a reading that has none: {m}");
         assert!(
             !m.chars().any(|c| c.is_ascii_digit()),
             "`{key}` shows a figure for a reading that has none. A number that looks right and \
