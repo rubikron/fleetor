@@ -2064,6 +2064,7 @@ fn the_gates_probe_reads_all_three_auth_shapes_the_vendor_reports() {
             config_dir: Some(config_dir),
             home: Some(&pane_home),
             cwd: Some(&cwd),
+            path: None,
         })
     };
 

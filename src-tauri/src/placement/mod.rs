@@ -539,12 +539,10 @@ impl Host {
         // subprocess, and #35's takes the two [`Host`] fields it needs as arguments.
         // Neither reads the process from inside `placement`, which is the property
         // `tests/placement_reads_nothing.rs` asserts.
+        let path = machine.orch_path();
         let harnesses = vec![
-            harness::claude_code_diagnose(
-                machine.operator_home.as_deref(),
-                &machine.inherited_path,
-            ),
-            codex::diagnose(&codex::Installation::default()),
+            harness::claude_code_diagnose(machine.operator_home.as_deref(), &path),
+            codex::diagnose(&codex::Installation { path: Some(&path), ..Default::default() }),
         ];
         Self { harnesses, ..machine }
     }

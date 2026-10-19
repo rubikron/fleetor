@@ -2699,8 +2699,8 @@ pub fn claude_code_diagnose(home: Option<&Path>, path: &str) -> HarnessReadiness
         return HarnessReadiness::not_installed(spec);
     };
 
-    let through_the_name = vendor_version(Path::new(invoked));
-    let through_the_binary = vendor_version(&resolved);
+    let through_the_name = vendor_version(Path::new(invoked), path);
+    let through_the_binary = vendor_version(&resolved, path);
 
     HarnessReadiness {
         harness: spec,
@@ -2795,8 +2795,8 @@ fn first_on_path(path: &str, bin: &str) -> Option<PathBuf> {
 }
 
 /// What a vendor says its version is, or `None` when it would not answer.
-fn vendor_version(bin: &Path) -> Option<String> {
-    let out = std::process::Command::new(bin).arg("--version").output().ok()?;
+fn vendor_version(bin: &Path, path: &str) -> Option<String> {
+    let out = std::process::Command::new(bin).arg("--version").env("PATH", path).output().ok()?;
     if !out.status.success() {
         return None;
     }

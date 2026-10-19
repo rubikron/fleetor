@@ -2420,6 +2420,8 @@ pub struct Installation<'a> {
     /// The directory to run in, which decides the trust and project readings.
     /// `None` inherits the application's.
     pub cwd: Option<&'a Path>,
+    /// The `PATH` to run under. `None` inherits the application's.
+    pub path: Option<&'a str>,
 }
 
 /// **Read what codex reports about this machine** (WP-25 #34; C8, C14, C47).
@@ -2659,6 +2661,9 @@ fn run_json(
     }
     if let Some(cwd) = at.cwd {
         command.current_dir(cwd);
+    }
+    if let Some(path) = at.path {
+        command.env("PATH", path);
     }
     let out = match command.output() {
         Ok(out) => out,
