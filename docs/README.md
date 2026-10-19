@@ -21,6 +21,7 @@ The map a fresh session reads instead of launching explore agents. Every documen
 | [`context-injection-flow.md`](./context-injection-flow.md) | *When* does each piece of context arrive, and where does it land in the window? | current |
 | [`runtime-layout.md`](./runtime-layout.md) | What lives under `~/.fleetor` and what bites? | current |
 | [`developing.md`](./developing.md) | How do I run the dev loop, the zero-token run, the tests and the probes? | current |
+| [`CLAUDE.template.md`](./CLAUDE.template.md) | What goes in a project's `CLAUDE.md` to make a session a collaborator rather than an executor? A template to copy. | template |
 
 `prompts/README.md` (beside the prompt files, not here) is the account of the briefs themselves. The `ui/` frontend has no map yet — that is WP-10 on the roadmap.
 
@@ -47,6 +48,9 @@ Each is stamped with the Claude Code version it measured; re-measure on a CC upd
 | [`codex-trust-key-notes.md`](./notes/codex-trust-key-notes.md) | How codex resolves the project trust key — canonical cwd or git root, matched exactly; what a linked worktree resolves to; what an unseeded pane parks on (C34) — **re-runnable**: `examples/codex-spike/trust_probe.py` | `codex-cli 0.153.4` |
 | [`codex-usage-notes.md`](./notes/codex-usage-notes.md) | Whether per-turn token usage is in codex's thread store — **no**; where the vendor does write it, and the window it reports being 5% under its own catalog (C61) — **re-runnable, and the one probe that spends real money**: `examples/codex-spike/usage_probe.py` | `codex-cli 0.153.4` |
 | [`reopen-spike-notes.md`](./notes/reopen-spike-notes.md) | Whether a past run's panes can be reopened from local logs — **neither vendor forks on resume**; Claude Code's id is its filename; codex's cwd picker is cwd-*dependent*, correcting a carried claim (WP-27, R3/R4/R6) — re-runnable: `examples/reopen-spike/probe.py` | `2.1.263 (Claude Code)`, `codex-cli 0.153.4` |
+| [`codex-hook-trust-notes.md`](./notes/codex-hook-trust-notes.md) | Whether a hook delivered with `-c hooks.PreToolUse=[…]` fires without a trust record, which decided the codex write-guardrail fix (C46, C48) — **re-runnable**: `examples/codex-spike/hook_probe.py` | `codex-cli 0.153.4` |
+| [`plan-worker-notes.md`](./notes/plan-worker-notes.md) | Why a plan-backed worker cannot authenticate from inside the Fence (WP-25 #49) — **re-runnable**: `examples/plan-worker-spike/` | `2.1.263 (Claude Code)` |
+| [`fleetor-working-loop.html`](./notes/fleetor-working-loop.html) | The working-loop design and its UI mockups, which the Tasks screens and the cards follow (D-119–D-121) | mockup, 2026-10 |
 
 ## Roadmap (`docs/roadmap/`)
 
@@ -78,7 +82,7 @@ Kept as the record behind decisions still in force, or as handoffs that were act
 |---|---|
 | `handoff.md` | The pre-pivot headless architecture (MCP shim, supervisor, ticket board) — all deleted by D-030 |
 | `phase2-spikes.md` | MCP-handshake and Stop-hook spikes; both mechanisms deleted (D-030), D-014 survives |
-| `phase0-report.md` + `.json` | DeepSeek Flash tool-call fidelity through headless CC — mechanism gone, the finding is why workers run Flash |
+| `phase0-report.md` + `phase0-report.json` | DeepSeek Flash tool-call fidelity through headless CC — mechanism gone, the finding is why workers run Flash |
 | `tui-pivot-plan.md` | The executed pivot plan, Phases 0–6, deviations recorded inline |
 | `MORNING-HANDOFF.md` | The overnight Blackboard build's handoff to the operator |
 | `OVERNIGHT-QUESTIONS.md` | Q-1..Q-4 — unattended judgment calls, all closed by measurement |
