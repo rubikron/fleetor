@@ -125,7 +125,8 @@ fn rendered() -> Option<serde_json::Value> {
 
     // CARGO_TARGET_TMPDIR is cargo's own per-integration-test scratch, so nothing
     // is written into the source tree and two test binaries cannot collide.
-    let bundle = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gauge_probe.cjs");
+    let bundle = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("gauge_probe-{:?}.cjs", std::thread::current().id()));
     let built = Command::new(&bundler)
         .arg(root.join(PROBE))
         .args(["--bundle", "--platform=node", "--format=cjs", "--jsx=automatic"])

@@ -94,7 +94,8 @@ fn rendered() -> Option<serde_json::Value> {
         return None;
     }
 
-    let bundle = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("pane_probe.cjs");
+    let bundle = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("pane_probe-{:?}.cjs", std::thread::current().id()));
     let built = Command::new(&bundler)
         .arg(root.join(PROBE))
         .args(["--bundle", "--platform=node", "--format=cjs", "--jsx=automatic"])

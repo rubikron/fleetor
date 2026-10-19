@@ -134,7 +134,7 @@ fn statuses_the_backend_sends(backend: &str) -> Vec<String> {
     let body = between(backend, "match &readiness.login {", "\n        };", "HarnessOffer::from");
     // The first literal in each `=>` arm is the status word; the rest of an arm is a
     // reason built from the vendor's own sentence, which is not a fixed spelling.
-    body.split("=> (").skip(1).filter_map(|arm| quoted(arm).into_iter().next()).collect()
+    body.split("=>").skip(1).filter_map(|arm| quoted(arm).into_iter().next()).collect()
 }
 
 /// The four status words the interface switches on, in TypeScript.
