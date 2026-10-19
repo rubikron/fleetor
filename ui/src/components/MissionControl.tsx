@@ -12,7 +12,7 @@ import {
   type ChainEvent,
 } from "../fleet/types";
 import { replayBoard, type TaskRecord } from "../fleet/board";
-import { monitorFlags } from "../fleet/flags";
+import { monitorFlags, namedReviewerVerdict } from "../fleet/flags";
 import type { TaskStoreInfo } from "../fleet/useFleet";
 import { summary, useNow } from "./TaskBoard";
 import { gaugeView } from "../lib/contextGaugeTone";
@@ -52,6 +52,17 @@ const clock = (at: number) =>
 const ownedBy = (board: TaskRecord[], pane: PaneId, lineage: string | null | undefined) =>
   board.filter((r) => r.block.kind === "task" && r.owner?.pane === pane && r.owner.lineage === lineage);
 
+/// The latest done task this pane is the named reviewer of, if it was named
+/// in this session.
+function reviewedTask(board: TaskRecord[], pane: PaneId, lineage: string | null | undefined) {
+  const named = (r: TaskRecord) =>
+    r.chain.filter((e) => e.entry.entry === "opened" || e.entry.entry === "reviewer-set").pop();
+  const task = board
+    .filter((r) => r.block.kind === "task" && r.status === "done" && r.block.reviewer === pane && named(r)?.lineage === lineage)
+    .reduce<TaskRecord | undefined>((a, r) => (!a || lastAt(r) >= lastAt(a) ? r : a), undefined);
+  return task && { number: task.number, verdict: namedReviewerVerdict(task) };
+}
+
 interface WorkerCardProps {
   pane: PaneId;
   status: PaneStatus;
@@ -88,7 +99,8 @@ function WorkerCard({
     monitorFlags(r, board, now, lineage).map((flag) => ({ ...flag, number: r.number })),
   );
   const pct = reading?.kind === "sampled" ? reading.gauge.pct : null;
-  const idle = !current && pane !== ORCH;
+  const review = current || pane === ORCH ? undefined : reviewedTask(board, pane, lineage);
+  const idle = !current && !review && pane !== ORCH;
 
   return (
     <button
@@ -117,6 +129,12 @@ function WorkerCard({
       {current && (
         <span className="mc-card__task">
           <span className="mc-card__id mono">#{current.number}</span> {current.block.outcome}
+        </span>
+      )}
+      {review && (
+        <span className="mc-card__task">
+          {review.verdict ? "reviewed" : "reviewing"} <span className="mc-card__id mono">#{review.number}</span>
+          {review.verdict && ` · ${review.verdict.met ? "met" : "not met"}`}
         </span>
       )}
       {idle && <span className="mc-card__task mc-card__task--none">No task claimed</span>}

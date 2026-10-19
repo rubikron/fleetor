@@ -90,6 +90,8 @@ import sys
 import threading
 import time
 
+import teardown
+
 BUILD = "codex-cli 0.153.4"
 
 # The scratch root must live under /tmp and not under `tempfile`'s longer paths, for two
@@ -448,6 +450,7 @@ def main():
         print("  SKIP  git arms — git is not on PATH; the worktree finding is unmeasured")
 
     print(f"\n{len(FAILURES)} failed" + (f": {', '.join(FAILURES)}" if FAILURES else ""))
+    teardown.kill_from(ROOT)
     return len(FAILURES)
 
 

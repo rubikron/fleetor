@@ -614,7 +614,25 @@ fn a_worker_card_shows_its_task_how_long_it_has_held_it_and_its_flags() {
         "the reviewer's card carries no flag: {}",
         card("worker-3")
     );
-    assert!(card("worker-3").contains("No task claimed"), "{}", card("worker-3"));
+    let reviewing = card("worker-3");
+    assert!(
+        reviewing.contains("reviewing <span class=\"mc-card__id mono\">#2</span>"),
+        "{reviewing}"
+    );
+    assert!(!reviewing.contains("No task claimed"), "{reviewing}");
+}
+
+/// A reviewer with nothing of its own shows its review, then the verdict; a
+/// pane with no review is still idle.
+#[test]
+fn a_reviewer_card_shows_its_review_and_verdict() {
+    let Some(all) = rendered() else { return };
+    let met = card_in(&markup(&all, "cardsMet"), "worker-3");
+    assert!(met.contains("reviewed <span class=\"mc-card__id mono\">#2</span> · met"), "{met}");
+    let not_met = card_in(&markup(&all, "cardsNotMet"), "worker-3");
+    assert!(not_met.contains("· not met"), "{not_met}");
+    let idle = card_in(&markup(&all, "cardsNoReview"), "worker-3");
+    assert!(idle.contains("No task claimed") && !idle.contains("review"), "{idle}");
 }
 
 /// Home's grid is orch and the four workers, the same card as beside the terminals.

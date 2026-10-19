@@ -46,6 +46,21 @@ export function evidence(record: TaskRecord) {
   return { receipts, receipt: receipts[receipts.length - 1], verdict: verdicts[verdicts.length - 1] };
 }
 
+/// The named reviewer's verdict since the task's latest done, if any.
+export function namedReviewerVerdict(record: TaskRecord) {
+  const reviewer = record.block.reviewer;
+  const done = lastIndex(record, (i) => {
+    const { entry } = record.chain[i];
+    return entry.entry === "status" && entry.status === "done";
+  });
+  const verdict = lastIndex(
+    record,
+    (i) => i > done && record.chain[i].entry.entry === "reviewed" && record.chain[i].from === reviewer,
+  );
+  const found = record.chain[verdict]?.entry;
+  return found?.entry === "reviewed" ? found : undefined;
+}
+
 export function monitorFlags(
   record: TaskRecord,
   board: TaskRecord[],
@@ -71,14 +86,7 @@ export function monitorFlags(
       flags.push({ kind: "no-receipt", text: "done, no receipt" });
     }
     const reviewer = record.block.reviewer;
-    const done = lastIndex(record, (i) => {
-      const { entry } = record.chain[i];
-      return entry.entry === "status" && entry.status === "done";
-    });
-    if (
-      reviewer &&
-      !record.chain.some((e, i) => i > done && e.entry.entry === "reviewed" && e.from === reviewer)
-    ) {
+    if (reviewer && !namedReviewerVerdict(record)) {
       flags.push({ kind: "no-verdict", text: `done, no verdict from ${reviewer}` });
     }
   }
