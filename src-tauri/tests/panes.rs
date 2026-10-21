@@ -126,13 +126,16 @@ fn scratch_installation() -> (Layout, PathBuf) {
     (layout, target)
 }
 
-/// The machine this binary describes: the stand-in pane program, a worker key,
+/// The machine this binary describes: the stand-in pane program, an operator login,
 /// and the real inherited `PATH` — the fake pane's `#!/usr/bin/env bash` has to
 /// find a `bash`, so that one field must be the truth rather than a scratch value.
 fn stand_in_host() -> Host {
     Host {
         pane_program: Some(fake_pane_script().display().to_string()),
-        api_key: Some("sk-test".to_string()),
+        operator_logins: vec![(
+            claude_code().spec().name,
+            fleetor_shell::placement::OperatorLogin::new("{}".to_string()),
+        )],
         inherited_path: std::env::var("PATH").unwrap_or_default(),
         ..Host::bare()
     }

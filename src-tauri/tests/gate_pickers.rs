@@ -880,17 +880,11 @@ fn sources_under(dir: &str) -> Vec<(String, String)> {
     out
 }
 
-/// `fleet.rs` above its tests, without the key loader placement still calls.
+/// `fleet.rs` above its tests.
 fn the_gates_backend() -> String {
     let backend = read(BACKEND);
     let production = backend.split("\n#[cfg(test)]\nmod tests {").next().expect("a first half");
-    let loader = between(
-        production,
-        "// --- worker credentials ---",
-        "// --- display ---",
-        "the key loader",
-    );
-    production.replace(&loader, "")
+    production.to_string()
 }
 
 /// **Nothing above placement offers, stores or sends a second credential** (D-118).

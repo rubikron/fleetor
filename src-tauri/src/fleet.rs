@@ -208,7 +208,7 @@ impl FleetSeats {
         let placed = match pane {
             PaneId::Orch => PaneSpec::orch(harness),
             // Every worker runs on the operator's login (D-118).
-            PaneId::Worker(slot) => PaneSpec::worker(slot, harness).on_the_operators_plan(),
+            PaneId::Worker(slot) => PaneSpec::worker(slot, harness),
             _ => return None,
         };
         Some(match &seat.model {
@@ -2345,66 +2345,6 @@ fn snapshot(store: &Arc<dyn Store>) -> Result<BootSnapshot, String> {
     Ok(BootSnapshot { latest_seq: store.latest_seq().map_err(|e| e.to_string())? })
 }
 
-// --- worker credentials -------------------------------------------------------
-
-/// Read `DEEPSEEK_API_KEY` from the env or the nearest `.env` on the path from the
-/// cwd up to the filesystem root. Under `tauri dev` the cwd is `src-tauri/`, so a
-/// repo-root `.env` is found by walking up (not just `<cwd>/.env`) — otherwise a
-/// key sitting at the repo root silently goes unseen. Never logged.
-///
-/// This is what a worker pane sets `ANTHROPIC_AUTH_TOKEN` from — and only that.
-/// Never `ANTHROPIC_API_KEY`: with it set, the interactive TUI blocks on api-key
-/// approval and never reaches its prompt (L2).
-/// The worker API key, or `None` — a [`Host`] field (D12). The orchestrator runs
-/// without one; worker panes cannot, which is why the failing path keeps the
-/// sentence in [`load_api_key`] rather than losing it to an `Option`.
-pub(crate) fn deepseek_api_key() -> Option<String> {
-    load_api_key().ok()
-}
-
-/// Where the `.env` walk begins: the application's own working directory.
-///
-/// Named once, read by both the walk below and by
-/// [`Host::discover`](crate::placement::Host::discover), so the sentence a worker
-/// fails with names the directory that was actually searched rather than a second
-/// guess at it (D-075).
-pub(crate) fn api_key_search_start() -> PathBuf {
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-}
-
-fn load_api_key() -> Result<String, String> {
-    if let Ok(k) = std::env::var("DEEPSEEK_API_KEY") {
-        if !k.is_empty() {
-            return Ok(k);
-        }
-    }
-    let start = api_key_search_start();
-    for dir in start.ancestors() {
-        let Ok(text) = std::fs::read_to_string(dir.join(".env")) else { continue };
-        if let Some(key) = parse_deepseek_key(&text) {
-            return Ok(key);
-        }
-    }
-    // One sentence for this failure, and it lives with the pane kind that cannot
-    // start without a key (D-075).
-    Err(placement::missing_api_key(Some(&start)))
-}
-
-/// Pull the `DEEPSEEK_API_KEY` value out of `.env` text, tolerating surrounding
-/// quotes; `None` if absent or empty. Kept separate so the parse is unit-tested
-/// without touching the filesystem.
-fn parse_deepseek_key(text: &str) -> Option<String> {
-    for line in text.lines() {
-        if let Some(rest) = line.trim().strip_prefix("DEEPSEEK_API_KEY=") {
-            let val = rest.trim().trim_matches('"').trim_matches('\'');
-            if !val.is_empty() {
-                return Some(val.to_string());
-            }
-        }
-    }
-    None
-}
-
 // --- display ------------------------------------------------------------------
 
 /// The current git branch of `repo`, or a sensible default when git is silent.
@@ -3842,18 +3782,5 @@ mod tests {
             posture_refusal(Some(&logged_in("claude-code", AccountShape::ApiKey))).is_none(),
             "a harness that publishes no resolved posture has nothing to disagree about",
         );
-    }
-
-    /// The `.env` parse tolerates quotes/comments and ignores an empty value, so a
-    /// repo-root key is picked up (via the walk-up in `load_api_key`) not skipped.
-    #[test]
-    fn parses_deepseek_key_from_env_text() {
-        assert_eq!(parse_deepseek_key("DEEPSEEK_API_KEY=sk-abc\n").as_deref(), Some("sk-abc"));
-        assert_eq!(
-            parse_deepseek_key("# comment\nOTHER=1\nDEEPSEEK_API_KEY=\"sk-xyz\"\n").as_deref(),
-            Some("sk-xyz"),
-        );
-        assert_eq!(parse_deepseek_key("OTHER=1\n"), None);
-        assert_eq!(parse_deepseek_key("DEEPSEEK_API_KEY=\n"), None);
     }
 }

@@ -30,13 +30,11 @@ use std::path::{Path, PathBuf};
 use fleetor_core::brief::{validate_orch, validate_worker, DEFAULT_ORCH, DEFAULT_WORKER};
 use fleetor_core::event::NoticeLevel;
 
-/// The `claude` flags and endpoint a worker is launched with, from
+/// The `claude` flags a worker is launched with, from
 /// `prompts/launch.conf`. The orchestrator takes none of these on purpose — it is
 /// the operator's own `claude` and keeps their model, login and permission mode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchConfig {
-    pub worker_model: String,
-    pub worker_base_url: String,
     pub worker_permission_mode: String,
     /// WP-08, the Fence: `open` is the only posture that exists — see
     /// `prompts/launch.conf`'s `[fence]` section for why the key exists anyway.
@@ -61,8 +59,6 @@ impl Default for LaunchConfig {
     /// pins them together.
     fn default() -> Self {
         Self {
-            worker_model: "deepseek-v4-flash".to_string(),
-            worker_base_url: "https://api.deepseek.com/anthropic".to_string(),
             worker_permission_mode: "auto".to_string(),
             fence_posture: "open".to_string(),
             fence_allow: Vec::new(),
@@ -263,8 +259,8 @@ fn apply_conf(base: &LaunchConfig, text: &str) -> (LaunchConfig, Vec<String>) {
             continue;
         }
         match (section.as_str(), key.as_str()) {
-            ("worker", "model") => config.worker_model = value,
-            ("worker", "base_url") => config.worker_base_url = value,
+            // Retired keys an older override file may still carry (D-118).
+            ("worker", "model" | "base_url") => {}
             ("worker", "permission_mode") => config.worker_permission_mode = value,
             // Only `open` is implemented (WP-08) — a Posture Ladder with other
             // values was proposed and rejected upstream. A value this parser
@@ -427,19 +423,26 @@ mod tests {
     #[test]
     fn launch_conf_overrides_only_what_it_sets() {
         let dir = temp_dir("launch");
-        std::fs::write(dir.join("launch.conf"), "[worker]\nmodel = my-model\n").unwrap();
+        std::fs::write(dir.join("launch.conf"), "[worker]\npermission_mode = plan\n").unwrap();
 
         let ctx = PaneContext::resolve(&dir);
-        assert_eq!(ctx.launch.worker_model, "my-model");
-        assert_eq!(
-            ctx.launch.worker_base_url,
-            LaunchConfig::default().worker_base_url,
-            "untouched"
-        );
-        assert_eq!(ctx.launch.worker_permission_mode, "auto", "untouched");
+        assert_eq!(ctx.launch.worker_permission_mode, "plan");
+        assert_eq!(ctx.launch.fence_posture, "open", "untouched");
         assert!(ctx.notices.iter().any(|(l, _)| *l == NoticeLevel::Info));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An override file written before D-118 still sets the retired fleet-key
+    /// endpoint keys; they are read and dropped without a word.
+    #[test]
+    fn the_retired_worker_model_and_base_url_keys_are_ignored_silently() {
+        let (config, complaints) = apply_conf(
+            &LaunchConfig::default(),
+            "[worker]\nmodel = old-model\nbase_url = https://example.invalid\n",
+        );
+        assert!(complaints.is_empty(), "{complaints:#?}");
+        assert_eq!(config, LaunchConfig::default());
     }
 
     /// A typo'd key reads exactly like a working config until a pane wedges. It
@@ -449,12 +452,15 @@ mod tests {
         let dir = temp_dir("typo");
         std::fs::write(
             dir.join("launch.conf"),
-            "[worker]\nmodel = good\npermision_mode = auto\nnot a pair\nbase_url =\n",
+            "[worker]\npermission_mode = good\npermision_mode = auto\nnot a pair\npermission_mode =\n",
         )
         .unwrap();
 
         let ctx = PaneContext::resolve(&dir);
-        assert_eq!(ctx.launch.worker_model, "good", "a bad line must not discard the good ones");
+        assert_eq!(
+            ctx.launch.worker_permission_mode, "good",
+            "a bad line must not discard the good ones"
+        );
 
         let warnings: Vec<&String> =
             ctx.notices.iter().filter(|(l, _)| *l == NoticeLevel::Warn).map(|(_, t)| t).collect();
@@ -471,10 +477,13 @@ mod tests {
     fn comments_and_blank_lines_are_not_complaints() {
         let (config, complaints) = apply_conf(
             &LaunchConfig::default(),
-            "# a comment\n\n[worker]\n\nmodel = m  # trailing note\n",
+            "# a comment\n\n[worker]\n\npermission_mode = m  # trailing note\n",
         );
         assert!(complaints.is_empty(), "{complaints:#?}");
-        assert_eq!(config.worker_model, "m", "the trailing comment is not part of the value");
+        assert_eq!(
+            config.worker_permission_mode, "m",
+            "the trailing comment is not part of the value"
+        );
     }
 
     /// A setting outside any section is a mistake with a specific fix, so it gets

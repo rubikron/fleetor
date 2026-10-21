@@ -111,10 +111,6 @@ const NEEDLES: &[Needle] = &[
     ("cp 4 — config_dir.env_var", "CLAUDE_CONFIG_DIR", |s| one(s.config_dir.env_var)),
     ("cp 4 — config_dir.seed_file", ".claude.json", |s| one(s.config_dir.seed_file)),
     ("cp 4 — config_dir.seed_keys", "hasCompletedOnboarding", |s| list(s.config_dir.seed_keys)),
-    ("cp 5 — credentials.base_url_env", "ANTHROPIC_BASE_URL", |s| {
-        opt(s.credentials.base_url_env)
-    }),
-    ("cp 5 — credentials.token_env", "ANTHROPIC_AUTH_TOKEN", |s| opt(s.credentials.token_env)),
     ("cp 5 — credentials.scrubbed_env", "ANTHROPIC_API_KEY", |s| {
         list(s.credentials.scrubbed_env)
     }),

@@ -408,19 +408,16 @@ fn checkpoint_11_the_window_the_pane_is_told_is_the_gauges_own_and_an_absent_rea
         );
 
         if let (Some(window), Some(var)) = (gauge.window_tokens, gauge.window_env) {
-            assert_eq!(
-                env_on(&pass.worker, var).as_deref(),
-                Some(window.to_string().as_str()),
-                "{}: the window the pane is told is not the one the gauge divides by",
-                pass.spec.name,
-            );
-            assert_eq!(
-                env_on(&pass.orch, var),
-                None,
-                "{}: the operator's own seat runs their account and their model, so the \
-                 fleet has no window to assert for it",
-                pass.spec.name,
-            );
+            let _ = window;
+            for (seat, placed) in pass.seats() {
+                assert_eq!(
+                    env_on(placed, var),
+                    None,
+                    "{}/{seat}: a pane runs the operator's login and their model, so the \
+                     fleet has no window to assert for it",
+                    pass.spec.name,
+                );
+            }
         }
 
         if gauge.reads_transcript {

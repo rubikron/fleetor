@@ -1287,26 +1287,17 @@ fn a_seeded_worker_commits_in_its_linked_worktree_and_the_rest_of_dot_git_stays_
 /// `codex doctor --json` supplies it: `checks["auth.credentials"]` names **which
 /// variable the active provider authenticates through**, and whether it is there.
 ///
-/// Four arms, and the middle one is the load-bearing one:
+/// Two arms:
 ///
-///  1. A fenced seat with the fleet's key present resolves to FLEETOR's entry and
-///     the variable placement sets.
-///  2. **The same seat with the fleet's key absent and the operator's
-///     `CODEX_API_KEY` present still fails.** That is the property worth having:
-///     the fleet's provider entry cannot be satisfied by an operator's own
-///     credential sitting in a shell profile, by construction rather than by the
-///     scrub — which makes `Credentials::scrubbed_env` the second line of defence
-///     rather than the only one. Without this arm, arm 1 passes just as well on a
-///     seeder that quietly fell back to whatever the environment had.
-///  3. The operator's own seat is **not** on FLEETOR's provider — C2 as C9 amended
-///     it, read off the vendor rather than off what the seeder wrote.
-///  4. The entry the seeder wrote is a document the vendor accepts.
+///  1. The operator's own seat is **not** switched onto another provider — C2 as C9
+///     amended it, read off the vendor rather than off what the seeder wrote.
+///  2. The seeded document is one the vendor accepts.
 ///
 /// Zero tokens. `doctor` requests no completion; its provider *reachability* probe
 /// is read from nowhere here, and every assertion holds on a machine with no
 /// network.
 #[test]
-fn the_vendor_resolves_a_worker_to_fleetors_provider_and_refuses_the_operators_key() {
+fn the_vendor_leaves_the_operators_seat_on_its_own_provider_and_accepts_the_seed() {
     use fleetor_shell::placement::codex::{codex, CODEX_SPEC, OPERATOR_DIR};
     use fleetor_shell::placement::Seed;
 
@@ -1315,17 +1306,11 @@ fn the_vendor_resolves_a_worker_to_fleetors_provider_and_refuses_the_operators_k
     const OPERATORS_PROVIDER: &str = "operators-own";
     const OPERATORS_TOKEN: &str = "sk-operator-CREDENTIAL-SENTINEL";
 
-    let fleet_key_env = CODEX_SPEC
-        .credentials
-        .token_env
-        .expect("codex carries the fleet's key in a variable its provider entry names");
-
     let Some(vendor) = the_vendor_binary() else {
         announce(&[
             format!("SKIPPED: the codex credential arm — `{VENDOR_BIN}` is not on PATH."),
             format!("  Recorded against {RECORDED_BUILD}. Nothing below was measured:"),
-            "    worker-resolves-to-fleetor, operators-key-cannot-satisfy-it,".into(),
-            "    orchestrator-keeps-its-own, the-entry-is-a-document-the-vendor-accepts".into(),
+            "    orchestrator-keeps-its-own, the-seed-is-a-document-the-vendor-accepts".into(),
             "  The in-crate tests still prove what FLEETOR wrote into the seed and".into(),
             "  that no credential of the operator's survives into a fenced pane.".into(),
             "  Only the vendor can say which provider it actually resolved (#29, C9).".into(),
@@ -1386,7 +1371,6 @@ fn the_vendor_resolves_a_worker_to_fleetors_provider_and_refuses_the_operators_k
         for name in CODEX_SPEC.credentials.scrubbed_env {
             command.env_remove(name);
         }
-        command.env_remove(fleet_key_env);
         for (name, value) in env {
             command.env(name, value);
         }
@@ -1400,52 +1384,13 @@ fn the_vendor_resolves_a_worker_to_fleetors_provider_and_refuses_the_operators_k
         report["checks"]["auth.credentials"].clone()
     };
 
-    // Arm 1 — the fenced seat, with the fleet's key where placement puts it.
-    let with_the_fleets_key = auth(&report(&worker, &[(fleet_key_env, "sk-the-fleets-own-key")]));
-    assert_eq!(
-        with_the_fleets_key["details"]["provider auth env var"].as_str(),
-        Some(format!("{fleet_key_env} (present)").as_str()),
-        "the vendor did not resolve a worker to FLEETOR's provider entry: {with_the_fleets_key}",
-    );
-    assert_eq!(
-        with_the_fleets_key["status"].as_str(),
-        Some("ok"),
-        "the entry resolved to a name and then would not authenticate: {with_the_fleets_key}",
-    );
-
-    // Arm 2 — the same seat, the fleet's key gone and the *operator's* in its
-    // place. This is the arm that proves arm 1 measured the entry rather than the
-    // environment.
-    let with_the_operators_key =
-        auth(&report(&worker, &[("CODEX_API_KEY", "sk-the-operators-own")]));
-    assert_eq!(
-        with_the_operators_key["status"].as_str(),
-        Some("fail"),
-        "an operator's own key in the environment authenticated a fenced pane. A worker holds \
-         the fleet's credential and never the operator's (D-062): {with_the_operators_key}",
-    );
-    assert_eq!(
-        with_the_operators_key["details"]["provider auth env var"].as_str(),
-        Some(format!("{fleet_key_env} (missing)").as_str()),
-        "the fleet's entry stopped naming the one variable it authenticates through: \
-         {with_the_operators_key}",
-    );
-    assert_eq!(
-        with_the_operators_key["details"]["auth env vars present"].as_str(),
-        Some("CODEX_API_KEY"),
-        "the operator's key was not in the environment, so arm 2 refused for the wrong \
-         reason: {with_the_operators_key}",
-    );
-
-    // Arm 3 — the operator's own seat, which keeps the provider it inherited
-    // (D-030, D-052). Asserted against the vendor's reading: a seat resolved to
-    // FLEETOR's entry would name the fleet's variable here, and this one does not.
+    // Arm 1 — the operator's own seat, which keeps the provider it inherited
+    // (D-030, D-052), asserted against the vendor's reading.
     let operators_seat = auth(&report(&orch, &[]));
     assert!(
         operators_seat["details"]["provider auth env var"].is_null(),
-        "the orchestrator was switched onto the fleet's provider. That seat runs the \
-         operator's own login and inherited provider, and there is no picker anywhere \
-         (C2 as amended by C9): {operators_seat}",
+        "the orchestrator was switched onto another provider. That seat runs the \
+         operator's own login and inherited provider (C2 as amended by C9): {operators_seat}",
     );
     let inherited = fs::read_to_string(orch.join("config.toml")).expect("the orchestrator's seed");
     assert!(
@@ -1453,10 +1398,10 @@ fn the_vendor_resolves_a_worker_to_fleetors_provider_and_refuses_the_operators_k
         "the orchestrator lost the provider it inherited:\n{inherited}",
     );
 
-    // Arm 4 — the entry is a document the vendor accepts. A provider table with a
-    // malformed row is a pane that dies at configuration load, which every other
-    // arm here would report as some other failure.
-    let loaded = report(&worker, &[(fleet_key_env, "sk-the-fleets-own-key")]);
+    // Arm 2 — the seed is a document the vendor accepts. A malformed one is a pane
+    // that dies at configuration load, which every other arm here would report as
+    // some other failure.
+    let loaded = report(&worker, &[]);
     assert_eq!(
         loaded["checks"]["config.load"]["details"]["config.toml parse"].as_str(),
         Some("ok"),
@@ -1470,8 +1415,7 @@ fn the_vendor_resolves_a_worker_to_fleetors_provider_and_refuses_the_operators_k
 /// **The operator's own seat is logged in, and the vendor is what says so** (WP-25
 /// phase 2, #44; C6, C9, C14, C43).
 ///
-/// The arm above proves a *worker* runs on FLEETOR's provider. This one proves the
-/// other half of the same asymmetry, and it is the half that was missing: a codex
+/// A codex
 /// login lives **inside the directory this seeder replaces** (C6 — `CODEX_HOME`
 /// alone determines configuration and login), so striking the credential on every
 /// seat handed the orchestrator a pane with no login at all. That failure is the
@@ -1513,11 +1457,6 @@ fn the_operators_own_seat_authenticates_and_a_fenced_seat_holds_nothing_of_the_o
     /// The variable the operator's *own* shell exports their key in — scrubbed on a
     /// fenced seat, and not on theirs.
     const OPERATORS_SHELL_VAR: &str = "OPERATORS_SHELL_KEY";
-
-    let fleet_key_env = CODEX_SPEC
-        .credentials
-        .token_env
-        .expect("codex carries the fleet's key in a variable its provider entry names");
 
     let Some(vendor) = the_vendor_binary() else {
         announce(&[
@@ -1561,9 +1500,8 @@ fn the_operators_own_seat_authenticates_and_a_fenced_seat_holds_nothing_of_the_o
     let said = |out: &std::process::Output| {
         format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
     };
-    // `doctor`, with a controlled environment: everything checkpoint 5 scrubs, the
-    // fleet's variable and the operator's own shell variable are all removed unless
-    // an arm puts one back, so nothing this machine exports can decide a result.
+    // `doctor`, with a controlled environment: everything checkpoint 5 scrubs and
+    // the operator's own shell variable are removed unless an arm puts one back, so nothing this machine exports can decide a result.
     let auth = |codex_home: &Path, env: &[(&str, &str)]| -> serde_json::Value {
         let mut command = Command::new(&vendor);
         command
@@ -1574,7 +1512,6 @@ fn the_operators_own_seat_authenticates_and_a_fenced_seat_holds_nothing_of_the_o
         for name in CODEX_SPEC.credentials.scrubbed_env {
             command.env_remove(name);
         }
-        command.env_remove(fleet_key_env);
         command.env_remove(OPERATORS_SHELL_VAR);
         for (name, value) in env {
             command.env(name, value);
