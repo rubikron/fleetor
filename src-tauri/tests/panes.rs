@@ -586,9 +586,7 @@ fn a_roster_ask_surfaces_a_workers_sampled_context_gauge() {
         resolved.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
     let project_dir = config_dir.join("projects").join(slug);
     std::fs::create_dir_all(&project_dir).unwrap();
-    // A fifth of the window constant — derived, so this stays 20% if D-054's
-    // number moves again.
-    let fifth = fleetor_shell::context_gauge::WORKER_WINDOW_TOKENS / 5;
+    let fifth = 1_000_000 / 5;
     std::fs::write(
         project_dir.join("session.jsonl"),
         serde_json::json!({

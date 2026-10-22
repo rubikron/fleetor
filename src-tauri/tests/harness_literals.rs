@@ -126,7 +126,6 @@ const NEEDLES: &[Needle] = &[
     ("cp 7 — guardrail.write_tools", "MultiEdit", |s| list(s.guardrail.write_tools)),
     ("cp 9 — typing.paste_start", "\x1b[200~", |s| bytes(s.typing.paste_start)),
     ("cp 9 — typing.paste_end", "\x1b[201~", |s| bytes(s.typing.paste_end)),
-    ("cp 11 — gauge.window_env", "CLAUDE_CODE_MAX_CONTEXT_TOKENS", |s| opt(s.gauge.window_env)),
     ("cp 13 — transcript.format", "claude-code-jsonl", |s| one(s.transcript.format)),
     ("cp 14 — project_identity.trust_file", ".claude.json", |s| {
         one(s.project_identity.trust_file)

@@ -667,7 +667,7 @@ pub const CODEX_SPEC: HarnessSpec = HarnessSpec {
     // window fields stay `None` because the numbers this harness divides by are
     // its own — the `model_context_window` it reports per turn, and its catalog
     // behind that — and neither is a constant the fleet could export to a pane.
-    gauge: GaugeSource { reads_transcript: true, window_tokens: None, window_env: None },
+    gauge: GaugeSource { reads_transcript: true, window_tokens: None },
 
     // 12 — orphan-sweep names (C11). A native binary, so one word — no interpreter
     // to match around, which is the whole of cursor's difficulty here.

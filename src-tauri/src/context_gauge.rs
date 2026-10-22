@@ -36,37 +36,16 @@ use std::sync::Mutex;
 
 use fleetor_core::pane::{ContextGauge, PaneId};
 
-/// Tier 2: the worker window the fleet operates to (`decisions.md` D-054) —
-/// deliberately **not** the 200k Claude Code silently assumes for a model
-/// name it does not recognize (WP-02 finding, `docs/notes/system-prompt-notes.md`
-/// §4). Operator-set at 500k on 2026-08-06, after that assumption surfaced
-/// live as a premature auto-compact warning.
-///
-/// One number, two consumers: this gauge's denominator, and the
-/// `CLAUDE_CODE_MAX_CONTEXT_TOKENS` env `placement::spawn::worker_command_with` exports so
-/// CC's own auto-compact bookkeeping works to the same window. They must
-/// never diverge — a gauge reading 100% while CC believes 40% (or the
-/// reverse) is exactly the quiet lie this product exists to avoid.
-///
-/// **Both consumers now reach it through checkpoint 11** (WP-25, C11): it is
-/// [`GaugeSource::window_tokens`](crate::placement::harness::GaugeSource::window_tokens)
-/// and [`GaugeSource::window_env`](crate::placement::harness::GaugeSource::window_env)
-/// that this gauge and the worker command read, and Claude Code's spec names
-/// this constant rather than repeating its value. It stays defined here because
-/// it is Claude Code's *answer*, not the seam's — a harness that publishes its
-/// own window answers `None` and is not measured against this number at all.
-pub const WORKER_WINDOW_TOKENS: u32 = 500_000;
-
 /// The context window Claude Code runs a model slug at, on the Anthropic API
-/// (measured against its docs and the 2.1.291 binary, 2026-10-06). Keyed by
+/// (measured against its docs and the 2.1.307 binary, 2026-10-21). Keyed by
 /// window class, not by a version list: aliases move with Claude Code releases.
 ///
-/// A slug Claude Code does not recognise, and a seat with no model, keep
-/// [`WORKER_WINDOW_TOKENS`] — the one case it honours the exported window (D-054).
+/// A seat with no model runs the plan's default model at 1M; a slug Claude Code
+/// does not recognise runs at 200k (D-125).
 pub fn model_window_tokens(model: Option<&str>) -> u32 {
     const LARGE: u32 = 1_000_000;
     const STANDARD: u32 = 200_000;
-    let Some(slug) = model else { return WORKER_WINDOW_TOKENS };
+    let Some(slug) = model else { return LARGE };
     if slug.contains("[1m]") || slug.contains("1m-") {
         return LARGE;
     }
@@ -74,7 +53,7 @@ pub fn model_window_tokens(model: Option<&str>) -> u32 {
         "sonnet" | "opus" | "default" | "fable" | "best" | "opusplan" | "haiku" => return LARGE,
         _ => {}
     }
-    let Some(rest) = slug.strip_prefix("claude-") else { return WORKER_WINDOW_TOKENS };
+    let Some(rest) = slug.strip_prefix("claude-") else { return STANDARD };
     let mut parts = rest.split('-');
     let family = parts.next().unwrap_or_default();
     let mut version = parts.map_while(|part| part.parse::<u32>().ok().filter(|n| *n < 100));
@@ -547,6 +526,8 @@ pub fn notice_text(pane: PaneId, gauge: &ContextGauge) -> String {
 mod tests {
     use super::*;
 
+    const TEST_WINDOW: u32 = 1_000_000;
+
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "fleetor-context-gauge-{tag}-{}-{:?}",
@@ -661,7 +642,7 @@ mod tests {
             cwd: temp_dir("no-dir-cwd"),
             window_tokens: None,
         };
-        assert_eq!(sample_transcript(&source, WORKER_WINDOW_TOKENS), None);
+        assert_eq!(sample_transcript(&source, TEST_WINDOW), None);
     }
 
     #[test]
@@ -676,20 +657,15 @@ mod tests {
             cwd,
             window_tokens: None,
         };
-        assert_eq!(
-            sample_transcript(&source, WORKER_WINDOW_TOKENS),
-            None,
-            "no assistant reply yet"
-        );
+        assert_eq!(sample_transcript(&source, TEST_WINDOW), None, "no assistant reply yet");
     }
 
     #[test]
-    fn a_real_transcript_samples_a_gauge_against_the_worker_window() {
+    fn a_real_transcript_samples_a_gauge_against_the_window() {
         let cwd = temp_dir("real-cwd");
         let config_dir = temp_dir("real-cfg");
-        // A tenth of whatever the window constant says — derived, so the pct
-        // assertion below stays meaningful if D-054's number moves again.
-        let tenth = WORKER_WINDOW_TOKENS / 10;
+        // A tenth of the test window, so the pct assertion derives from it.
+        let tenth = TEST_WINDOW / 10;
         seed_transcript(
             &config_dir,
             &cwd,
@@ -702,10 +678,9 @@ mod tests {
             cwd,
             window_tokens: None,
         };
-        let gauge =
-            sample_transcript(&source, WORKER_WINDOW_TOKENS).expect("a completed turn exists");
+        let gauge = sample_transcript(&source, TEST_WINDOW).expect("a completed turn exists");
         assert_eq!(gauge.used_tokens, tenth);
-        assert_eq!(gauge.window_tokens, WORKER_WINDOW_TOKENS);
+        assert_eq!(gauge.window_tokens, TEST_WINDOW);
         assert_eq!(gauge.pct, 10);
     }
 
@@ -729,7 +704,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(20));
         std::fs::write(dir.join("newer.jsonl"), assistant_line(1_000, 0, 0)).unwrap();
 
-        let gauge = sample_transcript(&source, WORKER_WINDOW_TOKENS).expect("a transcript exists");
+        let gauge = sample_transcript(&source, TEST_WINDOW).expect("a transcript exists");
         assert_eq!(
             gauge.used_tokens, 1_000,
             "the newer session's usage must win, not the larger older one"
@@ -750,7 +725,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("notes.txt"), "not a transcript").unwrap();
 
-        assert_eq!(sample_transcript(&source, WORKER_WINDOW_TOKENS), None);
+        assert_eq!(sample_transcript(&source, TEST_WINDOW), None);
     }
 
     // --- GaugeSources ------------------------------------------------------------
@@ -780,7 +755,7 @@ mod tests {
         pub struct PublishesItsOwnWindow;
         static NO_ASSERTED_WINDOW: LazyLock<HarnessSpec> = LazyLock::new(|| HarnessSpec {
             name: "stand-in-publishes-its-own-window",
-            gauge: GaugeSource { reads_transcript: true, window_tokens: None, window_env: None },
+            gauge: GaugeSource { reads_transcript: true, window_tokens: None },
             ..CLAUDE_CODE_SPEC
         });
 
@@ -789,11 +764,7 @@ mod tests {
         pub struct KeepsUsageElsewhere;
         static USAGE_ELSEWHERE: LazyLock<HarnessSpec> = LazyLock::new(|| HarnessSpec {
             name: "stand-in-keeps-usage-elsewhere",
-            gauge: GaugeSource {
-                reads_transcript: false,
-                window_tokens: Some(super::WORKER_WINDOW_TOKENS),
-                window_env: Some("A_WINDOW_IT_DOES_TELL_THE_PANE_ABOUT"),
-            },
+            gauge: GaugeSource { reads_transcript: false, window_tokens: Some(super::TEST_WINDOW) },
             ..CLAUDE_CODE_SPEC
         });
 
@@ -861,7 +832,7 @@ mod tests {
     fn a_harness_that_asserts_no_window_samples_as_absent_rather_than_borrowing_one() {
         let cwd = temp_dir("no-window-cwd");
         let config_dir = temp_dir("no-window-cfg");
-        let tenth = WORKER_WINDOW_TOKENS / 10;
+        let tenth = TEST_WINDOW / 10;
         seed_transcript(&config_dir, &cwd, &[assistant_line(u64::from(tenth), 0, 0)]);
 
         let sources = GaugeSources::default();
@@ -906,11 +877,7 @@ mod tests {
     fn a_harness_that_keeps_usage_elsewhere_samples_as_absent_rather_than_reading_a_transcript() {
         let cwd = temp_dir("elsewhere-cwd");
         let config_dir = temp_dir("elsewhere-cfg");
-        seed_transcript(
-            &config_dir,
-            &cwd,
-            &[assistant_line(u64::from(WORKER_WINDOW_TOKENS / 10), 0, 0)],
-        );
+        seed_transcript(&config_dir, &cwd, &[assistant_line(u64::from(TEST_WINDOW / 10), 0, 0)]);
 
         let sources = GaugeSources::default();
         sources.record(
@@ -942,11 +909,7 @@ mod tests {
     fn a_recorded_pane_samples_its_own_transcript_and_no_other_panes() {
         let cwd = temp_dir("gs-cwd");
         let config_dir = temp_dir("gs-cfg");
-        seed_transcript(
-            &config_dir,
-            &cwd,
-            &[assistant_line(u64::from(WORKER_WINDOW_TOKENS / 20), 0, 0)],
-        );
+        seed_transcript(&config_dir, &cwd, &[assistant_line(u64::from(TEST_WINDOW / 20), 0, 0)]);
 
         let sources = GaugeSources::default();
         sources.record(
@@ -1125,8 +1088,8 @@ mod tests {
         assert_eq!(gauge.window_tokens, CATALOG_WINDOW);
         assert_eq!(gauge.pct, 47);
         assert_ne!(
-            gauge.window_tokens, WORKER_WINDOW_TOKENS,
-            "D-054's constant is Claude Code's answer and must never divide a codex reading",
+            gauge.window_tokens, TEST_WINDOW,
+            "a claude window must never divide a codex reading",
         );
     }
 
@@ -1286,11 +1249,8 @@ mod tests {
 
     #[test]
     fn a_worker_spawn_notice_names_the_pane_the_tokens_and_the_window_percent() {
-        let text = spawn_estimate_notice_text(
-            PaneId::Worker(2),
-            &"x".repeat(4_000),
-            Some(WORKER_WINDOW_TOKENS),
-        );
+        let text =
+            spawn_estimate_notice_text(PaneId::Worker(2), &"x".repeat(4_000), Some(TEST_WINDOW));
         assert!(text.contains("worker-2"));
         assert!(text.contains("≈1000-token brief") || text.contains("1000-token"), "{text}");
         assert!(text.contains('%'), "a worker's notice states a window percent: {text}");
@@ -1319,10 +1279,8 @@ mod tests {
 
     #[test]
     fn notice_text_names_the_pane_and_proposes_without_acting() {
-        // Derived, not hardcoded: exactly 80% of whatever the window constant
-        // says today, so this test keeps testing the threshold if D-054's
-        // number moves again.
-        let gauge = ContextGauge::new(WORKER_WINDOW_TOKENS * 8 / 10, WORKER_WINDOW_TOKENS);
+        // Derived: exactly 80% of the test window.
+        let gauge = ContextGauge::new(TEST_WINDOW * 8 / 10, TEST_WINDOW);
         let text = notice_text(PaneId::Worker(4), &gauge);
         assert!(text.contains("worker-4"));
         assert!(text.contains("80%") || text.contains(&gauge.pct.to_string()));
@@ -1437,8 +1395,13 @@ mod tests {
 
     #[test]
     fn unknown_models_fall_back_to_the_default_constant() {
-        assert_eq!(model_window_tokens(Some("deepseek-v4-flash-preview")), WORKER_WINDOW_TOKENS);
-        assert_eq!(model_window_tokens(None), WORKER_WINDOW_TOKENS);
+        assert_eq!(model_window_tokens(Some("deepseek-v4-flash-preview")), 200_000);
+        assert_eq!(model_window_tokens(Some("deepseek-v4-flash")), 200_000);
+    }
+
+    #[test]
+    fn no_model_runs_the_plan_default_at_one_million() {
+        assert_eq!(model_window_tokens(None), 1_000_000);
     }
 
     #[test]

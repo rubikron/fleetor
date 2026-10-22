@@ -61,7 +61,7 @@ Note: D-005 is referenced elsewhere in this file (e.g. D-009, D-011) but has no 
 | [D-051](D-051.md) | WP-07 | alive | WP-07: the operator is a name in the record, and `recorded` is one word rather than two |
 | [D-052](D-052.md) | WP-08 | superseded | WP-08: the fence is `HOME`, seeded with one file, and the PATH leak it would have left open |
 | [D-053](D-053.md) | WP-09 | reversed | WP-09 (budget half): the ledger closes, a Tier 2 cap is set slightly above measured reality, and a conservative prune recovers what little was left |
-| [D-054](D-054.md) | meta | alive | the worker window is 500k, stated once, and Claude Code is told rather than left to guess |
+| [D-054](D-054.md) | meta | superseded by D-125 | the worker window is 500k, stated once, and Claude Code is told rather than left to guess |
 | [D-055](D-055.md) | meta | alive | shakedown finding 1: purpose before implementation, said outright |
 | [D-056](D-056.md) | meta | alive | the tenets go in as the operator wrote them, and orch finally gets the three attitudes |
 | [D-057](D-057.md) | meta | alive | the docs get four homes, an index, and a root CLAUDE.md |
@@ -131,3 +131,4 @@ Note: D-005 is referenced elsewhere in this file (e.g. D-009, D-011) but has no 
 | [D-122](D-122.md) | meta | alive | a receipt carries `tail`, the last lines of its check's output |
 | [D-123](D-123.md) | meta | alive | orch's brief names each worker's harness and model for assigning by difficulty and intent; workers still aren't told (M25) |
 | [D-124](D-124.md) | meta | alive | CI on macOS: fmt, clippy -D warnings, both suites, frontend build; guards G1–G4 follow |
+| [D-125](D-125.md) | meta | alive | the gauge divides by the window Claude Code runs: 1M with no model, 200k for an unrecognised slug |

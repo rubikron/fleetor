@@ -729,18 +729,13 @@ pub struct GaugeSource {
     /// named enum the way `file_move_is_safe` became [`Transport`] (C54) — one
     /// bool that means more than it says is exactly what that decision corrected.
     pub reads_transcript: bool,
-    /// The window the gauge divides by, when the fleet is the one asserting it.
-    /// `Some(WORKER_WINDOW_TOKENS)` here: Claude Code does not recognize the
-    /// worker model's name and would assume 200k and auto-compact early, so the
-    /// fleet states the window and exports the identical constant to the pane
-    /// through [`window_env`](Self::window_env) — one number, so the vendor's
-    /// bookkeeping and the fleet's display cannot disagree (D-054).
+    /// The window the gauge divides by, when the fleet states one. `Some` for
+    /// Claude Code, which does not publish its window (its default is 1M); only
+    /// whether it is `Some` is read (D-125).
     ///
     /// `None` for a harness that publishes the window itself, which is a strictly
     /// better answer than asserting one.
     pub window_tokens: Option<u32>,
-    /// The variable the asserted window is exported to the pane through.
-    pub window_env: Option<&'static str>,
 }
 
 /// **Checkpoint 12 — orphan-sweep process names.**
@@ -1522,13 +1517,9 @@ pub const CLAUDE_CODE_SPEC: HarnessSpec = HarnessSpec {
     // 10 — command-channel spellings, one row per allowlisted command.
     commands: CommandChannel { spellings: &[("/clear", "/clear"), ("/compact", "/compact")] },
 
-    // 11 — gauge source and window. The fleet asserts the window because the
-    // vendor does not recognize the worker model's name (D-054).
-    gauge: GaugeSource {
-        reads_transcript: true,
-        window_tokens: Some(crate::context_gauge::WORKER_WINDOW_TOKENS),
-        window_env: Some("CLAUDE_CODE_MAX_CONTEXT_TOKENS"),
-    },
+    // 11 — gauge source and window. Claude Code does not publish its window,
+    // so the fleet states it (D-125).
+    gauge: GaugeSource { reads_transcript: true, window_tokens: Some(1_000_000) },
 
     // 12 — orphan-sweep names. `orphans::sweep_at`.
     orphans: OrphanNames { comm_suffixes: &["claude"] },
@@ -3001,7 +2992,7 @@ mod tests {
         // Not a copy of them — the same items. This test says so out loud so that
         // a later edit which replaces either with a literal is caught here.
         let spec = claude_code().spec();
-        assert_eq!(spec.gauge.window_tokens, Some(crate::context_gauge::WORKER_WINDOW_TOKENS));
+        assert_eq!(spec.gauge.window_tokens, Some(1_000_000));
         assert_eq!(spec.guardrail.hook_file, guardrail::HOOK_FILE);
     }
 
