@@ -53,7 +53,7 @@ Note: D-005 is referenced elsewhere in this file (e.g. D-009, D-011) but has no 
 | [D-043](D-043.md) | meta | alive | the panes stop appending to Claude Code's system prompt and replace it |
 | [D-044](D-044.md) | meta | alive | the orchestrator becomes a vision partner, and the workers get a culture |
 | [D-045](D-045.md) | meta | alive | `fleet cmd`: a command channel that is not the message path |
-| [D-046](D-046.md) | WP-04 | alive | WP-04: the context gauge is `AppCommand::Roster`'s job, not a new channel; the window is our own 128k, not CC's 200k guess; the live gauge never estimates |
+| [D-046](D-046.md) | WP-04 | amended by D-125 | WP-04: the context gauge is `AppCommand::Roster`'s job, not a new channel; the window is our own 128k, not CC's 200k guess; the live gauge never estimates |
 | [D-047](D-047.md) | WP-05 | amended by D-100 | WP-05: the task board is a fold over the event log, and the one arm that never reaches a terminal |
 | [D-048](D-048.md) | WP-06 | alive | WP-06: the worktrees stay, because the object database was already shared |
 | [D-049](D-049.md) | WP-06 | amended by D-108 | WP-06: the reviewer is named in the assignment message, not in a field on the block |
