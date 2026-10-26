@@ -23,7 +23,7 @@ Every choice belongs to one of three tiers. When in doubt about which tier somet
 
 ### Tier 2 — Strong defaults. Change freely, but log it in `decisions.md`.
 
-Worker count (4) · SQLite via rusqlite · the `fleet` verb list · the `fleet cmd` allowlist (`/clear`, `/compact`) · pane briefing text · the 30 ms submit gap · the ~16 ms / 64 KB coalescing window · React for the UI · directory layout under `~/.fleetor/` · worker model (DeepSeek V4 Flash) · macOS-first.
+Worker count (4) · SQLite via rusqlite · the `fleet` verb list · the `fleet cmd` allowlist (`/clear`, `/compact`) · pane briefing text · the 30 ms submit gap · the ~16 ms / 64 KB coalescing window · React for the UI · directory layout under `~/.fleetor/` · worker model (the seat's pick, else the login's default; D-118) · macOS-first.
 
 A `decisions.md` entry is three lines: what changed, why the default lost, what would reverse it. Cheap enough that there is no excuse to skip it, substantial enough that the reasoning survives.
 

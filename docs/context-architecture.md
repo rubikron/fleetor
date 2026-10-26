@@ -56,12 +56,11 @@ Two deliberately different postures.
 
 | | `orch` | `worker-N` |
 |---|---|---|
-| Model | operator's own (Opus) | `deepseek-v4-flash` |
-| Endpoint | operator's login | `https://api.deepseek.com/anthropic` |
-| Credential | whatever they use | `DEEPSEEK_API_KEY` → `ANTHROPIC_AUTH_TOKEN` |
+| Model | the seat's pick, else the login's default (D-126) | the seat's pick, else the login's default (D-126) |
+| Credential | the operator's own login | the operator's own login (D-118) |
 | Permission mode | operator's default | `--permission-mode auto` |
 | `CLAUDE_CONFIG_DIR` | `~/.fleetor/_shell/pane-config/orch` (D-062) | `~/.fleetor/_shell/pane-config/worker-N` |
-| Credential lookup | `CLAUDE_SECURESTORAGE_CONFIG_DIR=""` → the operator's own Keychain entry | n/a — `ANTHROPIC_AUTH_TOKEN` |
+| Credential lookup | `CLAUDE_SECURESTORAGE_CONFIG_DIR=""` → the operator's own Keychain entry | the operator's login, copied into the worker's own config dir (D-118) |
 | cwd | the target repo | `~/.fleetor/_shell/worktrees/<target-slug>/worker-N` (branch `fleet/worker-N`) |
 
 Both get `FLEETOR_PANE` (identity — there is no anonymous connection), `FLEET_SOCKET`, an augmented `PATH` that can find `claude` and `fleet`, and a truecolor `TERM`.
@@ -106,8 +105,7 @@ Single-sourced in `message.rs` so the delivery path cannot invent a second spell
 | Worker brief | `prompts/worker.md` | markdown template | ✅ `~/.fleetor/prompts/` |
 | Delivery contract | `prompts/delivery-contract.md` | markdown fragment | ✅ — placeholder required |
 | L5 anti-amplification clause | `prompts/broadcast-rule.md` | markdown fragment | ✅ — placeholder required |
-| Worker model | `prompts/launch.conf` → `[worker] model` | conf | ✅ `~/.fleetor/prompts/` |
-| Worker endpoint | `prompts/launch.conf` → `[worker] base_url` | conf | ✅ `~/.fleetor/prompts/` |
+| Worker model | the seat's pick in the gate, else the login's default (D-126) | gate selection | ✅ per run |
 | Worker permission mode | `prompts/launch.conf` → `[worker] permission_mode` | conf | ✅ `~/.fleetor/prompts/` |
 | Fleet size | `pane.rs::WORKER_SLOTS = [1,2,3,4]` | `const [u8; 4]` | ❌ recompile (mirrored again in `ui/src/fleet/types.ts`) |
 | Worker config-dir contents | `spawn.rs::seed_config_dir` | two hardcoded keys | ❌ recompile |
@@ -129,7 +127,7 @@ Three distinct user needs are tangled together in "customize what context is inj
 
 1. **Role specialization** — give worker-2 a different job description than worker-3. Highest value, currently impossible, and it is the thing that makes a fleet more than four copies of the same agent.
 2. **Environment parity** — let workers see some of the operator's setup (a shared house-style `CLAUDE.md`, a specific skill, an MCP server) without inheriting all of it. Currently all-or-nothing at the config-dir boundary.
-3. **Brief tuning** — edit the coordination prompt itself. `decisions.md` D-031 flags that the briefs are *unvalidated against a real Flash worker*, so this is a live need: a Flash worker may well need blunter instructions than the text written for Opus.
+3. **Brief tuning** — edit the coordination prompt itself. `decisions.md` D-031 flags that the briefs are *unvalidated against a live worker*, so this is a live need: a worker may need blunter instructions than the text written for Opus.
 
 ### The hard constraint
 

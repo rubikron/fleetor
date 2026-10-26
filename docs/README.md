@@ -82,7 +82,7 @@ Kept as the record behind decisions still in force, or as handoffs that were act
 |---|---|
 | `handoff.md` | The pre-pivot headless architecture (MCP shim, supervisor, ticket board) — all deleted by D-030 |
 | `phase2-spikes.md` | MCP-handshake and Stop-hook spikes; both mechanisms deleted (D-030), D-014 survives |
-| `phase0-report.md` + `phase0-report.json` | DeepSeek Flash tool-call fidelity through headless CC — mechanism gone, the finding is why workers run Flash |
+| `phase0-report.md` + `phase0-report.json` | DeepSeek Flash tool-call fidelity through headless CC — historical; workers now run the operator's own login (D-118) |
 | `tui-pivot-plan.md` | The executed pivot plan, Phases 0–6, deviations recorded inline |
 | `MORNING-HANDOFF.md` | The overnight Blackboard build's handoff to the operator |
 | `OVERNIGHT-QUESTIONS.md` | Q-1..Q-4 — unattended judgment calls, all closed by measurement |
