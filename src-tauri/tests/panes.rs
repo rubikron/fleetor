@@ -126,13 +126,16 @@ fn scratch_installation() -> (Layout, PathBuf) {
     (layout, target)
 }
 
-/// The machine this binary describes: the stand-in pane program, a worker key,
+/// The machine this binary describes: the stand-in pane program, an operator login,
 /// and the real inherited `PATH` — the fake pane's `#!/usr/bin/env bash` has to
 /// find a `bash`, so that one field must be the truth rather than a scratch value.
 fn stand_in_host() -> Host {
     Host {
         pane_program: Some(fake_pane_script().display().to_string()),
-        api_key: Some("sk-test".to_string()),
+        operator_logins: vec![(
+            claude_code().spec().name,
+            fleetor_shell::placement::OperatorLogin::new("{}".to_string()),
+        )],
         inherited_path: std::env::var("PATH").unwrap_or_default(),
         ..Host::bare()
     }
@@ -583,9 +586,7 @@ fn a_roster_ask_surfaces_a_workers_sampled_context_gauge() {
         resolved.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
     let project_dir = config_dir.join("projects").join(slug);
     std::fs::create_dir_all(&project_dir).unwrap();
-    // A fifth of the window constant — derived, so this stays 20% if D-054's
-    // number moves again.
-    let fifth = fleetor_shell::context_gauge::WORKER_WINDOW_TOKENS / 5;
+    let fifth = 1_000_000 / 5;
     std::fs::write(
         project_dir.join("session.jsonl"),
         serde_json::json!({

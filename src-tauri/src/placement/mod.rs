@@ -104,7 +104,7 @@ pub mod harness;
 /// ticket's.
 pub mod codex;
 
-pub use harness::{CredentialSource, Harness, HarnessSpec, OperatorLogin, Seed};
+pub use harness::{Harness, HarnessSpec, OperatorLogin, Seed};
 
 // --- the layout ---------------------------------------------------------------
 
@@ -396,22 +396,6 @@ pub struct Host {
     pub inherited_path: String,
     /// The operator's rustup, or `None` on a machine with no toolchain at all.
     pub toolchain: Option<spawn::OperatorToolchain>,
-    /// The worker API key, or `None` — the orchestrator runs without one, worker
-    /// panes cannot.
-    pub api_key: Option<String>,
-    /// Where the search for that key began: the application's own working
-    /// directory, which is the head of the `.env` walk
-    /// (`crate::fleet::api_key_search_start`). `None` on a machine nobody looked
-    /// at.
-    ///
-    /// **A field only so a refusal can name a path (D-075).** The sentence a
-    /// worker fails with used to say where the key was looked for and lost that
-    /// clause when it became a constant here (D-072); "no key found" and "no key
-    /// found under `/Users/me/code/api`" are the same fact and only the second one
-    /// tells an operator whose `.env` is one directory up what to do. It is on the
-    /// [`Host`] rather than read in [`place`] for the reason everything else here
-    /// is.
-    pub api_key_searched_from: Option<PathBuf>,
     /// **What each harness reports about this machine — login state, account
     /// shape, model list and resolved posture** (WP-25 #34; C8, C14).
     ///
@@ -466,8 +450,6 @@ impl Host {
             operator_home: std::env::var_os("HOME").map(PathBuf::from),
             inherited_path: std::env::var("PATH").unwrap_or_default(),
             toolchain: spawn::operator_toolchain(),
-            api_key: crate::fleet::deepseek_api_key(),
-            api_key_searched_from: Some(crate::fleet::api_key_search_start()),
             // **Empty, and that is the ticket.** Everything above is a filesystem
             // check costing microseconds; a harness diagnosis is a subprocess and a
             // live provider reachability request. D13's "discovered per spawn" is
@@ -629,33 +611,9 @@ pub enum PaneSpec {
         /// Which harness this seat runs — the row C23 says expands into four, so
         /// two workers of one fleet may differ.
         harness: &'static dyn Harness,
-        /// **The model this seat starts with, or `None` for the fleet's own** —
-        /// `PaneContext`'s `launch.worker_model`.
-        ///
-        /// Unlike [`PaneSpec::Orch`]'s, `None` here does not mean "let the vendor
-        /// choose": a worker runs FLEETOR's provider rather than the operator's
-        /// (C9), so an unnamed model is the one the launch configuration names and
-        /// never the vendor's default. That is why the fallback is applied in
-        /// [`place`], against the `PaneContext` it already holds, rather than left
-        /// to a caller to remember.
+        /// **The model this seat starts with, or `None` for the vendor's own
+        /// default** (C80).
         model: Option<String>,
-        /// **Whether this seat spends the operator's plan rather than the fleet's
-        /// key** (C75) — the start gate's pick, saved when Start is clicked and
-        /// handed down per seat.
-        ///
-        /// **A `bool` here and a [`CredentialSource`](harness::CredentialSource)
-        /// below**, because a `PaneSpec` is what a caller builds and serialises and
-        /// the credential is neither serialisable nor the caller's to hold.
-        /// [`place_worker`] pairs this answer with
-        /// [`Host::operator_login`] to make the two-state value, and **refuses the
-        /// placement when this is `true` and no login is readable** rather than
-        /// falling back to the fleet's key — a silent fallback would spend metered
-        /// tokens the operator did not agree to, and a silent *failure* would be
-        /// D-062's logged-out pane again.
-        ///
-        /// `false` on a seat nobody thought about, for
-        /// [`Seed::credential_source`](harness::Seed::credential_source)'s reason.
-        on_the_operators_plan: bool,
     },
 }
 
@@ -666,30 +624,9 @@ impl PaneSpec {
         PaneSpec::Orch { harness, model: None }
     }
 
-    /// One fenced worker, on the harness the caller names, running the fleet's own
-    /// worker model.
+    /// One fenced worker, on the harness the caller names, on the operator's login.
     pub fn worker(slot: u8, harness: &'static dyn Harness) -> Self {
-        PaneSpec::Worker { slot, harness, model: None, on_the_operators_plan: false }
-    }
-
-    /// **The same worker, spending the operator's plan rather than the fleet's
-    /// key** (C75) — the start gate's pick, applied per seat.
-    ///
-    /// A refinement rather than a third argument on [`worker`](Self::worker), for
-    /// [`with_model`](Self::with_model)'s reason: every other caller is asking for
-    /// the seat and not for a credential, and making fifty lines say `false` would
-    /// be noise to serve one.
-    ///
-    /// **A no-op on the orchestrator**, and that is the asymmetry rather than an
-    /// omission: it already runs the operator's own login, so there is nothing here
-    /// for it to choose.
-    pub fn on_the_operators_plan(self) -> Self {
-        match self {
-            PaneSpec::Worker { slot, harness, model, .. } => {
-                PaneSpec::Worker { slot, harness, model, on_the_operators_plan: true }
-            }
-            other => other,
-        }
+        PaneSpec::Worker { slot, harness, model: None }
     }
 
     /// **The same seat, running the model the caller named** (M1, M2).
@@ -703,9 +640,7 @@ impl PaneSpec {
         let model = Some(model.into());
         match self {
             PaneSpec::Orch { harness, .. } => PaneSpec::Orch { harness, model },
-            PaneSpec::Worker { slot, harness, on_the_operators_plan, .. } => {
-                PaneSpec::Worker { slot, harness, model, on_the_operators_plan }
-            }
+            PaneSpec::Worker { slot, harness, .. } => PaneSpec::Worker { slot, harness, model },
         }
     }
 
@@ -822,28 +757,9 @@ pub fn place(
         PaneSpec::Orch { model, .. } => {
             place_orch(harness, model.as_deref(), layout, host, target, context)
         }
-        // **The fleet's own worker model is the fallback, applied here** — this is
-        // the one place holding both the picked value and the `PaneContext` that
-        // names the default, so neither a caller nor a spawn helper has to remember
-        // which wins (C9: a worker's provider is FLEETOR's, so an unnamed model is
-        // the launch configuration's and never the vendor's).
-        // **The fleet's model is no longer substituted here** (C80). It was, and
-        // this was the one place holding both the picked value and the
-        // `PaneContext` that names the default — but that reasoning assumed every
-        // worker runs FLEETOR's provider, which C78 stopped being true. A plan seat
-        // with no model named must reach `place_worker` still naming none, or the
-        // substitution happens before anything can tell the two kinds of seat
-        // apart. The fallback moved one function down, where the credential is.
-        PaneSpec::Worker { slot, model, on_the_operators_plan, .. } => place_worker(
-            harness,
-            slot,
-            model.as_deref(),
-            on_the_operators_plan,
-            layout,
-            host,
-            target,
-            context,
-        ),
+        PaneSpec::Worker { slot, model, .. } => {
+            place_worker(harness, slot, model.as_deref(), layout, host, target, context)
+        }
     }
 }
 
@@ -954,7 +870,7 @@ fn place_orch(
 }
 
 /// One fenced worker: its own checkout of the target, its own `HOME`, the fleet's
-/// own toolchain, and Flash on DeepSeek.
+/// own toolchain, and the operator's login.
 ///
 /// **Everything a worker needs before its process exists is decided and made true
 /// here, in this order**, and the order is the old sequence's exactly: the working
@@ -969,18 +885,10 @@ fn place_orch(
 /// and only a target that cannot be degrades to the shared checkout with a notice;
 /// a machine with no rustup gets the toolchain
 /// settings **absent** rather than pointing at a directory that does not exist.
-// **Eight arguments, and the eighth is C75's** — the seat's credential source, an
-// answer only the caller has. The alternative clippy is asking for is a struct, and
-// this ticket already added one (`CredentialSource`); wrapping the other seven
-// alongside it would move `place_orch` to a shape it does not
-// need, to silence a count. `worker_command_with` below carries the same allow for
-// the same reason.
-#[allow(clippy::too_many_arguments)]
 fn place_worker(
     harness: &'static dyn Harness,
     slot: u8,
     model: Option<&str>,
-    on_the_operators_plan: bool,
     layout: &Layout,
     host: &Host,
     target: &Path,
@@ -989,57 +897,11 @@ fn place_worker(
     let pane = PaneId::Worker(slot);
     let mut notices = Vec::new();
 
-    // **Whose usage this seat spends, resolved before a byte is written** (C75) —
-    // first, and for the reason the key check below used to be first: failing here
-    // costs nothing, where failing after four filesystem seeds leaves them behind.
-    //
-    // **The `true`-with-no-login case refuses rather than falls back.** Quietly
-    // using the fleet's key would spend metered tokens the operator did not agree
-    // to; quietly proceeding without a credential would produce D-062's pane —
-    // one that reaches its prompt, reports `accepted` on every `fleet send`, and
-    // is logged out.
-    let credential_source = if on_the_operators_plan {
-        let login = host.operator_login(harness).ok_or_else(|| no_operator_login(harness))?;
-        CredentialSource::OperatorsPlan(login)
-    } else {
-        CredentialSource::FleetKey
-    };
-
-    // **The fleet's own model is the fallback on a fleet-key seat, and there is no
-    // fallback on a plan seat** (C9, narrowed by C80).
-    //
-    // C9's rule was that an unnamed worker model is the launch configuration's and
-    // never the vendor's, *because* a worker's provider is FLEETOR's — so there is
-    // no vendor default to fall back to. A plan seat inverts the premise: its
-    // provider is the vendor's own, so the vendor's default is exactly what an
-    // unnamed model should mean, and substituting the fleet's would hand a pane
-    // running the operator's login a model name that provider has never heard of.
-    //
-    // **Resolved here rather than in `place`** because this is the first function
-    // that knows which kind of seat it is holding. That is the whole of the bug
-    // C80 fixes: the substitution used to happen one frame earlier, where the two
-    // kinds are indistinguishable.
-    let model = match credential_source {
-        CredentialSource::FleetKey => Some(model.unwrap_or(&context.launch.worker_model)),
-        CredentialSource::OperatorsPlan(_) => model,
-    };
-
-    // **The fleet's key is required only by a seat that will spend it** (C75).
-    // It was unconditional, and had to be: before plan seats a worker with no key
-    // could not authenticate at all. A plan seat authenticates from its own
-    // configuration directory, so demanding a key here would refuse to start a
-    // fleet for an operator who has a subscription and no API account — which is
-    // the exact operator this feature is for.
-    let key = match credential_source {
-        CredentialSource::FleetKey => host
-            .api_key
-            .as_deref()
-            .ok_or_else(|| missing_api_key(host.api_key_searched_from.as_deref()))?,
-        // Not read by `worker_command_with` on this branch — it sets neither the
-        // endpoint nor the token variable — and passed only because one function
-        // builds both kinds of worker.
-        CredentialSource::OperatorsPlan(_) => "",
-    };
+    // The operator's login, resolved before a byte is written: failing here costs
+    // nothing, where failing after four filesystem seeds leaves them behind. A
+    // seat with no readable login refuses rather than reaching its prompt logged
+    // out (D-062).
+    let login = host.operator_login(harness).ok_or_else(|| no_operator_login(harness))?;
 
     // Its own git worktree — in a target made a repository first if it was not one
     // (D-084) — or the announced fallback to the shared checkout. The notices are
@@ -1070,10 +932,7 @@ fn place_worker(
 
     let config_dir = layout.pane_config(&context.sessions, pane);
     let seed = Seed::new(&config_dir, &cwd, host.operator_home.as_deref()).with_brief(&rendered);
-    let seed = match credential_source {
-        CredentialSource::OperatorsPlan(login) => seed.on_the_operators_plan(login),
-        CredentialSource::FleetKey => seed,
-    };
+    let seed = seed.on_the_operators_plan(login);
     notices.extend(harness.seed_config_dir(&seed)?);
 
     // The Fence (WP-08): a private HOME, created and seeded before the process
@@ -1120,9 +979,7 @@ fn place_worker(
         &home,
         &config_dir,
         &layout.socket(),
-        key,
         model,
-        &credential_source,
         toolchain.as_ref(),
         context,
         host.pane_program.as_deref(),
@@ -1143,35 +1000,10 @@ fn place_worker(
             window_tokens: harness.spec().gauge.window_tokens.map(|_| seat_window),
         }),
         harness: harness.spec(),
-        // **The model this worker was actually placed on** — the gate's pick where
-        // there was one, the launch configuration's where there was not, resolved
-        // once in [`place`] so the record and the command cannot disagree.
+        // The gate's pick, or `None` for the vendor's default.
         model: model.map(str::to_string),
         scrubbed: worker.scrubbed,
     })
-}
-
-/// What placing a worker fails with when this machine has no key at all.
-///
-/// **It names the directory the `.env` walk started from (D-075).** That clause
-/// was in the sentence the old bring-up sequence emitted, and it was lost when the
-/// message became a constant here. It is the operator-actionable half: under
-/// `tauri dev` the working directory is `src-tauri/`, so a key sitting one level
-/// up at the repo root *is* found by the walk — and an operator whose key is
-/// somewhere else entirely can only tell which case they are in if the message
-/// says where it looked.
-///
-/// `searched_from` is `None` on a [`Host`] nobody discovered, and then the
-/// sentence degrades to the general one rather than naming a made-up path.
-pub fn missing_api_key(searched_from: Option<&Path>) -> String {
-    let where_ = match searched_from {
-        Some(dir) => format!("any .env from {} upward", dir.display()),
-        None => "any .env from the application's working directory upward".to_string(),
-    };
-    format!(
-        "no DEEPSEEK_API_KEY in the environment or {where_} — \
-         the orchestrator runs without one, worker panes cannot"
-    )
 }
 
 /// What the operator is told when a worker ends up in the shared checkout.
@@ -1487,11 +1319,10 @@ fn guardrail_notices(
     })
 }
 
-/// What a plan-backed seat is refused with when this machine has no login for its
+/// What a worker seat is refused with when this machine has no login for its
 /// harness (C75).
 ///
-/// **Kept next to the other refusal sentences and out of the call site**, for
-/// `missing_api_key`'s reason: it is the one sentence standing between the
+/// **Kept out of the call site**: it is the one sentence standing between the
 /// operator and a pane that would look perfectly healthy while logged out, so it
 /// is somewhere a test can read it.
 ///
@@ -1501,9 +1332,8 @@ fn guardrail_notices(
 fn no_operator_login(harness: &'static dyn Harness) -> String {
     let spec = harness.spec();
     format!(
-        "this seat was set to run on your {} plan, but no {} login was readable on this machine. \
-         Run `{}`{}, then start the fleet again. FLEETOR will not fall back to the fleet's \
-         metered key on a seat you set to your plan.",
+        "this seat runs on your {} login, but no {} login was readable on this machine. \
+         Run `{}`{}, then start the fleet again.",
         spec.name,
         spec.name,
         spec.login.command,
@@ -1571,7 +1401,6 @@ mod tests {
         assert!(host.fleet_bin.is_none(), "a bare machine has no built `fleet`");
         assert!(host.pane_program.is_none(), "a bare machine has no stand-in override");
         assert!(host.toolchain.is_none(), "a bare machine has no rustup");
-        assert!(host.api_key.is_none(), "a bare machine has no worker key");
         assert!(host.harnesses.is_empty(), "and nobody has asked a harness about it (#34)");
         assert!(host.harness_notices().is_empty(), "so there is nothing to tell the operator");
     }

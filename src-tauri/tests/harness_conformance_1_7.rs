@@ -26,8 +26,7 @@ use std::path::Path;
 
 use conformance::{
     arg_after, argv_of, config_states, env_on, files_containing, for_each_registered,
-    is_non_empty_dir, roots_in, ORCH_BRIEF_MARK, WORKER_BASE_URL, WORKER_BRIEF_MARK, WORKER_KEY,
-    WORKER_MODEL, WORKER_POSTURE,
+    is_non_empty_dir, roots_in, ORCH_BRIEF_MARK, WORKER_BRIEF_MARK, WORKER_MODEL, WORKER_POSTURE,
 };
 use fleetor_shell::placement::harness::registered;
 
@@ -351,12 +350,10 @@ fn checkpoint_4_the_config_dir_is_pointed_at_seeded_and_merged_into() {
 
 // --- checkpoint 5 ---------------------------------------------------------------
 
-/// **Checkpoint 5 — credential wiring and environment scrub.**
+/// **Checkpoint 5 — environment scrub.**
 ///
-/// D-062 across every harness: a worker holds the fleet's credential, never the
-/// operator's. Both halves are asserted, and the second is the one that is easier
-/// to get wrong — what has to be *removed* from an inherited environment so the
-/// operator's own credential cannot leak into a fenced pane (L2).
+/// What has to be *removed* from an inherited environment so the operator's own
+/// credential cannot leak into a fenced pane (L2).
 ///
 /// **What the scrub half can and cannot say here, stated plainly.** `place`
 /// returns a `CommandBuilder` whose environment is the app's own, snapshotted, plus
@@ -370,47 +367,9 @@ fn checkpoint_4_the_config_dir_is_pointed_at_seeded_and_merged_into() {
 /// pane the operator's own credential, and does not catch a missing `env_remove`
 /// on a machine that never exported it.
 #[test]
-fn checkpoint_5_the_worker_holds_the_fleets_credential_and_the_operators_is_removed() {
+fn checkpoint_5_the_operators_credential_is_removed_from_a_fenced_panes_environment() {
     for_each_registered("cp5", |pass| {
         let creds = &pass.spec.credentials;
-        assert!(
-            creds.token_env.is_some() || !creds.provider_keys.is_empty(),
-            "{}: a worker with no credential channel at all cannot authenticate",
-            pass.spec.name,
-        );
-
-        if let Some(var) = creds.base_url_env {
-            assert_eq!(
-                env_on(&pass.worker, var).as_deref(),
-                Some(WORKER_BASE_URL),
-                "{}: the worker talks to the endpoint the caller named",
-                pass.spec.name,
-            );
-        }
-        if let Some(var) = creds.token_env {
-            assert_eq!(
-                env_on(&pass.worker, var).as_deref(),
-                Some(WORKER_KEY),
-                "{}: the worker authenticates with the key from the host",
-                pass.spec.name,
-            );
-            assert_ne!(
-                env_on(&pass.orch, var).as_deref(),
-                Some(WORKER_KEY),
-                "{}: the operator's own seat runs their login, not the fleet's credential",
-                pass.spec.name,
-            );
-        }
-        for (key, value) in creds.provider_keys {
-            let dir = pass.config_dir(&pass.worker);
-            assert!(
-                config_states(&dir, key, value).is_some(),
-                "{}: provider key {key} = {value} is in the spec and not in {}",
-                pass.spec.name,
-                dir.display(),
-            );
-        }
-
         assert!(
             !creds.scrubbed_env.is_empty(),
             "{}: a worker inherits the app's environment, so a scrub that removes nothing \
@@ -436,15 +395,8 @@ fn checkpoint_5_the_worker_holds_the_fleets_credential_and_the_operators_is_remo
 /// The checkpoint C17 renamed, because the old name described one vendor's
 /// mechanism as a harness universal it is not. What is asserted is therefore the
 /// three mechanisms separately: the variable that relocates *configuration*, the
-/// variable that selects the *credential* namespace, and the private `HOME` — with
-/// `token_follows_home` deciding which of the last two a fenced pane's login
-/// actually arrives through.
+/// variable that selects the *credential* namespace, and the private `HOME`.
 ///
-/// **Two `*_follows_home` fields since C73, and this asserts both.** The one
-/// boolean that used to be here answered for the fleet's token channel *and* for
-/// the operator's own credential store, which behave differently on the same
-/// harness — Claude Code's token is an environment variable that cares nothing
-/// for `HOME`, and its keychain entry is behind a search list `HOME` derives.
 /// `operator_store_follows_home` is asserted **behaviourally**, against the
 /// pane's real private `HOME`, because a spec field claiming a store is
 /// unreachable is exactly the kind of claim this suite exists to stop taking on
@@ -540,33 +492,6 @@ fn checkpoint_6_configuration_and_credentials_are_isolated_by_the_named_mechanis
                     pass.spec.name,
                 );
             }
-        }
-
-        if isolation.token_follows_home {
-            // Then the private HOME *is* the credential mechanism, and it has to be
-            // both given and seeded from somewhere, or the pane has no login at all.
-            assert!(
-                isolation.private_home && isolation.seeds_from_operator,
-                "{}: a harness whose token is reachable only through HOME needs a private \
-                 one, seeded",
-                pass.spec.name,
-            );
-        } else {
-            // C17's own measurement, asserted rather than restated: a fenced pane of
-            // this harness keeps a private HOME and still has a credential, which
-            // arrives through checkpoint 5's channel or the namespace variable above.
-            let reachable = pass
-                .spec
-                .credentials
-                .token_env
-                .is_some_and(|var| env_on(&pass.worker, var).is_some())
-                || !pass.spec.credentials.provider_keys.is_empty();
-            assert!(
-                reachable,
-                "{}: this harness's login does not follow HOME, so a fenced pane's \
-                 credential has to arrive some other way — and none did",
-                pass.spec.name,
-            );
         }
 
         assert!(

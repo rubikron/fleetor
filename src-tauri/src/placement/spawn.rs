@@ -9,7 +9,7 @@
 //!    — see [`orch_command_with`] for the pair of variables that keeps the login.
 //!  - [`worker_command_with`] — an isolated Flash worker: its own `CLAUDE_CONFIG_DIR`,
 //!    its own worktree, its own private `HOME` (WP-08), `--permission-mode
-//!    auto`, and the DeepSeek endpoint.
+//!    auto`, and the operator's login planted in its config dir.
 //!
 //! Everything here that looks like a detail was measured in Phase 0
 //! (`docs/notes/tui-spawn-notes.md`) against a real interactive `claude`. The four that
@@ -64,10 +64,7 @@
 //! them read off the spec now, and the project key the trust record is filed under
 //! is asked of the harness rather than canonicalized here.
 //!
-//! Checkpoint 11's export half followed in the contract batch (WP-25, issue #23):
-//! the variable the fleet's asserted context window is exported to a worker
-//! through is `gauge.window_env` and the number is `gauge.window_tokens`, so no
-//! literal remains here. What is still spelled out in this module is
+//! What is spelled out in this module is
 //! [`ENV_CC_SECURESTORAGE_DIR`], which the spec *names* rather than repeats, and
 //! [`project_key`] / [`seed_config_dir`] — Claude Code's own answers to
 //! checkpoints 14 and 4, reached through [`Harness`] rather than called directly
@@ -79,7 +76,7 @@ use fleetor_core::brief::{render_orch_at, render_worker};
 use fleetor_core::pane::{PaneId, WORKER_SLOTS};
 use portable_pty::CommandBuilder;
 
-use super::harness::{CredentialSource, Harness, HarnessSpec, Seat, Seed};
+use super::harness::{Harness, HarnessSpec, Seat, Seed};
 use crate::prompts::PaneContext;
 
 /// Overrides the program every pane runs. Set by `src-tauri/tests/panes.rs` to
@@ -256,7 +253,7 @@ pub(super) fn orch_command_with(
 // --- the workers --------------------------------------------------------------
 
 /// One worker pane: isolated config dir, its own worktree, its own private
-/// `HOME`, Flash on DeepSeek.
+/// `HOME`, the operator's login.
 ///
 /// `config_dir` must already have been through [`seed_config_dir`] for this exact
 /// `cwd` — the trust flag is keyed by absolute project path, so a worker pointed
@@ -291,13 +288,7 @@ pub(super) fn worker_command_with(
     home: &Path,
     config_dir: &Path,
     socket: &Path,
-    api_key: &str,
-    // **`Option`, because a plan seat names no model** (C80). It was `&str` with
-    // the fleet's own model substituted upstream, which put `ANTHROPIC_MODEL` on
-    // every worker — including one running the operator's login, where the fleet's
-    // model is a name its vendor has never heard of.
     model: Option<&str>,
-    credential_source: &CredentialSource<'_>,
     toolchain: Option<&FleetToolchain>,
     ctx: &PaneContext,
     program: Option<&str>,
@@ -326,9 +317,6 @@ pub(super) fn worker_command_with(
                 &ctx.branch_prefix,
             );
             let seat = Seat::new(&brief).with_permission_mode(&ctx.launch.worker_permission_mode);
-            // **The argv half of the same rule** (C80). A harness that takes its
-            // model in argv (codex's `--model`) must not be handed the fleet's on
-            // a plan seat any more than one that takes it in the environment.
             let seat = match model {
                 Some(model) => seat.with_model(model),
                 None => seat,
@@ -377,67 +365,12 @@ pub(super) fn worker_command_with(
     // empty — a fenced pane is never handed the key to the operator's login, and
     // the scrub below is what makes that true against an inherit.
     cmd.env(spec.config_dir.env_var, config_dir);
-    // Checkpoint 5's first half, off the spec (WP-25): the endpoint a worker talks
-    // to and the fleet's own key, which is the whole of D-062 — a worker holds the
-    // fleet's credential, never the operator's. `None` on either is a harness that
-    // does not take it that way, not a worker that goes without: checkpoint 5's
-    // `provider_keys` is the config-dir channel for one that is configured
-    // instead, and the conformance suite refuses a harness with neither.
-    //
-    // **A plan-backed seat is given neither** (C73, C75), and that is a
-    // measurement rather than tidiness. The fleet's endpoint is a different
-    // provider, so an Anthropic OAuth credential presented there authenticates
-    // nothing; and `ANTHROPIC_AUTH_TOKEN`'s mere *presence* selects the metered
-    // path, so setting it would put a pane on API billing while the operator was
-    // told it runs their plan (C71). Its credential arrives through checkpoint 4's
-    // directory instead — planted by this harness's seeder, which is the one
-    // channel a fenced pane can still reach.
-    if credential_source.is_the_operators_plan() {
-        // Said out loud rather than left as an empty branch: the two variables
-        // below are deliberately absent here, and `Placed::scrubbed` reports the
-        // scrub that still happens either way.
-    } else {
-        if let Some(var) = spec.credentials.base_url_env {
-            cmd.env(var, &ctx.launch.worker_base_url);
-        }
-        if let Some(var) = spec.credentials.token_env {
-            cmd.env(var, api_key);
-        }
-    }
-    // Checkpoint 3's model channel. **A fleet-key worker is always given one** —
-    // the gate's pick or the launch configuration's — because its provider is
-    // FLEETOR's and there is no vendor default to fall back to (C9).
-    //
-    // **A plan seat is the other way round, and C80 is why that matters.** Its
-    // provider *is* the vendor's, so there is a default to fall back to and the
-    // fleet's model is a name that vendor has never heard of. `model` arrives
-    // `None` on such a seat and nothing is set — the same shape `orch` has always
-    // had (M2), reached now by a second seat rather than by a second rule.
+    // Checkpoint 3's model channel. `None` names nothing and the vendor's own
+    // default applies, as on `orch` (M2, C80).
     if let (Some(var), Some(model)) = (spec.posture.model_env, model) {
         cmd.env(var, model);
     }
-    // Checkpoint 11's export half, off the spec (WP-25 #23). A harness that does
-    // not recognize the worker model's name would assume its own default window
-    // and auto-compact early (WP-02 finding), so where the fleet is the one
-    // asserting the window it exports that same number to the pane — one value,
-    // read from `gauge.window_tokens`, so the vendor's bookkeeping and the rail's
-    // display cannot disagree (D-054). Both `None` is a harness that publishes its
-    // own window, which is the strictly better answer and gets nothing exported.
-    //
-    // **Not on a plan seat** (C80), for the reason the comment above gives read the
-    // other way: the fleet exports this *because* it is the one asserting the
-    // window, and on a plan seat it is not. Exporting the fleet model's window to
-    // a pane running the operator's own model tells that pane to compact against a
-    // number belonging to a different provider — the WP-02 failure this export
-    // exists to prevent, caused by the export itself.
-    if !credential_source.is_the_operators_plan() {
-        let effective_window =
-            Some(crate::context_gauge::model_window_tokens(model)).or(spec.gauge.window_tokens);
-        if let (Some(var), Some(window)) = (spec.gauge.window_env, effective_window) {
-            cmd.env(var, window.to_string());
-        }
-    }
-    // Checkpoint 5's second half, and the half that is easier to get wrong.
+    // Checkpoint 5: the scrub.
     //
     // Not "don't set it" — *unset* it. The worker inherits the operator's
     // environment, and an `ANTHROPIC_API_KEY` sitting in their shell profile is
@@ -445,8 +378,7 @@ pub(super) fn worker_command_with(
     // same is true of `CLAUDE_SECURESTORAGE_CONFIG_DIR` for a different reason
     // (WP-14): `orch` sets it, empty, to reach the operator's own Keychain entry,
     // and removing it here is what stops a fenced pane ever being handed the key
-    // to the operator's login — it has the fleet's token and needs nothing from
-    // the keychain.
+    // to the operator's login — its login is planted in its own config dir.
     let scrubbed = scrub(&mut cmd, spec.credentials.scrubbed_env);
     Worker { command: cmd, scrubbed }
 }
@@ -1007,7 +939,6 @@ mod tests {
         home: &Path,
         config_dir: &Path,
         socket: &Path,
-        api_key: &str,
         toolchain: Option<&FleetToolchain>,
         ctx: &PaneContext,
     ) -> CommandBuilder {
@@ -1019,9 +950,7 @@ mod tests {
             home,
             config_dir,
             socket,
-            api_key,
-            Some(ctx.launch.worker_model.as_str()),
-            &CredentialSource::FleetKey,
+            None,
             toolchain,
             ctx,
             pane_program().as_deref(),
@@ -1161,68 +1090,12 @@ mod tests {
             Path::new("/tmp/home"),
             Path::new("/tmp/cfg"),
             &socket,
-            "sk-test",
             None,
             &ctx,
         );
         assert_eq!(worker.get_env("FLEETOR_PANE").unwrap(), "worker-3");
         assert_eq!(worker.get_env("FLEET_SOCKET").unwrap(), socket.as_os_str());
         assert!(worker.get_env("CLAUDE_CODE_CHILD_SESSION").is_none());
-    }
-
-    /// L2, as a test rather than a comment: the auth token is set, the api key is
-    /// not. With both set, the interactive TUI never reaches its input box.
-    #[test]
-    fn a_worker_carries_the_auth_token_and_never_the_api_key() {
-        let worker = worker_command(
-            1,
-            Path::new("/tmp"),
-            Path::new("/tmp/home"),
-            Path::new("/tmp/cfg"),
-            Path::new("/tmp/s.sock"),
-            "sk-secret",
-            None,
-            &PaneContext::baked(),
-        );
-        assert_eq!(worker.get_env("ANTHROPIC_AUTH_TOKEN").unwrap(), "sk-secret");
-        assert!(
-            worker.get_env("ANTHROPIC_API_KEY").is_none(),
-            "L2: this wedges the pane on approval"
-        );
-        assert_eq!(
-            worker.get_env("ANTHROPIC_BASE_URL").unwrap(),
-            PaneContext::baked().launch.worker_base_url.as_str(),
-        );
-        assert_eq!(worker.get_env("CLAUDE_CONFIG_DIR").unwrap(), "/tmp/cfg");
-    }
-
-    /// D-054: a worker is told its real window, and it is the gauge's number —
-    /// spelled once. Orch never gets the override; its model is recognized and
-    /// its window is not ours to state.
-    #[test]
-    fn a_worker_is_told_the_window_the_gauge_divides_by() {
-        let ctx = PaneContext::baked();
-        let worker = worker_command(
-            2,
-            Path::new("/tmp"),
-            Path::new("/tmp/home"),
-            Path::new("/tmp/cfg"),
-            Path::new("/tmp/s.sock"),
-            "sk-test",
-            None,
-            &ctx,
-        );
-        assert_eq!(
-            worker.get_env("CLAUDE_CODE_MAX_CONTEXT_TOKENS").unwrap(),
-            crate::context_gauge::WORKER_WINDOW_TOKENS.to_string().as_str(),
-        );
-        let orch = orch_command(
-            Path::new("/tmp"),
-            Path::new("/tmp/s.sock"),
-            Path::new("/tmp/orch-cfg"),
-            &ctx,
-        );
-        assert!(orch.get_env("CLAUDE_CODE_MAX_CONTEXT_TOKENS").is_none());
     }
 
     /// `--permission-mode auto` is load-bearing: the default is `manual`, which
@@ -1237,7 +1110,6 @@ mod tests {
             Path::new("/tmp/home"),
             Path::new("/tmp/cfg"),
             Path::new("/tmp/s.sock"),
-            "k",
             None,
             &PaneContext::baked(),
         );
@@ -1283,7 +1155,6 @@ mod tests {
             Path::new("/tmp/private-home"),
             Path::new("/tmp/cfg"),
             &socket,
-            "k",
             None,
             &ctx,
         );
@@ -1312,7 +1183,6 @@ mod tests {
             Path::new("/tmp/private-home"),
             Path::new("/tmp/cfg"),
             &socket,
-            "k",
             None,
             &ctx,
         );
@@ -1432,8 +1302,8 @@ mod tests {
 
     /// The asymmetry is the product (D-030, D-052). `orch` moving onto its own
     /// config dir must not drag any of the worker posture along with it — a
-    /// private `HOME`, a DeepSeek endpoint or an auth-token override would each
-    /// take its login away by a different route.
+    /// private `HOME`, or an endpoint or auth-token override would each take
+    /// its login away by a different route.
     #[test]
     fn orch_takes_a_config_dir_and_none_of_the_worker_isolation() {
         let ctx = PaneContext::baked();
@@ -1477,7 +1347,6 @@ mod tests {
             Path::new("/tmp/home"),
             Path::new("/tmp/cfg"),
             Path::new("/tmp/s.sock"),
-            "sk-test",
             None,
             &PaneContext::baked(),
         );
@@ -1566,7 +1435,6 @@ mod tests {
             Path::new("/tmp/home"),
             Path::new("/tmp/cfg"),
             Path::new("/tmp/s.sock"),
-            "k",
             Some(&fleet),
             &PaneContext::baked(),
         );
@@ -1599,7 +1467,6 @@ mod tests {
             Path::new("/tmp/home"),
             Path::new("/tmp/cfg"),
             Path::new("/tmp/s.sock"),
-            "k",
             Some(&fleet),
             &PaneContext::baked(),
         );
@@ -1654,7 +1521,6 @@ mod tests {
             Path::new("/tmp/home"),
             Path::new("/tmp/cfg"),
             Path::new("/tmp/s.sock"),
-            "k",
             None,
             &PaneContext::baked(),
         );

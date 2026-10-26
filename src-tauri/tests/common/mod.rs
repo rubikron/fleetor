@@ -24,8 +24,8 @@ use fleetor_shell::guardrail;
 use fleetor_shell::placement::{self, Host, Layout, PaneSpec, Placed};
 use fleetor_shell::prompts::PaneContext;
 
-/// The worker credential the bench hands the host, for the same reason.
-pub const WORKER_KEY: &str = "sk-fleetor-bench-worker-key";
+/// The stand-in login the bench gives Claude Code, so a worker places by default.
+const BENCH_LOGIN: &str = r#"{"claudeAiOauth":{"accessToken":"bench-stand-in"}}"#;
 
 /// A whole installation in a scratch directory: the four arguments [`place`] takes,
 /// side by side, and the disk they are allowed to touch.
@@ -68,7 +68,10 @@ impl Bench {
 
         let host = Host {
             fleet_bin: Some(root.join("fleet")),
-            api_key: Some(WORKER_KEY.to_string()),
+            operator_logins: vec![(
+                fleetor_shell::placement::harness::claude_code().spec().name,
+                placement::OperatorLogin::new(BENCH_LOGIN.to_string()),
+            )],
             ..Host::bare()
         };
 
@@ -93,6 +96,7 @@ impl Bench {
     /// which is exactly what a real credential would be asserted on — so nothing
     /// here needs the operator's own.
     pub fn operator_logs_in(&mut self, harness: &'static str, document: &str) {
+        self.host.operator_logins.retain(|(name, _)| *name != harness);
         self.host
             .operator_logins
             .push((harness, placement::OperatorLogin::new(document.to_string())));

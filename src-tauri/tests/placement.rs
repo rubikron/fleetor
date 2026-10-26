@@ -149,7 +149,8 @@ fn branches(repo: &Path) -> Vec<String> {
         .collect()
 }
 
-/// A host a worker can actually be placed against: a `fleet` binary and a key.
+/// A host a worker can actually be placed against: a `fleet` binary and a Claude
+/// Code login.
 ///
 /// Everything else stays bare — **no toolchain**, which is the machine the
 /// absent-settings test is about, and no stand-in program, so the command really is
@@ -157,14 +158,13 @@ fn branches(repo: &Path) -> Vec<String> {
 fn host_for_worker(fleet_bin: &Path) -> Host {
     Host {
         fleet_bin: Some(fleet_bin.to_path_buf()),
-        api_key: Some(WORKER_KEY.to_string()),
+        operator_logins: vec![(
+            claude_code().spec().name,
+            placement::OperatorLogin::new("{}".to_string()),
+        )],
         ..Host::bare()
     }
 }
-
-/// The worker credential these tests hand the host, distinctive enough that finding
-/// it on the command proves it travelled rather than coincided.
-const WORKER_KEY: &str = "sk-fleetor-scratch-worker-key";
 
 /// What `place` put in the command's environment, as an owned string.
 fn env_on(command: &portable_pty::CommandBuilder, key: &str) -> Option<String> {
@@ -191,60 +191,13 @@ fn walk(dir: &Path) -> Vec<PathBuf> {
 
 /// A host with a `fleet` binary on it, so the missing-binary warning is out of the
 /// way for the tests that are not about it. Everything else stays bare — this
-/// machine has no rustup, no key and no stand-in pane program, and placing `orch`
+/// machine has no rustup, no login and no stand-in pane program, and placing `orch`
 /// must not care.
 fn host_with_fleet_bin(at: &Path) -> Host {
     Host { fleet_bin: Some(at.to_path_buf()), ..Host::bare() }
 }
 
 // --- what the machine is missing ------------------------------------------------
-
-/// The refusal a worker gets on a machine with no key **names the directory the
-/// `.env` walk started from** (D-075).
-///
-/// It is the operator-actionable half of the sentence and it was lost when the
-/// message became a constant: under `tauri dev` the working directory is
-/// `src-tauri/`, so a key at the repo root *is* found by the walk, and an operator
-/// whose key is somewhere else can only tell which case they are in if the message
-/// says where it looked. Asserted through the refusal `place` actually returns, so
-/// it cannot pass while the path is dropped between the constant and the caller.
-#[test]
-fn a_worker_with_no_key_is_told_where_the_key_was_looked_for() {
-    let scratch = Scratch::new("no-key");
-    let host = Host {
-        api_key: None,
-        api_key_searched_from: Some(scratch.root.join("app-cwd")),
-        ..host_with_fleet_bin(&scratch.root.join("fleet"))
-    };
-
-    let why = placement::place(
-        PaneSpec::worker(1, claude_code()),
-        &scratch.layout,
-        &host,
-        &scratch.target,
-        &PaneContext::baked(),
-    )
-    .expect_err("a machine with no key cannot place a worker");
-
-    assert!(why.contains("DEEPSEEK_API_KEY"), "{why}");
-    assert!(
-        why.contains(&scratch.root.join("app-cwd").display().to_string()),
-        "the refusal must say where it looked: {why}",
-    );
-    assert!(why.contains("worker panes cannot"), "{why}");
-
-    // And a host nobody discovered degrades to the general sentence rather than
-    // naming a path it invented.
-    let bare = placement::place(
-        PaneSpec::worker(1, claude_code()),
-        &scratch.layout,
-        &Host::bare(),
-        &scratch.target,
-        &PaneContext::baked(),
-    )
-    .expect_err("a bare machine cannot place a worker either");
-    assert!(bare.contains("the application's working directory"), "{bare}");
-}
 
 /// The two machine-level warnings are placement's decision, and `orch` is excluded
 /// from them because its own arm emits the `fleet`-binary line (D-075).
@@ -648,14 +601,9 @@ fn a_workers_command_carries_the_private_home_and_no_inherited_api_key() {
         "L2: an inherited api key parks the pane on an approval prompt forever, so it \
          must be *removed* from the command and not merely left unset",
     );
-    // The positive control: this really is a worker's command, carrying the key it
-    // was handed on the host — so the assertion above is about removal and not
-    // about having built something else entirely.
-    assert_eq!(
-        env_on(&placed.command, "ANTHROPIC_AUTH_TOKEN").as_deref(),
-        Some(WORKER_KEY),
-        "the worker authenticates with the token from the host",
-    );
+    // The positive control: this really is a worker's command, so the assertion
+    // above is about removal and not about having built something else entirely.
+    assert!(env_on(&placed.command, "CLAUDE_CONFIG_DIR").is_some());
 }
 
 /// **A bare machine: the toolchain settings are absent, not empty** (D-069).

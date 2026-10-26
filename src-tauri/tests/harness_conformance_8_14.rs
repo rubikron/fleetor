@@ -373,13 +373,8 @@ fn checkpoint_10_every_allowlisted_command_has_a_spelling_and_it_is_typed_unfram
 
 /// **Checkpoint 11 — context-gauge source and window constant.**
 ///
-/// Where the live gauge reads a worker's usage from, and what it divides by. The
-/// window is the more dangerous of the two, and D-054's rule is the whole
-/// checkpoint: **one number, two consumers.** The fleet asserts a window because
-/// the vendor does not recognize the worker model's name, and it exports the
-/// identical number to the pane — so the vendor's own bookkeeping and the fleet's
-/// display cannot disagree. A gauge reading 100% while the pane believes 40% is
-/// exactly the quiet lie this product exists to avoid.
+/// Where the live gauge reads a worker's usage from. The fleet exports no window
+/// to the pane (D-125); the gauge divides by the window Claude Code itself runs.
 ///
 /// **An unavailable gauge says unavailable.** Sampled at the moment `place`
 /// returns — before the pane's process exists, which is precisely when a
@@ -396,33 +391,9 @@ fn checkpoint_10_every_allowlisted_command_has_a_spelling_and_it_is_typed_unfram
 /// general. The gap is real and it is checkpoint 13's to close if a later harness
 /// needs it.
 #[test]
-fn checkpoint_11_the_window_the_pane_is_told_is_the_gauges_own_and_an_absent_reading_says_so() {
+fn checkpoint_11_an_absent_reading_says_so() {
     for_each_registered("cp11", |pass| {
         let gauge = &pass.spec.gauge;
-        assert_eq!(
-            gauge.window_tokens.is_some(),
-            gauge.window_env.is_some(),
-            "{}: a window the fleet asserts with no way to tell the pane about it is the \
-             two-numbers disagreement D-054 exists to prevent",
-            pass.spec.name,
-        );
-
-        if let (Some(window), Some(var)) = (gauge.window_tokens, gauge.window_env) {
-            assert_eq!(
-                env_on(&pass.worker, var).as_deref(),
-                Some(window.to_string().as_str()),
-                "{}: the window the pane is told is not the one the gauge divides by",
-                pass.spec.name,
-            );
-            assert_eq!(
-                env_on(&pass.orch, var),
-                None,
-                "{}: the operator's own seat runs their account and their model, so the \
-                 fleet has no window to assert for it",
-                pass.spec.name,
-            );
-        }
-
         if gauge.reads_transcript {
             let source = pass.worker.gauge.as_ref().unwrap_or_else(|| {
                 panic!(

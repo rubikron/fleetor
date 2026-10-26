@@ -76,14 +76,8 @@ pub const ORCH_BRIEF_MARK: &str = "FLEETOR-CONFORMANCE-ORCH-BRIEF";
 /// of them.
 pub const WORKER_BRIEF_MARK: &str = "FLEETOR-CONFORMANCE-WORKER-BRIEF";
 
-/// The fleet's own credential, as this pass's host holds it.
-pub const WORKER_KEY: &str = "sk-fleetor-conformance-worker-key";
-
 /// The model the caller names for unattended seats.
 pub const WORKER_MODEL: &str = "fleetor-conformance-worker-model";
-
-/// The endpoint the caller names for unattended seats.
-pub const WORKER_BASE_URL: &str = "https://workers.conformance.invalid/harness";
 
 /// The permission posture the caller names for unattended seats. Deliberately not
 /// a value any harness would default to.
@@ -186,14 +180,14 @@ impl Pass {
         let context = conformance_context();
         let host = Host {
             fleet_bin: Some(root.join("fleet")),
-            api_key: Some(WORKER_KEY.to_string()),
+            operator_logins: vec![a_login(spec)],
             ..Host::bare()
         };
 
         let orch = placement::place(PaneSpec::orch(harness), &layout, &host, &target, &context)
             .expect("placing the operator's own seat against a scratch layout");
         let worker = placement::place(
-            PaneSpec::worker(WORKER_SLOT, harness),
+            PaneSpec::worker(WORKER_SLOT, harness).with_model(WORKER_MODEL),
             &layout,
             &host,
             &target,
@@ -302,7 +296,7 @@ impl Pass {
         let other = self.root.join(name);
         init_repo(&other);
         let placed = placement::place(
-            PaneSpec::worker(WORKER_SLOT, self.harness),
+            PaneSpec::worker(WORKER_SLOT, self.harness).with_model(WORKER_MODEL),
             &self.layout,
             &self.host,
             &other,
@@ -321,7 +315,7 @@ impl Pass {
     /// that can differ between this placement and [`Pass::orch`] is the one fact
     /// being varied.
     pub fn place_orch_without_fleet_bin(&self) -> Placed {
-        let host = Host { fleet_bin: None, api_key: Some(WORKER_KEY.to_string()), ..Host::bare() };
+        let host = Host { fleet_bin: None, ..Host::bare() };
         placement::place(
             PaneSpec::orch(self.harness),
             &self.layout,
@@ -352,7 +346,7 @@ impl Pass {
         std::fs::create_dir_all(&home).expect("a scratch operator home");
         let host = Host {
             fleet_bin: self.host.fleet_bin.clone(),
-            api_key: Some(WORKER_KEY.to_string()),
+            operator_logins: vec![a_login(self.spec)],
             operator_home: Some(home.clone()),
             ..Host::bare()
         };
@@ -365,7 +359,7 @@ impl Pass {
         )
         .expect("placing the attended seat against a machine with an operator home");
         let worker = placement::place(
-            PaneSpec::worker(WORKER_SLOT, self.harness),
+            PaneSpec::worker(WORKER_SLOT, self.harness).with_model(WORKER_MODEL),
             &self.layout,
             &host,
             &self.target,
@@ -549,13 +543,13 @@ impl Pass {
         // exception, for the same sentence's worth of reason.
         let host = Host {
             fleet_bin: Some(self.root.join("fleet")),
-            api_key: Some(WORKER_KEY.to_string()),
+            operator_logins: vec![a_login(self.spec)],
             pane_program: Some(stand_in_pane_program().display().to_string()),
             inherited_path: std::env::var("PATH").unwrap_or_default(),
             ..Host::bare()
         };
         let placed = placement::place(
-            PaneSpec::worker(WORKER_SLOT, self.harness),
+            PaneSpec::worker(WORKER_SLOT, self.harness).with_model(WORKER_MODEL),
             &self.layout,
             &host,
             &self.target,
@@ -785,6 +779,11 @@ pub fn pane_of(seat: &str) -> PaneId {
 
 // --- the fixture ---------------------------------------------------------------
 
+/// A stand-in operator login for one harness, so a worker places.
+fn a_login(spec: &'static HarnessSpec) -> (&'static str, placement::OperatorLogin) {
+    (spec.name, placement::OperatorLogin::new("{}".to_string()))
+}
+
 /// The briefs and launch values every pass hands in.
 ///
 /// Each one is a scratch value nothing would produce by accident, which is what
@@ -796,8 +795,6 @@ fn conformance_context() -> PaneContext {
     let mut context = PaneContext::baked();
     context.orch_template = format!("{ORCH_BRIEF_MARK}\n{}", context.orch_template);
     context.worker_template = format!("{WORKER_BRIEF_MARK}\n{}", context.worker_template);
-    context.launch.worker_model = WORKER_MODEL.to_string();
-    context.launch.worker_base_url = WORKER_BASE_URL.to_string();
     context.launch.worker_permission_mode = WORKER_POSTURE.to_string();
     context.launch.fence_allow = Vec::new();
     context

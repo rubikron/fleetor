@@ -23,7 +23,7 @@
 //!
 //! **Every one of the fourteen is defined here, and as of phase 2 every one of
 //! them has a reader.** Three had none through the whole of phase 1 —
-//! [`Posture::sandbox_keys`], [`Credentials::provider_keys`] and
+//! [`Posture::sandbox_keys`] and
 //! [`Outbound::reachability_keys`] — left that way three times deliberately (#18,
 //! #19, #21) because all three are the same absent reader rather than three
 //! separate ones: the config-dir seeding a harness that is *configured* rather
@@ -344,9 +344,8 @@ pub struct Posture {
     /// **Tier 1.7 reads this field.** Anything a harness puts here narrows what a
     /// pane may do; nothing here may widen auto-approve past a worker's worktree.
     ///
-    /// **Written by [`Harness::seed_config_dir`]**, which reads this list,
-    /// [`Credentials::provider_keys`] and [`Outbound::reachability_keys`] together
-    /// and nothing else — one pass over dotted paths into the harness's own
+    /// **Written by [`Harness::seed_config_dir`]**, which reads this list
+    /// and [`Outbound::reachability_keys`] together and nothing else — one pass over dotted paths into the harness's own
     /// configuration document (C36).
     pub sandbox_keys: &'static [(&'static str, &'static str)],
     /// **What the vendor must be seen to have resolved from those keys** (WP-25
@@ -437,30 +436,14 @@ pub struct ConfigDir {
     pub seed_merges: bool,
 }
 
-/// **Checkpoint 5 — credential wiring and environment scrub.**
+/// **Checkpoint 5 — environment scrub.**
 ///
-/// What a worker pane is given to authenticate with, and — the half that is
-/// easier to get wrong — what has to be *removed* from the inherited environment
-/// so the operator's own credential cannot leak into a fenced pane.
-///
-/// D-062 across every harness: **a worker holds the fleet's credential, never the
-/// operator's.** The scrub is how that stays true against an environment inherit.
+/// What has to be *removed* from the inherited environment so the operator's own
+/// credential cannot park or redirect a fenced pane. A worker's login is planted
+/// in its own configuration directory (checkpoint 4), never carried in the
+/// environment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Credentials {
-    /// The variable naming the endpoint a worker talks to. Claude Code:
-    /// `ANTHROPIC_BASE_URL`, set from
-    /// [`LaunchConfig::worker_base_url`](crate::prompts::LaunchConfig).
-    pub base_url_env: Option<&'static str>,
-    /// The variable carrying the fleet's own key. Claude Code:
-    /// `ANTHROPIC_AUTH_TOKEN`, from the `.env` walk.
-    pub token_env: Option<&'static str>,
-    /// Configuration keys a harness needs written into its config dir to reach
-    /// the fleet's endpoint, for one that is configured rather than
-    /// environment-driven. Empty here.
-    ///
-    /// Written by [`Harness::seed_config_dir`], alongside
-    /// [`Posture::sandbox_keys`] and [`Outbound::reachability_keys`] (C36).
-    pub provider_keys: &'static [(&'static str, &'static str)],
     /// **Removed from the inherited environment, not merely left unset.** A
     /// worker inherits the app's environment, and an operator's key sitting in a
     /// shell profile is enough to park a pane on an approval prompt forever (L2).
@@ -479,13 +462,8 @@ pub struct Credentials {
 ///
 /// The private `HOME` is still real and still seeded — it is the Fence (WP-08),
 /// and its job is `~/.ssh`, shell profiles and the operator's tooling. It is not
-/// this harness's credential mechanism, and
-/// [`token_follows_home`](Self::token_follows_home) is the field that says so.
+/// this harness's credential mechanism.
 ///
-/// **Two fields, because there are two channels** (C73). The token channel and
-/// the operator's own credential store answer this question differently on the
-/// same harness, and the single boolean that used to answer for both recorded the
-/// second one wrong.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigAndCredentialIsolation {
     /// The variable that relocates *configuration*. The same variable as
@@ -501,18 +479,6 @@ pub struct ConfigAndCredentialIsolation {
     /// give `orch` an empty credential namespace keyed by a hash of that
     /// directory, and the pane would sit at a login prompt looking healthy.
     pub credential_env: Option<&'static str>,
-    /// Whether the **fleet's token channel** — [`Credentials::token_env`] — is
-    /// reachable only through `HOME`. `false` on every harness registered here,
-    /// and it is the fact C17 renamed this checkpoint over: an environment
-    /// variable cares nothing for `HOME`, so a fenced pane carrying the fleet's
-    /// key authenticates with a private one.
-    ///
-    /// **This was one boolean answering for two channels until C73.** The field
-    /// it replaces was documented as covering the token *and* the keychain entry;
-    /// the first clause was true and the second was measured false, which is C17's
-    /// own error in mirror image. See
-    /// [`operator_store_follows_home`](Self::operator_store_follows_home).
-    pub token_follows_home: bool,
     /// Whether the **operator's own credential store** is reachable only through
     /// `HOME` — the second channel, and the one that behaves differently.
     ///
@@ -627,7 +593,7 @@ pub struct Outbound {
     /// harness whose default posture refuses. Empty here.
     ///
     /// Written by [`Harness::seed_config_dir`], alongside
-    /// [`Posture::sandbox_keys`] and [`Credentials::provider_keys`] (C36).
+    /// [`Posture::sandbox_keys`] (C36).
     pub reachability_keys: &'static [(&'static str, &'static str)],
 }
 
@@ -763,18 +729,13 @@ pub struct GaugeSource {
     /// named enum the way `file_move_is_safe` became [`Transport`] (C54) — one
     /// bool that means more than it says is exactly what that decision corrected.
     pub reads_transcript: bool,
-    /// The window the gauge divides by, when the fleet is the one asserting it.
-    /// `Some(WORKER_WINDOW_TOKENS)` here: Claude Code does not recognize the
-    /// worker model's name and would assume 200k and auto-compact early, so the
-    /// fleet states the window and exports the identical constant to the pane
-    /// through [`window_env`](Self::window_env) — one number, so the vendor's
-    /// bookkeeping and the fleet's display cannot disagree (D-054).
+    /// The window the gauge divides by, when the fleet states one. `Some` for
+    /// Claude Code, which does not publish its window (its default is 1M); only
+    /// whether it is `Some` is read (D-125).
     ///
     /// `None` for a harness that publishes the window itself, which is a strictly
     /// better answer than asserting one.
     pub window_tokens: Option<u32>,
-    /// The variable the asserted window is exported to the pane through.
-    pub window_env: Option<&'static str>,
 }
 
 /// **Checkpoint 12 — orphan-sweep process names.**
@@ -959,45 +920,6 @@ impl std::fmt::Debug for OperatorLogin {
     }
 }
 
-/// **Whose usage a seat spends** — the field C75 split out of
-/// [`Seed::operators_own_seat`].
-///
-/// Those two questions had been one boolean, and `placement/codex.rs` said so in
-/// as many words: it was "the one question deciding both halves", meaning
-/// *whether a pane is the operator's own* and *whether it carries the operator's
-/// credential*. A plan-backed worker is the combination that boolean cannot
-/// spell — fenced, not the operator's own pane, and running on their login.
-///
-/// **The credential rides on the variant**, so "this seat is on the plan" cannot
-/// be said without supplying the thing that makes it true. The alternative was a
-/// bool beside an `Option`, which is the shape where a `true` with a `None` is a
-/// pane that reaches its prompt logged out and looking healthy — D-062's failure
-/// mode, and the one this whole arc exists to keep legible.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CredentialSource<'a> {
-    /// The fleet's own metered key and endpoint — [`Credentials::token_env`] and
-    /// [`Credentials::base_url_env`], with [`Credentials::scrubbed_env`] removed
-    /// from the inherit. D-062's original rule, unchanged and still the default
-    /// on a seat nobody thought about.
-    FleetKey,
-    /// The operator's existing login, planted in this pane's own configuration
-    /// directory by its harness's seeder.
-    ///
-    /// **A seat on this variant is given no endpoint and no fleet token.** Both
-    /// were measured to be wrong here rather than merely redundant: the fleet's
-    /// endpoint is a different provider, and setting the token variable at all
-    /// selects the metered path (C71, C73).
-    OperatorsPlan(&'a OperatorLogin),
-}
-
-impl CredentialSource<'_> {
-    /// Whether this seat spends the operator's plan. The one predicate the gate's
-    /// count and the cost line both read, so they cannot disagree.
-    pub fn is_the_operators_plan(&self) -> bool {
-        matches!(self, CredentialSource::OperatorsPlan(_))
-    }
-}
-
 /// A linked worktree's own gitdir and the common dir it shares, both
 /// canonicalized, as git reports them.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1025,17 +947,9 @@ pub struct Seed<'a> {
     /// A `PaneId` here would read more precisely and would have no safe default at
     /// all under the builder shape C39 settled on.
     pub operators_own_seat: bool,
-    /// **Whose usage this seat spends** (C75). See [`CredentialSource`] for why
-    /// this is not a widening of [`operators_own_seat`](Self::operators_own_seat).
-    ///
-    /// **[`CredentialSource::FleetKey`] is the default here, and that stays true
-    /// even though the operator-facing default is the plan.** The two are not the
-    /// same default: the gate makes the choice explicitly and hands it down, so a
-    /// seat that arrives here without one is a seat nobody thought about — a
-    /// fifth `place_*` arm, a harness added later — and it must not spend the
-    /// operator's plan by omission. What C75 changed is what the *operator* is
-    /// offered, not what a forgotten code path gets.
-    pub credential_source: CredentialSource<'a>,
+    /// The operator's login to plant in this pane's configuration directory.
+    /// `None` on the operator's own seat, which keeps its own.
+    pub operator_login: Option<&'a OperatorLogin>,
     /// The pane's own configuration directory. **Every byte this call writes lands
     /// under here**, and a harness that writes anywhere else is the bug this field
     /// exists to make obvious.
@@ -1109,7 +1023,7 @@ impl<'a> Seed<'a> {
     pub fn new(config_dir: &'a Path, cwd: &'a Path, operator_home: Option<&'a Path>) -> Self {
         Self {
             operators_own_seat: false,
-            credential_source: CredentialSource::FleetKey,
+            operator_login: None,
             config_dir,
             cwd,
             main_repository: super::main_repository(cwd),
@@ -1138,15 +1052,11 @@ impl<'a> Seed<'a> {
         Self { operators_own_seat: true, ..self }
     }
 
-    /// The same seed, spending the operator's own plan rather than the fleet's
-    /// key (C73, C75).
+    /// The same seed, running on the operator's own login (C73, C75).
     ///
-    /// **Takes the credential, so the state cannot be half-set.** There is no way
-    /// to mark a seat plan-backed and then fail to supply the login, which is the
-    /// shape that produces a pane sitting at a prompt looking healthy while logged
-    /// out.
+    /// **Takes the credential, so the state cannot be half-set.**
     pub fn on_the_operators_plan(self, login: &'a OperatorLogin) -> Self {
-        Self { credential_source: CredentialSource::OperatorsPlan(login), ..self }
+        Self { operator_login: Some(login), ..self }
     }
 
     /// The same seed carrying this pane's rendered brief.
@@ -1259,11 +1169,10 @@ pub trait Harness: std::fmt::Debug + Send + Sync + 'static {
     /// pane that boots into onboarding, which is the failure this exists to
     /// prevent.
     ///
-    /// **This is also the one reader of the three checkpoint key lists** —
-    /// [`Posture::sandbox_keys`], [`Credentials::provider_keys`] and
-    /// [`Outbound::reachability_keys`] (C36). One reader for all three, per
-    /// harness, because a harness's config keys have exactly one place they get
-    /// written and three readers would be three answers to that question.
+    /// **This is also the one reader of the checkpoint key lists** —
+    /// [`Posture::sandbox_keys`] and [`Outbound::reachability_keys`] (C36). One
+    /// reader for both, per harness, because a harness's config keys have exactly
+    /// one place they get written.
     ///
     /// **What it returns is Activity feed lines, and #28 is why** (C21, story 23).
     /// A harness that seeds from the operator's own configuration
@@ -1528,9 +1437,6 @@ pub const CLAUDE_CODE_SPEC: HarnessSpec = HarnessSpec {
 
     // 5 — credential wiring and the scrub. `spawn::worker_command_with`.
     credentials: Credentials {
-        base_url_env: Some("ANTHROPIC_BASE_URL"),
-        token_env: Some("ANTHROPIC_AUTH_TOKEN"),
-        provider_keys: &[],
         scrubbed_env: &[
             "ANTHROPIC_API_KEY",
             "ANTHROPIC_DEFAULT_OPUS_MODEL",
@@ -1556,7 +1462,6 @@ pub const CLAUDE_CODE_SPEC: HarnessSpec = HarnessSpec {
     isolation: ConfigAndCredentialIsolation {
         config_env: "CLAUDE_CONFIG_DIR",
         credential_env: Some(super::spawn::ENV_CC_SECURESTORAGE_DIR),
-        token_follows_home: false,
         // **Measured, and it is macOS's fact rather than this vendor's** (C73,
         // `plan-worker-notes.md` §2): `security list-keychains` under a private
         // `HOME` returns the System keychain alone, so the entry `credential_env`
@@ -1612,13 +1517,9 @@ pub const CLAUDE_CODE_SPEC: HarnessSpec = HarnessSpec {
     // 10 — command-channel spellings, one row per allowlisted command.
     commands: CommandChannel { spellings: &[("/clear", "/clear"), ("/compact", "/compact")] },
 
-    // 11 — gauge source and window. The fleet asserts the window because the
-    // vendor does not recognize the worker model's name (D-054).
-    gauge: GaugeSource {
-        reads_transcript: true,
-        window_tokens: Some(crate::context_gauge::WORKER_WINDOW_TOKENS),
-        window_env: Some("CLAUDE_CODE_MAX_CONTEXT_TOKENS"),
-    },
+    // 11 — gauge source and window. Claude Code does not publish its window,
+    // so the fleet states it (D-125).
+    gauge: GaugeSource { reads_transcript: true, window_tokens: Some(1_000_000) },
 
     // 12 — orphan-sweep names. `orphans::sweep_at`.
     orphans: OrphanNames { comm_suffixes: &["claude"] },
@@ -1700,7 +1601,7 @@ impl Harness for ClaudeCode {
         // and only here: a fenced pane has no login keychain on its search list,
         // and its own configuration directory is the one store it can still read.
         // Measured, not assumed — `plan-worker-notes.md` §12.
-        if let CredentialSource::OperatorsPlan(login) = seed.credential_source {
+        if let Some(login) = seed.operator_login {
             write_operator_login(seed.config_dir, login)?;
         }
         Ok(Vec::new())
@@ -3091,7 +2992,7 @@ mod tests {
         // Not a copy of them — the same items. This test says so out loud so that
         // a later edit which replaces either with a literal is caught here.
         let spec = claude_code().spec();
-        assert_eq!(spec.gauge.window_tokens, Some(crate::context_gauge::WORKER_WINDOW_TOKENS));
+        assert_eq!(spec.gauge.window_tokens, Some(1_000_000));
         assert_eq!(spec.guardrail.hook_file, guardrail::HOOK_FILE);
     }
 

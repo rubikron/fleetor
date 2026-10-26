@@ -315,6 +315,8 @@ mod tests {
     use fleetor_core::message::frame_for_pane;
     use fleetor_db::SqliteStore;
 
+    const TEST_WINDOW: u32 = 1_000_000;
+
     fn registry() -> Arc<PaneRegistry> {
         let path = std::env::temp_dir().join(format!(
             "fleetor-deliver-test-registry-{}-{:?}.pids",
@@ -647,9 +649,7 @@ mod tests {
             resolved.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
         let project_dir = config_dir.join("projects").join(slug);
         std::fs::create_dir_all(&project_dir).unwrap();
-        // A twentieth of the window constant — derived, so 5% stays 5% if
-        // D-054's number moves again.
-        let under = crate::context_gauge::WORKER_WINDOW_TOKENS / 20;
+        let under = TEST_WINDOW / 20;
         std::fs::write(
             project_dir.join("s.jsonl"),
             serde_json::json!({
@@ -687,9 +687,8 @@ mod tests {
             resolved.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
         let project_dir = config_dir.join("projects").join(slug);
         std::fs::create_dir_all(&project_dir).unwrap();
-        // 85% of the window constant — derived, over the 80% threshold
-        // whatever D-054's number is today.
-        let hot = crate::context_gauge::WORKER_WINDOW_TOKENS / 100 * 85;
+        // 85% of the test window, over the 80% threshold.
+        let hot = TEST_WINDOW / 100 * 85;
         std::fs::write(
             project_dir.join("s.jsonl"),
             serde_json::json!({
