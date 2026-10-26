@@ -66,17 +66,6 @@ use crate::prompts::PaneContext;
 /// hypothetical rather than real: those items are `pub(super)` and the module is a
 /// child, which together mean nothing outside this file can call them at all — let
 /// alone call them in the wrong order.
-///
-/// The one item that is still `pub` is [`spawn::project_key`], which is neither
-/// seeding nor command-building: it is **Claude Code's own** project-key
-/// canonicalization — checkpoint 14's answer for one vendor rather than the
-/// fleet's for all of them (WP-25, M23). Its two production consumers, the trust
-/// flag and the context gauge, now reach it through
-/// [`harness::Harness::project_key`] instead of by name, so that they agree on one
-/// spelling of a cwd *because they asked the same harness* and not because they
-/// happened to call the same function. What is left public is the implementation
-/// behind that method, still read directly by the delivery and gauge tests that
-/// pin the transcript slug rule until their own batches move.
 pub mod spawn;
 
 /// What a harness *is* — the fourteen checkpoints, answered once per vendor
@@ -103,6 +92,11 @@ pub mod harness;
 /// own header for which checkpoints are answered and which are still their own
 /// ticket's.
 pub mod codex;
+
+/// Claude Code's answers: its spec, its `Harness` impl, its diagnostic and its formats.
+pub mod claude_code;
+
+mod json_seed;
 
 pub use harness::{Harness, HarnessSpec, OperatorLogin, Seed};
 
@@ -520,7 +514,7 @@ impl Host {
         // `tests/placement_reads_nothing.rs` asserts.
         let path = machine.orch_path();
         let harnesses = vec![
-            harness::claude_code_diagnose(machine.operator_home.as_deref(), &path),
+            claude_code::claude_code_diagnose(machine.operator_home.as_deref(), &path),
             codex::diagnose(&codex::Installation { path: Some(&path), ..Default::default() }),
         ];
         Self { harnesses, ..machine }

@@ -858,10 +858,9 @@ impl Harness for CodexCli {
     /// per-turn accounting, out of the two files in the pane's own `CODEX_HOME`
     /// that hold it — never the thread store, which C61 measured to hold none.
     ///
-    /// The reading itself lives in [`crate::context_gauge::codex_vendor_usage`],
-    /// where the gauge's other honesty rules already are; what belongs here is
-    /// *which files*, because generation-numbered filenames are this harness's
-    /// facts and nothing else should be spelling them.
+    /// The reading itself is [`rollout_usage`]; what belongs here is *which files*,
+    /// because generation-numbered filenames are this harness's facts and nothing
+    /// else should be spelling them.
     ///
     /// Both are inside [`Seed::config_dir`], so this reads nothing outside the
     /// layout placement handed the pane, and neither is the operator's own
@@ -870,10 +869,7 @@ impl Harness for CodexCli {
         &self,
         source: &crate::context_gauge::TranscriptSource,
     ) -> Option<crate::context_gauge::UsageReading> {
-        crate::context_gauge::codex_vendor_usage(
-            &source.config_dir.join(STATE_DB),
-            &source.config_dir.join(MODEL_CATALOG),
-        )
+        rollout_usage(&source.config_dir.join(STATE_DB), &source.config_dir.join(MODEL_CATALOG))
     }
 
     /// The same canonicalization Claude Code uses, and for the same reason: on
@@ -2520,6 +2516,168 @@ fn unreadable(invoked: &Path, why: String) -> HarnessReadiness {
 }
 
 // --- checkpoints 4, 6 and 14, directly ------------------------------------------
+
+// --- the usage reader: the vendor's own number, joined out of its own files ------
+
+/// **Codex's answer to [`Harness::read_usage`](super::harness::Harness::read_usage)**
+/// (#41, closing C12's spike through C61): the per-turn `token_usage_record`
+/// the vendor wrote into its own rollout, and the `model_context_window` the
+/// vendor reported for that same turn.
+///
+/// **This is not the estimate C24 and M22 refuse.** Those refuse a figure
+/// synthesized from the prompt FLEETOR assembled. Both numbers here were
+/// written to disk by codex about its own turn, which is the same class of act
+/// as reading `thread_items` for the transcript — and #38 spent the one
+/// authorised turn establishing exactly that.
+///
+/// **The join, and why it is a join.** C61 measured that the thread store
+/// checkpoint 13 names holds *no* usage field — not a column, not inside any
+/// `item_json`, and not under any of the seven `CREATE TABLE`/`ALTER TABLE`
+/// statements this build ships. The number lives in a rollout JSONL somewhere
+/// under `sessions/<yyyy>/<mm>/<dd>/`, and `state_5.sqlite`'s `threads` row
+/// carries the absolute `rollout_path` to it. So the vendor is asked which file
+/// to read rather than the directory layout being reconstructed from a date.
+/// The database is opened **read-only**: this module's observer-only promise is
+/// a flag here, not a claim.
+///
+/// **What is deliberately not read, and it is the trap.** `threads.tokens_used`
+/// sits in the very row this reads `rollout_path` out of, and it is a *running
+/// total for the thread* — after enough turns it exceeds the window while the
+/// pane's actual context is small. A running total standing in for occupancy is
+/// the number that looks right and is wrong, so the numerator comes from the
+/// per-turn record and `tokens_used` is never touched. `thread_token_usage`,
+/// the same quantity inside the rollout, is refused for the same reason.
+///
+/// **This reads a live file, and the archive will not contain it** (#41, C66).
+/// C54's harvest takes checkpoint 13's transcript — the thread store — by
+/// `VACUUM INTO`, and the rollout JSONL is a different file it does not walk.
+/// Extending the harvest to take a second file per harness is a change to
+/// checkpoint 13's contract with its own conformance obligations, and it belongs
+/// to the harvest's ticket rather than being smuggled in behind a gauge. The
+/// consequence is stated rather than discovered: **an archived codex run carries
+/// its transcript without its per-turn usage**, so a reader of one cold has
+/// the turns and not the accounting. `state_5.sqlite` happens to travel already,
+/// because the walk filters by extension — but it carries only the thread's
+/// running total, which is the one figure this function refuses to use.
+///
+/// **Believed, not verified** (`docs/notes/codex-usage-notes.md`). The one
+/// measured turn had `cached_input_tokens = 0`, so whether codex's
+/// `input_tokens` is inclusive of cached input is unmeasured. `total_tokens` is
+/// taken verbatim because it is the field the vendor itself printed as "tokens
+/// used" and stored in `threads.tokens_used`; a hand-rolled sum over the six
+/// usage fields would be this module asserting an accounting model the vendor
+/// never stated, which is nearer to reconstruction than to reading. If a codex
+/// pane's gauge is ever seen to *drop* across a turn the way Claude Code's
+/// `input_tokens` alone did, that is the measurement to redo.
+fn rollout_usage(
+    state_db: &Path,
+    model_catalog: &Path,
+) -> Option<crate::context_gauge::UsageReading> {
+    let rollout = std::fs::read_to_string(latest_rollout(state_db)?).ok()?;
+    Some(crate::context_gauge::UsageReading {
+        used_tokens: last_turn_total_tokens(&rollout)?,
+        window_tokens: reported_context_window(&rollout)
+            .or_else(|| catalog_context_window(model_catalog)),
+    })
+}
+
+/// The rollout the vendor last wrote to, out of the paths its own state database
+/// names. Most-recently-modified wins, for the same reason
+/// [`latest_transcript`] picks that way: a `/clear` may open a second thread in
+/// a pane's home and the ordering columns that would say which is current are
+/// not among the ones C61 measured. Only `rollout_path` is — so only
+/// `rollout_path` is read.
+fn latest_rollout(state_db: &Path) -> Option<PathBuf> {
+    let conn = rusqlite::Connection::open_with_flags(
+        state_db,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()?;
+    let paths: Vec<PathBuf> = {
+        let mut stmt = conn.prepare("SELECT rollout_path FROM threads").ok()?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0)).ok()?;
+        rows.filter_map(Result::ok).map(PathBuf::from).collect()
+    };
+    paths
+        .into_iter()
+        .filter(|p| p.is_file())
+        .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+}
+
+/// The last model call's `total_tokens`, scanning from the end — the record's
+/// own `usage`, which is one call's prompt plus its reply.
+///
+/// **Never `turn_token_usage`.** It is a running sum over every call in the turn,
+/// and each call re-sends the context: measured on 437 records, it equals `usage`
+/// on a turn's first call and the sum of the calls after that, so a 12-call turn
+/// read 178,781 where the context held 18,294. `thread_token_usage` accumulates
+/// further still.
+fn last_turn_total_tokens(rollout: &str) -> Option<u32> {
+    rollout.lines().rev().find_map(|line| {
+        let entry: serde_json::Value = serde_json::from_str(line).ok()?;
+        if entry.get("type")?.as_str()? != "token_usage_record" {
+            return None;
+        }
+        let payload = entry.get("payload")?;
+        Some(payload.get("usage")?.get("total_tokens")?.as_u64()? as u32)
+    })
+}
+
+/// The window **codex told its own pane about**, off the last `token_count`
+/// event — `payload.info.model_context_window`.
+///
+/// This is what the rail divides by, and C61 is why: the catalog publishes
+/// 1048576 and this reports 996147 for the same model in the same run. The
+/// operator can see the vendor's own percentage; a rail computed against the
+/// other figure disagrees with it by 5% and is therefore wrong on screen even
+/// though every number in it is real.
+fn reported_context_window(rollout: &str) -> Option<u32> {
+    rollout.lines().rev().find_map(|line| {
+        let entry: serde_json::Value = serde_json::from_str(line).ok()?;
+        if entry.get("type")?.as_str()? != "event_msg" {
+            return None;
+        }
+        let payload = entry.get("payload")?;
+        if payload.get("type")?.as_str()? != "token_count" {
+            return None;
+        }
+        Some(payload.get("info")?.get("model_context_window")?.as_u64()? as u32)
+    })
+}
+
+/// The fallback: the window the harness's **own published catalog** states, out
+/// of the `models.json` the pane's `model_catalog_json` points at — never a
+/// FLEETOR constant, which is the acceptance criterion this satisfies.
+///
+/// **Unanimity or nothing.** [`TranscriptSource`] does not carry which model the
+/// seat runs, so a catalog whose entries disagree cannot be resolved to this
+/// pane's window and this answers `None`. A catalog that publishes one window
+/// for every model it offers publishes this pane's window whatever it runs —
+/// which is what C61 observed across all three of the operator's models — and
+/// that is the only case this returns a number in. Guessing an entry would be
+/// the number that looks right and is wrong.
+///
+/// **Believed, not verified.** The field name is C61's; the enclosing shape —
+/// a top-level `models` array of objects — is inferred from the fixtures in
+/// `placement::codex`, not measured character-for-character against a real
+/// catalog. It fails safe in either direction: a shape this does not recognize
+/// yields `None`, which is `unavailable`, never a wrong denominator. It is also
+/// a fallback for a case not yet observed to occur, since the measured run wrote
+/// `token_count` one line after `token_usage_record`.
+fn catalog_context_window(model_catalog: &Path) -> Option<u32> {
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(model_catalog).ok()?).ok()?;
+    let mut agreed: Option<u32> = None;
+    for model in doc.get("models")?.as_array()? {
+        let window = model.get("context_window")?.as_u64()? as u32;
+        match agreed {
+            None => agreed = Some(window),
+            Some(seen) if seen == window => {}
+            Some(_) => return None,
+        }
+    }
+    agreed
+}
 
 /// **Codex's own tests, not a conformance pass** (C25).
 ///
@@ -4970,5 +5128,24 @@ writable_roots = [{:?}, {:?}]
         assert_eq!(lines.len(), 1, "one sentence, no posture and no caveat: {lines:#?}");
         assert_eq!(lines[0].0, NoticeLevel::Info, "not having a vendor is not a warning");
         assert!(lines[0].1.contains("not installed"), "{}", lines[0].1);
+    }
+
+    /// A turn of several model calls: `turn_token_usage` sums them, and only the
+    /// last call's own `usage` is what the context holds.
+    #[test]
+    fn a_codex_turn_of_many_calls_reads_its_last_call_not_their_sum() {
+        let call = |this_call: u64, turn_so_far: u64| {
+            serde_json::json!({
+                "type": "token_usage_record",
+                "payload": {
+                    "usage": { "total_tokens": this_call },
+                    "turn_token_usage": { "total_tokens": turn_so_far },
+                    "thread_token_usage": { "total_tokens": turn_so_far }
+                }
+            })
+            .to_string()
+        };
+        let rollout = [call(15_000, 15_000), call(16_500, 31_500), call(18_294, 49_794)].join("\n");
+        assert_eq!(last_turn_total_tokens(&rollout), Some(18_294));
     }
 }

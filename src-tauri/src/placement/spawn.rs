@@ -15,7 +15,7 @@
 //! (`docs/notes/tui-spawn-notes.md`) against a real interactive `claude`. The four that
 //! each silently wedge a pane forever:
 //!
-//!  - **[`seed_config_dir`] is not optional (L1).** A virgin config dir does not
+//!  - **`seed_config_dir` is not optional (L1).** A virgin config dir does not
 //!    "sometimes" hit onboarding — it never reaches a prompt at all, and every
 //!    `fleet send` into it reports success into a theme picker.
 //!  - **`ANTHROPIC_API_KEY` must not be set (L2).** Headless didn't care;
@@ -66,7 +66,7 @@
 //!
 //! What is spelled out in this module is
 //! [`ENV_CC_SECURESTORAGE_DIR`], which the spec *names* rather than repeats, and
-//! [`project_key`] / [`seed_config_dir`] — Claude Code's own answers to
+//! `project_key` / `seed_config_dir` — Claude Code's own answers to
 //! checkpoints 14 and 4, reached through [`Harness`] rather than called directly
 //! (C31). Those are one harness's implementation, not the fleet's assumptions.
 
@@ -76,7 +76,7 @@ use fleetor_core::brief::{render_orch_at, render_worker};
 use fleetor_core::pane::{PaneId, WORKER_SLOTS};
 use portable_pty::CommandBuilder;
 
-use super::harness::{Harness, HarnessSpec, Seat, Seed};
+use super::harness::{Harness, HarnessSpec, Seat};
 use crate::prompts::PaneContext;
 
 /// Overrides the program every pane runs. Set by `src-tauri/tests/panes.rs` to
@@ -141,7 +141,7 @@ fn apply_attended_config(cmd: &mut CommandBuilder, spec: &'static HarnessSpec, c
 ///
 /// **`config_dir` is WP-14, and it is the one place `orch` is deliberately
 /// *unlike* the operator's daily `claude`.** It must already have been through
-/// [`seed_config_dir`] for this exact `cwd`: once `orch` stops using the
+/// `seed_config_dir` for this exact `cwd`: once `orch` stops using the
 /// operator's already-onboarded directory, L1 applies to it exactly as it applies
 /// to a worker — an unseeded dir lands on the theme picker and never reaches a
 /// prompt (`docs/notes/orch-config-dir-notes.md` §1). What this buys is that
@@ -255,7 +255,7 @@ pub(super) fn orch_command_with(
 /// One worker pane: isolated config dir, its own worktree, its own private
 /// `HOME`, the operator's login.
 ///
-/// `config_dir` must already have been through [`seed_config_dir`] for this exact
+/// `config_dir` must already have been through `seed_config_dir` for this exact
 /// `cwd` — the trust flag is keyed by absolute project path, so a worker pointed
 /// at a new target with an old seed sits on a trust dialog while `fleet send`
 /// reports success (L1). `home` must already have been through
@@ -580,112 +580,6 @@ pub(super) fn fleet_bin_path() -> Option<PathBuf> {
     candidates.into_iter().find(|p| p.is_file())
 }
 
-// --- the config seed (L1) -----------------------------------------------------
-
-/// **Claude Code's implementation of [`Harness::seed_config_dir`]** — checkpoint 4
-/// and checkpoint 14's trust half, in one write, because this harness records both
-/// in one document.
-///
-/// Give `dir` the keys an interactive `claude` needs to reach its prompt in `cwd`,
-/// without touching anything else that is already there.
-///
-/// **Which file, which keys, and whether to merge come off the spec** (WP-25).
-/// JSON, `true` as the affirmative answer and `"projects"` as the container do
-/// not, and that is exactly the line the trait draws: they are this vendor's
-/// document format rather than a harness universal — the next harness answers the
-/// same two checkpoints with TOML and a `trust_level` string (C16) — so they
-/// belong to a `Harness` method rather than to a shared seeder that would be
-/// general only by accident.
-///
-/// **Merge, never clobber**, where [`ConfigDir::seed_merges`](super::harness::ConfigDir::seed_merges)
-/// says so. The dir may hold a real `machineID`, cached experiment data, and —
-/// after the operator switches targets — trust flags for other project paths.
-/// Overwriting the file would work exactly once.
-///
-/// **Re-run this for every pane cwd whenever the target changes.** The trust
-/// record is keyed by absolute project path, not global; Phase 0 bisected this. It
-/// is the single most likely way to reintroduce L1 immediately after fixing it,
-/// which is why [`place`](super::place) calls it on the placement path for every
-/// pane rather than once at the target picker.
-pub(super) fn seed_config_dir(harness: &dyn Harness, seed: &Seed<'_>) -> Result<(), String> {
-    let (dir, cwd) = (seed.config_dir, seed.cwd);
-    let spec = harness.spec();
-    // This harness keeps the first-run gate in the document it seeds, so one
-    // read-modify-write covers both checkpoints. A harness that split them would
-    // need two writes, and would not be sharing this implementation.
-    debug_assert_eq!(
-        spec.config_dir.seed_file, spec.project_identity.trust_file,
-        "this seeder writes one document; a harness whose trust file differs needs its own",
-    );
-
-    std::fs::create_dir_all(dir)
-        .map_err(|e| format!("create config dir {}: {e}", dir.display()))?;
-    let file = dir.join(spec.config_dir.seed_file);
-
-    let mut root = match (spec.config_dir.seed_merges, std::fs::read_to_string(&file)) {
-        (true, Ok(text)) => {
-            serde_json::from_str::<serde_json::Value>(&text).unwrap_or_else(|_| json_object())
-        }
-        _ => json_object(),
-    };
-    if !root.is_object() {
-        root = json_object();
-    }
-
-    let object = root.as_object_mut().expect("just ensured it is an object");
-    for key in spec.config_dir.seed_keys {
-        object.insert((*key).into(), true.into());
-    }
-
-    // Checkpoint 14's key, **asked of the harness rather than canonicalized here**
-    // (WP-25, M23). The trust flag and the context gauge now take the same answer
-    // from the same harness instead of agreeing only because both happened to call
-    // one shared function — which is what has to be true before a second harness
-    // gives a different answer.
-    let project = harness.project_key(cwd);
-    let projects =
-        object.entry("projects").or_insert_with(json_object).as_object_mut().ok_or_else(|| {
-            format!("existing \"projects\" in {} is not an object", spec.config_dir.seed_file)
-        })?;
-    let entry =
-        projects.entry(project).or_insert_with(json_object).as_object_mut().ok_or_else(|| {
-            format!(
-                "existing project entry in {} is not an object",
-                spec.project_identity.trust_file
-            )
-        })?;
-    for key in spec.project_identity.trust_keys {
-        entry.insert((*key).into(), true.into());
-    }
-
-    // Write via a sibling temp file: a half-written seed file is a pane that boots
-    // into onboarding, which is the failure this whole function exists to prevent.
-    let tmp = file.with_extension("json.tmp");
-    let text = serde_json::to_string_pretty(&root).map_err(|e| format!("encode config: {e}"))?;
-    std::fs::write(&tmp, text).map_err(|e| format!("write {}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, &file).map_err(|e| format!("install {}: {e}", file.display()))
-}
-
-/// The key `claude` will look itself up under: its resolved working directory.
-/// `canonicalize` matters on macOS, where `/tmp` and `/var` are symlinks and a
-/// child's own `cwd` comes back resolved — an unresolved key would never match.
-///
-/// **This is Claude Code's own answer to checkpoint 14, not the fleet's** (WP-25,
-/// M23). It was one shared function with two consumers — the trust flag and the
-/// context gauge — and it can no longer be, because each harness declares its own
-/// project identity. Both consumers now reach it through
-/// [`Harness::project_key`](super::harness::Harness::project_key), which is the
-/// only caller inside `src/` that matters; what is left `pub` here is the
-/// implementation behind that method, kept reachable for the delivery and gauge
-/// tests that pin the slug rule against it until their own batches move.
-pub fn project_key(cwd: &Path) -> String {
-    std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf()).to_string_lossy().into_owned()
-}
-
-fn json_object() -> serde_json::Value {
-    serde_json::Value::Object(serde_json::Map::new())
-}
-
 // --- the private HOME (WP-08, the Fence) ---------------------------------------
 
 /// Give a worker's private `HOME` the one file its commits need: a minimal
@@ -697,7 +591,7 @@ fn json_object() -> serde_json::Value {
 /// done`'s first step) fails outright — no name, no receipt, nothing for a
 /// reviewer to read.
 ///
-/// Unlike [`seed_config_dir`], this does **not** merge-write on every spawn: a
+/// Unlike `seed_config_dir`, this does **not** merge-write on every spawn: a
 /// worker's private HOME is not a shared, evolving config dir the way
 /// `CLAUDE_CONFIG_DIR` is (nothing else legitimately writes into it), so
 /// touching an existing file on every relaunch would only risk clobbering
@@ -883,6 +777,7 @@ fn link(target: &Path, at: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::placement::harness::Seed;
 
     // --- the process reads, spelled in the tests that want them ------------------
     //
@@ -986,11 +881,11 @@ mod tests {
     fn a_virgin_config_dir_gets_the_two_keys_that_clear_onboarding() {
         let dir = temp_dir("virgin");
         let cwd = temp_dir("virgin-cwd");
-        seed_config_dir(cc(), &Seed::new(&dir, &cwd, None)).unwrap();
+        cc().seed_config_dir(&Seed::new(&dir, &cwd, None)).unwrap();
 
         let config = read_config(&dir);
         assert_eq!(config["hasCompletedOnboarding"], serde_json::json!(true));
-        let project = &config["projects"][project_key(&cwd)];
+        let project = &config["projects"][crate::placement::claude_code::project_key(&cwd)];
         assert_eq!(project["hasTrustDialogAccepted"], serde_json::json!(true));
         assert_eq!(project["hasCompletedProjectOnboarding"], serde_json::json!(true));
 
@@ -1011,7 +906,7 @@ mod tests {
         )
         .unwrap();
 
-        seed_config_dir(cc(), &Seed::new(&dir, &cwd, None)).unwrap();
+        cc().seed_config_dir(&Seed::new(&dir, &cwd, None)).unwrap();
 
         let config = read_config(&dir);
         assert_eq!(config["machineID"], serde_json::json!("abc"), "machineID survived");
@@ -1021,7 +916,8 @@ mod tests {
             "an unrelated project's trust flag survived"
         );
         assert_eq!(
-            config["projects"][project_key(&cwd)]["hasTrustDialogAccepted"],
+            config["projects"][crate::placement::claude_code::project_key(&cwd)]
+                ["hasTrustDialogAccepted"],
             serde_json::json!(true)
         );
 
@@ -1038,13 +934,14 @@ mod tests {
         let first = temp_dir("target-a");
         let second = temp_dir("target-b");
 
-        seed_config_dir(cc(), &Seed::new(&dir, &first, None)).unwrap();
-        seed_config_dir(cc(), &Seed::new(&dir, &second, None)).unwrap();
+        cc().seed_config_dir(&Seed::new(&dir, &first, None)).unwrap();
+        cc().seed_config_dir(&Seed::new(&dir, &second, None)).unwrap();
 
         let config = read_config(&dir);
         for cwd in [&first, &second] {
             assert_eq!(
-                config["projects"][project_key(cwd)]["hasTrustDialogAccepted"],
+                config["projects"][crate::placement::claude_code::project_key(cwd)]
+                    ["hasTrustDialogAccepted"],
                 serde_json::json!(true),
                 "{} lost its trust flag",
                 cwd.display()
@@ -1064,7 +961,7 @@ mod tests {
         let cwd = temp_dir("corrupt-cwd");
         std::fs::write(dir.join(".claude.json"), "{not json").unwrap();
 
-        seed_config_dir(cc(), &Seed::new(&dir, &cwd, None)).unwrap();
+        cc().seed_config_dir(&Seed::new(&dir, &cwd, None)).unwrap();
         assert_eq!(read_config(&dir)["hasCompletedOnboarding"], serde_json::json!(true));
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1362,12 +1259,13 @@ mod tests {
         let dir = temp_dir("orch-cfg");
         let cwd = temp_dir("orch-target");
 
-        seed_config_dir(cc(), &Seed::new(&dir, &cwd, None)).unwrap();
+        cc().seed_config_dir(&Seed::new(&dir, &cwd, None)).unwrap();
 
         let config = read_config(&dir);
         assert_eq!(config["hasCompletedOnboarding"], serde_json::json!(true));
         assert_eq!(
-            config["projects"][project_key(&cwd)]["hasTrustDialogAccepted"],
+            config["projects"][crate::placement::claude_code::project_key(&cwd)]
+                ["hasTrustDialogAccepted"],
             serde_json::json!(true),
         );
 

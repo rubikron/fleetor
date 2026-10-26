@@ -26,7 +26,6 @@ use fleetor_server::AppCommand;
 use fleetor_shell::context_gauge::GaugeSources;
 use fleetor_shell::deliver::spawn_delivery;
 use fleetor_shell::placement::harness::claude_code;
-use fleetor_shell::placement::spawn;
 use fleetor_shell::placement::{self, Host, Layout, PaneSpec};
 use fleetor_shell::prompts::PaneContext;
 use fleetor_shell::pty::{exit_channel, out_channel, Emit, PaneRegistry};
@@ -581,7 +580,7 @@ fn a_roster_ask_surfaces_a_workers_sampled_context_gauge() {
         std::thread::current().id()
     ));
     let _ = std::fs::remove_dir_all(&config_dir);
-    let resolved = spawn::project_key(&cwd);
+    let resolved = fleetor_shell::placement::claude_code::project_key(&cwd);
     let slug: String =
         resolved.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
     let project_dir = config_dir.join("projects").join(slug);

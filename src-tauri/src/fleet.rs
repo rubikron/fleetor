@@ -604,7 +604,7 @@ fn settle_models(
         let Some(reading) = reading_for(readings, &seat.harness) else { continue };
         let stands = if reading.models.is_empty() {
             seat.harness != harness::claude_code().spec().name
-                || crate::context_gauge::claude_code_recognises(&asked)
+                || crate::placement::claude_code::claude_code_recognises(&asked)
         } else {
             reading.models.iter().any(|model| model.slug == asked)
         };

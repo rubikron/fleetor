@@ -31,18 +31,10 @@
 //! (requirements doc, Invariant guardrails).
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use fleetor_core::pane::{ContextGauge, PaneId};
-
-/// Whether Claude Code serves this slug: a `claude-` id or one of its aliases,
-/// either with a `[1m]` suffix (D-126).
-pub fn claude_code_recognises(slug: &str) -> bool {
-    const ALIASES: [&str; 7] = ["sonnet", "opus", "default", "fable", "best", "opusplan", "haiku"];
-    let slug = slug.strip_suffix("[1m]").unwrap_or(slug);
-    slug.starts_with("claude-") || ALIASES.contains(&slug)
-}
 
 /// The context window Claude Code runs a model slug at, on the Anthropic API
 /// (measured against its docs and the 2.1.307 binary, 2026-10-21). Keyed by
@@ -58,7 +50,11 @@ pub fn model_window_tokens(model: Option<&str>) -> u32 {
         return LARGE;
     }
     let Some(rest) = slug.strip_prefix("claude-") else {
-        return if claude_code_recognises(slug) { LARGE } else { STANDARD };
+        return if crate::placement::claude_code::claude_code_recognises(slug) {
+            LARGE
+        } else {
+            STANDARD
+        };
     };
     let mut parts = rest.split('-');
     let family = parts.next().unwrap_or_default();
@@ -186,76 +182,6 @@ pub struct UsageReading {
 
 // --- the transcript sampler ------------------------------------------------------
 
-/// `<config_dir>/projects/<slug>/`, where `<slug>` is the pane's project key with
-/// every character that is not an ASCII letter or digit replaced by `-`.
-///
-/// **The key comes from the pane's own harness** (WP-25, checkpoint 14), which is
-/// what makes "the gauge and the trust flag agree on one spelling of a cwd" a
-/// property of the seam rather than of two call sites happening to name the same
-/// function. For Claude Code that answer is still `std::fs::canonicalize` — the
-/// same resolved path it itself sees as its cwd, since macOS resolves `/tmp` and
-/// `/var` symlinks on `getcwd` — and it is the key
-/// [`Harness::seed_config_dir`](crate::placement::harness::Harness::seed_config_dir)
-/// wrote the pane's trust record under.
-///
-/// **The subdirectory is checkpoint 13's** (WP-25,
-/// [`Transcript::subdir`](crate::placement::harness::Transcript::subdir)), read
-/// off the same harness as the key.
-///
-/// **The slug rule is not, and this is now the only place that shows it.** How a
-/// harness names the *per-project directory* underneath that subdirectory is not
-/// one of the fourteen answers, so the `/`-and-`.`-to-`-` mapping below is still
-/// Claude Code's own literal — the last one in this function, where there were
-/// two. Nothing else in the fleet re-derives it: the harvest walks whatever
-/// directories it finds rather than computing their names, so this is the single
-/// consumer and the single point of drift. A second harness whose transcripts are
-/// per-project cannot be read by this gauge until that becomes a checkpoint
-/// answer or a method on [`Harness`](crate::placement::harness::Harness); a
-/// harness whose store is not per-project at all is unaffected. Left for #39,
-/// which is the ticket that has a second layout to generalize against — inventing
-/// the shape from one example is how a seam ends up describing one vendor.
-fn project_dir(source: &TranscriptSource) -> PathBuf {
-    let resolved = source.harness.project_key(&source.cwd);
-    // Claude Code's own rule, measured on disk: `_shell` becomes `-shell`.
-    let slug: String =
-        resolved.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
-    source.config_dir.join(source.harness.spec().transcript.subdir).join(slug)
-}
-
-/// The pane's current transcript: the most-recently-modified file with this
-/// harness's transcript extension (WP-25, checkpoint 13's
-/// [`Transcript::file_ext`](crate::placement::harness::Transcript::file_ext))
-/// under its project directory.
-///
-/// Read fresh on every call, never cached from spawn. A `/clear` resets a
-/// pane's session (`docs/notes/command-channel-notes.md`); whether Claude Code
-/// opens a new `<uuid>.jsonl` for that or keeps writing the same one was not
-/// worth a fifth spike run to settle — picking "most recently modified" is
-/// correct under either answer, at the cost of one directory read per sample.
-fn latest_transcript(dir: &Path, file_ext: &str) -> Option<PathBuf> {
-    let entries = std::fs::read_dir(dir).ok()?;
-    entries
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some(file_ext))
-        .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
-}
-
-/// **The default reader** behind
-/// [`Harness::read_usage`](crate::placement::harness::Harness::read_usage): the
-/// `usage` object on the last completed turn of the pane's own transcript.
-///
-/// It reports no window of its own — a harness whose transcript carries usage
-/// but not the window it was measured against is exactly the case D-054's
-/// constant was written for, and stating `None` here is what routes the pane
-/// back to the window its spec asserts rather than to one this function
-/// invented.
-pub fn transcript_usage(source: &TranscriptSource) -> Option<UsageReading> {
-    let path = latest_transcript(&project_dir(source), source.harness.spec().transcript.file_ext)?;
-    let text = std::fs::read_to_string(&path).ok()?;
-    Some(UsageReading { used_tokens: last_turn_usage(&text)?, window_tokens: None })
-}
-
 /// The pre-#41 shape of the sampler — transcript reading and division in one
 /// call — kept because six tests written against it are the ones that pin the
 /// honest-sum finding, the `/clear` rule and the two absent cases, and a test
@@ -265,208 +191,8 @@ pub fn transcript_usage(source: &TranscriptSource) -> Option<UsageReading> {
 /// vendor's own reported window gets to win over the fleet's constant.
 #[cfg(test)]
 fn sample_transcript(source: &TranscriptSource, window_tokens: u32) -> Option<ContextGauge> {
-    let reading = transcript_usage(source)?;
+    let reading = crate::placement::claude_code::jsonl_usage(source)?;
     Some(ContextGauge::new(reading.used_tokens, reading.window_tokens.unwrap_or(window_tokens)))
-}
-
-/// The last `assistant` line's total prompt usage, or `None` if the
-/// transcript has no completed turn yet.
-///
-/// **`input_tokens + cache_creation_input_tokens + cache_read_input_tokens`,
-/// never `input_tokens` alone.** Prompt caching moves most of a turn's tokens
-/// out of `input_tokens` and into `cache_read_input_tokens` the moment the
-/// endpoint recognizes repeated context — reading `input_tokens` alone would
-/// report a pane's usage *dropping* the instant caching kicked in, which is
-/// the opposite of what happened (`docs/notes/context-gauge-notes.md` §3, measured
-/// live: 27,723 → 96 on `input_tokens` alone across two turns of the same
-/// growing conversation; 27,723 → 27,744 on the sum).
-///
-/// Scans from the end: two identical `usage` lines are written per real turn
-/// (same `message.id`, byte-identical usage), so "last" and "last real turn"
-/// agree without de-duplicating.
-///
-/// **A compaction after the last call wins over it**: the boundary line carries
-/// the size the context was cut to, and the next call may be hours away.
-///
-/// **A line with no usage is skipped**, not read as zero: Claude Code writes a
-/// synthetic `assistant` line for an API error, with every usage field 0.
-fn last_turn_usage(transcript: &str) -> Option<u32> {
-    transcript.lines().rev().find_map(|line| {
-        let entry: serde_json::Value = serde_json::from_str(line).ok()?;
-        match entry.get("type")?.as_str()? {
-            "system" if entry.get("subtype")?.as_str()? == "compact_boundary" => {
-                Some(entry.get("compactMetadata")?.get("postTokens")?.as_u64()? as u32)
-            }
-            "assistant" => {
-                let usage = entry.get("message")?.get("usage")?;
-                let field = |name: &str| usage.get(name).and_then(|v| v.as_u64()).unwrap_or(0);
-                let total = field("input_tokens")
-                    + field("cache_creation_input_tokens")
-                    + field("cache_read_input_tokens");
-                (total > 0).then_some(total as u32)
-            }
-            _ => None,
-        }
-    })
-}
-
-// --- codex's reader: the vendor's own number, joined out of its own files --------
-
-/// **Codex's answer to [`Harness::read_usage`](crate::placement::harness::Harness::read_usage)**
-/// (#41, closing C12's spike through C61): the per-turn `token_usage_record`
-/// the vendor wrote into its own rollout, and the `model_context_window` the
-/// vendor reported for that same turn.
-///
-/// **This is not the estimate C24 and M22 refuse.** Those refuse a figure
-/// synthesized from the prompt FLEETOR assembled. Both numbers here were
-/// written to disk by codex about its own turn, which is the same class of act
-/// as reading `thread_items` for the transcript — and #38 spent the one
-/// authorised turn establishing exactly that.
-///
-/// **The join, and why it is a join.** C61 measured that the thread store
-/// checkpoint 13 names holds *no* usage field — not a column, not inside any
-/// `item_json`, and not under any of the seven `CREATE TABLE`/`ALTER TABLE`
-/// statements this build ships. The number lives in a rollout JSONL somewhere
-/// under `sessions/<yyyy>/<mm>/<dd>/`, and `state_5.sqlite`'s `threads` row
-/// carries the absolute `rollout_path` to it. So the vendor is asked which file
-/// to read rather than the directory layout being reconstructed from a date.
-/// The database is opened **read-only**: this module's observer-only promise is
-/// a flag here, not a claim.
-///
-/// **What is deliberately not read, and it is the trap.** `threads.tokens_used`
-/// sits in the very row this reads `rollout_path` out of, and it is a *running
-/// total for the thread* — after enough turns it exceeds the window while the
-/// pane's actual context is small. A running total standing in for occupancy is
-/// the number that looks right and is wrong, so the numerator comes from the
-/// per-turn record and `tokens_used` is never touched. `thread_token_usage`,
-/// the same quantity inside the rollout, is refused for the same reason.
-///
-/// **This reads a live file, and the archive will not contain it** (#41, C66).
-/// C54's harvest takes checkpoint 13's transcript — the thread store — by
-/// `VACUUM INTO`, and the rollout JSONL is a different file it does not walk.
-/// Extending the harvest to take a second file per harness is a change to
-/// checkpoint 13's contract with its own conformance obligations, and it belongs
-/// to the harvest's ticket rather than being smuggled in behind a gauge. The
-/// consequence is stated rather than discovered: **an archived codex run carries
-/// its transcript without its per-turn usage**, so a reader of one cold has
-/// the turns and not the accounting. `state_5.sqlite` happens to travel already,
-/// because the walk filters by extension — but it carries only the thread's
-/// running total, which is the one figure this function refuses to use.
-///
-/// **Believed, not verified** (`docs/notes/codex-usage-notes.md`). The one
-/// measured turn had `cached_input_tokens = 0`, so whether codex's
-/// `input_tokens` is inclusive of cached input is unmeasured. `total_tokens` is
-/// taken verbatim because it is the field the vendor itself printed as "tokens
-/// used" and stored in `threads.tokens_used`; a hand-rolled sum over the six
-/// usage fields would be this module asserting an accounting model the vendor
-/// never stated, which is nearer to reconstruction than to reading. If a codex
-/// pane's gauge is ever seen to *drop* across a turn the way Claude Code's
-/// `input_tokens` alone did, that is the measurement to redo.
-pub fn codex_vendor_usage(state_db: &Path, model_catalog: &Path) -> Option<UsageReading> {
-    let rollout = std::fs::read_to_string(latest_rollout(state_db)?).ok()?;
-    Some(UsageReading {
-        used_tokens: last_turn_total_tokens(&rollout)?,
-        window_tokens: reported_context_window(&rollout)
-            .or_else(|| catalog_context_window(model_catalog)),
-    })
-}
-
-/// The rollout the vendor last wrote to, out of the paths its own state database
-/// names. Most-recently-modified wins, for the same reason
-/// [`latest_transcript`] picks that way: a `/clear` may open a second thread in
-/// a pane's home and the ordering columns that would say which is current are
-/// not among the ones C61 measured. Only `rollout_path` is — so only
-/// `rollout_path` is read.
-fn latest_rollout(state_db: &Path) -> Option<PathBuf> {
-    let conn = rusqlite::Connection::open_with_flags(
-        state_db,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .ok()?;
-    let paths: Vec<PathBuf> = {
-        let mut stmt = conn.prepare("SELECT rollout_path FROM threads").ok()?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(0)).ok()?;
-        rows.filter_map(Result::ok).map(PathBuf::from).collect()
-    };
-    paths
-        .into_iter()
-        .filter(|p| p.is_file())
-        .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
-}
-
-/// The last model call's `total_tokens`, scanning from the end — the record's
-/// own `usage`, which is one call's prompt plus its reply.
-///
-/// **Never `turn_token_usage`.** It is a running sum over every call in the turn,
-/// and each call re-sends the context: measured on 437 records, it equals `usage`
-/// on a turn's first call and the sum of the calls after that, so a 12-call turn
-/// read 178,781 where the context held 18,294. `thread_token_usage` accumulates
-/// further still.
-fn last_turn_total_tokens(rollout: &str) -> Option<u32> {
-    rollout.lines().rev().find_map(|line| {
-        let entry: serde_json::Value = serde_json::from_str(line).ok()?;
-        if entry.get("type")?.as_str()? != "token_usage_record" {
-            return None;
-        }
-        let payload = entry.get("payload")?;
-        Some(payload.get("usage")?.get("total_tokens")?.as_u64()? as u32)
-    })
-}
-
-/// The window **codex told its own pane about**, off the last `token_count`
-/// event — `payload.info.model_context_window`.
-///
-/// This is what the rail divides by, and C61 is why: the catalog publishes
-/// 1048576 and this reports 996147 for the same model in the same run. The
-/// operator can see the vendor's own percentage; a rail computed against the
-/// other figure disagrees with it by 5% and is therefore wrong on screen even
-/// though every number in it is real.
-fn reported_context_window(rollout: &str) -> Option<u32> {
-    rollout.lines().rev().find_map(|line| {
-        let entry: serde_json::Value = serde_json::from_str(line).ok()?;
-        if entry.get("type")?.as_str()? != "event_msg" {
-            return None;
-        }
-        let payload = entry.get("payload")?;
-        if payload.get("type")?.as_str()? != "token_count" {
-            return None;
-        }
-        Some(payload.get("info")?.get("model_context_window")?.as_u64()? as u32)
-    })
-}
-
-/// The fallback: the window the harness's **own published catalog** states, out
-/// of the `models.json` the pane's `model_catalog_json` points at — never a
-/// FLEETOR constant, which is the acceptance criterion this satisfies.
-///
-/// **Unanimity or nothing.** [`TranscriptSource`] does not carry which model the
-/// seat runs, so a catalog whose entries disagree cannot be resolved to this
-/// pane's window and this answers `None`. A catalog that publishes one window
-/// for every model it offers publishes this pane's window whatever it runs —
-/// which is what C61 observed across all three of the operator's models — and
-/// that is the only case this returns a number in. Guessing an entry would be
-/// the number that looks right and is wrong.
-///
-/// **Believed, not verified.** The field name is C61's; the enclosing shape —
-/// a top-level `models` array of objects — is inferred from the fixtures in
-/// `placement::codex`, not measured character-for-character against a real
-/// catalog. It fails safe in either direction: a shape this does not recognize
-/// yields `None`, which is `unavailable`, never a wrong denominator. It is also
-/// a fallback for a case not yet observed to occur, since the measured run wrote
-/// `token_count` one line after `token_usage_record`.
-fn catalog_context_window(model_catalog: &Path) -> Option<u32> {
-    let doc: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(model_catalog).ok()?).ok()?;
-    let mut agreed: Option<u32> = None;
-    for model in doc.get("models")?.as_array()? {
-        let window = model.get("context_window")?.as_u64()? as u32;
-        match agreed {
-            None => agreed = Some(window),
-            Some(seen) if seen == window => {}
-            Some(_) => return None,
-        }
-    }
-    agreed
 }
 
 // --- the spawn-time estimate (the Loadout counter) -------------------------------
@@ -531,6 +257,7 @@ pub fn notice_text(pane: PaneId, gauge: &ContextGauge) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     const TEST_WINDOW: u32 = 1_000_000;
 
@@ -576,67 +303,12 @@ mod tests {
             cwd: cwd.to_path_buf(),
             window_tokens: None,
         };
-        let dir = project_dir(&source);
+        let dir = crate::placement::claude_code::project_dir(&source);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("session-a.jsonl"), lines.join("\n")).unwrap();
     }
 
     // --- project_dir / the slug rule -------------------------------------------
-
-    #[test]
-    fn no_assistant_line_means_no_reading_at_all() {
-        let transcript = [user_line("hello")].join("\n");
-        assert_eq!(last_turn_usage(&transcript), None);
-    }
-
-    /// The load-bearing finding from the spike: `input_tokens` alone would
-    /// *drop* the instant prompt caching kicks in, which reads as the
-    /// conversation shrinking when it only grew. The sum must keep climbing.
-    #[test]
-    fn usage_is_the_sum_of_all_three_input_fields_not_input_tokens_alone() {
-        let turn_one = assistant_line(27_723, 0, 0);
-        let turn_two = assistant_line(96, 0, 27_648);
-
-        let after_turn_one = last_turn_usage(&turn_one).unwrap();
-        let after_turn_two = last_turn_usage(&[turn_one, turn_two].join("\n")).unwrap();
-
-        assert_eq!(after_turn_one, 27_723);
-        assert_eq!(
-            after_turn_two, 27_744,
-            "must track the growing conversation, not just input_tokens (96)"
-        );
-        assert!(
-            after_turn_two > after_turn_one,
-            "a second turn must never look like it shrank the context"
-        );
-    }
-
-    /// Two identical usage lines per real turn (same content, as Claude Code
-    /// actually writes them) must not be double-counted or picked
-    /// inconsistently — "last line" and "last real turn" have to agree.
-    #[test]
-    fn a_duplicated_usage_line_per_turn_does_not_change_the_reading() {
-        let line = assistant_line(500, 0, 0);
-        let once = last_turn_usage(&line).unwrap();
-        let twice = last_turn_usage(&[line.clone(), line].join("\n")).unwrap();
-        assert_eq!(once, twice);
-    }
-
-    /// Only the *last* assistant line counts — an earlier turn's usage must
-    /// never win over a later, larger one.
-    #[test]
-    fn only_the_last_assistant_lines_usage_is_read() {
-        let transcript =
-            [assistant_line(1_000, 0, 0), user_line("more"), assistant_line(1_200, 0, 800)]
-                .join("\n");
-        assert_eq!(last_turn_usage(&transcript), Some(2_000));
-    }
-
-    #[test]
-    fn a_line_that_is_not_json_is_skipped_rather_than_fatal() {
-        let transcript = ["not json at all".to_string(), assistant_line(50, 0, 0)].join("\n");
-        assert_eq!(last_turn_usage(&transcript), Some(50));
-    }
 
     // --- sample_transcript / latest_transcript ----------------------------------
 
@@ -703,7 +375,7 @@ mod tests {
             cwd: cwd.clone(),
             window_tokens: None,
         };
-        let dir = project_dir(&source);
+        let dir = crate::placement::claude_code::project_dir(&source);
         std::fs::create_dir_all(&dir).unwrap();
 
         std::fs::write(dir.join("older.jsonl"), assistant_line(90_000, 0, 0)).unwrap();
@@ -727,7 +399,7 @@ mod tests {
             cwd: cwd.clone(),
             window_tokens: None,
         };
-        let dir = project_dir(&source);
+        let dir = crate::placement::claude_code::project_dir(&source);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("notes.txt"), "not a transcript").unwrap();
 
@@ -747,9 +419,8 @@ mod tests {
     // satisfy it, which is not an assertion about the seam at all.
 
     mod stand_ins {
-        use crate::placement::harness::{
-            claude_code, GaugeSource, Harness, HarnessSpec, Seed, CLAUDE_CODE_SPEC,
-        };
+        use crate::placement::claude_code::CLAUDE_CODE_SPEC;
+        use crate::placement::harness::{claude_code, GaugeSource, Harness, HarnessSpec, Seed};
         use std::path::Path;
         use std::sync::LazyLock;
 
@@ -1295,69 +966,6 @@ mod tests {
             text.contains("may lag"),
             "the honesty label the requirements doc requires: {text}"
         );
-    }
-
-    /// Claude Code names a transcript directory by replacing every character
-    /// that is not a letter or digit — `_` included, and every worker's cwd is
-    /// under `_shell`. Measured on disk: `.fleetor/_shell` is `-fleetor--shell`.
-    #[test]
-    fn the_transcript_directory_is_found_for_a_cwd_under_shell() {
-        let source = TranscriptSource {
-            harness: crate::placement::harness::claude_code(),
-            config_dir: PathBuf::from("/cfg"),
-            cwd: PathBuf::from("/nonexistent/.fleetor/_shell/worktrees/repo-f7f9/worker-2"),
-            window_tokens: None,
-        };
-        let dir = project_dir(&source);
-        assert!(
-            dir.ends_with("-nonexistent--fleetor--shell-worktrees-repo-f7f9-worker-2"),
-            "{}",
-            dir.display()
-        );
-    }
-
-    #[test]
-    fn a_compaction_after_the_last_call_is_what_the_context_holds() {
-        let boundary = serde_json::json!({
-            "type": "system",
-            "subtype": "compact_boundary",
-            "compactMetadata": { "preTokens": 588_656, "postTokens": 11_284 }
-        })
-        .to_string();
-        let compacted = [assistant_line(96, 0, 588_560), boundary.clone()].join("\n");
-        assert_eq!(last_turn_usage(&compacted), Some(11_284));
-        let then_a_call = [compacted, assistant_line(40, 0, 48_542)].join("\n");
-        assert_eq!(
-            last_turn_usage(&then_a_call),
-            Some(48_582),
-            "the next call is the newer reading"
-        );
-    }
-
-    #[test]
-    fn an_api_error_line_is_not_a_reading_of_zero() {
-        let transcript = [assistant_line(390, 0, 500_000), assistant_line(0, 0, 0)].join("\n");
-        assert_eq!(last_turn_usage(&transcript), Some(500_390));
-        assert_eq!(last_turn_usage(&assistant_line(0, 0, 0)), None);
-    }
-
-    /// A turn of several model calls: `turn_token_usage` sums them, and only the
-    /// last call's own `usage` is what the context holds.
-    #[test]
-    fn a_codex_turn_of_many_calls_reads_its_last_call_not_their_sum() {
-        let call = |this_call: u64, turn_so_far: u64| {
-            serde_json::json!({
-                "type": "token_usage_record",
-                "payload": {
-                    "usage": { "total_tokens": this_call },
-                    "turn_token_usage": { "total_tokens": turn_so_far },
-                    "thread_token_usage": { "total_tokens": turn_so_far }
-                }
-            })
-            .to_string()
-        };
-        let rollout = [call(15_000, 15_000), call(16_500, 31_500), call(18_294, 49_794)].join("\n");
-        assert_eq!(last_turn_total_tokens(&rollout), Some(18_294));
     }
 
     // --- model_window_tokens ---------------------------------------------------------
