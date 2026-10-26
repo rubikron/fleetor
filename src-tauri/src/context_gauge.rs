@@ -485,6 +485,18 @@ mod tests {
                     fn has_session(&self, seat_dir: &Path, session_id: &str) -> bool {
                         claude_code().has_session(seat_dir, session_id)
                     }
+                    fn diagnose(
+                        &self,
+                        facts: &crate::placement::harness::MachineFacts<'_>,
+                    ) -> crate::placement::harness::HarnessReadiness {
+                        claude_code().diagnose(facts)
+                    }
+                    fn read_usage(
+                        &self,
+                        source: &super::TranscriptSource,
+                    ) -> Option<super::UsageReading> {
+                        claude_code().read_usage(source)
+                    }
                 }
             };
         }

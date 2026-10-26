@@ -31,7 +31,7 @@ pub(crate) fn write_registry(path: &Path, pids: &[u32]) {
         return;
     }
     let text = pids.iter().map(u32::to_string).collect::<Vec<_>>().join("\n");
-    // Sibling temp file + rename, same as `placement::spawn::seed_config_dir`: a
+    // Sibling temp file + rename, same as `placement::json_seed::seed_json_document`: a
     // half-written registry must never be read back as "these pids are live"
     // when it is actually truncated.
     let tmp = path.with_extension("pids.tmp");

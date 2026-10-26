@@ -13,7 +13,7 @@ use crate::guardrail;
 /// and for now the only registered one.
 ///
 /// A unit struct: everything it knows is in [`CLAUDE_CODE_SPEC`], and two of its
-/// three methods delegate to `spawn::project_key` and `spawn::seed_config_dir`.
+/// three methods delegate to `project_key` and `json_seed::seed_json_document`.
 /// **Those two are Claude Code's own answers to checkpoints 14 and 4** (C31), not
 /// the fleet's assumptions — which is why the contract step left them where they
 /// are and deleted nothing there. They are reached through [`Harness`] and called
@@ -93,7 +93,7 @@ pub const CLAUDE_CODE_SPEC: HarnessSpec = HarnessSpec {
         verified_against_schema: None,
     },
 
-    // 4 — config dir and its seeding. `spawn::seed_config_dir`.
+    // 4 — config dir and its seeding. `json_seed::seed_json_document`.
     config_dir: ConfigDir {
         env_var: "CLAUDE_CONFIG_DIR",
         seed_file: ".claude.json",
@@ -199,8 +199,8 @@ pub const CLAUDE_CODE_SPEC: HarnessSpec = HarnessSpec {
         transport: Transport::Rename,
     },
 
-    // 14 — project identity and trust seeding (C17). `spawn::project_key` and the
-    // per-project half of `spawn::seed_config_dir`.
+    // 14 — project identity and trust seeding (C17). `project_key` and the
+    // per-project half of `json_seed::seed_json_document`.
     project_identity: ProjectIdentityAndTrust {
         canonicalize: true,
         exact_path_match: true,
@@ -292,6 +292,17 @@ impl Harness for ClaudeCode {
     /// credentials with nothing to do with FLEETOR inside an unattended worktree.
     ///
     /// Read-only: `find-generic-password -w` does not modify the item.
+    fn diagnose(&self, facts: &MachineFacts<'_>) -> HarnessReadiness {
+        claude_code_diagnose(facts.home, facts.path)
+    }
+
+    fn read_usage(
+        &self,
+        source: &crate::context_gauge::TranscriptSource,
+    ) -> Option<crate::context_gauge::UsageReading> {
+        jsonl_usage(source)
+    }
+
     fn read_operator_login(&self, _operator_home: Option<&Path>) -> Option<OperatorLogin> {
         let out = std::process::Command::new("security")
             .args(["find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"])
@@ -934,7 +945,7 @@ mod tests {
 
     #[test]
     fn the_project_key_is_the_canonicalization_the_trust_flag_and_the_gauge_share() {
-        // Checkpoint 14's two halves agree: the method is `spawn::project_key`,
+        // Checkpoint 14's two halves agree: the method is `project_key`,
         // and the spec says that is what it is.
         let dir = std::env::temp_dir();
         assert_eq!(claude_code().project_key(&dir), project_key(&dir));

@@ -177,9 +177,9 @@ use toml_edit::{DocumentMut, Item, Table, Value};
 use super::harness::{
     AccountShape, BriefCarrier, CommandChannel, ConfigAndCredentialIsolation, ConfigDir,
     Credentials, GaugeSource, GuardrailInstall, Harness, HarnessReadiness, HarnessSpec,
-    LoginInstruction, LoginState, ModelChoice, OperatorLogin, OrphanNames, Outbound, Posture,
-    PostureExpectation, Program, ProjectIdentityAndTrust, ProviderKey, ResolvedPosture, Seat, Seed,
-    Transcript, Transport, TypingProfile, WorktreeGit,
+    LoginInstruction, LoginState, MachineFacts, ModelChoice, OperatorLogin, OrphanNames, Outbound,
+    Posture, PostureExpectation, Program, ProjectIdentityAndTrust, ProviderKey, ResolvedPosture,
+    Seat, Seed, Transcript, Transport, TypingProfile, WorktreeGit,
 };
 
 // --- the vendor's own shape ----------------------------------------------------
@@ -844,6 +844,16 @@ impl Harness for CodexCli {
     /// file is codex's alone — there is nothing in it belonging to another vendor
     /// to narrow away, and parsing it would be this module inventing an opinion
     /// about a document shape it does not own.
+    fn diagnose(&self, facts: &MachineFacts<'_>) -> HarnessReadiness {
+        diagnose(&Installation {
+            binary: None,
+            config_dir: None,
+            home: facts.home,
+            cwd: None,
+            path: Some(facts.path),
+        })
+    }
+
     fn read_operator_login(&self, operator_home: Option<&Path>) -> Option<OperatorLogin> {
         let home = operator_home?;
         let path = home.join(OPERATOR_DIR).join(OPERATOR_CREDENTIAL_FILE);
@@ -876,7 +886,7 @@ impl Harness for CodexCli {
     /// macOS `/tmp` and `/var` are symlinks and a child's own cwd comes back
     /// resolved, so an unresolved key would never match.
     ///
-    /// **Written out here rather than delegating to `spawn::project_key`** (C31).
+    /// **Written out here rather than delegating to `claude_code::project_key`** (C31).
     /// That function is Claude Code's own answer, and two harnesses agreeing
     /// because both call it is precisely the coupling the seam exists to remove —
     /// the day #30 measures that codex resolves trust by repository root, this

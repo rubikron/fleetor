@@ -824,7 +824,7 @@ pub enum Transport {
 /// key wrong and not writing the flag at all produce the identical symptom.
 ///
 /// The canonicalization itself is behaviour and lives on
-/// [`Harness::project_key`] — `spawn::project_key` is Claude Code's own, and
+/// [`Harness::project_key`] — `claude_code::project_key` is Claude Code's own, and
 /// `crate::deliver` and [`crate::context_gauge`] read it so the trust flag, the
 /// delivery path and the gauge all agree on one spelling of a cwd.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1146,6 +1146,14 @@ impl<'a> Seat<'a> {
 /// Everything that can be `'static` data is on [`HarnessSpec`] instead, because
 /// data can be asserted equal to the literal it replaces and a method can only be
 /// asserted equal to itself.
+/// The machine facts a probe is handed (D-090): the operator's `HOME` and the
+/// `PATH` the harness's own binary resolves on.
+#[derive(Clone, Copy, Debug)]
+pub struct MachineFacts<'a> {
+    pub home: Option<&'a Path>,
+    pub path: &'a str,
+}
+
 pub trait Harness: std::fmt::Debug + Send + Sync + 'static {
     /// This harness's fourteen answers.
     fn spec(&self) -> &'static HarnessSpec;
@@ -1222,6 +1230,10 @@ pub trait Harness: std::fmt::Debug + Send + Sync + 'static {
         let _ = operator_home;
         None
     }
+
+    /// **Read what this harness reports about the machine** (D-090): the gate's
+    /// probe, handed its facts and reading nothing from the process.
+    fn diagnose(&self, facts: &MachineFacts<'_>) -> HarnessReadiness;
 
     /// **Checkpoint 7's behavioural half:** register the fleet's write guardrail
     /// in this harness's own settings document, keeping everything the operator
@@ -1334,9 +1346,7 @@ pub trait Harness: std::fmt::Debug + Send + Sync + 'static {
     fn read_usage(
         &self,
         source: &crate::context_gauge::TranscriptSource,
-    ) -> Option<crate::context_gauge::UsageReading> {
-        super::claude_code::jsonl_usage(source)
-    }
+    ) -> Option<crate::context_gauge::UsageReading>;
 }
 
 // --- the registry -------------------------------------------------------------
