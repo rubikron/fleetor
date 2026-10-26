@@ -133,3 +133,4 @@ Note: D-005 is referenced elsewhere in this file (e.g. D-009, D-011) but has no 
 | [D-124](D-124.md) | meta | alive | CI on macOS: fmt, clippy -D warnings, both suites, frontend build; guards G1–G4 follow |
 | [D-125](D-125.md) | meta | alive | the gauge divides by the window Claude Code runs: 1M with no model, 200k for an unrecognised slug |
 | [D-126](D-126.md) | meta | alive | every seat's model is settled at launch, and Claude Code drops a slug it does not recognise |
+| [D-127](D-127.md) | WP-30 | alive | the probe's facts are `MachineFacts { home, path }`; codex's probe still inherits `CODEX_HOME` |

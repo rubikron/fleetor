@@ -250,9 +250,52 @@ fn write_operator_login(config_dir: &Path, login: &OperatorLogin) -> Result<(), 
     Ok(())
 }
 
+/// Claude Code's literals: every distinctive string its spec owns. `program.bin`,
+/// `transcript.subdir`, `transcript.file_ext` and the command spellings are left
+/// to conformance, being ordinary English that would fire on the fleet's own words.
+const NEEDLES: &[Needle] = &[
+    ("cp 2 — brief.argv_flag", "--system-prompt", |s| s.brief.argv_flag.into_iter().collect()),
+    ("cp 3 — posture.model_env", "ANTHROPIC_MODEL", |s| {
+        s.posture.model_env.into_iter().collect()
+    }),
+    ("cp 3 — posture.permission_flag", "--permission-mode", |s| {
+        s.posture.permission_flag.into_iter().collect()
+    }),
+    ("cp 4 — config_dir.env_var", "CLAUDE_CONFIG_DIR", |s| vec![s.config_dir.env_var]),
+    ("cp 4 — config_dir.seed_file", ".claude.json", |s| vec![s.config_dir.seed_file]),
+    ("cp 4 — config_dir.seed_keys", "hasCompletedOnboarding", |s| {
+        s.config_dir.seed_keys.to_vec()
+    }),
+    ("cp 5 — credentials.scrubbed_env", "ANTHROPIC_API_KEY", |s| {
+        s.credentials.scrubbed_env.to_vec()
+    }),
+    ("cp 6 — isolation.credential_env", "CLAUDE_SECURESTORAGE_CONFIG_DIR", |s| {
+        s.isolation.credential_env.into_iter().collect()
+    }),
+    ("cp 7 — guardrail.hook_event", "PreToolUse", |s| vec![s.guardrail.hook_event]),
+    ("cp 7 — guardrail.write_tools", "MultiEdit", |s| s.guardrail.write_tools.to_vec()),
+    ("cp 9 — typing.paste_start", "\x1b[200~", |s| {
+        vec![std::str::from_utf8(s.typing.paste_start).unwrap_or_default()]
+    }),
+    ("cp 9 — typing.paste_end", "\x1b[201~", |s| {
+        vec![std::str::from_utf8(s.typing.paste_end).unwrap_or_default()]
+    }),
+    ("cp 13 — transcript.format", "claude-code-jsonl", |s| vec![s.transcript.format]),
+    ("cp 14 — project_identity.trust_file", ".claude.json", |s| {
+        vec![s.project_identity.trust_file]
+    }),
+    ("cp 14 — project_identity.trust_keys", "hasTrustDialogAccepted", |s| {
+        s.project_identity.trust_keys.to_vec()
+    }),
+];
+
 impl Harness for ClaudeCode {
     fn spec(&self) -> &'static HarnessSpec {
         &CLAUDE_CODE_SPEC
+    }
+
+    fn literal_needles(&self) -> &'static [Needle] {
+        NEEDLES
     }
 
     fn project_key(&self, cwd: &Path) -> String {

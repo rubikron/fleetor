@@ -177,9 +177,9 @@ use toml_edit::{DocumentMut, Item, Table, Value};
 use super::harness::{
     AccountShape, BriefCarrier, CommandChannel, ConfigAndCredentialIsolation, ConfigDir,
     Credentials, GaugeSource, GuardrailInstall, Harness, HarnessReadiness, HarnessSpec,
-    LoginInstruction, LoginState, MachineFacts, ModelChoice, OperatorLogin, OrphanNames, Outbound,
-    Posture, PostureExpectation, Program, ProjectIdentityAndTrust, ProviderKey, ResolvedPosture,
-    Seat, Seed, Transcript, Transport, TypingProfile, WorktreeGit,
+    LoginInstruction, LoginState, MachineFacts, ModelChoice, Needle, OperatorLogin, OrphanNames,
+    Outbound, Posture, PostureExpectation, Program, ProjectIdentityAndTrust, ProviderKey,
+    ResolvedPosture, Seat, Seed, Transcript, Transport, TypingProfile, WorktreeGit,
 };
 
 // --- the vendor's own shape ----------------------------------------------------
@@ -741,7 +741,42 @@ impl CodexCli {
     }
 }
 
+/// Codex's literals: every distinctive string its spec owns. `program.bin`,
+/// `transcript.file_ext` and the command spellings are left to conformance (ordinary
+/// words); `PreToolUse` and the paste bytes are Claude Code's needles too.
+const NEEDLES: &[Needle] = &[
+    ("login.command", "codex login", |s| vec![s.login.command]),
+    ("cp 2 — brief.config_key", "model_instructions_file", |s| {
+        s.brief.config_key.into_iter().collect()
+    }),
+    ("cp 3 — posture.model_flag", "--model", |s| s.posture.model_flag.into_iter().collect()),
+    ("cp 3 — posture.sandbox_keys", "sandbox_mode", |s| {
+        s.posture.sandbox_keys.iter().map(|(k, _)| *k).collect()
+    }),
+    ("cp 3 — posture.sandbox_keys", "approval_policy", |s| {
+        s.posture.sandbox_keys.iter().map(|(k, _)| *k).collect()
+    }),
+    ("cp 4 — config_dir.env_var", "CODEX_HOME", |s| vec![s.config_dir.env_var]),
+    ("cp 4 — config_dir.seed_keys", "sqlite_home", |s| s.config_dir.seed_keys.to_vec()),
+    ("cp 5 — credentials.scrubbed_env", "OPENAI_API_KEY", |s| {
+        s.credentials.scrubbed_env.to_vec()
+    }),
+    ("cp 5 — credentials.scrubbed_env", "CODEX_API_KEY", |s| s.credentials.scrubbed_env.to_vec()),
+    ("cp 7 — guardrail.write_tools", "apply_patch", |s| s.guardrail.write_tools.to_vec()),
+    ("cp 8 — outbound.reachability_keys", "sandbox_workspace_write.network_access", |s| {
+        s.outbound.reachability_keys.iter().map(|(k, _)| *k).collect()
+    }),
+    ("cp 13 — transcript.format", "codex-thread-history-1-sqlite", |s| vec![s.transcript.format]),
+    ("cp 14 — project_identity.trust_keys", "trust_level", |s| {
+        s.project_identity.trust_keys.to_vec()
+    }),
+];
+
 impl Harness for CodexCli {
+    fn literal_needles(&self) -> &'static [Needle] {
+        NEEDLES
+    }
+
     /// **Codex reopens with `codex resume <uuid>`**, a subcommand that must lead
     /// the argv; the vendor takes the thread id directly.
     ///

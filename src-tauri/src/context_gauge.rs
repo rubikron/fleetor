@@ -451,6 +451,9 @@ mod tests {
                     fn spec(&self) -> &'static HarnessSpec {
                         &$spec
                     }
+                    fn literal_needles(&self) -> &'static [crate::placement::harness::Needle] {
+                        claude_code().literal_needles()
+                    }
                     fn project_key(&self, cwd: &Path) -> String {
                         claude_code().project_key(cwd)
                     }

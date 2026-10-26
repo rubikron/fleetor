@@ -1154,9 +1154,17 @@ pub struct MachineFacts<'a> {
     pub path: &'a str,
 }
 
+/// A string this harness's spec owns, which no shared file may spell: the spec
+/// field it came from, the literal, and the live read of that field.
+pub type Needle = (&'static str, &'static str, fn(&HarnessSpec) -> Vec<&'static str>);
+
 pub trait Harness: std::fmt::Debug + Send + Sync + 'static {
     /// This harness's fourteen answers.
     fn spec(&self) -> &'static HarnessSpec;
+
+    /// The literals `tests/harness_literals.rs` forbids outside this harness's own
+    /// file, each pinned to the spec field it is the answer to (D-090).
+    fn literal_needles(&self) -> &'static [Needle];
 
     /// **Checkpoint 14's behavioural half:** the key this harness looks a project
     /// up under, given a pane's working directory.
