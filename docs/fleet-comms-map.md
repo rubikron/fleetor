@@ -234,7 +234,7 @@ The two framings differ on purpose. A worker can only obey the do-not-answer-a-b
 | App took it and never answered | exits 1, `treat it as not delivered` | same. A dropped ack would otherwise park the caller forever |
 | **Pane is mid-turn** | **exits 0, `accepted`, and the model may never act on it** | **nothing on this side of the pty can see it.** The residual, and the reason `accepted` is the weaker claim (L3) |
 | `fleet` not on PATH | panes spawn fine and cannot message; `Notice` on the Activity view at spawn | `spawn::fleet_bin_path` |
-| Pane wedged on onboarding | looks exactly like a working pane; every send reports success | `spawn::seed_config_dir`, called at the spawn site so it is keyed by the cwd actually used |
+| Pane wedged on onboarding | looks exactly like a working pane; every send reports success | `json_seed::seed_json_document`, called at the spawn site so it is keyed by the cwd actually used |
 | Body contains `ESC[201~` | would end the paste early and turn its tail into live keystrokes | `message::sanitize` |
 | Same, in a `fleet cmd` | exits 1, `refused rather than repaired` | `command::check_command`. **Refused, not stripped** — a mangled message is still the message, a mangled command is a *different command* |
 | **`fleet cmd` lands on a non-empty input box** | **exits 0, `accepted`, and the command runs as prose instead** | **nothing on this side can see it.** Measured in `docs/notes/command-channel-notes.md` §3; the second residual, and the second reason `accepted` never means "executed" |

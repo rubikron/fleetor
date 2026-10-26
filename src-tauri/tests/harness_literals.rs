@@ -13,14 +13,14 @@
 //! ## What it catches
 //!
 //! A vendor string the spec owns, spelled as a literal in production code in one
-//! of the [`MIGRATED`] files. The needles are not a hand-written list of things
-//! that look Claude-shaped: every one is [pinned](NEEDLES) to the spec field it
+//! of the [`MIGRATED`] files. Each registered harness carries its own needles
+//! (`Harness::literal_needles`), and every one is pinned to the spec field it
 //! came from, so a needle that stops being the spec's answer fails this file
 //! instead of silently matching nothing.
 //!
 //! ## What it permits, deliberately
 //!
-//! 1. **`placement/harness.rs`.** It is where the answers live; it is not scanned.
+//! 1. **The vendor files** (`placement/claude_code.rs`, `placement/codex.rs`) and `placement/harness.rs`. They are where the answers and each harness's own needles live; they are not scanned.
 //! 2. **Everything below the first `#[cfg(test)]`.** A unit test asserting
 //!    `get_env("CLAUDE_CONFIG_DIR")` is asserting the observable, which is exactly
 //!    what a migration must not change — pinning it is the point, not a relapse.
@@ -68,7 +68,7 @@
 
 use std::path::{Path, PathBuf};
 
-use fleetor_shell::placement::harness::{claude_code, HarnessSpec};
+use fleetor_shell::placement::harness::registered;
 
 /// The files the five migrate batches touched, plus the two that were already
 /// spec-driven — every production file that has ever had a reason to spell one of
@@ -92,49 +92,6 @@ const MIGRATED: [&str; 11] = [
     "src-tauri/src/lib.rs",
 ];
 
-/// A needle, and the checkpoint field it is the current answer to.
-///
-/// The second element is what makes this list maintainable rather than
-/// decorative: [`the_needles_are_still_the_specs_own_answers`] resolves every one
-/// against the live spec, so a needle can never drift into meaning nothing. A
-/// harness whose answer changes gets one failing test naming the field, not a
-/// grep that silently stops guarding it.
-type Needle = (&'static str, &'static str, fn(&HarnessSpec) -> Vec<String>);
-
-/// Every distinctive string the spec owns. See the module header for the five
-/// answers deliberately absent — they are the ones that are also ordinary
-/// English, and a needle for them would fire on the fleet's own vocabulary.
-const NEEDLES: &[Needle] = &[
-    ("cp 2 — brief.argv_flag", "--system-prompt", |s| opt(s.brief.argv_flag)),
-    ("cp 3 — posture.model_env", "ANTHROPIC_MODEL", |s| opt(s.posture.model_env)),
-    ("cp 3 — posture.permission_flag", "--permission-mode", |s| opt(s.posture.permission_flag)),
-    ("cp 4 — config_dir.env_var", "CLAUDE_CONFIG_DIR", |s| one(s.config_dir.env_var)),
-    ("cp 4 — config_dir.seed_file", ".claude.json", |s| one(s.config_dir.seed_file)),
-    ("cp 4 — config_dir.seed_keys", "hasCompletedOnboarding", |s| list(s.config_dir.seed_keys)),
-    ("cp 5 — credentials.scrubbed_env", "ANTHROPIC_API_KEY", |s| {
-        list(s.credentials.scrubbed_env)
-    }),
-    ("cp 6 — isolation.credential_env", "CLAUDE_SECURESTORAGE_CONFIG_DIR", |s| {
-        opt(s.isolation.credential_env)
-    }),
-    ("cp 7 — guardrail.hook_event", "PreToolUse", |s| one(s.guardrail.hook_event)),
-    // One name out of the list, not the joined matcher: the failure worth catching
-    // is a second copy of the vendor's *tool names*, and a second copy would not
-    // necessarily be spelled as the same alternation. This row used to split the
-    // matcher on `|` to recover the list, which is the evidence that the list was
-    // the real fact and the matcher a rendering of it — #31 made the spec say so.
-    ("cp 7 — guardrail.write_tools", "MultiEdit", |s| list(s.guardrail.write_tools)),
-    ("cp 9 — typing.paste_start", "\x1b[200~", |s| bytes(s.typing.paste_start)),
-    ("cp 9 — typing.paste_end", "\x1b[201~", |s| bytes(s.typing.paste_end)),
-    ("cp 13 — transcript.format", "claude-code-jsonl", |s| one(s.transcript.format)),
-    ("cp 14 — project_identity.trust_file", ".claude.json", |s| {
-        one(s.project_identity.trust_file)
-    }),
-    ("cp 14 — project_identity.trust_keys", "hasTrustDialogAccepted", |s| {
-        list(s.project_identity.trust_keys)
-    }),
-];
-
 /// **The convention this tripwire must not fight** (`harness.rs`, `spawn.rs:95`).
 ///
 /// Where a public constant already holds a value, the spec *names the item*
@@ -154,17 +111,12 @@ const NAMED_NOT_REPEATED: &[(&str, &str, &str)] = &[(
      is a second source of truth.",
 )];
 
-fn one(s: &str) -> Vec<String> {
-    vec![s.to_string()]
-}
-fn opt(s: Option<&str>) -> Vec<String> {
-    s.into_iter().map(str::to_string).collect()
-}
-fn list(v: &[&str]) -> Vec<String> {
-    v.iter().map(|s| (*s).to_string()).collect()
-}
-fn bytes(b: &[u8]) -> Vec<String> {
-    vec![String::from_utf8_lossy(b).into_owned()]
+/// Every registered harness's needles, as `(harness, field, literal)`.
+fn needles() -> Vec<(&'static str, &'static str, &'static str)> {
+    registered()
+        .iter()
+        .flat_map(|h| h.literal_needles().iter().map(|(f, n, _)| (h.spec().name, *f, *n)))
+        .collect()
 }
 
 /// The repo root — this crate's manifest dir is `src-tauri/`.
@@ -207,7 +159,7 @@ fn no_migrated_call_site_spells_a_harness_answer() {
     for rel in MIGRATED {
         let file = root.join(rel);
         for (n, line) in production_lines(&file) {
-            for (field, needle, _) in NEEDLES {
+            for (harness, field, needle) in needles() {
                 if !line.contains(needle) {
                     continue;
                 }
@@ -217,7 +169,7 @@ fn no_migrated_call_site_spells_a_harness_answer() {
                 if excused {
                     continue;
                 }
-                hits.push(format!("  {rel}:{n} [{field}] {}", line.trim()));
+                hits.push(format!("  {rel}:{n} [{harness}: {field}] {}", line.trim()));
             }
         }
     }
@@ -241,14 +193,17 @@ fn no_migrated_call_site_spells_a_harness_answer() {
 /// checkpoint, and the fix is to update the needle — never to drop the row.
 #[test]
 fn the_needles_are_still_the_specs_own_answers() {
-    let spec = claude_code().spec();
-    for (field, needle, current) in NEEDLES {
-        let answers = current(spec);
-        assert!(
-            answers.iter().any(|a| a == needle),
-            "`{needle}` is no longer what {field} says — it is {answers:?}. The needle stopped \
-             guarding anything the moment the answer moved.",
-        );
+    for h in registered() {
+        assert!(!h.literal_needles().is_empty(), "{} carries no needles", h.spec().name);
+        for (field, needle, current) in h.literal_needles() {
+            let answers = current(h.spec());
+            assert!(
+                answers.iter().any(|a| a == needle),
+                "`{needle}` is no longer what {} {field} says — it is {answers:?}. The needle \
+                 stopped guarding anything the moment the answer moved.",
+                h.spec().name,
+            );
+        }
     }
 }
 
@@ -268,7 +223,7 @@ fn each_excused_line_still_exists_and_is_still_a_single_line() {
             .collect();
         assert_eq!(matched.len(), 1, "{rel}: `{anchor}` matches {} lines — {why}", matched.len());
         assert!(
-            NEEDLES.iter().any(|(_, needle, _)| matched[0].1.contains(needle)),
+            needles().iter().any(|(_, _, needle)| matched[0].1.contains(needle)),
             "{rel}:{} is excused from a needle it no longer carries. Delete the row.\n{why}",
             matched[0].0,
         );

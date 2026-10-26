@@ -66,17 +66,6 @@ use crate::prompts::PaneContext;
 /// hypothetical rather than real: those items are `pub(super)` and the module is a
 /// child, which together mean nothing outside this file can call them at all — let
 /// alone call them in the wrong order.
-///
-/// The one item that is still `pub` is [`spawn::project_key`], which is neither
-/// seeding nor command-building: it is **Claude Code's own** project-key
-/// canonicalization — checkpoint 14's answer for one vendor rather than the
-/// fleet's for all of them (WP-25, M23). Its two production consumers, the trust
-/// flag and the context gauge, now reach it through
-/// [`harness::Harness::project_key`] instead of by name, so that they agree on one
-/// spelling of a cwd *because they asked the same harness* and not because they
-/// happened to call the same function. What is left public is the implementation
-/// behind that method, still read directly by the delivery and gauge tests that
-/// pin the transcript slug rule until their own batches move.
 pub mod spawn;
 
 /// What a harness *is* — the fourteen checkpoints, answered once per vendor
@@ -103,6 +92,11 @@ pub mod harness;
 /// own header for which checkpoints are answered and which are still their own
 /// ticket's.
 pub mod codex;
+
+/// Claude Code's answers: its spec, its `Harness` impl, its diagnostic and its formats.
+pub mod claude_code;
+
+mod json_seed;
 
 pub use harness::{Harness, HarnessSpec, OperatorLogin, Seed};
 
@@ -496,33 +490,13 @@ impl Host {
     /// [`place`] or from anything `place` reaches, which
     /// `tests/placement_reads_nothing.rs` asserts by reading this file.
     ///
-    /// **The vendors are named here and nowhere else, and that is deliberate rather
-    /// than tidy.** [`Host::harnesses`] is a list keyed by harness with nothing
-    /// vendor-shaped in it; what is vendor-shaped is *having a diagnostic to run*,
-    /// and each registered harness has one written by hand. #34 built codex's; #35
-    /// built Claude Code's (M17 — `~/.claude.json`'s `oauthAccount`, carrying the
-    /// same reachability-not-authorization caveat), because the gate offers both on
-    /// both rows and a harness with nothing to say about itself sits beside one that
-    /// does, looking half-built. A third harness is a third push into this vector,
-    /// not a redesign. A trait method would have made it a fifteenth checkpoint,
-    /// which is the wrong shape: the fourteen are facts about a vendor, and this is
-    /// a fact about a machine.
+    /// Each registered harness answers its own probe, handed the machine's facts (D-090).
     pub fn discover_for_the_gate() -> Self {
         let machine = Self::discover();
-        // **In the order the gate offers them** (C23), which is the order this
-        // vector is read in and therefore the order the operator sees. Claude Code
-        // first, because it is what a fleet runs unless the operator says otherwise.
-        //
-        // **Both probes are handed the machine rather than reading it** — #34's
-        // `Installation::default()` inherits the application's environment into a
-        // subprocess, and #35's takes the two [`Host`] fields it needs as arguments.
-        // Neither reads the process from inside `placement`, which is the property
-        // `tests/placement_reads_nothing.rs` asserts.
+        // In the order the gate offers them (C23): `registered()` order.
         let path = machine.orch_path();
-        let harnesses = vec![
-            harness::claude_code_diagnose(machine.operator_home.as_deref(), &path),
-            codex::diagnose(&codex::Installation { path: Some(&path), ..Default::default() }),
-        ];
+        let facts = harness::MachineFacts { home: machine.operator_home.as_deref(), path: &path };
+        let harnesses = harness::registered().iter().map(|h| h.diagnose(&facts)).collect();
         Self { harnesses, ..machine }
     }
 

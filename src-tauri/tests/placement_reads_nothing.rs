@@ -47,11 +47,13 @@
 use std::path::{Path, PathBuf};
 
 /// The files that make up the bring-up sequence and the values it takes.
-const PLACEMENT: [&str; 4] = [
+const PLACEMENT: [&str; 6] = [
     "src-tauri/src/placement/mod.rs",
     "src-tauri/src/placement/spawn.rs",
     "src-tauri/src/placement/harness.rs",
     "src-tauri/src/placement/codex.rs",
+    "src-tauri/src/placement/claude_code.rs",
+    "src-tauri/src/placement/json_seed.rs",
 ];
 
 /// How a Rust program reads the process it is running in.
@@ -274,7 +276,7 @@ fn the_vendor_diagnostic_runs_at_the_gate_and_never_on_the_spawn_path() {
         .next()
         .expect("it has a body");
     assert!(
-        gate_body.contains("codex::diagnose"),
+        gate_body.contains("registered()") && gate_body.contains(".diagnose("),
         "the gate's constructor stopped asking any harness anything, so the check above \
          now passes vacuously:\n{gate_body}",
     );
