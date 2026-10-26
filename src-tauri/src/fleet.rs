@@ -589,30 +589,37 @@ fn posture_refusal(reading: Option<&harness::HarnessReadiness>) -> Option<String
 /// quietly — a gate that silently ran a different model than the row showed is the
 /// same lie M15 refuses about harnesses.
 ///
-/// **Only the orchestrator seat is checked** (C9).
-///
-/// **A harness that publishes no catalog has no opinion.** An empty list is a real
-/// answer (Claude Code has no catalog command), not evidence that every model is
-/// retired, so nothing is checked against it and a name typed by hand stands.
+/// Every seat is checked (D-126). A harness with a list checks against it; one with
+/// none (Claude Code) drops a slug it does not recognise, and codex keeps a name
+/// typed by hand.
 fn settle_models(
     mut seats: FleetSeats,
     readings: &[harness::HarnessReadiness],
 ) -> (FleetSeats, Vec<ModelFallback>) {
-    let Some(asked) = seats.orch.model.clone() else { return (seats, Vec::new()) };
-    let Some(reading) = reading_for(readings, &seats.orch.harness) else {
-        return (seats, Vec::new());
-    };
-    if reading.models.is_empty() || reading.models.iter().any(|model| model.slug == asked) {
-        return (seats, Vec::new());
+    let mut fallbacks = Vec::new();
+    let panes = std::iter::once(PaneId::Orch)
+        .chain(fleetor_core::pane::WORKER_SLOTS.iter().map(|slot| PaneId::Worker(*slot)));
+    for (pane, seat) in panes.zip(std::iter::once(&mut seats.orch).chain(&mut seats.workers)) {
+        let Some(asked) = seat.model.clone() else { continue };
+        let Some(reading) = reading_for(readings, &seat.harness) else { continue };
+        let stands = if reading.models.is_empty() {
+            seat.harness != harness::claude_code().spec().name
+                || crate::context_gauge::claude_code_recognises(&asked)
+        } else {
+            reading.models.iter().any(|model| model.slug == asked)
+        };
+        if stands {
+            continue;
+        }
+        fallbacks.push(ModelFallback {
+            seat: seat_label(pane),
+            harness: seat.harness.clone(),
+            asked,
+            fell_back_to: DEFAULT_YOUR_LOGIN.to_string(),
+        });
+        seat.model = None;
     }
-    let fallback = ModelFallback {
-        seat: seat_label(PaneId::Orch),
-        harness: seats.orch.harness.clone(),
-        asked,
-        fell_back_to: DEFAULT_YOUR_LOGIN.to_string(),
-    };
-    seats.orch.model = None;
-    (seats, vec![fallback])
+    (seats, fallbacks)
 }
 
 /// **What each harness reports about this machine, held for the gate** (C58).
@@ -2996,29 +3003,41 @@ mod tests {
         let bench = Bench::new("after-reopen");
         let repo_a = bench.root.join("repo-a");
         bench.fresh();
-        bench.bring_up_orch("recorded");
+        bench.bring_up_orch("claude-recorded");
         bench.fresh();
         assert!(!bench.registry.any_pane(), "the first fleet's pane went with it");
         let first = runs::list(&bench.runs_dir())[0].id.clone();
 
         // The gate moves on; the reopen must not follow it, and must not move it.
-        bench.pick("gate");
+        bench.pick("claude-gate");
         bench.reopen(&first).expect("the first run reopens");
         let (orch, workers, target) = bench.placing().expect("a reopened fleet");
-        assert_eq!(orch.as_deref(), Some("recorded"), "a reopen places what the run recorded");
-        assert_eq!(workers.as_deref(), Some("gate"), "a seat with no record keeps the gate's pick");
+        assert_eq!(
+            orch.as_deref(),
+            Some("claude-recorded"),
+            "a reopen places what the run recorded"
+        );
+        assert_eq!(
+            workers.as_deref(),
+            Some("claude-gate"),
+            "a seat with no record keeps the gate's pick"
+        );
         assert_eq!(target, repo_a);
         assert_eq!(
             bench.gate.seats().orch.model,
             None,
             "and the gate is left for the next new fleet"
         );
-        bench.bring_up_orch("recorded");
+        bench.bring_up_orch("claude-recorded");
 
         bench.fresh();
 
         let (orch, workers, _) = bench.placing().expect("a new fleet");
-        assert_eq!((orch, workers.as_deref()), (None, Some("gate")), "the new fleet is the gate's");
+        assert_eq!(
+            (orch, workers.as_deref()),
+            (None, Some("claude-gate")),
+            "the new fleet is the gate's"
+        );
         assert!(!bench.registry.any_pane(), "the reopened run's pane is gone");
         assert_eq!(
             bench.archives().len(),
@@ -3037,7 +3056,7 @@ mod tests {
 
         bench.fresh();
         assert_eq!(startup(), Startup::Ask, "off by default");
-        bench.bring_up_orch("recorded");
+        bench.bring_up_orch("claude-recorded");
         let (first, _) = bench.ids();
 
         assert_eq!(set_startup_tasks_at(&config, true), Ok(true));
@@ -3605,36 +3624,60 @@ mod tests {
         assert!(none.is_empty());
     }
 
-    /// A harness that publishes no catalog has no opinion, and a worker's model is
-    /// not the catalog's business at all (C9) — the two ways this check could have
-    /// rewritten a fleet nobody asked it to.
-    #[test]
-    fn the_fallback_keeps_out_of_what_the_catalog_does_not_describe() {
-        let mut typed = seats_on("claude-code", "claude-code");
-        typed.orch.model = Some("something-only-i-know".to_string());
-        let (kept, none) = settle_models(typed, &[logged_in("claude-code", AccountShape::ApiKey)]);
-        assert_eq!(
-            kept.orch.model.as_deref(),
-            Some("something-only-i-know"),
-            "an empty catalog is an answer, not evidence that every model is retired",
-        );
-        assert!(none.is_empty());
+    fn worker_on(harness: &str, model: &str) -> FleetSeats {
+        let mut seats = seats_on("claude-code", harness);
+        for worker in &mut seats.workers {
+            worker.model = None;
+        }
+        seats.workers[1].model = Some(model.to_string());
+        seats
+    }
 
-        // A worker runs FLEETOR's provider and key, whose model names the vendor's
-        // catalog knows nothing about. Checking one against it would rewrite the
-        // launch configuration's own worker model the day somebody picked this
-        // harness — the gate choosing a fleet nobody picked.
-        let catalog = vec![HarnessReadiness {
+    /// **D-126.** A pre-D-118 run recorded a worker on `deepseek-v4-flash`, which the
+    /// Anthropic API does not serve.
+    #[test]
+    fn a_claude_code_worker_on_a_slug_it_does_not_recognise_falls_back() {
+        let readings = [logged_in("claude-code", AccountShape::ApiKey)];
+        let (settled, fallbacks) =
+            settle_models(worker_on("claude-code", "deepseek-v4-flash"), &readings);
+        assert_eq!(settled.workers[1].model, None);
+        assert_eq!(fallbacks.len(), 1, "{fallbacks:?}");
+        assert_eq!(fallbacks[0].seat, "worker 2");
+        assert_eq!(fallbacks[0].asked, "deepseek-v4-flash");
+    }
+
+    #[test]
+    fn a_claude_code_worker_on_a_recognised_slug_stands() {
+        let readings = [logged_in("claude-code", AccountShape::ApiKey)];
+        for slug in ["claude-opus-5-5", "opus", "sonnet[1m]"] {
+            let (settled, fallbacks) = settle_models(worker_on("claude-code", slug), &readings);
+            assert_eq!(settled.workers[1].model.as_deref(), Some(slug));
+            assert!(fallbacks.is_empty(), "{slug}: {fallbacks:?}");
+        }
+    }
+
+    #[test]
+    fn a_codex_worker_off_a_non_empty_list_falls_back() {
+        let readings = [HarnessReadiness {
             models: vec![ModelChoice { slug: "gpt-6-sol".into(), display_name: "Sol".into() }],
             ..logged_in("codex", AccountShape::ApiKey)
         }];
-        let (workers, quiet) = settle_models(seats_on("codex", "codex"), &catalog);
-        assert!(
-            workers.workers.iter().all(|seat| seat.model.as_deref() == Some("m")),
-            "the fleet's own worker model is untouched: {:?}",
-            workers.workers,
-        );
-        assert!(quiet.is_empty());
+        let (settled, fallbacks) = settle_models(worker_on("codex", "gpt-5.1-gone"), &readings);
+        assert_eq!(settled.workers[1].model, None);
+        assert_eq!(fallbacks.len(), 1, "{fallbacks:?}");
+        assert_eq!(fallbacks[0].seat, "worker 2");
+
+        let (kept, none) = settle_models(worker_on("codex", "gpt-6-sol"), &readings);
+        assert_eq!(kept.workers[1].model.as_deref(), Some("gpt-6-sol"));
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn a_codex_worker_keeps_a_hand_typed_name_when_codex_lists_nothing() {
+        let readings = [logged_in("codex", AccountShape::ApiKey)];
+        let (kept, none) = settle_models(worker_on("codex", "typed-by-hand"), &readings);
+        assert_eq!(kept.workers[1].model.as_deref(), Some("typed-by-hand"));
+        assert!(none.is_empty());
     }
 
     // --- the posture tripwire (WP-25 #37; C8) ---------------------------------

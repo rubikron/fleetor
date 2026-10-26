@@ -132,3 +132,4 @@ Note: D-005 is referenced elsewhere in this file (e.g. D-009, D-011) but has no 
 | [D-123](D-123.md) | meta | alive | orch's brief names each worker's harness and model for assigning by difficulty and intent; workers still aren't told (M25) |
 | [D-124](D-124.md) | meta | alive | CI on macOS: fmt, clippy -D warnings, both suites, frontend build; guards G1–G4 follow |
 | [D-125](D-125.md) | meta | alive | the gauge divides by the window Claude Code runs: 1M with no model, 200k for an unrecognised slug |
+| [D-126](D-126.md) | meta | alive | every seat's model is settled at launch, and Claude Code drops a slug it does not recognise |

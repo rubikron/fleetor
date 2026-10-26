@@ -36,6 +36,14 @@ use std::sync::Mutex;
 
 use fleetor_core::pane::{ContextGauge, PaneId};
 
+/// Whether Claude Code serves this slug: a `claude-` id or one of its aliases,
+/// either with a `[1m]` suffix (D-126).
+pub fn claude_code_recognises(slug: &str) -> bool {
+    const ALIASES: [&str; 7] = ["sonnet", "opus", "default", "fable", "best", "opusplan", "haiku"];
+    let slug = slug.strip_suffix("[1m]").unwrap_or(slug);
+    slug.starts_with("claude-") || ALIASES.contains(&slug)
+}
+
 /// The context window Claude Code runs a model slug at, on the Anthropic API
 /// (measured against its docs and the 2.1.307 binary, 2026-10-21). Keyed by
 /// window class, not by a version list: aliases move with Claude Code releases.
@@ -49,11 +57,9 @@ pub fn model_window_tokens(model: Option<&str>) -> u32 {
     if slug.contains("[1m]") || slug.contains("1m-") {
         return LARGE;
     }
-    match slug {
-        "sonnet" | "opus" | "default" | "fable" | "best" | "opusplan" | "haiku" => return LARGE,
-        _ => {}
-    }
-    let Some(rest) = slug.strip_prefix("claude-") else { return STANDARD };
+    let Some(rest) = slug.strip_prefix("claude-") else {
+        return if claude_code_recognises(slug) { LARGE } else { STANDARD };
+    };
     let mut parts = rest.split('-');
     let family = parts.next().unwrap_or_default();
     let mut version = parts.map_while(|part| part.parse::<u32>().ok().filter(|n| *n < 100));
