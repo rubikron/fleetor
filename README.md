@@ -37,7 +37,7 @@ Tauri 2 · Rust · React · macOS-first. Plugs in on top of your repo: `rm -rf ~
   │              │  [1][2][3][4]│      fleet send 2 "…"
   │ orchestrator │              │             │
   │  your Opus   │  worker-2    │             ▼
-  │              │  Flash       │      unix socket ──▶ Hub
+  │              │  your login  │      unix socket ──▶ Hub
   │              │              │                       │
   └──────────────┴──────────────┘      AppCommand::Deliver
          ▲                                              │

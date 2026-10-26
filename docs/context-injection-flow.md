@@ -95,10 +95,9 @@ Three consequences worth designing around:
 | The vision tenets | `prompts/vision-tenets.md` | inside the orchestrator brief | T2, once | ✅ — but the placeholder is required |
 | The pane's working directory | the cwd `spawn.rs` sets | `{cwd}` in both briefs | T2, once | ❌ — CC's `# Environment` section used to carry it |
 | Peer roster | computed — `PaneId::roster` | `{peers}` / `{workers}` | T2, once | ❌ `WORKER_SLOTS` |
-| Worker model | `prompts/launch.conf` | `ANTHROPIC_MODEL` | T2, once | ✅ |
-| Worker endpoint | `prompts/launch.conf` | `ANTHROPIC_BASE_URL` | T2, once | ✅ |
+| Worker model | the seat's pick in the gate, else the login's default (D-126) | `ANTHROPIC_MODEL` | T2, once | ✅ per run |
 | Permission mode | `prompts/launch.conf` | `--permission-mode` | T2, once | ✅ |
-| Worker credential | `DEEPSEEK_API_KEY` env or nearest `.env` | `ANTHROPIC_AUTH_TOKEN` | T2, once | ✅ (never in a file here) |
+| Worker credential | the operator's own login (D-118) | the worker's config dir | T2, once | ❌ |
 | Project memory | the target repo's own `CLAUDE.md` | memory files | T2, once | ✅ — it is just a repo file |
 | Operator memory, skills, agents, MCP | `CLAUDE_CONFIG_DIR` | memory files | T2, once | **none, for either class** (D-062) |
 | `orch`'s credential | the operator's Keychain entry | `CLAUDE_SECURESTORAGE_CONFIG_DIR=""` | T2, once | ❌ — unset it and orch is silently logged out |
