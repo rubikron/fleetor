@@ -10,9 +10,9 @@ Note: D-005 is referenced elsewhere in this file (e.g. D-009, D-011) but has no 
 | ID | Phase | Status | Title |
 |----|-------|--------|-------|
 | [D-001](D-001.md) | meta | alive | Working name: FLEETOR |
-| [D-002](D-002.md) | 0 | alive | DeepSeek reached via Anthropic-compatible endpoint, not LiteLLM |
+| [D-002](D-002.md) | 0 | superseded by D-118 | DeepSeek reached via Anthropic-compatible endpoint, not LiteLLM |
 | [D-003](D-003.md) | 0 | alive | Workers run under an isolated `CLAUDE_CONFIG_DIR` |
-| [D-004](D-004.md) | meta | alive | `total_cost_usd` ignored; cost computed from token counts |
+| [D-004](D-004.md) | meta | amended by D-118 | `total_cost_usd` ignored; cost computed from token counts |
 | [D-006](D-006.md) | 0.5 | alive | Phase 0.5 pty spike: PASS (GO); no companion-window fallback |
 | [D-007](D-007.md) | 4 | alive | Spike shell: standalone `src-tauri` package, plain-TS frontend |
 | [D-010](D-010.md) | meta | alive | Assign-first: don't gate the first stdin write on the `init` event |
@@ -82,7 +82,7 @@ Note: D-005 is referenced elsewhere in this file (e.g. D-009, D-011) but has no 
 | [D-072](D-072.md) | meta | alive | the layout and the host: a pane's bring-up is a function of values, not of the operator's machine |
 | [D-073](D-073.md) | meta | alive | the evaluator is a view in the rail, not a second window (supersedes the window half of D-066) |
 | [D-074](D-074.md) | meta | alive | the evaluator is placed, dev mode is read through the layout, and the target is one cell |
-| [D-075](D-075.md) | meta | alive | the process-shaping module becomes an internal of placement, and the layout goes on the fleet |
+| [D-075](D-075.md) | meta | amended by D-118 | the process-shaping module becomes an internal of placement, and the layout goes on the fleet |
 | [D-076](D-076.md) | meta | reversed | the Critic: a fourth pane identity, a fifth brief, and a sixth finding category the spike earned |
 | [D-077](D-077.md) | meta | alive | `fleet reply` refuses a recipient at parse, and the discriminator is the argv element rather than the first word |
 | [D-078](D-078.md) | meta | alive | `fleet broadcast` refuses a recipient too, and the two message verbs move together |
@@ -101,7 +101,7 @@ Note: D-005 is referenced elsewhere in this file (e.g. D-009, D-011) but has no 
 | [D-091](D-091.md) | meta | alive | the orchestrator seat spawns `--permission-mode auto` |
 | [D-092](D-092.md) | meta | alive | the Critic and the Evaluator are removed from the product |
 | [D-094](D-094.md) | meta | alive | dev mode and the live-run snapshot helpers are removed |
-| [D-095](D-095.md) | WP-27 | alive | a reopened run comes back on the harness, model and credential it recorded, not on what the gate holds |
+| [D-095](D-095.md) | WP-27 | amended by D-118 | a reopened run comes back on the harness, model and credential it recorded, not on what the gate holds |
 | [D-096](D-096.md) | meta | alive | panes wake at once: `pty_spawn` leaves the main thread, and placement alone is one at a time |
 | [D-097](D-097.md) | meta | alive | a pane's colour query is answered at the pty, by the registry, and xterm is told not to answer |
 | [D-098](D-098.md) | meta | alive | the wake waits for quiet first, and presses only a pane that will not settle by itself |
