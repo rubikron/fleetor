@@ -72,8 +72,6 @@ use std::path::{Path, PathBuf};
 
 use fleetor_core::event::NoticeLevel;
 
-use crate::guardrail;
-
 // --- the fourteen checkpoints -------------------------------------------------
 
 /// One harness's answers to the fourteen checkpoints — the data half of the seam
@@ -826,7 +824,7 @@ pub enum Transport {
 /// key wrong and not writing the flag at all produce the identical symptom.
 ///
 /// The canonicalization itself is behaviour and lives on
-/// [`Harness::project_key`] — `spawn::project_key` is Claude Code's own, and
+/// [`Harness::project_key`] — `claude_code::project_key` is Claude Code's own, and
 /// `crate::deliver` and [`crate::context_gauge`] read it so the trust flag, the
 /// delivery path and the gauge all agree on one spelling of a cwd.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1148,9 +1146,25 @@ impl<'a> Seat<'a> {
 /// Everything that can be `'static` data is on [`HarnessSpec`] instead, because
 /// data can be asserted equal to the literal it replaces and a method can only be
 /// asserted equal to itself.
+/// The machine facts a probe is handed (D-090): the operator's `HOME` and the
+/// `PATH` the harness's own binary resolves on.
+#[derive(Clone, Copy, Debug)]
+pub struct MachineFacts<'a> {
+    pub home: Option<&'a Path>,
+    pub path: &'a str,
+}
+
+/// A string this harness's spec owns, which no shared file may spell: the spec
+/// field it came from, the literal, and the live read of that field.
+pub type Needle = (&'static str, &'static str, fn(&HarnessSpec) -> Vec<&'static str>);
+
 pub trait Harness: std::fmt::Debug + Send + Sync + 'static {
     /// This harness's fourteen answers.
     fn spec(&self) -> &'static HarnessSpec;
+
+    /// The literals `tests/harness_literals.rs` forbids outside this harness's own
+    /// file, each pinned to the spec field it is the answer to (D-090).
+    fn literal_needles(&self) -> &'static [Needle];
 
     /// **Checkpoint 14's behavioural half:** the key this harness looks a project
     /// up under, given a pane's working directory.
@@ -1224,6 +1238,10 @@ pub trait Harness: std::fmt::Debug + Send + Sync + 'static {
         let _ = operator_home;
         None
     }
+
+    /// **Read what this harness reports about the machine** (D-090): the gate's
+    /// probe, handed its facts and reading nothing from the process.
+    fn diagnose(&self, facts: &MachineFacts<'_>) -> HarnessReadiness;
 
     /// **Checkpoint 7's behavioural half:** register the fleet's write guardrail
     /// in this harness's own settings document, keeping everything the operator
@@ -1336,471 +1354,12 @@ pub trait Harness: std::fmt::Debug + Send + Sync + 'static {
     fn read_usage(
         &self,
         source: &crate::context_gauge::TranscriptSource,
-    ) -> Option<crate::context_gauge::UsageReading> {
-        crate::context_gauge::transcript_usage(source)
-    }
-}
-
-// --- Claude Code --------------------------------------------------------------
-
-/// Claude Code — the harness every pane has run since before there was a seam,
-/// and for now the only registered one.
-///
-/// A unit struct: everything it knows is in [`CLAUDE_CODE_SPEC`], and two of its
-/// three methods delegate to `spawn::project_key` and `spawn::seed_config_dir`.
-/// **Those two are Claude Code's own answers to checkpoints 14 and 4** (C31), not
-/// the fleet's assumptions — which is why the contract step left them where they
-/// are and deleted nothing there. They are reached through [`Harness`] and called
-/// directly by no one.
-///
-/// It is registered *and* wired through: every literal those eight files carried
-/// now comes off this spec.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct ClaudeCode;
-
-/// Claude Code's fourteen answers, each one stating what a literal somewhere in
-/// `src-tauri/src` already does.
-///
-/// **Where a public constant already holds the value, this names it rather than
-/// repeating it** — the guardrail's hook file, the gauge's window — so those two
-/// cannot drift by editing one side. The rest are literals here and pinned by
-/// the `tests` module below against their originals.
-pub const CLAUDE_CODE_SPEC: HarnessSpec = HarnessSpec {
-    name: "claude-code",
-    mark: "CC",
-
-    // How an operator logs it in (#51). **Two steps, because its login is a
-    // command inside its own session** rather than a subcommand — the move
-    // `placement::mod`'s own note has named since WP-14 ("run `/login` inside that
-    // pane once"), stated here so the gate can say it before a pane exists.
-    //
-    // The credential lands in the operator's login keychain, which #49 measured
-    // and which is the reason FLEETOR does not offer to take it: a token pasted
-    // into this app would not be in the keychain, and the vendor reads the
-    // keychain.
-    login: LoginInstruction {
-        command: "claude",
-        then: Some("/login"),
-        credential_home: "your login keychain",
-    },
-
-    // 1 — program and base arguments. `spawn::base_command_with`.
-    program: Program { bin: "claude", base_args: &[] },
-
-    // 2 — brief carrier. `--system-prompt` replaces the vendor prompt (D-043),
-    // and nothing is written into the pane's checkout.
-    brief: BriefCarrier {
-        argv_flag: Some("--system-prompt"),
-        config_key: None,
-        replaces_system_prompt: true,
-        writes_into_worktree: false,
-    },
-
-    // 3 — model and permission posture. No sandbox of its own; the write
-    // guardrail and the Fence are what bound a pane.
-    posture: Posture {
-        model_env: Some("ANTHROPIC_MODEL"),
-        model_flag: None,
-        // **The vendor's own aliases, from its own `--help`** (C78): "an alias
-        // for the latest model (e.g. 'fable', 'opus', or 'sonnet') or a model's
-        // full name". An alias is deliberately preferred
-        // to a dated id here — it tracks the latest of each family, so this list
-        // does not go stale every release.
-        //
-        // **Offered on a seat running the operator's own login and nowhere else.**
-        // A worker on the fleet's key talks to FLEETOR's provider, where none of
-        // these names resolves; the gate picks the list per credential.
-        declared_models: &[
-            ("fable", "Claude Fable 5.1"),
-            ("opus", "Claude Opus 5.5"),
-            ("sonnet", "Claude Sonnet 5.5"),
-            ("haiku", "Claude Haiku 5.5"),
-        ],
-        permission_flag: Some("--permission-mode"),
-        sandbox_keys: &[],
-        // **Nothing to read back, which is an answer rather than a gap** (#37).
-        // Claude Code has no sandbox of its own and publishes no diagnostic that
-        // reports a resolved containment, so there is no vendor reading to compare
-        // an empty `sandbox_keys` against. An expectation invented here would be a
-        // tripwire with no measurement behind it.
-        verified_as: &[],
-        verified_against_schema: None,
-    },
-
-    // 4 — config dir and its seeding. `spawn::seed_config_dir`.
-    config_dir: ConfigDir {
-        env_var: "CLAUDE_CONFIG_DIR",
-        seed_file: ".claude.json",
-        seed_keys: &["hasCompletedOnboarding"],
-        seed_merges: true,
-    },
-
-    // 5 — credential wiring and the scrub. `spawn::worker_command_with`.
-    credentials: Credentials {
-        scrubbed_env: &[
-            "ANTHROPIC_API_KEY",
-            "ANTHROPIC_DEFAULT_OPUS_MODEL",
-            "ANTHROPIC_DEFAULT_SONNET_MODEL",
-            "CLAUDE_SECURESTORAGE_CONFIG_DIR",
-            // **A D-062 hole found while measuring #49, and fixed independently of
-            // it** (C74). This variable overrides `/login` — the vendor's own
-            // `/login` warns when it is set — so an operator carrying one in a
-            // shell profile authenticates every fenced worker on their personal
-            // account, silently and without the plan seat being chosen. It is
-            // scrubbed for `ANTHROPIC_API_KEY`'s reason and not for this ticket's:
-            // a plan seat's credential arrives as a file in checkpoint 4's
-            // directory, never in the environment, so removing this name costs the
-            // feature nothing.
-            "CLAUDE_CODE_OAUTH_TOKEN",
-        ],
-    },
-
-    // 6 — config and credential isolation (C17, split per channel by C73).
-    // Configuration relocates by variable; the fleet's token is a variable and
-    // does not follow HOME; the *operator's* keychain entry does, transitively,
-    // through a search list derived from HOME. Two channels, two answers.
-    isolation: ConfigAndCredentialIsolation {
-        config_env: "CLAUDE_CONFIG_DIR",
-        credential_env: Some(super::spawn::ENV_CC_SECURESTORAGE_DIR),
-        // **Measured, and it is macOS's fact rather than this vendor's** (C73,
-        // `plan-worker-notes.md` §2): `security list-keychains` under a private
-        // `HOME` returns the System keychain alone, so the entry `credential_env`
-        // names is not on the search list at all. Setting that variable correctly
-        // buys nothing once `HOME` has been replaced.
-        operator_store_follows_home: true,
-        private_home: true,
-        // **Measured** (D-082): the operator's 2.1.266 binary under a private
-        // `HOME` wrote 2.1.267 (200 MB) into it within 90 seconds and printed
-        // "Update installed · Restart to update"; with this set, nothing. The
-        // vendor's own sandbox runner sets the same variable for the same reason.
-        fenced_env: &[("DISABLE_AUTOUPDATER", "1")],
-        seeds_from_operator: false,
-    },
-
-    // 7 — write-guardrail install. The installer is `ClaudeCode::install_guardrail`
-    // below, because the document is this vendor's JSON (C32); the matcher it
-    // writes is `write_tools` joined with `|`, which is Claude Code's syntax for
-    // the list rather than a second copy of it.
-    guardrail: GuardrailInstall {
-        settings_file: "settings.json",
-        hook_event: "PreToolUse",
-        write_tools: &["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit"],
-        hook_file: guardrail::HOOK_FILE,
-    },
-
-    // 8 — outbound reachability. No seatbelt, so the socket is simply reachable.
-    outbound: Outbound { sandboxed: false, socket_reachable: true, reachability_keys: &[] },
-
-    // Bring-up. Claude Code reaches a composer that accepts input on its own, so
-    // a pane of it is announced the moment it has a pty — which is what every
-    // pane has always done, and what keeps this a widening rather than a change.
-    bring_up: BringUp::AtOnce,
-
-    // 9 — typing profile. `pty::write_paste` reads it off the pane's own harness
-    // (C35). The four values were `pty`'s constants until the contract batch
-    // (#23); they are Claude Code's answers rather than the pty driver's, so they
-    // live here now and `pty.rs` no longer spells them at all. See the type's doc
-    // for why there is no startup wait.
-    //
-    // `submit_gap_ms` is D-034's one delay between `fleet send` and a pty: phase 0
-    // measured 0/10/30 ms and all three submit, because pty stream ordering is
-    // preserved; 30 ms anyway, so the fleet does not depend on the TUI batching
-    // the end marker and the CR within one input-handler tick.
-    typing: TypingProfile {
-        bracketed_paste: true,
-        paste_start: b"\x1b[200~",
-        paste_end: b"\x1b[201~",
-        submit_bytes: b"\r",
-        submit_gap_ms: 30,
-    },
-
-    // 10 — command-channel spellings, one row per allowlisted command.
-    commands: CommandChannel { spellings: &[("/clear", "/clear"), ("/compact", "/compact")] },
-
-    // 11 — gauge source and window. Claude Code does not publish its window,
-    // so the fleet states it (D-125).
-    gauge: GaugeSource { reads_transcript: true, window_tokens: Some(1_000_000) },
-
-    // 12 — orphan-sweep names. `orphans::sweep_at`.
-    orphans: OrphanNames { comm_suffixes: &["claude"] },
-
-    // 13 — transcript location and format. `runs::harvest_transcripts` moves
-    // these, which is safe because they are append-only files.
-    transcript: Transcript {
-        subdir: "projects",
-        file_ext: "jsonl",
-        format: "claude-code-jsonl",
-        transport: Transport::Rename,
-    },
-
-    // 14 — project identity and trust seeding (C17). `spawn::project_key` and the
-    // per-project half of `spawn::seed_config_dir`.
-    project_identity: ProjectIdentityAndTrust {
-        canonicalize: true,
-        exact_path_match: true,
-        trust_file: ".claude.json",
-        trust_keys: &["hasTrustDialogAccepted", "hasCompletedProjectOnboarding"],
-    },
-
-    // 15 — reopening a recorded session (WP-27, R6). `--resume <id>` takes an id
-    // directly, appends to the same transcript under the same `sessionId`, and
-    // does not fork. Driven under a pty in `docs/notes/reopen-spike-notes.md`.
-    resume: Resume::Supported,
-};
-
-/// The macOS login-keychain item Claude Code's own `/login` writes.
-///
-/// **Named here rather than on the spec**, because it is not one of the fourteen:
-/// the checkpoints are facts a bring-up reads, and this is the address of a store
-/// only [`ClaudeCode::read_operator_login`] ever opens.
-const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
-
-/// The file Claude Code reads a credential out of, inside its configuration
-/// directory (C73, `plan-worker-notes.md` §12).
-const CREDENTIALS_FILE: &str = ".credentials.json";
-
-/// Write the operator's login where this pane can read it, at `0600`.
-///
-/// **The mode is the vendor's own**, matching what its file store chmods its
-/// writes to — and it is the whole of the protection this file gets. The
-/// directory is fleet-owned and disposable, which is what makes that acceptable:
-/// a refreshed credential the pane writes back lands in the same place and is
-/// thrown away with the pane.
-///
-/// **Truncating rather than merging.** A credential is one document with one
-/// writer; merging would mean a stale half surviving a re-seed, which is the
-/// shape that produces a pane authenticating as something the operator no longer
-/// is.
-fn write_operator_login(config_dir: &Path, login: &OperatorLogin) -> Result<(), String> {
-    let path = config_dir.join(CREDENTIALS_FILE);
-    std::fs::write(&path, login.document())
-        .map_err(|e| format!("write {}: {e}", path.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-            .map_err(|e| format!("chmod {}: {e}", path.display()))?;
-    }
-    Ok(())
-}
-
-impl Harness for ClaudeCode {
-    fn spec(&self) -> &'static HarnessSpec {
-        &CLAUDE_CODE_SPEC
-    }
-
-    fn project_key(&self, cwd: &Path) -> String {
-        super::spawn::project_key(cwd)
-    }
-
-    fn seed_config_dir(&self, seed: &Seed<'_>) -> Result<Vec<(NoticeLevel, String)>, String> {
-        // Nothing to announce: this directory is the fleet's own, so no key
-        // written into it is standing on top of an answer the operator gave.
-        super::spawn::seed_config_dir(self, seed)?;
-        // **Checkpoint 6's plan-seat half** (C73, C75). The credential goes here
-        // and only here: a fenced pane has no login keychain on its search list,
-        // and its own configuration directory is the one store it can still read.
-        // Measured, not assumed — `plan-worker-notes.md` §12.
-        if let Some(login) = seed.operator_login {
-            write_operator_login(seed.config_dir, login)?;
-        }
-        Ok(Vec::new())
-    }
-
-    /// **Claude Code's login is a macOS login-keychain item**, not a file, which
-    /// is why `operator_home` goes unread here (C73).
-    ///
-    /// **Narrowed to `claudeAiOauth` before it returns, and that is not caution
-    /// for its own sake.** The item is a JSON document holding more than this
-    /// vendor's credential: on a machine with MCP servers configured it also
-    /// carries their OAuth access tokens, refresh tokens and client secrets
-    /// (`plan-worker-notes.md` §9). Handing the *item* to a fenced pane would put
-    /// credentials with nothing to do with FLEETOR inside an unattended worktree.
-    ///
-    /// Read-only: `find-generic-password -w` does not modify the item.
-    fn read_operator_login(&self, _operator_home: Option<&Path>) -> Option<OperatorLogin> {
-        let out = std::process::Command::new("security")
-            .args(["find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"])
-            .output()
-            .ok()?;
-        if !out.status.success() {
-            return None;
-        }
-        let raw = String::from_utf8(out.stdout).ok()?;
-        let item: serde_json::Value = serde_json::from_str(raw.trim()).ok()?;
-        let oauth = item.get("claudeAiOauth")?;
-        if !oauth.is_object() {
-            return None;
-        }
-        let mut narrowed = serde_json::Map::new();
-        narrowed.insert("claudeAiOauth".to_string(), oauth.clone());
-        serde_json::to_string(&serde_json::Value::Object(narrowed)).ok().map(OperatorLogin::new)
-    }
-
-    /// Claude Code's settings document: JSON, a top-level `hooks` object keyed by
-    /// event, each event an array of `{matcher, hooks:[{type, command}]}`.
-    ///
-    /// **This body is the thing C32 said could not be data.** It was
-    /// `guardrail::merge_hook` and read as though it were general; it was one
-    /// vendor's document all along, and codex's TOML is what made that visible.
-    ///
-    /// The matcher is rendered from [`GuardrailInstall::write_tools`] rather than
-    /// stored beside it — an alternation is Claude Code's *syntax* for the same
-    /// list the script is handed, and two fields holding one answer is the drift
-    /// this ticket exists to close.
-    fn install_guardrail(
-        &self,
-        at: &crate::guardrail::GuardrailPlacement<'_>,
-    ) -> Result<Vec<(NoticeLevel, String)>, String> {
-        let spec = &self.spec().guardrail;
-        let (command, notices) = guardrail::prepare(spec, at)?;
-
-        let mut root = guardrail::existing_document(spec, at.config_dir)
-            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-            .filter(serde_json::Value::is_object)
-            .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
-
-        let object = root.as_object_mut().expect("just filtered to an object");
-        let hooks = object
-            .entry("hooks")
-            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-        if !hooks.is_object() {
-            *hooks = serde_json::Value::Object(serde_json::Map::new());
-        }
-        let hooks = hooks.as_object_mut().expect("just ensured it is an object");
-        let pre =
-            hooks.entry(spec.hook_event).or_insert_with(|| serde_json::Value::Array(Vec::new()));
-        if !pre.is_array() {
-            *pre = serde_json::Value::Array(Vec::new());
-        }
-        let pre = pre.as_array_mut().expect("just ensured it is an array");
-        // Ours is replaced rather than appended to, so a relaunch does not
-        // accumulate five copies that would each run and each report.
-        pre.retain(|entry| !mentions_our_hook(entry, spec));
-        pre.push(serde_json::json!({
-            "matcher": spec.write_tools.join("|"),
-            "hooks": [{ "type": "command", "command": command }],
-        }));
-
-        let text =
-            serde_json::to_string_pretty(&root).map_err(|e| format!("encode settings: {e}"))?;
-        guardrail::install_document(spec, at.config_dir, &text)?;
-        Ok(notices)
-    }
-
-    /// Claude Code's model channel is [`Posture::model_env`], so
-    /// [`Seat::model`] is read here and produces nothing: `model_flag` is `None`,
-    /// and a flag this harness does not have is a flag it must not be given.
-    fn command_args(&self, seat: &Seat<'_>) -> Vec<String> {
-        let spec = self.spec();
-        let mut args: Vec<String> =
-            spec.program.base_args.iter().map(|a| (*a).to_string()).collect();
-        if let (Some(flag), Some(model)) = (spec.posture.model_flag, seat.model) {
-            args.push(flag.to_string());
-            args.push(model.to_string());
-        }
-        if let (Some(flag), Some(mode)) = (spec.posture.permission_flag, seat.permission_mode) {
-            args.push(flag.to_string());
-            args.push(mode.to_string());
-        }
-        if let Some(flag) = spec.brief.argv_flag {
-            args.push(flag.to_string());
-            args.push(seat.brief.to_string());
-        }
-        args
-    }
-
-    /// **Claude Code reopens with `--resume <id>`**, which the vendor accepts as a
-    /// session id directly with no picker (verified from `--help` and driven under
-    /// a pty, `docs/notes/reopen-spike-notes.md` §1).
-    ///
-    /// **This launch's brief is passed again, with prompt recording off.** Claude
-    /// Code records the system prompt on a conversation's first request and
-    /// reuses that record on every resume. A pane with no turns has no record,
-    /// so without the flag it comes up on the vendor's own prompt; a pane with
-    /// history would keep its old brief. `--system-prompt-snapshot` needs
-    /// Claude Code 2.1.257 or later and is passed unconditionally.
-    ///
-    /// **No `--fork-session`.** Measured: a plain resume appends to the same
-    /// `.jsonl` under the same `sessionId` rather than forking, which is exactly
-    /// what R3's continue-in-place wants.
-    fn resume_args(&self, seat: &Seat<'_>, session_id: &str) -> Option<Vec<String>> {
-        let spec = self.spec();
-        let mut args = vec!["--resume".to_string(), session_id.to_string()];
-        if let (Some(flag), Some(model)) = (spec.posture.model_flag, seat.model) {
-            args.push(flag.to_string());
-            args.push(model.to_string());
-        }
-        if let (Some(flag), Some(mode)) = (spec.posture.permission_flag, seat.permission_mode) {
-            args.push(flag.to_string());
-            args.push(mode.to_string());
-        }
-        if let Some(flag) = spec.brief.argv_flag {
-            args.push(flag.to_string());
-            args.push(seat.brief.to_string());
-        }
-        args.push("--system-prompt-snapshot".to_string());
-        args.push("off".to_string());
-        Some(args)
-    }
-
-    /// **Claude Code's resumable id is its transcript's own filename** — it keeps
-    /// `projects/<cwd-slug>/<session-id>.jsonl`, and every row inside carries the
-    /// same `sessionId` as the stem (measured; spike notes §2).
-    ///
-    /// Reads the newest transcript under the seat, because R3 leaves a seat's
-    /// sessions in place and a lineage's directory accumulates one per reopen —
-    /// the id worth recording for *this* run is the one it last wrote. Same rule
-    /// the context gauge already uses (`context_gauge::latest_transcript`).
-    fn session_id(&self, seat_dir: &Path) -> Option<String> {
-        let spec = self.spec();
-        let root = seat_dir.join(spec.transcript.subdir);
-        let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
-        for file in crate::runs::transcript_files_for(&root, spec.transcript.file_ext) {
-            let Ok(at) = std::fs::metadata(&file).and_then(|m| m.modified()) else { continue };
-            if newest.as_ref().is_none_or(|(best, _)| at > *best) {
-                newest = Some((at, file));
-            }
-        }
-        newest?.1.file_stem().and_then(|s| s.to_str()).map(str::to_string)
-    }
-
-    /// Present when a transcript named `<session_id>.jsonl` is under the seat —
-    /// the filename rule [`Self::session_id`] reads the id from, asked the other
-    /// way round.
-    fn has_session(&self, seat_dir: &Path, session_id: &str) -> bool {
-        let spec = self.spec();
-        crate::runs::transcript_files_for(
-            &seat_dir.join(spec.transcript.subdir),
-            spec.transcript.file_ext,
-        )
-        .iter()
-        .any(|file| file.file_stem().and_then(|s| s.to_str()) == Some(session_id))
-    }
-}
-
-/// Is this `PreToolUse` entry one of ours, from a previous launch?
-///
-/// Claude Code's document shape, so it lives with Claude Code. The *recognition*
-/// is the fleet's — the hook file's name — and that half is
-/// [`guardrail::is_our_command`].
-fn mentions_our_hook(entry: &serde_json::Value, spec: &GuardrailInstall) -> bool {
-    entry
-        .get("hooks")
-        .and_then(|h| h.as_array())
-        .map(|hooks| {
-            hooks.iter().any(|h| {
-                h.get("command")
-                    .and_then(|c| c.as_str())
-                    .is_some_and(|c| guardrail::is_our_command(c, spec))
-            })
-        })
-        .unwrap_or(false)
+    ) -> Option<crate::context_gauge::UsageReading>;
 }
 
 // --- the registry -------------------------------------------------------------
 
-static CLAUDE_CODE: ClaudeCode = ClaudeCode;
+static CLAUDE_CODE: super::claude_code::ClaudeCode = super::claude_code::ClaudeCode;
 
 /// Every registered harness. **Still exactly one, and #39 removed the last thing
 /// standing in the way of two** (C20, C25, C53, C54).
@@ -2553,161 +2112,6 @@ impl HarnessReadiness {
     }
 }
 
-// --- what Claude Code reports about this machine (WP-25 #35; M17) --------------
-
-/// **Read what Claude Code reports about this machine** (WP-25 #35; M17, C14, C47).
-///
-/// **C58's named second push into [`Host::harnesses`](super::Host::harnesses)**, built
-/// here because the gate is what needed it: C23 puts Claude Code on the orchestrator
-/// row and the workers row beside codex, and a harness whose login the gate cannot
-/// speak to sits next to one whose it can, looking half-built. That is story 9's *a
-/// supported feature looks unimplemented*, at the one screen where the operator is
-/// deciding what to spend.
-///
-/// **`home` and `path` arrive rather than being read**, which is the whole reason
-/// this takes two arguments instead of none. It lives inside `placement`,
-/// `tests/placement_reads_nothing.rs` holds the module to its one rule, and both
-/// facts it needs — the operator's `HOME` and the `PATH` the application was
-/// launched with — are already fields on [`Host`](super::Host). So it reads the same
-/// values a spawn resolves against, and a test can hand it a scratch directory.
-///
-/// **The login check is `~/.claude.json`'s `oauthAccount`, and M17 recorded its
-/// caveat when it chose it:** that file is Claude Code's internal state rather than a
-/// supported API, and its presence proves a login *happened*, not that the token
-/// still works. So a pass here carries the same [`REACHABILITY_NOT_AUTHORIZATION`]
-/// sentence codex's does — two harnesses failing this way for different reasons, and
-/// the operator told the same thing about both.
-///
-/// **What it is bounded by, said rather than hidden:** an operator authenticating
-/// through `ANTHROPIC_API_KEY` in their shell has no `oauthAccount` and is reported
-/// as having no credential. Reading that variable would be a process read inside
-/// `placement`, and putting it on [`Host`](super::Host) to dodge that would put the
-/// operator's own key on a value the whole spawn path holds. The refusal names the
-/// bound so an operator in that state can read what happened rather than guess.
-///
-/// **Both readings, per C47.** `claude` is a name people alias, and this is a
-/// measurement taken through a subprocess — the class where #31 found the two
-/// readings disagreeing absolutely. So the version is read once through the bare name
-/// and once through the absolute file the `PATH` resolved to, and whether they agreed
-/// is [`HarnessReadiness::readings_agree`]. Zero tokens: `--version` asks for no
-/// completion.
-///
-/// **No model list, and that is an answer rather than a gap.** Claude Code publishes
-/// no catalog command, so [`HarnessReadiness::models`] is empty and the gate offers
-/// the operator a name to type — exactly what that field's own documentation says an
-/// empty list means.
-pub fn claude_code_diagnose(home: Option<&Path>, path: &str) -> HarnessReadiness {
-    let spec = &CLAUDE_CODE_SPEC;
-    let invoked = spec.program.bin;
-    let Some(resolved) = first_on_path(path, invoked) else {
-        return HarnessReadiness::not_installed(spec);
-    };
-
-    let through_the_name = vendor_version(Path::new(invoked), path);
-    let through_the_binary = vendor_version(&resolved, path);
-
-    HarnessReadiness {
-        harness: spec,
-        invoked: invoked.to_string(),
-        resolved: Some(resolved),
-        readings_agree: through_the_name == through_the_binary,
-        version: through_the_binary,
-        login: claude_code_login(home),
-        // C2 as amended by C9: the orchestrator inherits its provider and the gate
-        // displays it. Claude Code reports none of its own here — an operator
-        // pointing `ANTHROPIC_BASE_URL` somewhere is doing it in their shell, which
-        // is the process this module may not read.
-        provider: None,
-        // **The vendor publishes no catalog, so the spec's is what the gate
-        // offers** (C78). This is still not an invented reading: the aliases are
-        // the vendor's own, quoted from its `--help`, and the field they land in
-        // is the same one codex fills from a live `models.json`. What a caller
-        // cannot do is tell the two apart — which is correct, because the gate's
-        // job is to offer models and not to explain where the list came from.
-        models: CLAUDE_CODE_SPEC
-            .posture
-            .declared_models
-            .iter()
-            .map(|(slug, display_name)| ModelChoice {
-                slug: (*slug).to_string(),
-                display_name: (*display_name).to_string(),
-            })
-            .collect(),
-        // #37's, not this ticket's: comparing what the vendor resolved against what
-        // FLEETOR wrote is a gate check of its own, and Claude Code publishes no
-        // diagnostic that reports one.
-        posture: ResolvedPosture::default(),
-    }
-}
-
-/// Whether this machine has completed a `claude` login, by the one file M17 named.
-fn claude_code_login(home: Option<&Path>) -> LoginState {
-    let Some(home) = home else {
-        return LoginState::Unreadable {
-            why: "this machine reported no HOME, so `~/.claude.json` could not be located"
-                .to_string(),
-        };
-    };
-    let file = home.join(".claude.json");
-    let text = match std::fs::read_to_string(&file) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return LoginState::NoCredential {
-                summary: no_login_recorded(&file),
-                // Claude Code publishes no custom-provider reading at all, so this
-                // shape cannot arise for it — an honest `None` rather than an
-                // invented one (#51).
-                provider_key: None,
-            };
-        }
-        Err(e) => {
-            let why = format!("{} could not be read: {e}", file.display());
-            return LoginState::Unreadable { why };
-        }
-    };
-    // **Not a refusal**, for the reason `LoginState::Unreadable` exists: a working
-    // installation whose internal state file this arc cannot parse is a parse error,
-    // and treating that as "logged out" would refuse a seat on the strength of one.
-    let value: serde_json::Value = match serde_json::from_str(&text) {
-        Ok(value) => value,
-        Err(e) => {
-            let why = format!("{} is not readable as JSON: {e}", file.display());
-            return LoginState::Unreadable { why };
-        }
-    };
-    match value.get("oauthAccount") {
-        Some(account) if !account.is_null() => {
-            LoginState::LoggedIn(AccountShape::SubscriptionPlan { plan: None })
-        }
-        _ => LoginState::NoCredential { summary: no_login_recorded(&file), provider_key: None },
-    }
-}
-
-/// The one sentence both no-credential branches say, so they cannot drift apart.
-fn no_login_recorded(file: &Path) -> String {
-    format!(
-        "{} records no completed `claude` login (an `ANTHROPIC_API_KEY` in your shell \
-         is not written there and is not read here)",
-        file.display(),
-    )
-}
-
-/// The first `bin` on `path` that is a file. A plain search of a string the caller
-/// handed over — nothing here asks the process what its `PATH` is.
-fn first_on_path(path: &str, bin: &str) -> Option<PathBuf> {
-    std::env::split_paths(path).map(|dir| dir.join(bin)).find(|found| found.is_file())
-}
-
-/// What a vendor says its version is, or `None` when it would not answer.
-fn vendor_version(bin: &Path, path: &str) -> Option<String> {
-    let out = std::process::Command::new(bin).arg("--version").env("PATH", path).output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (!text.is_empty()).then_some(text)
-}
-
 // --- pinning the two forms together -------------------------------------------
 
 /// **What the expand step's safety net became once there was no second form
@@ -2727,6 +2131,7 @@ fn vendor_version(bin: &Path, path: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::placement::claude_code::CLAUDE_CODE_SPEC;
 
     /// **The registry pin, now holding two** (C20, C25, C53, C54, C57).
     ///
@@ -2832,89 +2237,6 @@ mod tests {
         }
     }
 
-    /// **The three not-usable shapes get three different answers** (#51; C14, #36,
-    /// #29).
-    ///
-    /// The one place the distinction is decided. Every one of these is a machine
-    /// the gate has something to say about, and saying the same thing about all
-    /// three would be worse than saying nothing: two of them are not fixed by
-    /// logging in.
-    #[test]
-    fn the_three_not_usable_shapes_are_told_three_different_things() {
-        let spec = &CLAUDE_CODE_SPEC;
-        let readiness =
-            |login: LoginState| HarnessReadiness { login, ..HarnessReadiness::not_installed(spec) };
-
-        // 1 — no credential at all: the vendor's own login command, with whatever
-        // second step the spec declared.
-        let none = readiness(LoginState::NoCredential {
-            summary: "no login recorded".into(),
-            provider_key: None,
-        })
-        .login_guidance()
-        .expect("a machine with no credential is told what to run");
-        assert_eq!(none.command, Some(spec.login.command));
-        assert_eq!(none.then, spec.login.then);
-        assert_eq!(none.variable, None, "there is no variable to set in this shape");
-        assert!(
-            none.sentence.contains(spec.login.credential_home),
-            "the operator is told to run something and not why only they can: {}",
-            none.sentence,
-        );
-
-        // 2 — a custom provider whose key is missing: no command helps, and the
-        // variable is the whole of the fix (#29 — no ambient fallback).
-        let missing = readiness(LoginState::NoCredential {
-            summary: "the configured provider's key is missing".into(),
-            provider_key: Some(ProviderKey {
-                provider: "the operator's own".into(),
-                env_var: "OPERATORS_SHELL_KEY".into(),
-            }),
-        })
-        .login_guidance()
-        .expect("a provider missing its key is told about the variable");
-        assert_eq!(
-            missing.command, None,
-            "a login command was offered for a state no login command fixes",
-        );
-        assert_eq!(missing.variable.as_deref(), Some("OPERATORS_SHELL_KEY"));
-        assert!(
-            missing.sentence.contains("No login command will help"),
-            "the sentence does not say that this is the shape logging in does not fix: {}",
-            missing.sentence,
-        );
-
-        // 3 — `Unreadable`: a working installation, and telling this operator to
-        // log in would be telling them to fix something that is not broken.
-        let unreadable = readiness(LoginState::Unreadable { why: "an unknown format".into() })
-            .login_guidance()
-            .expect("an unreadable report is told what it is");
-        assert_eq!(unreadable.command, None);
-        assert_eq!(unreadable.variable, None);
-        assert!(
-            unreadable.sentence.contains("Nothing to log in to"),
-            "an operator with a working installation is being told to log in: {}",
-            unreadable.sentence,
-        );
-
-        // The two states with nothing to say. `NotInstalled`'s reason already
-        // carries the only actionable sentence there is, and a logged-in harness
-        // has nothing to fix.
-        assert_eq!(readiness(LoginState::NotInstalled).login_guidance(), None);
-        assert_eq!(readiness(LoginState::LoggedIn(AccountShape::ApiKey)).login_guidance(), None,);
-
-        // **And none of the three respells the caveat.** That sentence is about a
-        // machine that *is* logged in — the opposite state to all three — and it is
-        // said once, from `REACHABILITY_NOT_AUTHORIZATION`.
-        for guidance in [&none, &missing, &unreadable] {
-            assert!(
-                !guidance.sentence.contains("revoked or expired key clears this check"),
-                "a guidance sentence respells the reachability caveat: {}",
-                guidance.sentence,
-            );
-        }
-    }
-
     #[test]
     fn the_registry_holds_two_distinct_harnesses_and_names_resolve() {
         let all = registered();
@@ -2952,118 +2274,6 @@ mod tests {
 
         assert_eq!(claude_code().spec(), &CLAUDE_CODE_SPEC);
         assert!(by_name("nothing-registered-under-this-name").is_none());
-    }
-
-    #[test]
-    fn the_program_and_the_argv_match_what_the_command_builders_already_produce() {
-        // Checkpoints 1, 2 and 3 against `spawn`'s three shapes: `orch` gets the
-        // brief alone, every unattended seat gets the permission flag first.
-        let cc = claude_code();
-        assert_eq!(cc.spec().program.bin, "claude");
-        assert_eq!(
-            cc.command_args(&Seat::new("BRIEF").for_the_operator()),
-            vec!["--system-prompt", "BRIEF"]
-        );
-        assert_eq!(
-            cc.command_args(&Seat::new("BRIEF").with_permission_mode("auto")),
-            vec!["--permission-mode", "auto", "--system-prompt", "BRIEF"]
-        );
-        // Checkpoint 3's second channel, and the reason it now exists: this
-        // harness names its model in the environment, so a seat that carries one
-        // adds nothing to argv. A harness whose `model_flag` is set gets the flag
-        // from the same call — see codex's own test.
-        assert_eq!(
-            cc.command_args(&Seat::new("BRIEF").with_model("a-model").with_permission_mode("auto")),
-            vec!["--permission-mode", "auto", "--system-prompt", "BRIEF"],
-        );
-    }
-
-    #[test]
-    fn the_command_channel_covers_the_allowlist_and_nothing_beyond_it() {
-        // Widening `ALLOWED_COMMANDS` is Tier 2; widening it without a spelling
-        // here would send a pane a command the harness may not have.
-        let spellings = claude_code().spec().commands.spellings;
-        let canonical: Vec<&str> = spellings.iter().map(|(c, _)| *c).collect();
-        assert_eq!(canonical, fleetor_core::command::ALLOWED_COMMANDS.to_vec());
-    }
-
-    #[test]
-    fn the_gauge_window_and_the_guardrail_hook_are_the_live_constants() {
-        // Not a copy of them — the same items. This test says so out loud so that
-        // a later edit which replaces either with a literal is caught here.
-        let spec = claude_code().spec();
-        assert_eq!(spec.gauge.window_tokens, Some(1_000_000));
-        assert_eq!(spec.guardrail.hook_file, guardrail::HOOK_FILE);
-    }
-
-    #[test]
-    fn the_typing_profile_matches_the_bytes_the_pty_actually_writes() {
-        // Checkpoint 9. The paste framing and the submit byte are pinned; the
-        // 30 ms gap is the only delay on the message path (D-034, Tier 1.4) and
-        // this is the value that must stay one number.
-        let typing = &claude_code().spec().typing;
-        assert!(typing.bracketed_paste);
-        assert_eq!(typing.paste_start, b"\x1b[200~");
-        assert_eq!(typing.paste_end, b"\x1b[201~");
-        assert_eq!(typing.submit_bytes, b"\r");
-        assert_eq!(typing.submit_gap_ms, 30);
-    }
-
-    #[test]
-    fn the_project_key_is_the_canonicalization_the_trust_flag_and_the_gauge_share() {
-        // Checkpoint 14's two halves agree: the method is `spawn::project_key`,
-        // and the spec says that is what it is.
-        let dir = std::env::temp_dir();
-        assert_eq!(claude_code().project_key(&dir), super::super::spawn::project_key(&dir));
-        assert!(claude_code().spec().project_identity.canonicalize);
-    }
-
-    /// Checkpoint 15's reader and its presence check agree on one session, and the
-    /// check is exact: a prefix of the id is not the session (R19).
-    #[test]
-    fn claude_codes_presence_check_finds_the_session_its_reader_names_and_no_other() {
-        let seat = std::env::temp_dir()
-            .join(format!("fleetor-cc-has-session-{}", fleetor_core::time::now_ms()));
-        let project = seat.join("projects").join("-tmp-slug");
-        std::fs::create_dir_all(&project).expect("scratch seat");
-        std::fs::write(project.join("abc-123.jsonl"), r#"{"type":"user"}"#).expect("a transcript");
-
-        let cc = claude_code();
-        let id = cc.session_id(&seat).expect("the reader names the session");
-        assert!(cc.has_session(&seat, &id), "the check must find what the reader named");
-        assert!(!cc.has_session(&seat, "abc"), "a prefix of the id is not the session");
-        assert!(!cc.has_session(&seat, "zzz-999"), "an id with no transcript is absent");
-        assert!(!cc.has_session(&seat.join("nowhere"), &id), "a missing seat holds nothing");
-        let _ = std::fs::remove_dir_all(&seat);
-    }
-
-    #[test]
-    fn seeding_through_the_harness_writes_the_keys_the_spec_names() {
-        // Checkpoints 4 and 14 end to end, against a scratch directory — the same
-        // property `placement`'s own rule buys: every filesystem effect is
-        // confined to the directory it was handed.
-        let scratch = std::env::temp_dir()
-            .join(format!("fleetor-harness-seed-{}", fleetor_core::time::now_ms()));
-        let cwd = scratch.join("work");
-        std::fs::create_dir_all(&cwd).expect("scratch cwd");
-        let config = scratch.join("config");
-
-        let cc = claude_code();
-        cc.seed_config_dir(&Seed::new(&config, &cwd, None)).expect("seed the config dir");
-
-        let spec = cc.spec();
-        let text = std::fs::read_to_string(config.join(spec.config_dir.seed_file))
-            .expect("the seed file the spec names");
-        let root: serde_json::Value = serde_json::from_str(&text).expect("valid json");
-        for key in spec.config_dir.seed_keys {
-            assert_eq!(root[key], serde_json::json!(true), "config key {key}");
-        }
-        let project = &root["projects"][cc.project_key(&cwd)];
-        for key in spec.project_identity.trust_keys {
-            assert_eq!(project[key], serde_json::json!(true), "trust key {key}");
-        }
-
-        std::fs::remove_dir_all(&scratch).ok();
     }
 
     // --- what a harness reports about this machine (WP-25 #34) ------------------

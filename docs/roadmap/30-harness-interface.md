@@ -1,6 +1,6 @@
 # WP-30 — `harness.rs` becomes the interface: one file per harness
 
-status: not-started size: M
+status: landed size: M
 depends-on: 25 (the seam, landed) blocks: 24 (register cursor)
 brief-cost: 0 — no prompt changes. This moves code and re-points two mechanisms.
 
@@ -91,3 +91,13 @@ of scope and belongs to whichever package needs the measurement.
 - [ ] `tests/placement_reads_nothing.rs` still passes, and codex's probe no longer reads the process.
 - [ ] This doc: status → landed, "How it landed" appended.
 - [ ] `00-index.md` status column updated — the last act of the session.
+
+## How it landed
+
+Three commits on `refactor/wp-30-harness-interface`: `ed489a3` (the file move), `fd271d3` (the
+probe onto the trait) and the needles commit, which makes `tests/harness_literals.rs` iterate
+`registered()` through a new `Harness::literal_needles` method. The conformance suite was not
+edited, and codex's needles found no hard-coding outside `codex.rs`. D-127 records the two
+choices beyond D-090: the `MachineFacts` type and codex's probe inheriting `CODEX_HOME`. Two docs
+still name old paths and were updated: `docs/fleet-comms-map.md` and
+`docs/roadmap/27-reopening-a-run.md`.

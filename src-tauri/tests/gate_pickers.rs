@@ -56,6 +56,7 @@ const API: &str = "ui/src/fleet/api.ts";
 const BACKEND: &str = "src-tauri/src/fleet.rs";
 const COMMANDS: &str = "src-tauri/src/lib.rs";
 const HARNESS: &str = "src-tauri/src/placement/harness.rs";
+const CLAUDE_CODE: &str = "src-tauri/src/placement/claude_code.rs";
 const CODEX: &str = "src-tauri/src/placement/codex.rs";
 
 fn repo_root() -> PathBuf {
@@ -368,7 +369,7 @@ fn the_recheck_button_forces_a_probe_rather_than_re_rendering_one() {
 /// passing over the literal it was written to find.
 fn registered_vendor_words() -> Vec<String> {
     let mut words = registered_names();
-    let harness = read(HARNESS);
+    let harness = read(CLAUDE_CODE);
     let codex = read(CODEX);
     for (text, spec, what) in [
         (&harness, "pub const CLAUDE_CODE_SPEC: HarnessSpec = HarnessSpec {", "CLAUDE_CODE_SPEC"),
@@ -392,7 +393,7 @@ fn registered_vendor_words() -> Vec<String> {
 
 /// Every registered harness's name, read out of the spec that declares it.
 fn registered_names() -> Vec<String> {
-    let harness = read(HARNESS);
+    let harness = read(CLAUDE_CODE);
     let codex = read(CODEX);
     let mut names = Vec::new();
     for (text, spec, what) in [
@@ -838,8 +839,9 @@ fn the_checks_fire_on_a_source_that_violates_them() {
 /// quietly stopped existing.
 #[test]
 fn the_declarations_this_file_reads_still_exist() {
-    for rel in
-        [GATE, PICKERS, WIRE, API, BACKEND, COMMANDS, HARNESS, CODEX].into_iter().chain(CHROME)
+    for rel in [GATE, PICKERS, WIRE, API, BACKEND, COMMANDS, HARNESS, CLAUDE_CODE, CODEX]
+        .into_iter()
+        .chain(CHROME)
     {
         let file = repo_root().join(rel);
         assert!(file.is_file(), "{} is read by this file and is gone", file.display());

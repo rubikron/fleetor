@@ -642,9 +642,9 @@ mod tests {
         };
 
         // Seed a transcript with usage well under the notice threshold —
-        // `crate::placement::spawn::project_key` canonicalizes the same way
+        // `crate::placement::claude_code::project_key` canonicalizes the same way
         // `context_gauge::project_dir` does, so this mirrors a real spawn.
-        let resolved = crate::placement::spawn::project_key(&cwd);
+        let resolved = crate::placement::claude_code::project_key(&cwd);
         let slug: String =
             resolved.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
         let project_dir = config_dir.join("projects").join(slug);
@@ -682,7 +682,7 @@ mod tests {
     fn crossing_the_notice_threshold_appends_exactly_one_notice_across_repeated_asks() {
         let cwd = temp_dir("hot-cwd");
         let config_dir = temp_dir("hot-cfg");
-        let resolved = crate::placement::spawn::project_key(&cwd);
+        let resolved = crate::placement::claude_code::project_key(&cwd);
         let slug: String =
             resolved.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
         let project_dir = config_dir.join("projects").join(slug);
