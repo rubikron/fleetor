@@ -37,7 +37,7 @@ No login check (D-140).
 ## Phases
 
 1. Zero-token spike. **Done** (`opencode-spike-notes.md`).
-2. Paid spike, on the operator's word: the open list at the end of the notes.
+2. Paid spike. **Done** — every arm passed except `external_directory` against `shell`, which D-142 now records.
 3. `opencode.rs`, registered; conformance green.
 4. One live opencode worker and one opencode orch complete a `fleet send` round trip.
 

@@ -4,7 +4,7 @@
 
 **Version stamp: `opencode v2.2.5`** (macOS, arm64), operator on the OpenCode Go plan.
 
-Re-runnable, **zero tokens**: `python3 -I examples/opencode-spike/tui_probe.py <empty dir> --standalone --auto`.
+Re-runnable, **zero tokens**: `python3 -I examples/opencode-spike/tui_probe.py <empty dir> --standalone --auto` and `system_prompt_probe.py <empty dir>`. **Spends turns**: `PROBE_MODEL=<provider/model> python3 -I examples/opencode-spike/turn_probe.py <empty dir> main|resume|baseline`.
 
 **Never rewritten** (`building.md` §4). Findings append.
 
@@ -26,3 +26,26 @@ Re-runnable, **zero tokens**: `python3 -I examples/opencode-spike/tui_probe.py <
 ## Open — needs a real turn (spends the operator's Go plan)
 
 Whether `ctx.tool.hook("execute.before", …)` throwing blocks the call (D-142); whether `external_directory: deny` holds under `--auto`; whether the `fleetor` agent's `prompt` replaces the default system prompt (sentinel not in the pasted bytes) and survives `/new` (D-145); bracketed paste + CR submits; `--session <id>` resumes; `/compact`; which row the gauge reads mid-turn; that `fleet` reaches the hub socket (no vendor sandbox, so expected).
+
+## 2026-11-02 — paid findings (`examples/opencode-spike/turn_probe.py`, ~15 turns on `opencode-go/beam-free`)
+
+Every arm ran `opencode --standalone --auto` with the seat config of D-141–D-145. `opencode-go/deepseek-v4.1-flash` failed every turn upstream (`This Go model requires Global regions … in your workspace's Privacy settings`), and `glm-5.3-flash` / `claude-haiku-5-5` returned `OpenCode Go 5 hour usage limit reached`; the free `beam-free` was used instead.
+
+| Arm | Result |
+|---|---|
+| Bracketed paste + CR submits | **pass** — every turn |
+| Brief sentinel (`agent.fleetor.prompt`) reaches the model | **pass** |
+| Brief survives `/new` (new session row, still agent `fleetor`) | **pass** |
+| Plugin `execute.before` throw refuses a `shell` call | **pass** — `executed: false`, `status: error`; the model reads the thrown message |
+| Plugin throw refuses a `write` call | **pass** |
+| `external_directory: deny` refuses a `write` outside the cwd under `--auto` | **pass** — `Permission denied: external_directory` |
+| `external_directory: deny` refuses a `shell` write outside the cwd | **fail** — the file was written |
+| `--auto` runs a shell write inside the cwd unprompted | **pass** |
+| Unix socket outside the worktree reachable from `shell` | **pass** — no vendor sandbox |
+| `/compact` | **pass** — a `compaction` record (`reason: manual`) with a summary, same session |
+| `--session <id>` resumes the conversation | **pass** |
+
+1. **The hook event** is `{tool, sessionID, agent, messageID, id, input}`. Tool names are opencode's own: `shell` (not `bash`), `write` with `input.path`. The hook runs before the permission check: the `ext-write` call reached the hook, then `external_directory` refused it.
+2. **The agent prompt replaces opencode's base prompt** (`examples/opencode-spike/system_prompt_probe.py`, zero tokens, a local stub provider recording the request). The default agent's system prompt opens `You are an AI agent running in OpenCode…` with sections `# Harness`, `# Communication`, `# Working in codebases`, `# Your Model`, `# Code Mode`; the `fleetor` agent's opens with the brief and keeps only `# Your Model` and `# Code Mode` (tool documentation, ~34k of its 35.5k chars).
+3. **The transcript is `session_message`** (v2), keyed by `session_id`, types `user`, `assistant`, `compaction`, `idle`. Each `assistant` row carries `tokens: {input, output, reasoning, cache: {read, write}}`; the context in use is the last one's `input + cache.read + cache.write`. `session_v2.tokens_*` are running totals, not the context.
+4. **Input-token comparison is not a replacement test.** One `ok` turn cost 10,735 + 448 cached on `fleetor` and 9,399 + 2,048 on the default agent; the base prompt is small beside ~34k chars of tool documentation, so the totals barely differ.
