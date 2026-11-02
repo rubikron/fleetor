@@ -134,3 +134,9 @@ Note: D-005 is referenced elsewhere in this file (e.g. D-009, D-011) but has no 
 | [D-125](D-125.md) | meta | alive | the gauge divides by the window Claude Code runs: 1M with no model, 200k for an unrecognised slug |
 | [D-126](D-126.md) | meta | alive | every seat's model is settled at launch, and Claude Code drops a slug it does not recognise |
 | [D-127](D-127.md) | WP-30 | alive | the probe's facts are `MachineFacts { home, path }`; codex's probe still inherits `CODEX_HOME` |
+| [D-140](D-140.md) | WP-32 | alive | an opencode seat runs on the operator's existing opencode providers and login; FLEETOR enforces no login |
+| [D-141](D-141.md) | WP-32 | alive | the gate picks an opencode seat's model; it reaches the pane as `model` in `OPENCODE_CONFIG_CONTENT` |
+| [D-142](D-142.md) | WP-32 | alive | an opencode pane is contained by a guardrail plugin calling `write_guardrail.py`, plus `external_directory: deny` |
+| [D-143](D-143.md) | WP-32 | alive | an opencode seat runs on the operator's real data dir; only its configuration is relocated |
+| [D-144](D-144.md) | WP-32 | alive | every opencode pane runs `--standalone --auto`; orch mirrors D-091 |
+| [D-145](D-145.md) | WP-32 | alive | an opencode pane's brief is the prompt of a custom default agent `fleetor` |
