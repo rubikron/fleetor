@@ -126,6 +126,7 @@ fn roster() -> Vec<PaneId> {
 /// caller.
 fn apply_attended_config(cmd: &mut CommandBuilder, spec: &'static HarnessSpec, config_dir: &Path) {
     cmd.env(spec.config_dir.env_var, config_dir);
+    cmd.env(spec.isolation.config_env, config_dir);
     if let Some(var) = spec.isolation.credential_env {
         cmd.env(var, "");
     }
@@ -293,6 +294,7 @@ pub(super) fn worker_command_with(
     ctx: &PaneContext,
     program: Option<&str>,
     path: &str,
+    inherited_secrets: &[String],
 ) -> Worker {
     let spec = harness.spec();
     let pane = PaneId::Worker(slot);
@@ -325,6 +327,10 @@ pub(super) fn worker_command_with(
         },
     );
     cmd.cwd(cwd);
+    // Removed before anything is set, so the fleet's own variables still win (D-131).
+    for name in inherited_secrets {
+        cmd.env_remove(name);
+    }
     apply_pane_env(&mut cmd, pane, socket, path.to_string());
 
     // The Fence learns about rustup (D-069). Both homes are the fleet's own, not
@@ -365,6 +371,7 @@ pub(super) fn worker_command_with(
     // empty — a fenced pane is never handed the key to the operator's login, and
     // the scrub below is what makes that true against an inherit.
     cmd.env(spec.config_dir.env_var, config_dir);
+    cmd.env(spec.isolation.config_env, config_dir);
     // Checkpoint 3's model channel. `None` names nothing and the vendor's own
     // default applies, as on `orch` (M2, C80).
     if let (Some(var), Some(model)) = (spec.posture.model_env, model) {
@@ -406,6 +413,25 @@ pub(super) struct Worker {
 /// One function so that "which names were scrubbed" is answered by the act of
 /// scrubbing rather than beside it — a caller that wants the list cannot get one
 /// that the command does not match.
+/// Whether an inherited name looks like a credential (D-131). Matched on whole
+/// `_`-separated segments, so `GIT_AUTHOR_NAME` and `MAX_OUTPUT_TOKENS` pass.
+pub fn looks_like_a_secret(name: &str) -> bool {
+    const SEGMENTS: &[&str] = &[
+        "TOKEN",
+        "SECRET",
+        "PASSWORD",
+        "PASSWD",
+        "CREDENTIAL",
+        "CREDENTIALS",
+        "APIKEY",
+        "AUTH",
+        "KEY",
+    ];
+    const KEPT: &[&str] = &["SSH_AUTH_SOCK"];
+    let upper = name.to_ascii_uppercase();
+    !KEPT.contains(&upper.as_str()) && upper.split('_').any(|s| SEGMENTS.contains(&s))
+}
+
 fn scrub(cmd: &mut CommandBuilder, names: &'static [&'static str]) -> &'static [&'static str] {
     for name in names {
         cmd.env_remove(name);
@@ -779,6 +805,47 @@ mod tests {
     use super::*;
     use crate::placement::harness::Seed;
 
+    #[test]
+    fn secret_looking_names_are_matched_on_whole_segments() {
+        for name in [
+            "CMUX_CUA_AUTH_TOKEN_FILE",
+            "GITHUB_TOKEN",
+            "AWS_SECRET_ACCESS_KEY",
+            "OPENAI_API_KEY",
+            "npm_config_authtoken_key",
+        ] {
+            assert!(looks_like_a_secret(name), "{name}");
+        }
+        for name in [
+            "SSH_AUTH_SOCK",
+            "GIT_AUTHOR_NAME",
+            "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+            "PATH",
+            "KEYCHAIN_PATH_X",
+        ] {
+            assert!(!looks_like_a_secret(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_worker_never_carries_a_withheld_name() {
+        let worker = worker_command_with(
+            crate::placement::harness::claude_code(),
+            1,
+            Path::new("/tmp"),
+            Path::new("/tmp/home"),
+            Path::new("/tmp/cfg"),
+            Path::new("/tmp/s.sock"),
+            None,
+            None,
+            &crate::prompts::PaneContext::baked(),
+            None,
+            "/usr/bin",
+            &["USER".to_string()],
+        );
+        assert!(worker.command.get_env("USER").is_none());
+    }
+
     // --- the process reads, spelled in the tests that want them ------------------
     //
     // These four were `pub fn` in this module until D-075. Each was one line: the
@@ -850,6 +917,7 @@ mod tests {
             ctx,
             pane_program().as_deref(),
             &worker_augmented_path(cargo_bin.as_deref()),
+            &[],
         )
         .command
     }

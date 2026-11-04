@@ -28,7 +28,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use conformance::{
-    argv_of, config_states, env_on, files_containing, for_each_registered, pane_of, WORKER_SLOT,
+    argv_of, config_states, document, env_on, files_containing, for_each_registered, pane_of,
+    WORKER_SLOT,
 };
 use fleetor_core::pane::PaneId;
 use fleetor_core::{Command, ALLOWED_COMMANDS};
@@ -169,16 +170,16 @@ fn checkpoint_8_every_seat_is_given_the_fleets_own_socket_and_a_fleet_binary_to_
         }
 
         // The machine-with-no-CLI case is announced rather than discovered.
-        let mute = pass.place_orch_without_fleet_bin();
+        let mute = pass.notices_without_fleet_bin();
         assert!(
-            mute.notices.iter().any(|(_, text)| text == MISSING_FLEET_BIN),
+            mute.iter().any(|(_, text)| text == MISSING_FLEET_BIN),
             "{}: a pane with no `fleet` on its PATH looks alive and cannot talk, and \
              placement said nothing about it: {:?}",
             pass.spec.name,
-            mute.notices,
+            mute,
         );
         assert!(
-            !pass.orch.notices.iter().any(|(_, text)| text == MISSING_FLEET_BIN),
+            !pass.seats()[0].1.notices.iter().any(|(_, text)| text == MISSING_FLEET_BIN),
             "{}: this pass's machine has a fleet binary, and placement warned about it \
              anyway — the notice does not depend on the fact it names",
             pass.spec.name,
@@ -423,15 +424,17 @@ fn checkpoint_11_an_absent_reading_says_so() {
                 source.config_dir.display(),
             );
         }
-        let orch = pass.orch.gauge.as_ref().unwrap_or_else(|| {
-            panic!("{}: the attended seat records no gauge source", pass.spec.name)
-        });
-        assert!(
-            pass.is_contained(&orch.config_dir),
-            "{}: the attended seat's gauge reads from outside the layout: {}",
-            pass.spec.name,
-            orch.config_dir.display(),
-        );
+        if let Some(orch) = &pass.orch {
+            let orch = orch.gauge.as_ref().unwrap_or_else(|| {
+                panic!("{}: the attended seat records no gauge source", pass.spec.name)
+            });
+            assert!(
+                pass.is_contained(&orch.config_dir),
+                "{}: the attended seat's gauge reads from outside the layout: {}",
+                pass.spec.name,
+                orch.config_dir.display(),
+            );
+        }
 
         // Nothing has run yet, so there is nothing honest to report.
         let sources = GaugeSources::default();
@@ -823,12 +826,16 @@ fn checkpoint_14_the_key_is_the_panes_own_directory_and_the_first_run_gate_is_se
         for (seat, placed) in pass.seats() {
             let cwd = pass.cwd_of(seat);
             let key = pass.harness.project_key(&cwd);
-            assert!(
-                Path::new(&key).is_absolute(),
-                "{}/{seat}: {key:?} is not an absolute path, so nothing a pane reports about \
-                 its own cwd could ever match it",
-                pass.spec.name,
-            );
+            // A per-project trust file is named by the key rather than holding it,
+            // so its key is a file name and not a path.
+            if !identity.file_per_project() {
+                assert!(
+                    Path::new(&key).is_absolute(),
+                    "{}/{seat}: {key:?} is not an absolute path, so nothing a pane reports \
+                     about its own cwd could ever match it",
+                    pass.spec.name,
+                );
+            }
 
             if identity.canonicalize {
                 // A child's own cwd comes back resolved — on macOS `/tmp` and
@@ -845,12 +852,7 @@ fn checkpoint_14_the_key_is_the_panes_own_directory_and_the_first_run_gate_is_se
                 );
             }
 
-            let text = pass.config_text(placed, identity.trust_file);
-            let recorded = document(&text).unwrap_or_else(|why| {
-                panic!("{}/{seat}: {} is not readable: {why}", pass.spec.name, identity.trust_file)
-            });
-
-            let record = record_under(&recorded, &key).unwrap_or_else(|| {
+            let record = pass.trust_record(placed, &key).unwrap_or_else(|| {
                 panic!(
                     "{}/{seat}: {} records nothing under {key} — this pane starts on a \
                      first-run dialog and reports `accepted` to everything sent to it",
@@ -893,7 +895,19 @@ fn checkpoint_14_the_key_is_the_panes_own_directory_and_the_first_run_gate_is_se
                 // start in without a human, so a harness that trusted the
                 // operator's home, or `/`, would have passed the old assertion and
                 // fails this one.
-                for (recorded_key, _) in trusted_directories(&recorded, identity.trust_keys) {
+                let recorded = if identity.file_per_project() {
+                    record.clone()
+                } else {
+                    document(&pass.config_text(placed, identity.trust_file))
+                        .expect("the trust file was just read")
+                };
+                let mut trusted = trusted_directories(&recorded, identity.trust_keys);
+                if identity.file_per_project() {
+                    trusted.extend(
+                        absolute_paths_in(&record).into_iter().map(|p| (p, record.clone())),
+                    );
+                }
+                for (recorded_key, _) in trusted {
                     assert!(
                         pass.is_contained(Path::new(&recorded_key)),
                         "{}/{seat}: the seed recorded trust for {recorded_key}, which is \
@@ -912,10 +926,8 @@ fn checkpoint_14_the_key_is_the_panes_own_directory_and_the_first_run_gate_is_se
         let (other, placed) = pass.place_worker_against("cp14-second-repo");
         let moved_to = pass.layout.worktree(&other, &pass.context.sessions, WORKER_SLOT);
         let moved_to = if moved_to.join(".git").exists() { moved_to } else { other };
-        let after = document(&pass.config_text(&placed, identity.trust_file))
-            .expect("the trust file is still readable after a target switch");
         let key = pass.harness.project_key(&moved_to);
-        let record = record_under(&after, &key).unwrap_or_else(|| {
+        let record = pass.trust_record(&placed, &key).unwrap_or_else(|| {
             panic!(
                 "{}: switching targets left the new working directory {key} with no trust \
                  record, so every pane of the new target starts on a dialog",
@@ -932,63 +944,6 @@ fn checkpoint_14_the_key_is_the_panes_own_directory_and_the_first_run_gate_is_se
     });
 }
 
-/// **This harness's trust file, as a value that can be searched** — whatever
-/// document format it is in.
-///
-/// **Reshaped in #33, and this is the shape it was in.** It was
-/// `serde_json::from_str`, which is not a checkpoint answer: `trust_file` names a
-/// *file*, and which document format that file is in is the vendor's — Claude
-/// Code's is JSON and codex's is the same `config.toml` the rest of its seed goes
-/// into. A checkpoint that could only read one of them was asserting one vendor's
-/// format under a general name, and would have failed a correct harness on its
-/// first line.
-///
-/// Both are parsed into the same `serde_json::Value`, so everything below —
-/// [`record_under`], [`is_affirmative`], [`trusted_directories`] — stays one
-/// implementation rather than one per format. That is the point: what a checkpoint
-/// asserts is *what the record says*, and the encoding it says it in is not a
-/// property of the seam.
-fn document(text: &str) -> Result<serde_json::Value, String> {
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
-        return Ok(value);
-    }
-    let doc = text
-        .parse::<toml_edit::DocumentMut>()
-        .map_err(|e| format!("neither JSON nor TOML: {e}"))?;
-    Ok(as_value(doc.as_item()))
-}
-
-/// One TOML item as the same `serde_json::Value` a JSON document would parse to.
-///
-/// Written out rather than reached for through a serde bridge because the mapping
-/// is three lines and the alternative is a feature flag on a production
-/// dependency, turned on for a test. Only the shapes a trust record can be in
-/// matter: tables become objects, arrays become arrays, and a scalar becomes
-/// whatever [`is_affirmative`] can judge.
-fn as_value(item: &toml_edit::Item) -> serde_json::Value {
-    use toml_edit::{Item, Value as Toml};
-    match item {
-        Item::None => serde_json::Value::Null,
-        Item::Value(Toml::String(s)) => serde_json::Value::String(s.value().clone()),
-        Item::Value(Toml::Integer(i)) => serde_json::Value::from(*i.value()),
-        Item::Value(Toml::Float(f)) => serde_json::Value::from(*f.value()),
-        Item::Value(Toml::Boolean(b)) => serde_json::Value::Bool(*b.value()),
-        Item::Value(Toml::Datetime(d)) => serde_json::Value::String(d.value().to_string()),
-        Item::Value(Toml::Array(array)) => serde_json::Value::Array(
-            array.iter().map(|v| as_value(&Item::Value(v.clone()))).collect(),
-        ),
-        Item::Value(Toml::InlineTable(table)) => serde_json::Value::Object(
-            table.iter().map(|(k, v)| (k.to_string(), as_value(&Item::Value(v.clone())))).collect(),
-        ),
-        Item::Table(table) => serde_json::Value::Object(
-            table.iter().map(|(k, v)| (k.to_string(), as_value(v))).collect(),
-        ),
-        Item::ArrayOfTables(tables) => serde_json::Value::Array(
-            tables.iter().map(|t| as_value(&Item::Table(t.clone()))).collect(),
-        ),
-    }
-}
-
 /// Every directory this document has recorded a trust answer for, with the record.
 ///
 /// **Found by the trust keys rather than by walking a named path**, for
@@ -997,6 +952,16 @@ fn as_value(item: &toml_edit::Item) -> serde_json::Value {
 /// would be asserting a vendor's file layout. What *is* an answer is
 /// `trust_keys` — so any object that answers one of them is a trust record, and
 /// the name it hangs under is the directory it trusts.
+/// Every absolute path a per-project trust record names as a value.
+fn absolute_paths_in(record: &serde_json::Value) -> Vec<String> {
+    match record {
+        serde_json::Value::String(s) if Path::new(s).is_absolute() => vec![s.clone()],
+        serde_json::Value::Object(map) => map.values().flat_map(absolute_paths_in).collect(),
+        serde_json::Value::Array(items) => items.iter().flat_map(absolute_paths_in).collect(),
+        _ => Vec::new(),
+    }
+}
+
 fn trusted_directories(
     value: &serde_json::Value,
     trust_keys: &[&str],
@@ -1029,21 +994,6 @@ fn collect_trusted(
             }
         }
         _ => {}
-    }
-}
-
-/// The object this document records under `key`, wherever it keeps it.
-///
-/// **Searched rather than navigated**, for the reason checkpoint 14's doc comment
-/// gives: the container is not one of the fourteen answers.
-fn record_under(value: &serde_json::Value, key: &str) -> Option<serde_json::Value> {
-    match value {
-        serde_json::Value::Object(map) => map
-            .get(key)
-            .cloned()
-            .or_else(|| map.values().find_map(|nested| record_under(nested, key))),
-        serde_json::Value::Array(items) => items.iter().find_map(|item| record_under(item, key)),
-        _ => None,
     }
 }
 

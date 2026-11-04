@@ -92,6 +92,7 @@ pub mod harness;
 /// own header for which checkpoints are answered and which are still their own
 /// ticket's.
 pub mod codex;
+pub mod cursor;
 
 /// Claude Code's answers: its spec, its `Harness` impl, its diagnostic and its formats.
 pub mod claude_code;
@@ -388,6 +389,8 @@ pub struct Host {
     pub operator_home: Option<PathBuf>,
     /// The `PATH` the application itself was launched with.
     pub inherited_path: String,
+    /// Inherited variable names that look like secrets; no worker gets them (D-131).
+    pub inherited_secrets: Vec<String>,
     /// The operator's rustup, or `None` on a machine with no toolchain at all.
     pub toolchain: Option<spawn::OperatorToolchain>,
     /// **What each harness reports about this machine — login state, account
@@ -443,6 +446,14 @@ impl Host {
             pane_program: spawn::pane_program(),
             operator_home: std::env::var_os("HOME").map(PathBuf::from),
             inherited_path: std::env::var("PATH").unwrap_or_default(),
+            inherited_secrets: {
+                let mut names: Vec<String> = std::env::vars_os()
+                    .filter_map(|(k, _)| k.into_string().ok())
+                    .filter(|k| spawn::looks_like_a_secret(k))
+                    .collect();
+                names.sort();
+                names
+            },
             toolchain: spawn::operator_toolchain(),
             // **Empty, and that is the ticket.** Everything above is a filesystem
             // check costing microseconds; a harness diagnosis is a subprocess and a
@@ -759,6 +770,13 @@ fn place_orch(
 ) -> Result<Placed, String> {
     let pane = PaneId::Orch;
     let mut notices = Vec::new();
+    if !harness.spec().takes_the_operators_seat() {
+        return Err(format!(
+            "{} cannot run the orchestrator: it writes into its checkout, and the \
+             orchestrator's checkout is your own repository",
+            harness.spec().name,
+        ));
+    }
 
     // A pane with no `fleet` on its PATH is a pane that looks alive and cannot
     // talk. Say so once, loudly, rather than letting the model discover it as
@@ -889,6 +907,13 @@ fn place_worker(
     let cwd = match worktree {
         Ok(dir) => dir,
         Err(why) => {
+            if !harness.spec().takes_the_operators_seat() {
+                return Err(format!(
+                    "{} needs its own worktree, because it writes into its checkout, and \
+                     none could be made: {why}",
+                    harness.spec().name,
+                ));
+            }
             notices.push((NoticeLevel::Warn, shared_checkout_warning(slot, &why, target)));
             target.to_path_buf()
         }
@@ -908,6 +933,10 @@ fn place_worker(
     let seed = Seed::new(&config_dir, &cwd, host.operator_home.as_deref()).with_brief(&rendered);
     let seed = seed.on_the_operators_plan(login);
     notices.extend(harness.seed_config_dir(&seed)?);
+    let brief = &harness.spec().brief;
+    if let Some(rel) = brief.worktree_file {
+        write_into_checkout(&cwd, rel, &format!("{}{rendered}", brief.worktree_header))?;
+    }
 
     // The Fence (WP-08): a private HOME, created and seeded before the process
     // exists — same reason the config dir is seeded here rather than at the target
@@ -942,7 +971,11 @@ fn place_worker(
     let seat_window = context_gauge::model_window_tokens(model);
     notices.push((
         NoticeLevel::Info,
-        context_gauge::spawn_estimate_notice_text(pane, &rendered, Some(seat_window)),
+        context_gauge::spawn_estimate_notice_text(
+            pane,
+            &rendered,
+            harness.spec().gauge.window_tokens.map(|_| seat_window),
+        ),
     ));
 
     let cargo_bin = toolchain.as_ref().map(|t| t.cargo_home.join("bin"));
@@ -958,7 +991,17 @@ fn place_worker(
         context,
         host.pane_program.as_deref(),
         &host.worker_path(cargo_bin.as_deref()),
+        &host.inherited_secrets,
     );
+    if !host.inherited_secrets.is_empty() {
+        notices.push((
+            NoticeLevel::Info,
+            format!(
+                "{pane}: withheld inherited variables that look like secrets: {}",
+                host.inherited_secrets.join(", ")
+            ),
+        ));
+    }
 
     // The live gauge's source of truth, returned so the caller records it **before
     // the process exists** — a `fleet roster` landing before this pane's first turn
@@ -1203,6 +1246,50 @@ pub(crate) fn worktree_git(cwd: &Path) -> Option<harness::WorktreeGit> {
     (git_dir != common_dir).then_some(harness::WorktreeGit { git_dir, common_dir })
 }
 
+/// Write `text` to `rel` inside the pane's checkout and keep it out of git: one
+/// anchored line in the exclude file git reports for `cwd` (shared by every
+/// worktree of the repository). Through a temp file and a rename.
+pub(crate) fn write_into_checkout(cwd: &Path, rel: &str, text: &str) -> Result<(), String> {
+    let path = cwd.join(rel);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    }
+    let tmp = path.with_extension("fleetor-tmp");
+    std::fs::write(&tmp, text).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, &path).map_err(|e| format!("install {}: {e}", path.display()))?;
+    exclude_from_git(cwd, rel)
+}
+
+/// Add `/<rel>` to the repository's `info/exclude`, once. Outside git there is
+/// nothing to exclude from.
+fn exclude_from_git(cwd: &Path, rel: &str) -> Result<(), String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["rev-parse", "--path-format=absolute", "--git-path", "info/exclude"])
+        .output();
+    let Ok(out) = out else { return Ok(()) };
+    if !out.status.success() {
+        return Ok(());
+    }
+    let exclude = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+    let line = format!("/{rel}");
+    let existing = std::fs::read_to_string(&exclude).unwrap_or_default();
+    if existing.lines().any(|l| l.trim() == line) {
+        return Ok(());
+    }
+    if let Some(dir) = exclude.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    }
+    let mut text = existing;
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(&line);
+    text.push('\n');
+    std::fs::write(&exclude, text).map_err(|e| format!("write {}: {e}", exclude.display()))
+}
+
 /// What the operator is told when the `fleet` binary is nowhere. Pinned by a test
 /// for the same reason [`orch_config_dir_notice`] is.
 pub const MISSING_FLEET_BIN: &str =
@@ -1287,6 +1374,7 @@ fn guardrail_notices(
         operators_own_seat,
         pane,
         config_dir,
+        cwd,
         roots: &roots,
         policy: &guardrail::policy_dir(&shell),
         journal: &guardrail::journal_path(&shell),

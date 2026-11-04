@@ -440,6 +440,8 @@ pub const CODEX_SPEC: HarnessSpec = HarnessSpec {
         config_key: Some("model_instructions_file"),
         replaces_system_prompt: true,
         writes_into_worktree: false,
+        worktree_file: None,
+        worktree_header: "",
     },
 
     // 3 — model and posture. Codex takes its model as an argv flag rather than an
@@ -510,6 +512,7 @@ pub const CODEX_SPEC: HarnessSpec = HarnessSpec {
         // because the pin is an identity rather than an ordering: this arc does not
         // understand schema 2 better for its being larger.
         verified_against_schema: Some("1"),
+        bounded_by_guardrail: false,
     },
 
     // 4 — config dir and its seeding. The two seed keys are this ticket's own and
@@ -585,6 +588,7 @@ pub const CODEX_SPEC: HarnessSpec = HarnessSpec {
         // every codex file edit through. Both spellings, measured, both carried.
         write_tools: &["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "apply_patch"],
         hook_file: crate::guardrail::HOOK_FILE,
+        settings_in_worktree: false,
     },
 
     // 8 — outbound reachability (C5). Codex confines its pane in a real seatbelt —
@@ -693,6 +697,7 @@ pub const CODEX_SPEC: HarnessSpec = HarnessSpec {
         file_ext: "sqlite",
         format: "codex-thread-history-1-sqlite",
         transport: Transport::SqliteBackup,
+        depth: 1,
     },
 
     // 14 — project identity and trust seeding (C16, C17). The key canonicalizes
@@ -1194,7 +1199,7 @@ fn install_guardrail(
     let (command, mut notices) = crate::guardrail::prepare(install, at)?;
     let seat = seat_label(at.config_dir);
 
-    let mut doc = crate::guardrail::existing_document(install, at.config_dir)
+    let mut doc = crate::guardrail::existing_document(install, at)
         .unwrap_or_default()
         .parse::<DocumentMut>()
         .map_err(|e| format!("parse {} for the guardrail: {e}", install.settings_file))?;
@@ -1238,7 +1243,7 @@ fn install_guardrail(
         notices.extend(fleet_owns_the_hook_table(&mut doc, install, &command, &seat));
     }
 
-    crate::guardrail::install_document(install, at.config_dir, &doc.to_string())?;
+    crate::guardrail::install_document(install, at, &doc.to_string())?;
     Ok(notices)
 }
 
@@ -3021,8 +3026,8 @@ args = ["--root", "~/notes"]
     /// lines — `harness::REGISTERED` and this test — and nothing in front of
     /// them.
     #[test]
-    fn codex_is_registered_and_the_seam_holds_two_harnesses() {
-        assert_eq!(registered().len(), 2);
+    fn codex_is_registered_beside_the_others() {
+        assert_eq!(registered().len(), 3);
         assert!(
             registered().iter().any(|h| h.spec().name == CODEX_SPEC.name),
             "codex is registered — the pin is inverted rather than deleted, so a later \
@@ -4185,6 +4190,7 @@ writable_roots = [{:?}, {:?}]
             &context,
             None,
             "/usr/bin",
+            &[],
         );
 
         assert_eq!(
@@ -4436,6 +4442,7 @@ writable_roots = [{:?}, {:?}]
                     operators_own_seat,
                     pane: fleetor_core::pane::PaneId::Worker(1),
                     config_dir: &dir,
+                    cwd: &dir,
                     roots,
                     policy: &self.root.join("_shell").join("pane-config"),
                     journal: &self.root.join("_shell").join("guardrail.jsonl"),

@@ -150,6 +150,9 @@ pub struct GuardrailPlacement<'a> {
     /// The pane's own configuration directory. The script and the settings file
     /// both land under here and nowhere else.
     pub config_dir: &'a Path,
+    /// The pane's working directory, for a harness whose settings file lives in
+    /// its checkout ([`GuardrailInstall::settings_in_worktree`]).
+    pub cwd: &'a Path,
     /// **The roots this pane may write under**, already computed. Tier 1.7's
     /// whole content, and deliberately not a harness's to supply.
     pub roots: &'a [PathBuf],
@@ -214,18 +217,27 @@ pub fn prepare(
 /// its guardrail while looking perfectly healthy.
 pub fn install_document(
     spec: &GuardrailInstall,
-    config_dir: &Path,
+    at: &GuardrailPlacement<'_>,
     text: &str,
 ) -> Result<(), String> {
-    let settings = config_dir.join(spec.settings_file);
-    let tmp = config_dir.join(format!("{}.tmp", spec.settings_file));
+    if spec.settings_in_worktree {
+        return crate::placement::write_into_checkout(at.cwd, spec.settings_file, text);
+    }
+    let settings = at.config_dir.join(spec.settings_file);
+    let tmp = at.config_dir.join(format!("{}.tmp", spec.settings_file));
     std::fs::write(&tmp, text).map_err(|e| format!("write {}: {e}", tmp.display()))?;
     std::fs::rename(&tmp, &settings).map_err(|e| format!("install {}: {e}", settings.display()))
 }
 
 /// This pane's existing settings document, if it has one.
-pub fn existing_document(spec: &GuardrailInstall, config_dir: &Path) -> Option<String> {
-    std::fs::read_to_string(config_dir.join(spec.settings_file)).ok()
+pub fn existing_document(spec: &GuardrailInstall, at: &GuardrailPlacement<'_>) -> Option<String> {
+    std::fs::read_to_string(settings_path(spec, at)).ok()
+}
+
+/// Where this pane's settings document lives: its config dir, or its checkout.
+pub fn settings_path(spec: &GuardrailInstall, at: &GuardrailPlacement<'_>) -> PathBuf {
+    let base = if spec.settings_in_worktree { at.cwd } else { at.config_dir };
+    base.join(spec.settings_file)
 }
 
 /// Is this command string one of ours, from a previous launch?
@@ -385,6 +397,7 @@ mod tests {
             operators_own_seat: false,
             pane,
             config_dir: dir,
+            cwd: dir,
             roots,
             policy: &policy_dir(shell),
             journal: &journal_path(shell),

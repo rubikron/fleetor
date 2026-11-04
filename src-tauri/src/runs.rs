@@ -753,12 +753,13 @@ fn walk_transcripts(shell: &Path, sessions: &SessionsId, dest: &Path) -> u32 {
         let into = dest.join("transcripts").join(&name);
 
         for at in transcript_locations() {
-            for from in transcript_files_for(&pane.path().join(at.subdir), at.file_ext) {
-                let Some(file_name) = from.file_name() else { continue };
+            let root = pane.path().join(at.subdir);
+            for from in transcript_files_within(&root, at.file_ext, at.depth) {
+                let Some(file_name) = archived_name(&root, &from, at.depth) else { continue };
                 if std::fs::create_dir_all(&into).is_err() {
                     continue;
                 }
-                if take_transcript(&from, &into.join(file_name), at.transport) {
+                if take_transcript(&from, &into.join(&file_name), at.transport) {
                     taken += 1;
                 }
             }
@@ -805,13 +806,19 @@ fn capture_session_ids(
 /// would have its settings and its caches archived as evidence by a walk that kept
 /// descending.
 pub(crate) fn transcript_files_for(root: &Path, file_ext: &str) -> Vec<PathBuf> {
+    transcript_files_within(root, file_ext, 1)
+}
+
+/// [`transcript_files_for`], descending `depth` levels below `root`.
+pub(crate) fn transcript_files_within(root: &Path, file_ext: &str, depth: u8) -> Vec<PathBuf> {
     let mut found = Vec::new();
     let Ok(entries) = std::fs::read_dir(root) else { return found };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            let Ok(below) = std::fs::read_dir(&path) else { continue };
-            found.extend(below.flatten().map(|e| e.path()).filter(|p| has_ext(p, file_ext)));
+            if depth > 0 {
+                found.extend(transcript_files_within(&path, file_ext, depth - 1));
+            }
         } else if has_ext(&path, file_ext) {
             found.push(path);
         }
@@ -856,6 +863,7 @@ fn transcript_locations() -> Vec<Location> {
             subdir: transcript.subdir,
             file_ext: transcript.file_ext,
             transport: transcript.transport,
+            depth: transcript.depth,
         };
         if !seen.contains(&at) {
             seen.push(at);
@@ -870,6 +878,21 @@ struct Location {
     subdir: &'static str,
     file_ext: &'static str,
     transport: Transport,
+    depth: u8,
+}
+
+/// The name a transcript is archived under. Its own file name at depth 1; deeper,
+/// its parent directory's name, since a harness that nests that far (Cursor's
+/// `<chat id>/store.db`) names every file the same.
+fn archived_name(root: &Path, from: &Path, depth: u8) -> Option<std::ffi::OsString> {
+    let file_name = from.file_name()?;
+    let nested = from.strip_prefix(root).ok()?.components().count() > 2;
+    if depth < 2 || !nested {
+        return Some(file_name.to_os_string());
+    }
+    let parent = from.parent()?.file_name()?;
+    let ext = from.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    Some(format!("{}{ext}", parent.to_string_lossy()).into())
 }
 
 /// Write the two files an agent reads: the log as JSON, and a manifest saying

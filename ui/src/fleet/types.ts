@@ -119,6 +119,9 @@ export interface ModelOffer {
 /// One harness as the gate offers it — the facts that sit beside the model.
 export interface HarnessOffer {
   name: string;
+  /// Whether this harness may run the orchestrator seat; one that writes into its
+  /// checkout may not, since that checkout is the operator's own repository.
+  orchestrator: boolean;
   invoked: string;
   status: HarnessStatus;
   /// The account *shape*, never a plan tier — `doctor` reports the shape and the

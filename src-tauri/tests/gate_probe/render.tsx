@@ -45,6 +45,7 @@ const RUNNABLE: HarnessOffer = {
     { slug: "deepseek-v4-flash-preview", display_name: "DeepSeek v4 Flash (preview)" },
   ],
   readings_agree: true,
+  orchestrator: true,
   resolved: null,
 };
 
@@ -71,6 +72,7 @@ const REFUSED: HarnessOffer = {
   provider: null,
   models: [],
   readings_agree: true,
+  orchestrator: true,
   resolved: null,
 };
 
