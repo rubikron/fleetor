@@ -475,6 +475,12 @@ mod tests {
                     ) -> Vec<String> {
                         claude_code().command_args(seat)
                     }
+                    fn pane_env(
+                        &self,
+                        seat: &crate::placement::harness::Seat<'_>,
+                    ) -> Vec<(String, String)> {
+                        claude_code().pane_env(seat)
+                    }
                     fn resume_args(
                         &self,
                         seat: &crate::placement::harness::Seat<'_>,

@@ -96,6 +96,8 @@ pub mod codex;
 /// Claude Code's answers: its spec, its `Harness` impl, its diagnostic and its formats.
 pub mod claude_code;
 
+pub mod opencode;
+
 mod json_seed;
 
 pub use harness::{Harness, HarnessSpec, OperatorLogin, Seed};

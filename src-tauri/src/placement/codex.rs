@@ -715,6 +715,7 @@ pub const CODEX_SPEC: HarnessSpec = HarnessSpec {
     project_identity: ProjectIdentityAndTrust {
         canonicalize: true,
         exact_path_match: true,
+        first_run_gate: true,
         trust_file: CONFIG_FILE,
         trust_keys: &["trust_level"],
     },
@@ -1010,6 +1011,10 @@ impl Harness for CodexCli {
     /// **The one argument this harness does add is the hook-trust bypass, and only
     /// on a seat FLEETOR drives** — see [`BYPASS_HOOK_TRUST`] for what makes that
     /// narrow rather than wide, and why it is argv rather than a config key.
+    fn pane_env(&self, _seat: &Seat<'_>) -> Vec<(String, String)> {
+        Vec::new()
+    }
+
     fn command_args(&self, seat: &Seat<'_>) -> Vec<String> {
         let spec = self.spec();
         let mut args: Vec<String> =
@@ -3021,8 +3026,7 @@ args = ["--root", "~/notes"]
     /// lines — `harness::REGISTERED` and this test — and nothing in front of
     /// them.
     #[test]
-    fn codex_is_registered_and_the_seam_holds_two_harnesses() {
-        assert_eq!(registered().len(), 2);
+    fn codex_is_registered_beside_claude_code() {
         assert!(
             registered().iter().any(|h| h.spec().name == CODEX_SPEC.name),
             "codex is registered — the pin is inverted rather than deleted, so a later \

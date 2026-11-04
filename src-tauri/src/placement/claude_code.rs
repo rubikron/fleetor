@@ -204,6 +204,7 @@ pub const CLAUDE_CODE_SPEC: HarnessSpec = HarnessSpec {
     project_identity: ProjectIdentityAndTrust {
         canonicalize: true,
         exact_path_match: true,
+        first_run_gate: true,
         trust_file: ".claude.json",
         trust_keys: &["hasTrustDialogAccepted", "hasCompletedProjectOnboarding"],
     },
@@ -419,6 +420,10 @@ impl Harness for ClaudeCode {
     /// Claude Code's model channel is [`Posture::model_env`], so
     /// [`Seat::model`] is read here and produces nothing: `model_flag` is `None`,
     /// and a flag this harness does not have is a flag it must not be given.
+    fn pane_env(&self, _seat: &Seat<'_>) -> Vec<(String, String)> {
+        Vec::new()
+    }
+
     fn command_args(&self, seat: &Seat<'_>) -> Vec<String> {
         let spec = self.spec();
         let mut args: Vec<String> =
@@ -667,12 +672,12 @@ fn no_login_recorded(file: &Path) -> String {
 
 /// The first `bin` on `path` that is a file. A plain search of a string the caller
 /// handed over — nothing here asks the process what its `PATH` is.
-fn first_on_path(path: &str, bin: &str) -> Option<PathBuf> {
+pub(super) fn first_on_path(path: &str, bin: &str) -> Option<PathBuf> {
     std::env::split_paths(path).map(|dir| dir.join(bin)).find(|found| found.is_file())
 }
 
 /// What a vendor says its version is, or `None` when it would not answer.
-fn vendor_version(bin: &Path, path: &str) -> Option<String> {
+pub(super) fn vendor_version(bin: &Path, path: &str) -> Option<String> {
     let out = std::process::Command::new(bin).arg("--version").env("PATH", path).output().ok()?;
     if !out.status.success() {
         return None;

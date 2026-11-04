@@ -807,13 +807,22 @@ fn checkpoint_13_transcripts_live_under_the_panes_config_dir_and_the_archive_cop
 fn checkpoint_14_the_key_is_the_panes_own_directory_and_the_first_run_gate_is_seeded_past() {
     for_each_registered("cp14", |pass| {
         let identity = &pass.spec.project_identity;
+        if !identity.first_run_gate {
+            // D-150: a harness with no first-run dialog writes no trust record, and
+            // only the key's shape below is asserted for it.
+            assert!(
+                identity.trust_file.is_empty() && identity.trust_keys.is_empty(),
+                "{}: declares no first-run gate and still names trust fields",
+                pass.spec.name,
+            );
+        }
         assert!(
-            !identity.trust_file.trim().is_empty(),
+            !identity.first_run_gate || !identity.trust_file.trim().is_empty(),
             "{}: a harness with no trust file has nowhere to record that a pane may start",
             pass.spec.name,
         );
         assert!(
-            !identity.trust_keys.is_empty(),
+            !identity.first_run_gate || !identity.trust_keys.is_empty(),
             "{}: a harness that writes no trust record parks every fresh pane on a \
              first-run dialog while every `fleet send` reports `accepted` — the key's shape \
              is only half of this checkpoint (C17)",
@@ -845,6 +854,9 @@ fn checkpoint_14_the_key_is_the_panes_own_directory_and_the_first_run_gate_is_se
                 );
             }
 
+            if !identity.first_run_gate {
+                continue;
+            }
             let text = pass.config_text(placed, identity.trust_file);
             let recorded = document(&text).unwrap_or_else(|why| {
                 panic!("{}/{seat}: {} is not readable: {why}", pass.spec.name, identity.trust_file)
@@ -909,6 +921,9 @@ fn checkpoint_14_the_key_is_the_panes_own_directory_and_the_first_run_gate_is_se
         // trust record is keyed by path, so a fleet pointed at a new target has to
         // write one for the *new* cwd. Checkpoint 4 asserts the old one survives;
         // this asserts the new one arrives.
+        if !identity.first_run_gate {
+            return;
+        }
         let (other, placed) = pass.place_worker_against("cp14-second-repo");
         let moved_to = pass.layout.worktree(&other, &pass.context.sessions, WORKER_SLOT);
         let moved_to = if moved_to.join(".git").exists() { moved_to } else { other };

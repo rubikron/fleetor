@@ -137,6 +137,11 @@ Note: D-005 is referenced elsewhere in this file (e.g. D-009, D-011) but has no 
 | [D-140](D-140.md) | WP-32 | alive | an opencode seat runs on the operator's existing opencode providers and login; FLEETOR enforces no login |
 | [D-141](D-141.md) | WP-32 | alive | the gate picks an opencode seat's model; it reaches the pane as `model` in `OPENCODE_CONFIG_CONTENT` |
 | [D-142](D-142.md) | WP-32 | alive | an opencode pane is contained by a guardrail plugin calling `write_guardrail.py`, plus `external_directory: deny` |
-| [D-143](D-143.md) | WP-32 | alive | an opencode seat runs on the operator's real data dir; only its configuration is relocated |
-| [D-144](D-144.md) | WP-32 | alive | every opencode pane runs `--standalone --auto`; orch mirrors D-091 |
+| [D-143](D-143.md) | WP-32 | amended by D-146 | an opencode seat runs on the operator's real data dir; only its configuration is relocated |
+| [D-144](D-144.md) | WP-32 | amended by D-149 | every opencode pane runs `--standalone --auto`; orch mirrors D-091 |
 | [D-145](D-145.md) | WP-32 | alive | an opencode pane's brief is the prompt of a custom default agent `fleetor` |
+| [D-146](D-146.md) | WP-32 | alive | an opencode seat's config dir is a snapshot of the operator's `opencode.json`; `OPENCODE_CONFIG` dropped (amends D-143) |
+| [D-147](D-147.md) | WP-32 | alive | `Harness::pane_env` carries per-pane env; opencode's is `OPENCODE_CONFIG_CONTENT` with model, agent, deny rule |
+| [D-148](D-148.md) | WP-32 | alive | opencode registers in slices: slice 1 has no resume, gauge or archived transcript |
+| [D-149](D-149.md) | WP-32 | alive | an opencode seat's posture is `permission` config read back by `debug agents`; `--auto` dropped (amends D-144) |
+| [D-150](D-150.md) | WP-32 | alive | checkpoint 14 gains `first_run_gate`; opencode answers `false` and writes no trust record |

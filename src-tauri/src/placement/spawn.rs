@@ -247,6 +247,9 @@ pub(super) fn orch_command_with(
         cmd.env(var, model);
     }
     apply_attended_config(&mut cmd, harness.spec(), config_dir);
+    for (var, value) in harness.pane_env(&seat) {
+        cmd.env(var, value);
+    }
     cmd
 }
 
@@ -299,31 +302,25 @@ pub(super) fn worker_command_with(
     // Checkpoints 1, 2 and 3, off the spec (WP-25): the program, the base
     // arguments, the brief behind its carrier, and — unlike the attended seats —
     // a permission posture, because nobody is watching this one.
-    let mut cmd = base_command_with(
-        harness,
-        program,
-        // Checkpoint 3's **both** channels, on the one seat that gets either. The
-        // model is named here because a harness may take it in argv
-        // (`Posture::model_flag`, codex's answer) and the `model_env` half below
-        // is for one that takes it in the environment (Claude Code's). One seat,
-        // one value, two possible carriers — never both at once, which is what
-        // the conformance suite's checkpoint 3 refuses.
-        &{
-            let brief = render_worker(
-                &ctx.worker_template,
-                pane,
-                &roster(),
-                &cwd.display().to_string(),
-                &ctx.branch_prefix,
-            );
-            let seat = Seat::new(&brief).with_permission_mode(&ctx.launch.worker_permission_mode);
-            let seat = match model {
-                Some(model) => seat.with_model(model),
-                None => seat,
-            };
-            args_for(harness, &seat, pane, ctx)
-        },
+    // Checkpoint 3's **both** channels, on the one seat that gets either. The
+    // model is named here because a harness may take it in argv
+    // (`Posture::model_flag`, codex's answer) and the `model_env` half below
+    // is for one that takes it in the environment (Claude Code's). One seat,
+    // one value, two possible carriers — never both at once, which is what
+    // the conformance suite's checkpoint 3 refuses.
+    let brief = render_worker(
+        &ctx.worker_template,
+        pane,
+        &roster(),
+        &cwd.display().to_string(),
+        &ctx.branch_prefix,
     );
+    let seat = Seat::new(&brief).with_permission_mode(&ctx.launch.worker_permission_mode);
+    let seat = match model {
+        Some(model) => seat.with_model(model),
+        None => seat,
+    };
+    let mut cmd = base_command_with(harness, program, &args_for(harness, &seat, pane, ctx));
     cmd.cwd(cwd);
     apply_pane_env(&mut cmd, pane, socket, path.to_string());
 
@@ -380,6 +377,9 @@ pub(super) fn worker_command_with(
     // and removing it here is what stops a fenced pane ever being handed the key
     // to the operator's login — its login is planted in its own config dir.
     let scrubbed = scrub(&mut cmd, spec.credentials.scrubbed_env);
+    for (var, value) in harness.pane_env(&seat) {
+        cmd.env(var, value);
+    }
     Worker { command: cmd, scrubbed }
 }
 

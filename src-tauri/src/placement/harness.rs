@@ -837,6 +837,10 @@ pub struct ProjectIdentityAndTrust {
     /// that resolves trust by repository root instead matches a parent of the
     /// pane's cwd, and seeding it per worktree would write rows it never reads.
     pub exact_path_match: bool,
+    /// Whether a fresh pane of this harness stops on a first-run trust dialog at
+    /// all. `false` is a measurement, not a default (D-150): the trust fields
+    /// below are then empty and the conformance suite asserts only the key.
+    pub first_run_gate: bool,
     /// The file the trust record is written into — the same file as
     /// [`ConfigDir::seed_file`] for a harness that keeps both together.
     pub trust_file: &'static str,
@@ -1288,6 +1292,10 @@ pub trait Harness: std::fmt::Debug + Send + Sync + 'static {
     /// [`Posture::model_env`] beside the command rather than inside it.
     fn command_args(&self, seat: &Seat<'_>) -> Vec<String>;
 
+    /// Environment this seat's command carries beyond the spec's own variables,
+    /// applied last so nothing inherited or set earlier overrides it (D-147).
+    fn pane_env(&self, seat: &Seat<'_>) -> Vec<(String, String)>;
+
     /// **Checkpoint 15's argv — reopen the session `session_id` names** (WP-27,
     /// R6).
     ///
@@ -1388,7 +1396,8 @@ static CLAUDE_CODE: super::claude_code::ClaudeCode = super::claude_code::ClaudeC
 /// runs one pass per entry, end to end through [`place`](super::place), and it
 /// refuses the answers a half-implemented harness would give — that is what makes
 /// that line the registration and not a declaration.
-static REGISTERED: [&dyn Harness; 2] = [&CLAUDE_CODE, &super::codex::CODEX];
+static REGISTERED: [&dyn Harness; 3] =
+    [&CLAUDE_CODE, &super::codex::CODEX, &super::opencode::OPENCODE];
 
 /// Every harness a pane may run.
 pub fn registered() -> &'static [&'static dyn Harness] {
@@ -2238,9 +2247,10 @@ mod tests {
     }
 
     #[test]
-    fn the_registry_holds_two_distinct_harnesses_and_names_resolve() {
+    fn the_registry_holds_three_distinct_harnesses_and_names_resolve() {
         let all = registered();
-        assert_eq!(all.len(), 2, "codex joined at #39's follow-up; a third is its own arc");
+        assert_eq!(all.len(), 3, "opencode joined in WP-32");
+        assert!(all.iter().any(|h| h.spec().name == "opencode"), "opencode is registered");
         assert!(
             all.iter().any(|h| h.spec().name == "claude-code"),
             "Claude Code stays — a registry that swapped its sole harness for another \
