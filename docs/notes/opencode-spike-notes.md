@@ -58,3 +58,9 @@ Every arm ran `opencode --standalone --auto` with the seat config of D-141–D-1
 4. **An inline agent `prompt` in `OPENCODE_CONFIG_CONTENT` reaches the agent** (`debug agents` shows it as `system`), so a pane carries its brief without a path in its environment.
 5. **`opencode run` takes its directory from `$PWD`, the TUI from the process cwd.** Measured both ways under a conflicting `PWD`. Panes run the TUI, so a pane's inherited `PWD` is harmless; a probe using `run` must set `PWD`.
 6. **`opencode run` waits on an open stdin.** Probes pass `stdin=DEVNULL`.
+
+## 2026-11-04 — phase 4, the live round trip (`src-tauri/tests/opencode_round_trip.rs`, `opencode-go/beam-free`)
+
+1. **An opencode orch and an opencode worker complete a `fleet send` round trip** through the real hub, `fleet` binary and `PaneRegistry`, in a scratch layout: operator → orch → worker-1 → orch → operator, every pane-bound leg `accepted`. Passed twice; the second run took 23 s.
+2. **No approval prompt appeared without `--auto`** (D-149): both panes ran `fleet send` through `shell` unprompted, on the `Fleetor` agent.
+3. **Two Activity lines mislead on an opencode seat**, both shared code: orch's config-dir notice says its transcript is archived and to run `/login` (Claude Code's wording, already wrong for codex), and a worker's spawn line quotes a 200k window though its gauge is unavailable (D-148).

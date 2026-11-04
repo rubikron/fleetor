@@ -36,7 +36,7 @@ No login check (D-140), no trust record (D-150). Slice 1 has no resume, gauge or
 1. Zero-token spike. **Done** (`opencode-spike-notes.md`).
 2. Paid spike. **Done** — every arm passed except `external_directory` against `shell`, which D-142 now records.
 3. `opencode.rs`, registered; conformance green. **Done** (slice 1, D-148).
-4. One live opencode worker and one opencode orch complete a `fleet send` round trip.
+4. One live opencode worker and one opencode orch complete a `fleet send` round trip. **Done** (`tests/opencode_round_trip.rs`).
 
 ## Session prompt
 
