@@ -113,17 +113,23 @@ fn checkpoint_1_the_program_and_base_arguments_are_what_the_spec_names() {
 fn checkpoint_2_the_brief_reaches_the_pane_by_the_carrier_the_spec_names() {
     for_each_registered("cp2", |pass| {
         let brief = &pass.spec.brief;
+        assert_eq!(
+            brief.carriers(),
+            1,
+            "{}: exactly one of argv_flag, config_key and worktree_file carries the brief",
+            pass.spec.name,
+        );
         assert!(
-            brief.argv_flag.is_some() ^ brief.config_key.is_some(),
-            "{}: exactly one of argv_flag and config_key carries the brief",
+            brief.worktree_file.is_none() || brief.writes_into_worktree,
+            "{}: a brief written into the checkout says it writes into the worktree",
             pass.spec.name,
         );
 
         for (seat, placed) in pass.seats() {
             let mark = if seat == "orch" { ORCH_BRIEF_MARK } else { WORKER_BRIEF_MARK };
 
-            match (brief.argv_flag, brief.config_key) {
-                (Some(flag), _) => {
+            match (brief.argv_flag, brief.config_key, brief.worktree_file) {
+                (Some(flag), _, _) => {
                     let carried = arg_after(placed, flag).unwrap_or_else(|| {
                         panic!("{}/{seat}: nothing follows {flag} on the command", pass.spec.name)
                     });
@@ -133,7 +139,7 @@ fn checkpoint_2_the_brief_reaches_the_pane_by_the_carrier_the_spec_names() {
                         pass.spec.name,
                     );
                 }
-                (_, Some(key)) => {
+                (_, Some(key), _) => {
                     // A harness that carries the brief through its config dir has
                     // to have named the file, and the file has to hold the brief.
                     let dir = pass.config_dir(placed);
@@ -149,7 +155,34 @@ fn checkpoint_2_the_brief_reaches_the_pane_by_the_carrier_the_spec_names() {
                         pass.spec.name,
                     );
                 }
-                (None, None) => unreachable!("the exactly-one assertion above"),
+                (_, _, Some(rel)) => {
+                    let cwd = pass.cwd_of(seat);
+                    let file = cwd.join(rel);
+                    let text = std::fs::read_to_string(&file).unwrap_or_else(|e| {
+                        panic!("{}/{seat}: {} is not there: {e}", pass.spec.name, file.display())
+                    });
+                    assert!(
+                        text.starts_with(brief.worktree_header),
+                        "{}/{seat}: {} does not open with the header that makes the vendor \
+                         apply it",
+                        pass.spec.name,
+                        file.display(),
+                    );
+                    assert!(
+                        !brief.worktree_header.is_empty(),
+                        "{}: a brief file in the checkout with no header is one the vendor \
+                         may never attach",
+                        pass.spec.name,
+                    );
+                    assert!(
+                        text.contains(mark),
+                        "{}/{seat}: {} does not hold this seat's brief",
+                        pass.spec.name,
+                        file.display(),
+                    );
+                    assert_ignored_by_git(&cwd, rel, pass.spec.name);
+                }
+                (None, None, None) => unreachable!("the exactly-one assertion above"),
             }
 
             // The other seat's brief did not go to this one.
@@ -206,9 +239,11 @@ fn checkpoint_3_the_model_and_the_posture_reach_the_unattended_seat_alone() {
             "{}: one model channel, not two — a harness that sets both can disagree with itself",
             pass.spec.name,
         );
+        let named = posture.permission_flag.is_some() || !posture.sandbox_keys.is_empty();
         assert!(
-            posture.permission_flag.is_some() || !posture.sandbox_keys.is_empty(),
-            "{}: an unattended pane bounded by nothing the spec names is checkpoint 3 stubbed",
+            named ^ posture.bounded_by_guardrail,
+            "{}: an unattended pane is bounded by a permission flag or sandbox keys, or says \
+             the write guardrail is its only bound — exactly one",
             pass.spec.name,
         );
 
@@ -220,7 +255,7 @@ fn checkpoint_3_the_model_and_the_posture_reach_the_unattended_seat_alone() {
                 pass.spec.name,
             );
             assert_ne!(
-                env_on(&pass.orch, var).as_deref(),
+                pass.orch.as_ref().and_then(|orch| env_on(orch, var)).as_deref(),
                 Some(WORKER_MODEL),
                 "{}: the operator's own seat runs their model, never the fleet's worker model",
                 pass.spec.name,
@@ -234,7 +269,7 @@ fn checkpoint_3_the_model_and_the_posture_reach_the_unattended_seat_alone() {
                 pass.spec.name,
             );
             assert!(
-                !argv_of(&pass.orch).iter().any(|a| a == flag),
+                !pass.orch.as_ref().is_some_and(|orch| argv_of(orch).iter().any(|a| a == flag)),
                 "{}: the operator's own seat is not given a model flag",
                 pass.spec.name,
             );
@@ -248,7 +283,7 @@ fn checkpoint_3_the_model_and_the_posture_reach_the_unattended_seat_alone() {
                 pass.spec.name,
             );
             assert!(
-                !argv_of(&pass.orch).iter().any(|a| a == flag),
+                !pass.orch.as_ref().is_some_and(|orch| argv_of(orch).iter().any(|a| a == flag)),
                 "{}: the operator's own seat is watched by a human and gets no posture flag",
                 pass.spec.name,
             );
@@ -329,17 +364,15 @@ fn checkpoint_4_the_config_dir_is_pointed_at_seeded_and_merged_into() {
             // *shape* is checkpoint 14's claim; here it is only the handle on what
             // was there before.
             let first = pass.harness.project_key(&pass.worker_cwd);
-            let before = pass.config_text(&pass.worker, config.seed_file);
             assert!(
-                before.contains(&first),
+                pass.trust_record(&pass.worker, &first).is_some(),
                 "{}: the first target was never seeded",
                 pass.spec.name
             );
 
             let (_other, placed) = pass.place_worker_against("second-repo");
-            let after = pass.config_text(&placed, config.seed_file);
             assert!(
-                after.contains(&first),
+                pass.trust_record(&placed, &first).is_some(),
                 "{}: switching targets clobbered the first target's record — a seed that \
                  replaces instead of merging works exactly once",
                 pass.spec.name,
@@ -428,7 +461,7 @@ fn checkpoint_6_configuration_and_credentials_are_isolated_by_the_named_mechanis
 
         if let Some(cred) = isolation.credential_env {
             assert!(
-                env_on(&pass.orch, cred).is_some(),
+                pass.orch.as_ref().is_none_or(|orch| env_on(orch, cred).is_some()),
                 "{}: the attended seat must be pointed at the operator's own credential \
                  namespace, or it boots into an empty one looking healthy",
                 pass.spec.name,
@@ -460,7 +493,7 @@ fn checkpoint_6_configuration_and_credentials_are_isolated_by_the_named_mechanis
                 pass.spec.name
             );
             assert_ne!(
-                env_on(&pass.orch, "HOME").as_deref(),
+                pass.orch.as_ref().and_then(|orch| env_on(orch, "HOME")).as_deref(),
                 Some(home.as_str()),
                 "{}: the Fence is the worker's, not the operator's seat's",
                 pass.spec.name,
@@ -474,7 +507,9 @@ fn checkpoint_6_configuration_and_credentials_are_isolated_by_the_named_mechanis
         // the claim is checked instead of believed. This is what makes a plan seat
         // *need* the credential planted in its config dir: the failure asserted
         // here is the reason that mechanism exists (`plan-worker-notes.md` §2).
-        if isolation.operator_store_follows_home {
+        // Only a pane given a private HOME is claimed unable to reach the store;
+        // one on the operator's HOME reaches it by design (D-128).
+        if isolation.operator_store_follows_home && isolation.private_home {
             let home = env_on(&pass.worker, "HOME")
                 .expect("a harness whose store follows HOME must give the Fence one");
             let fenced = std::process::Command::new("security")
@@ -617,7 +652,10 @@ fn checkpoint_7_every_seat_gets_the_write_guardrail_with_roots_no_wider_than_its
                 dir.display(),
             );
 
-            let settings = pass.config_text(placed, install.settings_file);
+            let settings = pass.settings_text(seat, placed);
+            if install.settings_in_worktree {
+                assert_ignored_by_git(&pass.cwd_of(seat), install.settings_file, pass.spec.name);
+            }
             for (what, needle) in
                 [("hook event", install.hook_event), ("hook file", install.hook_file)]
             {
@@ -703,4 +741,19 @@ fn tree_of(dir: &Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
     }
     found.sort();
     found
+}
+
+/// A file FLEETOR wrote into a checkout must never reach the operator's `git status`.
+fn assert_ignored_by_git(cwd: &Path, rel: &str, harness: &str) {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["status", "--porcelain", "--untracked-files=all"])
+        .output()
+        .expect("git status");
+    let status = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !status.lines().any(|line| line.ends_with(rel)),
+        "{harness}: {rel} shows up in the checkout's git status:\n{status}",
+    );
 }

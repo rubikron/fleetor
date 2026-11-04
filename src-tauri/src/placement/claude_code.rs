@@ -60,6 +60,8 @@ pub const CLAUDE_CODE_SPEC: HarnessSpec = HarnessSpec {
         config_key: None,
         replaces_system_prompt: true,
         writes_into_worktree: false,
+        worktree_file: None,
+        worktree_header: "",
     },
 
     // 3 — model and permission posture. No sandbox of its own; the write
@@ -91,6 +93,7 @@ pub const CLAUDE_CODE_SPEC: HarnessSpec = HarnessSpec {
         // tripwire with no measurement behind it.
         verified_as: &[],
         verified_against_schema: None,
+        bounded_by_guardrail: false,
     },
 
     // 4 — config dir and its seeding. `json_seed::seed_json_document`.
@@ -152,6 +155,7 @@ pub const CLAUDE_CODE_SPEC: HarnessSpec = HarnessSpec {
         hook_event: "PreToolUse",
         write_tools: &["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit"],
         hook_file: guardrail::HOOK_FILE,
+        settings_in_worktree: false,
     },
 
     // 8 — outbound reachability. No seatbelt, so the socket is simply reachable.
@@ -197,6 +201,7 @@ pub const CLAUDE_CODE_SPEC: HarnessSpec = HarnessSpec {
         file_ext: "jsonl",
         format: "claude-code-jsonl",
         transport: Transport::Rename,
+        depth: 1,
     },
 
     // 14 — project identity and trust seeding (C17). `project_key` and the
@@ -380,40 +385,7 @@ impl Harness for ClaudeCode {
         &self,
         at: &crate::guardrail::GuardrailPlacement<'_>,
     ) -> Result<Vec<(NoticeLevel, String)>, String> {
-        let spec = &self.spec().guardrail;
-        let (command, notices) = guardrail::prepare(spec, at)?;
-
-        let mut root = guardrail::existing_document(spec, at.config_dir)
-            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-            .filter(serde_json::Value::is_object)
-            .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
-
-        let object = root.as_object_mut().expect("just filtered to an object");
-        let hooks = object
-            .entry("hooks")
-            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-        if !hooks.is_object() {
-            *hooks = serde_json::Value::Object(serde_json::Map::new());
-        }
-        let hooks = hooks.as_object_mut().expect("just ensured it is an object");
-        let pre =
-            hooks.entry(spec.hook_event).or_insert_with(|| serde_json::Value::Array(Vec::new()));
-        if !pre.is_array() {
-            *pre = serde_json::Value::Array(Vec::new());
-        }
-        let pre = pre.as_array_mut().expect("just ensured it is an array");
-        // Ours is replaced rather than appended to, so a relaunch does not
-        // accumulate five copies that would each run and each report.
-        pre.retain(|entry| !mentions_our_hook(entry, spec));
-        pre.push(serde_json::json!({
-            "matcher": spec.write_tools.join("|"),
-            "hooks": [{ "type": "command", "command": command }],
-        }));
-
-        let text =
-            serde_json::to_string_pretty(&root).map_err(|e| format!("encode settings: {e}"))?;
-        guardrail::install_document(spec, at.config_dir, &text)?;
-        Ok(notices)
+        install_json_hooks(&self.spec().guardrail, at)
     }
 
     /// Claude Code's model channel is [`Posture::model_env`], so
@@ -505,6 +477,45 @@ impl Harness for ClaudeCode {
         .iter()
         .any(|file| file.file_stem().and_then(|s| s.to_str()) == Some(session_id))
     }
+}
+
+/// Merge the fleet's hook into a Claude Code-shaped settings document: a
+/// top-level `hooks` object keyed by event, each an array of
+/// `{matcher, hooks:[{type, command}]}`. Cursor reads the same shape (D-129).
+pub(super) fn install_json_hooks(
+    spec: &GuardrailInstall,
+    at: &crate::guardrail::GuardrailPlacement<'_>,
+) -> Result<Vec<(NoticeLevel, String)>, String> {
+    let (command, notices) = guardrail::prepare(spec, at)?;
+
+    let mut root = guardrail::existing_document(spec, at)
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+
+    let object = root.as_object_mut().expect("just filtered to an object");
+    let hooks =
+        object.entry("hooks").or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    if !hooks.is_object() {
+        *hooks = serde_json::Value::Object(serde_json::Map::new());
+    }
+    let hooks = hooks.as_object_mut().expect("just ensured it is an object");
+    let pre = hooks.entry(spec.hook_event).or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    if !pre.is_array() {
+        *pre = serde_json::Value::Array(Vec::new());
+    }
+    let pre = pre.as_array_mut().expect("just ensured it is an array");
+    // Ours is replaced rather than appended to, so a relaunch does not
+    // accumulate five copies that would each run and each report.
+    pre.retain(|entry| !mentions_our_hook(entry, spec));
+    pre.push(serde_json::json!({
+        "matcher": spec.write_tools.join("|"),
+        "hooks": [{ "type": "command", "command": command }],
+    }));
+
+    let text = serde_json::to_string_pretty(&root).map_err(|e| format!("encode settings: {e}"))?;
+    guardrail::install_document(spec, at, &text)?;
+    Ok(notices)
 }
 
 /// Is this `PreToolUse` entry one of ours, from a previous launch?
@@ -667,12 +678,12 @@ fn no_login_recorded(file: &Path) -> String {
 
 /// The first `bin` on `path` that is a file. A plain search of a string the caller
 /// handed over — nothing here asks the process what its `PATH` is.
-fn first_on_path(path: &str, bin: &str) -> Option<PathBuf> {
+pub(super) fn first_on_path(path: &str, bin: &str) -> Option<PathBuf> {
     std::env::split_paths(path).map(|dir| dir.join(bin)).find(|found| found.is_file())
 }
 
 /// What a vendor says its version is, or `None` when it would not answer.
-fn vendor_version(bin: &Path, path: &str) -> Option<String> {
+pub(super) fn vendor_version(bin: &Path, path: &str) -> Option<String> {
     let out = std::process::Command::new(bin).arg("--version").env("PATH", path).output().ok()?;
     if !out.status.success() {
         return None;

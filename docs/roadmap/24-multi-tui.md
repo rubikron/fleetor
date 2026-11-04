@@ -1,7 +1,7 @@
 # WP-24 — Multi-TUI: harness and model per pane (Claude Code + Cursor)
 
-status: not-started size: L
-depends-on: 20 (placement, landed) blocks: —
+status: in-progress size: M
+depends-on: 25, 30 (the seam and its file layout, both landed) blocks: —
 brief-cost: 0 — the briefs do not change. One `orch.md`, one `worker.md`, both harnesses (M4).
 
 **The spec lives in [issue #12](https://github.com/rubikron/fleetor/issues/12), not here.** This doc
@@ -44,27 +44,20 @@ Design ran spike-first (`building.md` §4) against the real `cursor-agent`
   lifts it. **This deleted a whole phase** (M28): no bridge, no second transport, no split
   of the receipt verb.
 
-## Current state (verified 2026-09-05 — do not re-explore)
+## Current state (2026-11-02)
 
-Where the fourteen checkpoints are today. 61 of the ~79 Claude-Code-specific references
-are in one file, which is why the seam belongs in `placement` (M23).
+**Re-scoped by C19; the September map below this line is gone.** WP-25 built the `Harness`
+seam and registered codex through it; WP-30 gave each harness its own file. So this package
+is now: write `placement/cursor.rs` answering all fifteen checkpoints and its needles, add
+it to `REGISTERED` in `harness.rs`, and let the conformance suite and the literals tripwire
+cover it. `claude_code.rs` and `codex.rs` are the templates.
 
-- `src-tauri/src/placement/spawn.rs:116` — `orch_command_with`; `:286` `worker_command_with`;
-  `:367` `base_command_with` (the literal `claude`); `:543` `seed_config_dir`.
-- `src-tauri/src/placement/mod.rs:285` — `Host`, where harness discovery belongs (login,
-  plan, model list) so `place` keeps its "nothing reads the process" rule.
-- `src-tauri/src/guardrail.rs` — the `PreToolUse` half, 18 references.
-- `src-tauri/src/orphans.rs:51` — `sweep_at_named(path, "claude")`. **A live bug the moment
-  a cursor pane exists**: no cursor process matches, so every crashed cursor pane leaks.
-  Its replacement must catch a Node tree without ever matching a bare interpreter.
-- `src-tauri/src/runs.rs:226` — `harvest_transcripts`, Claude-Code-only. A cursor pane
-  contributes **zero** transcripts and `runs.rs:64` documents `0` as ordinary.
-- `src-tauri/src/context_gauge.rs:50` — `WORKER_WINDOW_TOKENS`, the constant exported to
-  the harness so display and bookkeeping cannot disagree (D-054).
-- `spawn::project_key` — Claude Code's **own** canonicalization, shared by the trust flag
-  (`deliver.rs`) and the gauge. Cursor keys projects differently; it can no longer be one
-  function.
-- `ui/src/components/StartGate.tsx` — the spend gate the pickers join (M15).
+The M-series was measured on `2026.09.02-c22c1a3`. Everything is being re-measured on
+`2026.10.22-27dcf5f` in [`cursor-spike-notes.md`](../notes/cursor-spike-notes.md). Already
+changed: M8 does not hold (the login is keychain-only), so D-128 runs a cursor worker on
+the operator's real `HOME`, with `CURSOR_CONFIG_DIR` keeping its configuration separate.
+D-129 contains it with the write guardrail as a Claude Code hook in the worktree; D-130
+carries its brief as a worktree rule and keeps cursor off the orchestrator seat.
 
 ## Scope
 
@@ -97,31 +90,36 @@ now that no bridge is being built.
 
 ## Phases
 
-1. The `Harness` trait + `HarnessSpec`, inside `placement`, with the conformance suite over
-   the fourteen checkpoints — Claude Code first, green before Cursor exists.
-2. Per-harness configuration seeding: the `.mdc` brief, the layered `~/.cursor` snapshot,
-   the two sandbox keys, per-worktree git exclusion.
-3. The gate: login/plan probe on `Host`, the pickers, the per-harness cost line.
-4. The integration tail: gauge reader, transcript harvest, orphan sweep names, project-key
-   split.
+1. Zero-token spike: login, config relocation, trust, process tree. **Done** (D-128).
+2. Paid spike, on the operator's word: brief, sandbox, socket, delivery, `/clear` and
+   `/compact`, transcript, resume. **Done** (D-129, D-130).
+3. `cursor.rs` with every checkpoint answered from phases 1–2, registered; conformance
+   green over three harnesses. **Done**, worker seats only (D-130); the gauge reads
+   unavailable until the SQLite chat store has a reader.
+4. One live cursor worker completes a `fleet send` round trip. **Done** (live run, 2026-11-03,
+   after the `.mdc` gained its `alwaysApply` header).
+5. **TODO: a live baseline every new harness must pass**, written to
+   `docs/notes/live-baseline.md` (**written**; Cursor partly run). One live worker, by hand:
+   - It receives a message and answers with `fleet reply`.
+   - It edits a file, runs the tests and commits on its own branch, with no prompts.
+   - The guardrail refuses writes and deletes outside its worktree, both through the
+     harness's own tools and through a shell redirect, and the refusals show in Activity.
+   - The operator's `git status` stays clean.
+   - The pane carries no vendor credentials in `env`.
+   - It uses the other `fleet` verbs a worker has, and the orchestrator sees them.
+   - It survives `/clear`, `/compact` and a restart that resumes the same session.
+   - A message sent before the composer paints still arrives.
+   - The worker's card shows a context reading, not `ctx unavailable`. Cursor fails this
+     until its SQLite chat store has a reader.
+   Later, consider turning it into an opt-in test that spends paid turns.
 
 ## Session prompt
 
 ```
-Read docs/roadmap/24-multi-tui.md in full, then the spec at
-https://github.com/rubikron/fleetor/issues/12, then decisions.md M1–M28 (search "WP-22 —
-multi-TUI"; the M-series is the interview trail). Then building.md §1 and §9.
-
-Implement phase 1 only: the Harness trait and HarnessSpec inside placement, with the
-conformance suite over the fourteen checkpoints, Claude Code as the sole registered
-harness. No cursor code in this phase — the suite must be green with one harness before a
-second exists, or it is not a suite, it is a description of cursor.
-
-Spike-first for anything the spec marks unverified (building.md §4). Two things it marks
-so: whether an alwaysApply .mdc survives /clear, and cursor's transcript format. Neither
-is phase 1's problem; do not start them here.
-
-Exit: the checklist at the bottom of the roadmap doc.
+Read docs/roadmap/24-multi-tui.md, docs/notes/cursor-spike-notes.md and decisions D-128,
+then placement/harness.rs (the interface) and placement/codex.rs (the closest template).
+Continue from the first phase not marked done. Phase 2 spends the operator's Cursor plan:
+ask before running it. Never pass --force or --yolo (M11).
 ```
 
 ## Session exit checklist

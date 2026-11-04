@@ -818,6 +818,8 @@ pub struct HarnessOffer {
     readings_agree: bool,
     /// The vendor binary the `PATH` name resolved to, absolutely (C47).
     resolved: Option<String>,
+    /// Whether this harness may run the orchestrator seat.
+    orchestrator: bool,
 }
 
 /// One model a harness would accept, as the vendor names it.
@@ -919,6 +921,7 @@ impl HarnessOffer {
             models,
             readings_agree: readiness.readings_agree,
             resolved: readiness.resolved.as_ref().map(|p| p.display().to_string()),
+            orchestrator: readiness.harness.takes_the_operators_seat(),
         }
     }
 }

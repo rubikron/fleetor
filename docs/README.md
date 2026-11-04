@@ -50,6 +50,8 @@ Each is stamped with the Claude Code version it measured; re-measure on a CC upd
 | [`reopen-spike-notes.md`](./notes/reopen-spike-notes.md) | Whether a past run's panes can be reopened from local logs — **neither vendor forks on resume**; Claude Code's id is its filename; codex's cwd picker is cwd-*dependent*, correcting a carried claim (WP-27, R3/R4/R6) — re-runnable: `examples/reopen-spike/probe.py` | `2.1.263 (Claude Code)`, `codex-cli 0.153.4` |
 | [`codex-hook-trust-notes.md`](./notes/codex-hook-trust-notes.md) | Whether a hook delivered with `-c hooks.PreToolUse=[…]` fires without a trust record, which decided the codex write-guardrail fix (C46, C48) — **re-runnable**: `examples/codex-spike/hook_probe.py` | `codex-cli 0.153.4` |
 | [`plan-worker-notes.md`](./notes/plan-worker-notes.md) | Why a plan-backed worker cannot authenticate from inside the Fence (WP-25 #49) — **re-runnable**: `examples/plan-worker-spike/` | `2.1.263 (Claude Code)` |
+| [`cursor-spike-notes.md`](./notes/cursor-spike-notes.md) | Where cursor keeps its login (keychain only), that `CURSOR_CONFIG_DIR` relocates config and keeps it, the trust gate and `--trust`, the chat and process layout (D-128) — **re-runnable**: `examples/cursor-spike/tui_probe.py` | `cursor-agent 2026.10.22-27dcf5f` |
+| [`live-baseline.md`](./notes/live-baseline.md) | The checks a new harness must pass in a running fleet — message, commit, guardrail refusals, clean repo, clear/compact/resume — with results per harness | checklist; cursor-agent 2026.10.22-27dcf5f |
 | [`fleetor-working-loop.html`](./notes/fleetor-working-loop.html) | The working-loop design and its UI mockups, which the Tasks screens and the cards follow (D-119–D-121) | mockup, 2026-10 |
 
 ## Roadmap (`docs/roadmap/`)

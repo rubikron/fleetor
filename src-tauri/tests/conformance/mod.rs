@@ -58,6 +58,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use base64::{engine::general_purpose::STANDARD, Engine};
+use fleetor_core::event::NoticeLevel;
 use fleetor_core::pane::PaneId;
 use fleetor_shell::placement::harness::{registered, Harness, Transport};
 use fleetor_shell::placement::{self, HarnessSpec, Host, Layout, PaneSpec, Placed};
@@ -120,8 +121,9 @@ pub struct Pass {
     /// snapshotted from the operator's own" a thing a test can say.
     pub host: Host,
 
-    /// The operator's own seat, placed.
-    pub orch: Placed,
+    /// The operator's own seat, placed — `None` for a harness that may not take
+    /// it ([`HarnessSpec::takes_the_operators_seat`]), whose refusal is asserted.
+    pub orch: Option<Placed>,
     /// One fenced worker, placed.
     pub worker: Placed,
     /// The directory that worker was placed in: its own checkout of the target.
@@ -184,8 +186,18 @@ impl Pass {
             ..Host::bare()
         };
 
-        let orch = placement::place(PaneSpec::orch(harness), &layout, &host, &target, &context)
-            .expect("placing the operator's own seat against a scratch layout");
+        let orch = placement::place(PaneSpec::orch(harness), &layout, &host, &target, &context);
+        let orch = if spec.takes_the_operators_seat() {
+            Some(orch.expect("placing the operator's own seat against a scratch layout"))
+        } else {
+            assert!(
+                orch.is_err(),
+                "{}: writes into its checkout and was placed on the orchestrator's, which \
+                 is the operator's own repository",
+                spec.name,
+            );
+            None
+        };
         let worker = placement::place(
             PaneSpec::worker(WORKER_SLOT, harness).with_model(WORKER_MODEL),
             &layout,
@@ -245,8 +257,34 @@ impl Pass {
     }
 
     /// The two seats, named for failure messages: the attended one first.
-    pub fn seats(&self) -> [(&'static str, &Placed); 2] {
-        [("orch", &self.orch), ("worker", &self.worker)]
+    pub fn seats(&self) -> Vec<(&'static str, &Placed)> {
+        let mut seats: Vec<(&'static str, &Placed)> =
+            self.orch.iter().map(|orch| ("orch", orch)).collect();
+        seats.push(("worker", &self.worker));
+        seats
+    }
+
+    /// This seat's guardrail settings document: under its config dir, or in its
+    /// checkout for a harness whose settings file lives there.
+    pub fn settings_text(&self, seat: &str, placed: &Placed) -> String {
+        let install = &self.spec.guardrail;
+        if !install.settings_in_worktree {
+            return self.config_text(placed, install.settings_file);
+        }
+        let path = self.cwd_of(seat).join(install.settings_file);
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+    }
+
+    /// The trust record a placed pane holds for `key`, from one document keyed by
+    /// project or from that project's own file ([`ProjectIdentityAndTrust::file_per_project`]).
+    pub fn trust_record(&self, placed: &Placed, key: &str) -> Option<serde_json::Value> {
+        let identity = &self.spec.project_identity;
+        if identity.file_per_project() {
+            let path = self.config_dir(placed).join(identity.trust_file_for(key));
+            return document(&std::fs::read_to_string(path).ok()?).ok();
+        }
+        let text = self.config_text(placed, identity.trust_file);
+        record_under(&document(&text).ok()?, key)
     }
 
     /// The unattended seat's own working directory, and the attended one's.
@@ -314,16 +352,22 @@ impl Pass {
     /// Everything else about the machine is this pass's own, so the only thing
     /// that can differ between this placement and [`Pass::orch`] is the one fact
     /// being varied.
-    pub fn place_orch_without_fleet_bin(&self) -> Placed {
-        let host = Host { fleet_bin: None, ..Host::bare() };
-        placement::place(
-            PaneSpec::orch(self.harness),
-            &self.layout,
-            &host,
-            &self.target,
-            &self.context,
-        )
-        .expect("placing the operator's own seat on a machine with no fleet binary")
+    /// What the operator is told when a seat is brought up on a machine with no
+    /// `fleet` binary: the machine's own lines plus the placement's, as `fleet.rs`
+    /// emits them. The orchestrator if this harness takes it, else a worker.
+    pub fn notices_without_fleet_bin(&self) -> Vec<(NoticeLevel, String)> {
+        let host =
+            Host { fleet_bin: None, operator_logins: vec![a_login(self.spec)], ..Host::bare() };
+        let (pane, spec) = if self.spec.takes_the_operators_seat() {
+            (PaneId::Orch, PaneSpec::orch(self.harness))
+        } else {
+            (PaneId::Worker(WORKER_SLOT), PaneSpec::worker(WORKER_SLOT, self.harness))
+        };
+        let mut notices = placement::machine_notices(&host, pane);
+        let placed = placement::place(spec, &self.layout, &host, &self.target, &self.context)
+            .expect("placing a seat on a machine with no fleet binary");
+        notices.extend(placed.notices);
+        notices
     }
 
     /// Place both seats against a machine that **has** an operator installation,
@@ -405,10 +449,13 @@ impl Pass {
     /// checkpoint that planted a checkpointed database would pass for a harvest
     /// that renamed.
     pub fn plant_transcript(&self, placed: &Placed, slug: &str, file: &str, body: &str) -> PathBuf {
-        let dir = match self.spec.transcript.subdir {
+        let mut dir = match self.spec.transcript.subdir {
             "" => self.transcript_dir(placed),
             _ => self.transcript_dir(placed).join(slug),
         };
+        for _ in 1..self.spec.transcript.depth {
+            dir = dir.join("session");
+        }
         std::fs::create_dir_all(&dir).expect("a scratch transcript directory");
         let path = dir.join(file);
         match self.spec.transcript.transport {
@@ -828,4 +875,76 @@ fn run_git(dir: &Path, args: &[&str]) {
         dir.display(),
         String::from_utf8_lossy(&output.stderr),
     );
+}
+
+/// **This harness's trust file, as a value that can be searched** — whatever
+/// document format it is in.
+///
+/// **Reshaped in #33, and this is the shape it was in.** It was
+/// `serde_json::from_str`, which is not a checkpoint answer: `trust_file` names a
+/// *file*, and which document format that file is in is the vendor's — Claude
+/// Code's is JSON and codex's is the same `config.toml` the rest of its seed goes
+/// into. A checkpoint that could only read one of them was asserting one vendor's
+/// format under a general name, and would have failed a correct harness on its
+/// first line.
+///
+/// Both are parsed into the same `serde_json::Value`, so everything below —
+/// [`record_under`], [`is_affirmative`], [`trusted_directories`] — stays one
+/// implementation rather than one per format. That is the point: what a checkpoint
+/// asserts is *what the record says*, and the encoding it says it in is not a
+/// property of the seam.
+pub fn document(text: &str) -> Result<serde_json::Value, String> {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
+        return Ok(value);
+    }
+    let doc = text
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|e| format!("neither JSON nor TOML: {e}"))?;
+    Ok(as_value(doc.as_item()))
+}
+
+/// One TOML item as the same `serde_json::Value` a JSON document would parse to.
+///
+/// Written out rather than reached for through a serde bridge because the mapping
+/// is three lines and the alternative is a feature flag on a production
+/// dependency, turned on for a test. Only the shapes a trust record can be in
+/// matter: tables become objects, arrays become arrays, and a scalar becomes
+/// whatever [`is_affirmative`] can judge.
+pub fn as_value(item: &toml_edit::Item) -> serde_json::Value {
+    use toml_edit::{Item, Value as Toml};
+    match item {
+        Item::None => serde_json::Value::Null,
+        Item::Value(Toml::String(s)) => serde_json::Value::String(s.value().clone()),
+        Item::Value(Toml::Integer(i)) => serde_json::Value::from(*i.value()),
+        Item::Value(Toml::Float(f)) => serde_json::Value::from(*f.value()),
+        Item::Value(Toml::Boolean(b)) => serde_json::Value::Bool(*b.value()),
+        Item::Value(Toml::Datetime(d)) => serde_json::Value::String(d.value().to_string()),
+        Item::Value(Toml::Array(array)) => serde_json::Value::Array(
+            array.iter().map(|v| as_value(&Item::Value(v.clone()))).collect(),
+        ),
+        Item::Value(Toml::InlineTable(table)) => serde_json::Value::Object(
+            table.iter().map(|(k, v)| (k.to_string(), as_value(&Item::Value(v.clone())))).collect(),
+        ),
+        Item::Table(table) => serde_json::Value::Object(
+            table.iter().map(|(k, v)| (k.to_string(), as_value(v))).collect(),
+        ),
+        Item::ArrayOfTables(tables) => serde_json::Value::Array(
+            tables.iter().map(|t| as_value(&Item::Table(t.clone()))).collect(),
+        ),
+    }
+}
+
+/// The object this document records under `key`, wherever it keeps it.
+///
+/// **Searched rather than navigated**, for the reason checkpoint 14's doc comment
+/// gives: the container is not one of the fourteen answers.
+pub fn record_under(value: &serde_json::Value, key: &str) -> Option<serde_json::Value> {
+    match value {
+        serde_json::Value::Object(map) => map
+            .get(key)
+            .cloned()
+            .or_else(|| map.values().find_map(|nested| record_under(nested, key))),
+        serde_json::Value::Array(items) => items.iter().find_map(|item| record_under(item, key)),
+        _ => None,
+    }
 }

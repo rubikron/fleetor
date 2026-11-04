@@ -214,7 +214,7 @@ fn no_harness_is_hidden_and_a_refused_one_carries_its_reason() {
          run must appear disabled with its reason, never be dropped:\n{picker}",
     );
     assert!(
-        picker.contains("disabled={!canTakeASeat(harness)}"),
+        picker.contains("disabled={!canTakeASeat(harness)"),
         "the harness options no longer disable what cannot take a seat:\n{picker}",
     );
     assert!(

@@ -1806,6 +1806,7 @@ fn a_fleet_seeded_codex_worker_is_refused_a_write_outside_its_worktree() {
                 operators_own_seat: false,
                 pane: fleetor_core::pane::PaneId::Worker(1),
                 config_dir: &seeded,
+                cwd: &seeded,
                 roots: &roots,
                 policy: &fleetor_shell::guardrail::policy_dir(&shell),
                 journal: &journal,

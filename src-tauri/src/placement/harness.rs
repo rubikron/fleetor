@@ -203,6 +203,14 @@ pub enum Resume {
     NotSupported { why: &'static str },
 }
 
+impl HarnessSpec {
+    /// Whether this harness may run the orchestrator. A harness that writes into
+    /// its checkout cannot: the orchestrator's checkout is the operator's own repo.
+    pub fn takes_the_operators_seat(&self) -> bool {
+        !self.brief.writes_into_worktree && !self.guardrail.settings_in_worktree
+    }
+}
+
 impl Resume {
     pub fn is_supported(&self) -> bool {
         matches!(self, Resume::Supported)
@@ -289,6 +297,23 @@ pub struct BriefCarrier {
     /// is the good answer: a brief file in the worktree shows up in the operator's
     /// `git status` and has to be excluded.
     pub writes_into_worktree: bool,
+    /// The file, relative to the pane's cwd, the brief is written into, for a
+    /// harness that reads it from its checkout (Cursor's rules, D-130). Placement
+    /// writes it and excludes it from git.
+    pub worktree_file: Option<&'static str>,
+    /// Written before the brief in [`worktree_file`](Self::worktree_file): what
+    /// makes the vendor apply it to every turn. Empty for the other carriers.
+    pub worktree_header: &'static str,
+}
+
+impl BriefCarrier {
+    /// How many carriers are set; conformance requires exactly one.
+    pub fn carriers(&self) -> usize {
+        [self.argv_flag.is_some(), self.config_key.is_some(), self.worktree_file.is_some()]
+            .into_iter()
+            .filter(|set| *set)
+            .count()
+    }
 }
 
 /// **Checkpoint 3 — model flag and permission or sandbox posture.**
@@ -380,6 +405,9 @@ pub struct Posture {
     /// `None` for a harness with no schema to pin, which is every harness with an
     /// empty [`Self::verified_as`].
     pub verified_against_schema: Option<&'static str>,
+    /// Whether an unattended pane's only bound is the write guardrail (checkpoint
+    /// 7): no permission flag, no sandbox keys. Cursor's answer (D-129).
+    pub bounded_by_guardrail: bool,
 }
 
 /// **One row of the posture tripwire: a key FLEETOR writes, and the word the vendor
@@ -564,6 +592,10 @@ pub struct GuardrailInstall {
     /// The script file dropped into the config dir, shared by every harness
     /// because the policy is the fleet's rather than the vendor's.
     pub hook_file: &'static str,
+    /// Whether [`settings_file`](Self::settings_file) is relative to the pane's
+    /// cwd rather than its config dir (Cursor, D-129). The script stays in the
+    /// config dir either way.
+    pub settings_in_worktree: bool,
 }
 
 /// **Checkpoint 8 — outbound reachability.**
@@ -789,6 +821,9 @@ pub struct Transcript {
     /// non-exhaustive `match` in [`crate::runs`] instead: a fourth mechanism
     /// cannot be declared without the harvest being made to implement it.
     pub transport: Transport,
+    /// How many directory levels below [`subdir`](Self::subdir) a transcript may
+    /// sit. Claude Code and codex: 1. Cursor keeps `chats/<cwd hash>/<chat>/store.db`: 2.
+    pub depth: u8,
 }
 
 /// How the archive takes one harness's transcript — checkpoint 13's third answer.
@@ -844,6 +879,22 @@ pub struct ProjectIdentityAndTrust {
     /// without a dialog. Re-applied for every pane cwd whenever the target
     /// changes; this is the single most likely way to reintroduce L1.
     pub trust_keys: &'static [&'static str],
+}
+
+/// The placeholder in [`ProjectIdentityAndTrust::trust_file`] for a harness that
+/// keeps one trust file per project, keyed by [`Harness::project_key`].
+pub const KEY_SLOT: &str = "{key}";
+
+impl ProjectIdentityAndTrust {
+    /// Whether trust is one file per project rather than a record in one document.
+    pub fn file_per_project(&self) -> bool {
+        self.trust_file.contains(KEY_SLOT)
+    }
+
+    /// The trust file for `key`, relative to the config dir.
+    pub fn trust_file_for(&self, key: &str) -> String {
+        self.trust_file.replace(KEY_SLOT, key)
+    }
 }
 
 // --- the behavioural half -----------------------------------------------------
@@ -1388,7 +1439,7 @@ static CLAUDE_CODE: super::claude_code::ClaudeCode = super::claude_code::ClaudeC
 /// runs one pass per entry, end to end through [`place`](super::place), and it
 /// refuses the answers a half-implemented harness would give — that is what makes
 /// that line the registration and not a declaration.
-static REGISTERED: [&dyn Harness; 2] = [&CLAUDE_CODE, &super::codex::CODEX];
+static REGISTERED: [&dyn Harness; 3] = [&CLAUDE_CODE, &super::codex::CODEX, &super::cursor::CURSOR];
 
 /// Every harness a pane may run.
 pub fn registered() -> &'static [&'static dyn Harness] {
@@ -2238,9 +2289,10 @@ mod tests {
     }
 
     #[test]
-    fn the_registry_holds_two_distinct_harnesses_and_names_resolve() {
+    fn the_registry_holds_three_distinct_harnesses_and_names_resolve() {
         let all = registered();
-        assert_eq!(all.len(), 2, "codex joined at #39's follow-up; a third is its own arc");
+        assert_eq!(all.len(), 3, "cursor joined at WP-24");
+        assert!(all.iter().any(|h| h.spec().name == "cursor"), "cursor is registered");
         assert!(
             all.iter().any(|h| h.spec().name == "claude-code"),
             "Claude Code stays — a registry that swapped its sole harness for another \

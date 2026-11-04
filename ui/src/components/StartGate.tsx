@@ -105,6 +105,8 @@ export interface SeatRowProps {
   /// seats on two harnesses printed the same two sentences twice each, and
   /// identical text under identical rows trains the eye to skip all four.
   showFacts?: boolean;
+  /// This row is the orchestrator's, where a workers-only harness is disabled.
+  orchestrator?: boolean;
 }
 
 /// One seat's harness and model, with the harness's own facts beneath them.
@@ -123,6 +125,7 @@ export function SeatRow({
   onModel,
   aside,
   showFacts = true,
+  orchestrator = false,
 }: SeatRowProps) {
   const offer = offerFor(gate, seat.harness);
   const models = modelsFor(gate, seat);
@@ -146,8 +149,12 @@ export function SeatRow({
             <option
               key={harness.name}
               value={harness.name}
-              disabled={!canTakeASeat(harness)}
-              title={harness.reason ?? undefined}
+              disabled={!canTakeASeat(harness) || (orchestrator && !harness.orchestrator)}
+              title={
+                orchestrator && !harness.orchestrator
+                  ? "workers only: it writes into its checkout, and this seat's is your repository"
+                  : (harness.reason ?? undefined)
+              }
             >
               {optionLabel(harness)}
             </option>
@@ -313,6 +320,7 @@ export function StartGate({ onStart }: StartGateProps) {
             <>
               <SeatRow
                 label="orchestrator"
+                orchestrator
                 gate={gate}
                 seat={gate.seats.orch}
                 sentinel={DEFAULT_YOUR_LOGIN}
